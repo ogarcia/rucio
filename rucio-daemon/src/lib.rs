@@ -3,7 +3,11 @@ pub mod config;
 pub mod db;
 pub mod node;
 
+use std::sync::Arc;
+use std::time::Instant;
+
 use anyhow::Result;
+use tokio::sync::RwLock;
 use tracing::info;
 
 /// Entry point for the daemon logic.
@@ -17,11 +21,11 @@ pub async fn run() -> Result<()> {
         )
         .init();
 
-    let config = config::Config::load()?;
+    let config = Arc::new(config::Config::load()?);
     info!("Starting Rucio daemon v{}", env!("CARGO_PKG_VERSION"));
 
     // --- Database -----------------------------------------------------------
-    let _db = db::open(&config.storage.database_path).await?;
+    let db = db::open(&config.storage.database_path).await?;
 
     // --- Node ---------------------------------------------------------------
     let mut handle = node::task::spawn(&config.node).await?;
@@ -39,6 +43,9 @@ pub async fn run() -> Result<()> {
         }
     }
 
+    // Shared live node status (updated as events arrive)
+    let node_status = Arc::new(RwLock::new(api::NodeStatus::default()));
+
     // Wait for the node to confirm it is listening
     loop {
         match handle.event_rx.recv().await {
@@ -47,7 +54,10 @@ pub async fn run() -> Result<()> {
                 listen_addrs,
             }) => {
                 info!(%peer_id, "Node ready");
-                for addr in &listen_addrs {
+                let mut ns = node_status.write().await;
+                ns.peer_id = peer_id.to_string();
+                ns.listen_addrs = listen_addrs.iter().map(|a| a.to_string()).collect();
+                for addr in &ns.listen_addrs {
                     info!(%addr, "Listening");
                 }
                 break;
@@ -55,16 +65,73 @@ pub async fn run() -> Result<()> {
             Some(node::messages::NodeEvent::FatalError(e)) => {
                 anyhow::bail!("Node fatal error: {e}");
             }
-            Some(_) => {} // other events before Ready — ignore
+            Some(_) => {}
             None => anyhow::bail!("Node task exited before becoming ready"),
         }
     }
 
-    // TODO: start API server and DB, then drive the event loop
-    // For now, keep the node alive until Ctrl-C
-    tokio::signal::ctrl_c().await?;
-    info!("Received Ctrl-C, shutting down");
-    let _ = handle.cmd_tx.send(node::messages::NodeCmd::Shutdown).await;
+    // --- API server ---------------------------------------------------------
+    let app_state = api::AppState {
+        db: db.clone(),
+        config: Arc::clone(&config),
+        node_cmd: handle.cmd_tx.clone(),
+        started_at: Instant::now(),
+        node_status: Arc::clone(&node_status),
+    };
+
+    let listen_addr = config.api.listen.clone();
+    tokio::spawn(async move {
+        if let Err(e) = api::serve(app_state, &listen_addr).await {
+            tracing::error!("API server error: {e}");
+        }
+    });
+
+    // --- Main loop: forward node events, handle Ctrl-C ---------------------
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                info!("Received Ctrl-C, shutting down");
+                let _ = handle.cmd_tx.send(node::messages::NodeCmd::Shutdown).await;
+                break;
+            }
+            event = handle.event_rx.recv() => {
+                match event {
+                    Some(node::messages::NodeEvent::PeerDiscovered { peer_id, addrs }) => {
+                        node_status.write().await.connected_peers += 1;
+                        let addrs_json = serde_json::to_string(
+                            &addrs.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
+                        )
+                        .unwrap_or_default();
+                        let _ = db::peers::upsert(
+                            &db,
+                            &peer_id.to_string(),
+                            &addrs_json,
+                            now_secs(),
+                            true,
+                        )
+                        .await;
+                    }
+                    Some(node::messages::NodeEvent::PeerExpired { .. }) => {
+                        let mut ns = node_status.write().await;
+                        ns.connected_peers = ns.connected_peers.saturating_sub(1);
+                    }
+                    Some(node::messages::NodeEvent::FatalError(e)) => {
+                        tracing::error!("Node fatal error: {e}");
+                        break;
+                    }
+                    Some(_) => {}
+                    None => break,
+                }
+            }
+        }
+    }
 
     Ok(())
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }

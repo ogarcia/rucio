@@ -1,5 +1,7 @@
 /// Connectivity class of a node, inspired by eMule's LowID/HighID.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize, utoipa::ToSchema,
+)]
 pub enum NodeClass {
     /// Node has a publicly reachable address. Can serve chunks to any peer.
     HighId,
@@ -7,6 +9,7 @@ pub enum NodeClass {
     /// Can search and download but is not announced as a provider in the DHT.
     LowId,
     /// Class not yet determined (startup phase).
+    #[default]
     Unknown,
 }
 

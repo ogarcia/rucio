@@ -3217,6 +3217,7 @@ dependencies = [
  "anyhow",
  "axum",
  "dirs",
+ "hex",
  "libp2p",
  "rucio-core",
  "serde",
@@ -3228,6 +3229,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "utoipa",
+ "uuid",
 ]
 
 [[package]]
