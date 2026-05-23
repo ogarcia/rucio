@@ -19,9 +19,9 @@
 #   podman build --target full   --build-arg BUILDER=prebuilt .
 #
 # Environment variables (runtime):
-#   RUCIOD_CONFIG   Path to the daemon config file
-#                   (default: $XDG_CONFIG_HOME/rucio/config.toml)
-#   RUCIO_API       Daemon API URL used by the rucio CLI
+#   RUCIOD_CONFIG   Path to the daemon config file — optional, defaults to
+#                   $HOME/.config/rucio/config.toml (/var/lib/rucio/.config/…)
+#   RUCIO_API       Daemon API URL used by the rucio CLI (full image only)
 #                   (default: http://127.0.0.1:7070)
 
 # ── Stage 1a: compile from source (default local path) ──────────────────────
@@ -57,31 +57,29 @@ FROM alpine:3.23 AS ruciod
 
 RUN apk add --no-cache ca-certificates && \
     addgroup -S -g 10001 rucio && \
-    adduser  -S -G rucio -u 10001 rucio && \
-    mkdir -p /etc/rucio /var/lib/rucio && \
-    chown -R rucio:rucio /var/lib/rucio /etc/rucio
+    adduser  -S -G rucio -u 10001 -h /var/lib/rucio rucio && \
+    mkdir -p /var/lib/rucio && \
+    chown -R rucio:rucio /var/lib/rucio
 
 COPY --from=bins /usr/bin/ruciod /usr/bin/ruciod
 
 USER rucio
 WORKDIR /var/lib/rucio
 
-ENV RUCIOD_CONFIG=/etc/rucio/config.toml
-
 EXPOSE 4321/tcp
 EXPOSE 7070/tcp
 
 ENTRYPOINT ["/usr/bin/ruciod"]
 
-# ── Stage 3: runtime – full (tag: master-full / vX.Y.Z-full / latest-full) ──
+# ── Stage 3: runtime – full (tag: master-full / 0.1.0-full / latest-full) ──
 
 FROM alpine:3.23 AS full
 
 RUN apk add --no-cache ca-certificates && \
     addgroup -S -g 10001 rucio && \
-    adduser  -S -G rucio -u 10001 rucio && \
-    mkdir -p /etc/rucio /var/lib/rucio && \
-    chown -R rucio:rucio /var/lib/rucio /etc/rucio
+    adduser  -S -G rucio -u 10001 -h /var/lib/rucio rucio && \
+    mkdir -p /var/lib/rucio && \
+    chown -R rucio:rucio /var/lib/rucio
 
 COPY --from=bins /usr/bin/ruciod /usr/bin/ruciod
 COPY --from=bins /usr/bin/rucio  /usr/bin/rucio
@@ -89,8 +87,7 @@ COPY --from=bins /usr/bin/rucio  /usr/bin/rucio
 USER rucio
 WORKDIR /var/lib/rucio
 
-ENV RUCIOD_CONFIG=/etc/rucio/config.toml \
-    RUCIO_API=http://127.0.0.1:7070
+ENV RUCIO_API=http://127.0.0.1:7070
 
 EXPOSE 4321/tcp
 EXPOSE 7070/tcp
