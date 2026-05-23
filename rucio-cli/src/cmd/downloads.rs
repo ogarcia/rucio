@@ -83,16 +83,14 @@ pub async fn start(client: &ApiClient, target: &str, provider: Option<&str>) -> 
 pub async fn cancel(client: &ApiClient, hash: &str) -> Result<()> {
     let dl = client.find_download_by_hash(hash).await?;
     match dl {
-        None => bail!("No download found with hash {hash}"),
+        None => bail!("No download found with hash prefix '{hash}'"),
         Some(d) => {
-            // The cancel endpoint uses numeric ID; we store the hash as root_hash.
-            // Since the API only exposes cancel-by-id, we need the id — but our
-            // current DownloadResponse doesn't carry it yet.
-            // For now use a best-effort approach: pass the hash to the daemon
-            // which will look it up. TODO: add id field to DownloadResponse.
-            println!("Cancelling download: {}", d.root_hash);
-            // Temporary: show a not-yet-implemented note
-            println!("(cancel by hash not yet wired — use the numeric id)");
+            client.cancel_download(d.id).await?;
+            println!(
+                "Cancelled: {} ({})",
+                d.name.unwrap_or_else(|| "-".to_string()),
+                d.root_hash
+            );
             Ok(())
         }
     }

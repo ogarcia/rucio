@@ -11,8 +11,16 @@ pub async fn status(client: &ApiClient) -> Result<()> {
     println!("Peer ID  : {}", s.peer_id);
     println!("Class    : {:?}", s.class);
     println!("Peers    : {}", s.connected_peers);
-    println!("Uptime   : {}s", s.uptime_secs);
+    println!("Uptime   : {}", format_uptime(s.uptime_secs));
     println!("Version  : {}", s.version);
+    if s.listen_addrs.is_empty() {
+        println!("Listening: (none)");
+    } else {
+        println!("Listening:");
+        for addr in &s.listen_addrs {
+            println!("  {addr}");
+        }
+    }
     Ok(())
 }
 
@@ -40,7 +48,11 @@ pub async fn peers(client: &ApiClient) -> Result<()> {
         .map(|p| Row {
             peer_id: truncate(&p.peer_id, 24),
             class: format!("{:?}", p.class),
-            addresses: p.addresses.first().cloned().unwrap_or_default(),
+            addresses: if p.addresses.is_empty() {
+                "-".to_string()
+            } else {
+                p.addresses.join(", ")
+            },
         })
         .collect();
 
@@ -53,5 +65,15 @@ fn truncate(s: &str, max: usize) -> String {
         s.to_string()
     } else {
         format!("{}…", &s[..max])
+    }
+}
+
+fn format_uptime(secs: u64) -> String {
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m {}s", secs / 60, secs % 60)
+    } else {
+        format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
     }
 }

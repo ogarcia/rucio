@@ -6,6 +6,7 @@ pub struct StatusResponse {
     pub peer_id: String,
     pub class: NodeClass,
     pub connected_peers: usize,
+    pub listen_addrs: Vec<String>,
     pub uptime_secs: u64,
     pub version: String,
 }

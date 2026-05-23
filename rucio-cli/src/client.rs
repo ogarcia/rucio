@@ -229,6 +229,16 @@ impl ApiClient {
 
     pub async fn find_download_by_hash(&self, hash: &str) -> Result<Option<DownloadResponse>> {
         let resp = self.list_downloads().await?;
-        Ok(resp.downloads.into_iter().find(|d| d.root_hash == hash))
+        // Accept full hash or unambiguous prefix.
+        let matches: Vec<_> = resp
+            .downloads
+            .into_iter()
+            .filter(|d| d.root_hash.starts_with(hash))
+            .collect();
+        match matches.len() {
+            0 => Ok(None),
+            1 => Ok(Some(matches.into_iter().next().unwrap())),
+            n => anyhow::bail!("Ambiguous hash prefix '{hash}' matches {n} downloads"),
+        }
     }
 }
