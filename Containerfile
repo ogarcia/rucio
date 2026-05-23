@@ -40,9 +40,7 @@ WORKDIR /app
 
 COPY . .
 
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/app/target \
-    cargo build --release --locked && \
+RUN cargo build --release --locked && \
     cp target/release/ruciod /usr/local/bin/ruciod && \
     cp target/release/rucio  /usr/local/bin/rucio  && \
     strip /usr/local/bin/ruciod /usr/local/bin/rucio
