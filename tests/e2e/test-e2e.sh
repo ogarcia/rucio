@@ -5,15 +5,17 @@
 # searches from B, downloads it, and verifies the SHA-256 hash.
 #
 # Usage:
-#   bash test-e2e.sh
+#   bash tests/e2e/test-e2e.sh        (from workspace root)
+#   bash test-e2e.sh                   (from tests/e2e/)
 #
 # Requirements:
 #   - curl and jq installed
 
 set -euo pipefail
 
-REPO="$(cd "$(dirname "$0")" && pwd)"
-RUCIOD="$REPO/target/debug/ruciod"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+WORKSPACE_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+RUCIOD="$WORKSPACE_ROOT/target/debug/ruciod"
 API_A="http://127.0.0.1:17070"
 API_B="http://127.0.0.1:17071"
 
@@ -30,7 +32,7 @@ command -v curl >/dev/null || fail "curl is not installed"
 command -v jq   >/dev/null || fail "jq is not installed"
 
 info "Building binaries..."
-cargo build -p rucio-daemon -p rucio-cli --quiet
+cargo build --manifest-path "$WORKSPACE_ROOT/Cargo.toml" -p rucio-daemon -p rucio-cli --quiet
 [[ -f "$RUCIOD" ]] || fail "ruciod not found at $RUCIOD"
 
 # ---------------------------------------------------------------------------
