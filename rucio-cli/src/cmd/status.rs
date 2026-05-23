@@ -13,6 +13,7 @@ pub async fn status(client: &ApiClient) -> Result<()> {
     println!("Peers    : {}", s.connected_peers);
     println!("Uptime   : {}", format_uptime(s.uptime_secs));
     println!("Version  : {}", s.version);
+
     if s.listen_addrs.is_empty() {
         println!("Listening: (none)");
     } else {
@@ -20,20 +21,40 @@ pub async fn status(client: &ApiClient) -> Result<()> {
         for addr in &s.listen_addrs {
             println!("  {addr}");
         }
+    }
+
+    if !s.observed_addrs.is_empty() {
+        println!("External (observed by peers):");
+        for addr in &s.observed_addrs {
+            println!("  {addr}");
+        }
+    }
+
+    // Bootstrap multiaddrs: prefer observed (public) addresses; fall back to
+    // listen addresses filtering out loopback/unspecified.
+    let bootstrap_base: Vec<&str> = if !s.observed_addrs.is_empty() {
+        s.observed_addrs.iter().map(String::as_str).collect()
+    } else {
+        s.listen_addrs
+            .iter()
+            .map(String::as_str)
+            .filter(|a| {
+                !a.contains("/127.0.0.1")
+                    && !a.contains("/::1")
+                    && !a.contains("/0.0.0.0")
+                    && !a.contains("/::")
+            })
+            .collect()
+    };
+
+    if !bootstrap_base.is_empty() {
         println!();
         println!("Bootstrap multiaddrs (paste into another node's config.toml):");
-        for addr in &s.listen_addrs {
-            // Skip loopback and unspecified addresses — not useful as bootstrap peers.
-            if addr.contains("/127.0.0.1")
-                || addr.contains("/::1")
-                || addr.contains("/0.0.0.0")
-                || addr.contains("/::")
-            {
-                continue;
-            }
+        for addr in &bootstrap_base {
             println!("  {addr}/p2p/{}", s.peer_id);
         }
     }
+
     Ok(())
 }
 

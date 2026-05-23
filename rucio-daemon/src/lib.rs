@@ -206,6 +206,12 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                     }
                     Some(node::messages::NodeEvent::ObservedAddr { addr, reported_by }) => {
                         debug!(%addr, %reported_by, "Observed address");
+                        let addr_str = addr.to_string();
+                        let mut ns = node_status.write().await;
+                        if !ns.observed_addrs.contains(&addr_str) {
+                            info!(%addr, %reported_by, "New external address observed");
+                            ns.observed_addrs.push(addr_str);
+                        }
                     }
                     Some(node::messages::NodeEvent::ClassChanged(class)) => {
                         info!(?class, "Node class updated");

@@ -82,6 +82,9 @@ pub struct NodeStatus {
     pub peer_id: String,
     pub connected_peers: usize,
     pub listen_addrs: Vec<String>,
+    /// External addresses reported by remote peers via Identify.
+    /// Deduplicated; populated as peers connect and exchange Identify info.
+    pub observed_addrs: Vec<String>,
     pub node_class: rucio_core::protocol::node::NodeClass,
 }
 

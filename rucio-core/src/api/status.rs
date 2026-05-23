@@ -7,6 +7,10 @@ pub struct StatusResponse {
     pub class: NodeClass,
     pub connected_peers: usize,
     pub listen_addrs: Vec<String>,
+    /// External addresses observed by remote peers via the Identify protocol.
+    /// These are the addresses other nodes on the internet see us from.
+    /// May be empty until at least one peer has connected and reported back.
+    pub observed_addrs: Vec<String>,
     pub uptime_secs: u64,
     pub version: String,
 }

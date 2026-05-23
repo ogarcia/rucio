@@ -25,6 +25,7 @@ pub async fn get_status(State(state): State<AppState>) -> Json<StatusResponse> {
         class: ns.node_class.clone(),
         connected_peers: ns.connected_peers,
         listen_addrs: ns.listen_addrs.clone(),
+        observed_addrs: ns.observed_addrs.clone(),
         uptime_secs: uptime,
         version: env!("CARGO_PKG_VERSION").to_string(),
     })
