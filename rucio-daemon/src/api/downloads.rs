@@ -101,12 +101,25 @@ pub async fn start_download(
     )
 )]
 pub async fn cancel_download(State(state): State<AppState>, Path(id): Path<i64>) -> StatusCode {
+    // Fetch the root_hash before marking cancelled so the engine can clean up
+    // pending manifest state (which is keyed by hash, not by id).
+    let root_hash = match crate::db::downloads::get_root_hash(&state.db, id).await {
+        Ok(Some(h)) => h,
+        Ok(None) => return StatusCode::NOT_FOUND,
+        Err(e) => {
+            tracing::error!("DB error fetching download {id}: {e}");
+            return StatusCode::INTERNAL_SERVER_ERROR;
+        }
+    };
+
     match crate::db::downloads::set_status(&state.db, id, "cancelled", None).await {
         Ok(()) => {
-            // Notify the engine so it stops sending chunk requests.
             let _ = state
                 .download_tx
-                .send(DownloadRequest::Cancel { download_id: id })
+                .send(DownloadRequest::Cancel {
+                    download_id: id,
+                    root_hash,
+                })
                 .await;
             StatusCode::NO_CONTENT
         }

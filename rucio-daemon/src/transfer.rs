@@ -112,10 +112,6 @@ struct PendingManifest {
     attempt: usize,
     /// When the last manifest request was sent.
     requested_at: Instant,
-    /// DB download id, if the row was created before the manifest arrived.
-    /// Set to `None` if the download hasn't been written to the DB yet (i.e.
-    /// the manifest request was started but not yet enqueued).
-    download_id: Option<i64>,
 }
 
 /// Per-peer slot tracking for an active download.
@@ -217,7 +213,6 @@ impl DownloadEngine {
                 providers,
                 attempt: 0,
                 requested_at: Instant::now(),
-                download_id: None,
             },
         );
 
@@ -331,26 +326,45 @@ impl DownloadEngine {
     // Cancel
     // -----------------------------------------------------------------------
 
-    /// Stop tracking a download identified by its DB id.
-    /// In-flight chunk requests will be silently ignored when they arrive.
-    pub async fn cancel(&mut self, download_id: i64) {
-        // Check pending manifests first.
-        self.pending_manifests
-            .retain(|_, pm| pm.download_id != Some(download_id));
-
-        // Check active downloads.
-        let hash = self
-            .active
-            .iter()
-            .find(|(_, dl)| dl.download_id == download_id)
-            .map(|(h, _)| *h);
-        if let Some(h) = hash {
-            self.active.remove(&h);
-            info!(
-                download_id,
-                root_hash = hex::encode(h),
-                "Download cancelled"
-            );
+    /// Stop tracking a download identified by its DB id and root hash.
+    /// Covers both active downloads and pending manifest requests.
+    /// In-flight chunk/manifest responses that arrive afterwards are silently
+    /// discarded by the existing "unknown request" guards.
+    pub async fn cancel(&mut self, download_id: i64, root_hash: Vec<u8>) {
+        // Remove a pending manifest (keyed by hash — download_id may be None
+        // at this stage if the manifest hasn't arrived yet).
+        let hash_arr: Option<[u8; 32]> = root_hash.try_into().ok();
+        if let Some(h) = hash_arr {
+            if self.pending_manifests.remove(&h).is_some() {
+                info!(
+                    download_id,
+                    root_hash = hex::encode(h),
+                    "Cancelled pending manifest"
+                );
+            }
+            // Also remove from active downloads (manifest already arrived).
+            if self.active.remove(&h).is_some() {
+                info!(
+                    download_id,
+                    root_hash = hex::encode(h),
+                    "Download cancelled"
+                );
+            }
+        } else {
+            // Fallback: search active downloads by download_id.
+            let found = self
+                .active
+                .iter()
+                .find(|(_, dl)| dl.download_id == download_id)
+                .map(|(h, _)| *h);
+            if let Some(h) = found {
+                self.active.remove(&h);
+                info!(
+                    download_id,
+                    root_hash = hex::encode(h),
+                    "Download cancelled"
+                );
+            }
         }
     }
 

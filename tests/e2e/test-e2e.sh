@@ -173,18 +173,30 @@ ok "Node B discovered node A ($PEERS peer(s))"
 # 6. Search from node B
 # ---------------------------------------------------------------------------
 info "Searching for 'test-file' from node B..."
-QUERY_ID=$(curl -sf -X POST "$API_B/api/v1/search" \
-    -H 'Content-Type: application/json' \
-    -d '{"keywords": ["test-file"]}' | jq -r '.query_id')
-info "Query ID: $QUERY_ID"
 
+# The Gossipsub mesh may not be fully formed the instant mDNS discovers the
+# peer.  We re-issue the search query every 3 s until results arrive (up to
+# 30 s total) rather than firing once and waiting passively.
 RESULTS="{}"
-for i in $(seq 1 30); do
-    RESULTS=$(curl -sf "$API_B/api/v1/search/$QUERY_ID")
-    [[ "$(echo "$RESULTS" | jq '.results | length')" -ge 1 ]] && break
+RESULT_COUNT=0
+for attempt in $(seq 1 10); do
+    QUERY_ID=$(curl -sf -X POST "$API_B/api/v1/search" \
+        -H 'Content-Type: application/json' \
+        -d '{"keywords": ["test-file"]}' | jq -r '.query_id')
+    info "Query ID: $QUERY_ID (attempt $attempt)"
+
+    for i in $(seq 1 6); do
+        RESULTS=$(curl -sf "$API_B/api/v1/search/$QUERY_ID")
+        RESULT_COUNT=$(echo "$RESULTS" | jq '.results | length')
+        [[ "$RESULT_COUNT" -ge 1 ]] && break
+        sleep 0.5
+    done
+
+    [[ "$RESULT_COUNT" -ge 1 ]] && break
+    # No results yet — pause briefly before re-querying.
     sleep 1
 done
-RESULT_COUNT=$(echo "$RESULTS" | jq '.results | length')
+
 [[ "$RESULT_COUNT" -ge 1 ]] || fail "No search results found on node B"
 ok "Found $RESULT_COUNT result(s)"
 

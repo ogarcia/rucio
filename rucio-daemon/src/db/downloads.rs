@@ -132,6 +132,15 @@ pub async fn set_status(
     Ok(())
 }
 
+/// Return the root_hash for a single download row, or `None` if not found.
+pub async fn get_root_hash(db: &Db, download_id: i64) -> Result<Option<Vec<u8>>> {
+    let row = sqlx::query("SELECT root_hash FROM downloads WHERE id = ?1")
+        .bind(download_id)
+        .fetch_optional(db)
+        .await?;
+    Ok(row.map(|r| r.get("root_hash")))
+}
+
 /// Mark any pending/active download for `root_hash` as failed.
 /// Used when the manifest cannot be retrieved from any provider.
 pub async fn fail_by_hash(db: &Db, root_hash: &[u8; 32]) -> Result<()> {

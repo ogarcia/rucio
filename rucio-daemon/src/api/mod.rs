@@ -50,8 +50,13 @@ pub enum DownloadRequest {
         /// Known providers (PeerId strings). At least one is required.
         providers: Vec<String>,
     },
-    /// Cancel an in-flight download by its DB id.
-    Cancel { download_id: i64 },
+    /// Cancel an in-flight download by its DB id and root hash.
+    Cancel {
+        download_id: i64,
+        /// BLAKE3 root hash — used to purge pending manifest state in the
+        /// engine even before the manifest has been received.
+        root_hash: Vec<u8>,
+    },
 }
 
 // ---------------------------------------------------------------------------

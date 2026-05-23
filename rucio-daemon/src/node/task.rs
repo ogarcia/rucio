@@ -111,6 +111,9 @@ struct LoopState {
     /// Gossipsub messages that failed with InsufficientPeers, queued for
     /// retry when a peer subscribes to the relevant topic.
     pending_publishes: Vec<(IdentTopic, Vec<u8>, String)>,
+    /// Peers whose outgoing connection attempt failed; will be retried after
+    /// a short delay to recover from simultaneous-open handshake collisions.
+    retry_dials: HashMap<PeerId, (Vec<Multiaddr>, tokio::time::Instant)>,
 }
 
 impl LoopState {
@@ -124,6 +127,7 @@ impl LoopState {
             pending_manifest_channels: HashMap::new(),
             next_channel_id: 0,
             pending_publishes: Vec::new(),
+            retry_dials: HashMap::new(),
         }
     }
 
@@ -155,9 +159,37 @@ async fn run_loop(
     let topic_query = IdentTopic::new(TOPIC_SEARCH);
     let topic_result = IdentTopic::new(TOPIC_SEARCH_RESULT);
     let mut state = LoopState::new();
+    let mut dial_retry_tick = tokio::time::interval(tokio::time::Duration::from_millis(500));
 
     loop {
         tokio::select! {
+            _ = dial_retry_tick.tick() => {
+                // Retry dial for peers that had a failed outgoing connection
+                // more than 1 s ago (simultaneous-open recovery).
+                let retry_delay = tokio::time::Duration::from_secs(1);
+                let now = tokio::time::Instant::now();
+                let to_retry: Vec<(PeerId, Vec<Multiaddr>)> = state
+                    .retry_dials
+                    .iter()
+                    .filter(|(_, (_, ts))| now.duration_since(*ts) >= retry_delay)
+                    .map(|(pid, (addrs, _))| (*pid, addrs.clone()))
+                    .collect();
+                for (pid, addrs) in to_retry {
+                    // Remove first so we don't loop on persistent failures.
+                    state.retry_dials.remove(&pid);
+                    // Skip if already connected.
+                    if swarm.is_connected(&pid) {
+                        continue;
+                    }
+                    debug!(%pid, "Retrying dial after connection failure");
+                    let dial_opts = libp2p::swarm::dial_opts::DialOpts::peer_id(pid)
+                        .addresses(addrs)
+                        .build();
+                    if let Err(e) = swarm.dial(dial_opts) {
+                        debug!(%pid, "Retry dial failed: {e}");
+                    }
+                }
+            }
             cmd = cmd_rx.recv() => {
                 match cmd {
                     None | Some(NodeCmd::Shutdown) => {
@@ -294,6 +326,8 @@ async fn on_swarm_event(
         SwarmEvent::ConnectionEstablished { peer_id: pid, .. } => {
             debug!(%pid, "Connection established");
             swarm.behaviour_mut().gossipsub.add_explicit_peer(&pid);
+            // Connection succeeded — no need to retry.
+            state.retry_dials.remove(&pid);
         }
         SwarmEvent::ConnectionClosed {
             peer_id: pid,
@@ -303,8 +337,15 @@ async fn on_swarm_event(
             debug!(%pid, ?cause, "Connection closed");
             swarm.behaviour_mut().gossipsub.remove_explicit_peer(&pid);
         }
-        SwarmEvent::OutgoingConnectionError { error, .. } => {
+        SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
             warn!(%error, "Outgoing connection error");
+            // Schedule a retry for known peers so that simultaneous-open
+            // handshake collisions (both nodes dial each other at the same
+            // instant) are recovered from automatically.
+            if let Some(Some(entry)) = peer_id.map(|pid| state.retry_dials.get_mut(&pid)) {
+                // Refresh the timestamp so the retry fires ~1 s from now.
+                entry.1 = tokio::time::Instant::now();
+            }
         }
 
         SwarmEvent::Behaviour(bev) => match bev {
@@ -318,13 +359,29 @@ async fn on_swarm_event(
                         }
                         for (pid, addrs) in by_peer {
                             info!(%pid, "mDNS discovered peer");
-                            // Single dial with all known addresses; libp2p
-                            // will try them in order and stop on first success.
+                            // Store addresses for potential retry after a
+                            // failed handshake (simultaneous-open collision).
+                            state
+                                .retry_dials
+                                .entry(pid)
+                                .or_insert_with(|| {
+                                    (
+                                        addrs.clone(),
+                                        tokio::time::Instant::now()
+                                            - tokio::time::Duration::from_secs(60),
+                                    )
+                                })
+                                .0 = addrs.clone();
+                            // Only dial if we are not already connected or
+                            // dialling this peer — avoids simultaneous-open
+                            // handshake collisions when both nodes discover
+                            // each other at the same instant via mDNS.
                             let dial_opts = libp2p::swarm::dial_opts::DialOpts::peer_id(pid)
+                                .condition(libp2p::swarm::dial_opts::PeerCondition::NotDialing)
                                 .addresses(addrs.clone())
                                 .build();
                             if let Err(e) = swarm.dial(dial_opts) {
-                                debug!(%pid, "mDNS dial failed: {e}");
+                                debug!(%pid, "mDNS dial skipped or failed: {e}");
                             }
                             let _ = event_tx
                                 .send(NodeEvent::PeerDiscovered {

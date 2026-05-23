@@ -147,8 +147,8 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                                 }
                             }
                         }
-                        api::DownloadRequest::Cancel { download_id } => {
-                            engine.cancel(download_id).await;
+                        api::DownloadRequest::Cancel { download_id, root_hash } => {
+                            engine.cancel(download_id, root_hash).await;
                         }
                     }
                 }
