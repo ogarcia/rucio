@@ -3,15 +3,18 @@ pub mod config;
 pub mod db;
 pub mod node;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
 use tokio::sync::RwLock;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
+
+use rucio_core::api::search::SearchResultResponse;
+use rucio_core::protocol::search::{SearchQuery, SearchResult};
 
 /// Entry point for the daemon logic.
-/// Called both from the daemon's own `main.rs` and from the fat binary.
 pub async fn run() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -39,12 +42,15 @@ pub async fn run() -> Result<()> {
                     .send(node::messages::NodeCmd::AddBootstrapPeer(addr))
                     .await?;
             }
-            Err(e) => tracing::warn!("Invalid bootstrap peer address {addr_str}: {e}"),
+            Err(e) => warn!("Invalid bootstrap peer address {addr_str}: {e}"),
         }
     }
 
     // Shared live node status (updated as events arrive)
     let node_status = Arc::new(RwLock::new(api::NodeStatus::default()));
+
+    // In-memory search store
+    let search_store: api::SearchStore = Arc::new(RwLock::new(HashMap::new()));
 
     // Wait for the node to confirm it is listening
     loop {
@@ -77,6 +83,7 @@ pub async fn run() -> Result<()> {
         node_cmd: handle.cmd_tx.clone(),
         started_at: Instant::now(),
         node_status: Arc::clone(&node_status),
+        search_store: Arc::clone(&search_store),
     };
 
     let listen_addr = config.api.listen.clone();
@@ -86,7 +93,7 @@ pub async fn run() -> Result<()> {
         }
     });
 
-    // --- Main loop: forward node events, handle Ctrl-C ---------------------
+    // --- Main loop ----------------------------------------------------------
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
@@ -122,6 +129,18 @@ pub async fn run() -> Result<()> {
                         info!(?class, "Node class updated");
                         node_status.write().await.node_class = class;
                     }
+                    Some(node::messages::NodeEvent::SearchQueryReceived(query)) => {
+                        // Check our shares and respond for each match.
+                        let peer_id = node_status.read().await.peer_id.clone();
+                        let cmd_tx = handle.cmd_tx.clone();
+                        let db2 = db.clone();
+                        tokio::spawn(async move {
+                            respond_to_query(query, peer_id, cmd_tx, db2).await;
+                        });
+                    }
+                    Some(node::messages::NodeEvent::SearchResult(result)) => {
+                        accumulate_result(result, &search_store).await;
+                    }
                     Some(node::messages::NodeEvent::FatalError(e)) => {
                         tracing::error!("Node fatal error: {e}");
                         break;
@@ -134,6 +153,86 @@ pub async fn run() -> Result<()> {
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Search helpers
+// ---------------------------------------------------------------------------
+
+/// Look up matching local shares and publish a SearchResult for each one.
+async fn respond_to_query(
+    query: SearchQuery,
+    peer_id: String,
+    cmd_tx: tokio::sync::mpsc::Sender<node::messages::NodeCmd>,
+    db: db::Db,
+) {
+    let shares = match db::shares::list(&db).await {
+        Ok(s) => s,
+        Err(e) => {
+            warn!("DB error while responding to search query: {e}");
+            return;
+        }
+    };
+
+    for share in shares {
+        if !query.matches(&share.name) {
+            continue;
+        }
+
+        let root_hash_hex = hex::encode(&share.root_hash);
+        let chunk_count = (share.size as usize).div_ceil(share.chunk_size as usize);
+        let magnet =
+            SearchResult::magnet_from_parts(&root_hash_hex, &share.name, share.size as u64);
+
+        let result = SearchResult {
+            query_id: query.id.clone(),
+            root_hash: root_hash_hex,
+            name: share.name.clone(),
+            size: share.size as u64,
+            chunk_count,
+            mime_type: share.mime_type.clone(),
+            magnet,
+            provider: peer_id.clone(),
+        };
+
+        if cmd_tx
+            .send(node::messages::NodeCmd::PublishSearchResult(result))
+            .await
+            .is_err()
+        {
+            warn!("Node cmd channel closed; could not send search result");
+            break;
+        }
+    }
+}
+
+/// Insert an incoming SearchResult into the in-memory store.
+async fn accumulate_result(result: SearchResult, store: &api::SearchStore) {
+    let mut map = store.write().await;
+
+    // Only accumulate results for queries we originated.
+    if let Some(entry) = map.get_mut(&result.query_id.0) {
+        if !entry.pending {
+            return; // window already closed
+        }
+        // Deduplicate by (root_hash, provider).
+        let already_have = entry
+            .results
+            .iter()
+            .any(|r| r.root_hash == result.root_hash);
+        if !already_have {
+            entry.results.push(SearchResultResponse {
+                root_hash: result.root_hash,
+                name: result.name,
+                size: result.size,
+                chunk_count: result.chunk_count,
+                mime_type: result.mime_type,
+                magnet: result.magnet,
+            });
+        }
+    } else {
+        debug!(qid = %result.query_id, "Ignoring result for unknown/expired query");
+    }
 }
 
 fn now_secs() -> u64 {

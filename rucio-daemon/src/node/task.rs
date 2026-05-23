@@ -1,15 +1,14 @@
 //! The node task: owns the libp2p swarm and drives it to completion.
-//!
-//! Spawn with [`spawn`]; it returns a [`NodeHandle`] through which callers
-//! send [`NodeCmd`]s and receive [`NodeEvent`]s.
 
 use anyhow::{Context, Result};
 use libp2p::futures::StreamExt;
 use libp2p::{
     Multiaddr, SwarmBuilder,
+    gossipsub::{self, IdentTopic},
     kad::{self, QueryId},
     swarm::SwarmEvent,
 };
+use rucio_core::protocol::search::{SearchQuery, SearchResult};
 use std::collections::{HashMap, HashSet};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
@@ -17,13 +16,12 @@ use tracing::{debug, info, warn};
 use crate::config::NodeConfig;
 
 use super::{
-    behaviour::{RucioBehaviour, RucioBehaviourEvent},
+    behaviour::{RucioBehaviour, RucioBehaviourEvent, TOPIC_SEARCH, TOPIC_SEARCH_RESULT},
     classify::ClassificationState,
     identity,
     messages::{NodeCmd, NodeEvent},
 };
 
-// Channel capacities
 const CMD_BUFFER: usize = 64;
 const EVENT_BUFFER: usize = 256;
 
@@ -31,17 +29,15 @@ const EVENT_BUFFER: usize = 256;
 // Public handle
 // ---------------------------------------------------------------------------
 
-/// A cheaply-cloneable handle to the running node task.
 pub struct NodeHandle {
     pub cmd_tx: mpsc::Sender<NodeCmd>,
     pub event_rx: mpsc::Receiver<NodeEvent>,
 }
 
 // ---------------------------------------------------------------------------
-// Public spawn function
+// spawn
 // ---------------------------------------------------------------------------
 
-/// Spawn the node task and return a [`NodeHandle`].
 pub async fn spawn(cfg: &NodeConfig) -> Result<NodeHandle> {
     let keypair = identity::load_or_create(&cfg.identity_path)?;
     let peer_id = keypair.public().to_peer_id();
@@ -73,6 +69,16 @@ pub async fn spawn(cfg: &NodeConfig) -> Result<NodeHandle> {
         .context("attaching behaviour")?
         .build();
 
+    // Subscribe to gossipsub topics before entering the event loop.
+    let topic_query = IdentTopic::new(TOPIC_SEARCH);
+    let topic_result = IdentTopic::new(TOPIC_SEARCH_RESULT);
+    if let Err(e) = swarm.behaviour_mut().gossipsub.subscribe(&topic_query) {
+        warn!("Failed to subscribe to search topic: {e}");
+    }
+    if let Err(e) = swarm.behaviour_mut().gossipsub.subscribe(&topic_result) {
+        warn!("Failed to subscribe to search-result topic: {e}");
+    }
+
     for addr in &listen_addrs {
         if let Err(e) = swarm.listen_on(addr.clone()) {
             warn!("Failed to listen on {addr}: {e}");
@@ -85,7 +91,7 @@ pub async fn spawn(cfg: &NodeConfig) -> Result<NodeHandle> {
 }
 
 // ---------------------------------------------------------------------------
-// Event loop state
+// Loop state
 // ---------------------------------------------------------------------------
 
 struct LoopState {
@@ -116,6 +122,8 @@ async fn run_loop(
     mut cmd_rx: mpsc::Receiver<NodeCmd>,
     event_tx: mpsc::Sender<NodeEvent>,
 ) {
+    let topic_query = IdentTopic::new(TOPIC_SEARCH);
+    let topic_result = IdentTopic::new(TOPIC_SEARCH_RESULT);
     let mut state = LoopState::new();
 
     loop {
@@ -147,25 +155,62 @@ async fn run_loop(
                         let qid = swarm.behaviour_mut().kademlia.get_providers(record_key);
                         state.provider_queries.insert(qid, key);
                     }
+                    Some(NodeCmd::Search(query)) => {
+                        publish_json(&mut swarm, &topic_query, &query, "search query");
+                    }
+                    Some(NodeCmd::PublishSearchResult(result)) => {
+                        publish_json(&mut swarm, &topic_result, &result, "search result");
+                    }
                 }
             }
 
             event = swarm.next() => {
                 let Some(event) = event else { break };
-                handle_swarm_event(event, &event_tx, &mut state, peer_id).await;
+                on_swarm_event(event, &event_tx, &mut state, peer_id, &mut swarm).await;
             }
         }
     }
 }
 
-async fn handle_swarm_event(
+// ---------------------------------------------------------------------------
+// Publish helper
+// ---------------------------------------------------------------------------
+
+fn publish_json<T: serde::Serialize>(
+    swarm: &mut libp2p::Swarm<RucioBehaviour>,
+    topic: &IdentTopic,
+    value: &T,
+    label: &str,
+) {
+    match serde_json::to_vec(value) {
+        Ok(bytes) => {
+            if let Err(e) = swarm
+                .behaviour_mut()
+                .gossipsub
+                .publish(topic.clone(), bytes)
+            {
+                // InsufficientPeers is expected when there are no mesh peers yet.
+                debug!("Could not publish {label}: {e}");
+            } else {
+                debug!("Published {label}");
+            }
+        }
+        Err(e) => warn!("Failed to serialise {label}: {e}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Swarm event handler
+// ---------------------------------------------------------------------------
+
+async fn on_swarm_event(
     event: SwarmEvent<RucioBehaviourEvent>,
     event_tx: &mpsc::Sender<NodeEvent>,
     state: &mut LoopState,
     peer_id: libp2p::PeerId,
+    swarm: &mut libp2p::Swarm<RucioBehaviour>,
 ) {
     match event {
-        // ---- listener events -------------------------------------------
         SwarmEvent::NewListenAddr { address, .. } => {
             info!(%address, "Listening");
             state.confirmed_addrs.insert(address);
@@ -187,10 +232,9 @@ async fn handle_swarm_event(
                 state.confirmed_addrs.remove(a);
             }
         }
-
-        // ---- connection events -----------------------------------------
         SwarmEvent::ConnectionEstablished { peer_id: pid, .. } => {
             debug!(%pid, "Connection established");
+            swarm.behaviour_mut().gossipsub.add_explicit_peer(&pid);
         }
         SwarmEvent::ConnectionClosed {
             peer_id: pid,
@@ -198,12 +242,12 @@ async fn handle_swarm_event(
             ..
         } => {
             debug!(%pid, ?cause, "Connection closed");
+            swarm.behaviour_mut().gossipsub.remove_explicit_peer(&pid);
         }
         SwarmEvent::OutgoingConnectionError { error, .. } => {
             warn!(%error, "Outgoing connection error");
         }
 
-        // ---- behaviour events ------------------------------------------
         SwarmEvent::Behaviour(bev) => match bev {
             RucioBehaviourEvent::Mdns(mdns_event) => {
                 use libp2p::mdns::Event;
@@ -273,7 +317,6 @@ async fn handle_swarm_event(
                         let listen_vec: Vec<Multiaddr> =
                             state.confirmed_addrs.iter().cloned().collect();
 
-                        // Emit the raw observation so consumers can log/display it
                         let _ = event_tx
                             .send(NodeEvent::ObservedAddr {
                                 addr: observed.clone(),
@@ -281,7 +324,6 @@ async fn handle_swarm_event(
                             })
                             .await;
 
-                        // Run the classifier; emit ClassChanged only if it changes
                         if let Some(new_class) =
                             state
                                 .classifier
@@ -291,12 +333,53 @@ async fn handle_swarm_event(
                             let _ = event_tx.send(NodeEvent::ClassChanged(new_class)).await;
                         }
                     }
-                    Event::Sent { .. } => {}
+                    Event::Sent { .. } | Event::Error { .. } => {}
                     _ => {}
                 }
             }
+
+            RucioBehaviourEvent::Gossipsub(gs_event) => {
+                on_gossipsub_event(gs_event, event_tx).await;
+            }
         },
 
+        _ => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Gossipsub event handler
+// ---------------------------------------------------------------------------
+
+async fn on_gossipsub_event(event: gossipsub::Event, event_tx: &mpsc::Sender<NodeEvent>) {
+    match event {
+        gossipsub::Event::Message { message, .. } => {
+            let topic_str = message.topic.as_str();
+
+            if topic_str == TOPIC_SEARCH {
+                match serde_json::from_slice::<SearchQuery>(&message.data) {
+                    Ok(query) => {
+                        debug!(id = %query.id, keywords = ?query.keywords, "Received search query");
+                        let _ = event_tx.send(NodeEvent::SearchQueryReceived(query)).await;
+                    }
+                    Err(e) => warn!("Failed to decode search query: {e}"),
+                }
+            } else if topic_str == TOPIC_SEARCH_RESULT {
+                match serde_json::from_slice::<SearchResult>(&message.data) {
+                    Ok(result) => {
+                        debug!(qid = %result.query_id, "Received search result from {}", result.provider);
+                        let _ = event_tx.send(NodeEvent::SearchResult(result)).await;
+                    }
+                    Err(e) => warn!("Failed to decode search result: {e}"),
+                }
+            }
+        }
+        gossipsub::Event::Subscribed { peer_id, topic } => {
+            debug!(%peer_id, %topic, "Peer subscribed to topic");
+        }
+        gossipsub::Event::Unsubscribed { peer_id, topic } => {
+            debug!(%peer_id, %topic, "Peer unsubscribed from topic");
+        }
         _ => {}
     }
 }

@@ -12,7 +12,10 @@
 //! module imports libp2p types directly.
 
 use libp2p::{Multiaddr, PeerId};
-use rucio_core::protocol::node::NodeClass;
+use rucio_core::protocol::{
+    node::NodeClass,
+    search::{SearchQuery, SearchResult},
+};
 
 // ---------------------------------------------------------------------------
 // Commands (caller → node)
@@ -29,6 +32,10 @@ pub enum NodeCmd {
     StopProviding(Vec<u8>),
     /// Ask the DHT for providers of a content hash.
     FindProviders(Vec<u8>),
+    /// Publish a search query on the gossip network.
+    Search(SearchQuery),
+    /// Publish a search result on the gossip network (response to a query).
+    PublishSearchResult(SearchResult),
     /// Gracefully stop the node task.
     Shutdown,
 }
@@ -53,11 +60,8 @@ pub enum NodeEvent {
     /// A peer is no longer reachable.
     PeerExpired { peer_id: PeerId },
     /// A remote peer reported our observed (external) address via Identify.
-    /// Accumulating several of these is the basis for HighID/LowID detection.
     ObservedAddr {
-        /// The address as seen by the remote peer.
         addr: Multiaddr,
-        /// The peer that reported it.
         reported_by: PeerId,
     },
     /// Node connectivity class has been (re)determined.
@@ -67,6 +71,11 @@ pub enum NodeEvent {
         key: Vec<u8>,
         providers: Vec<PeerId>,
     },
+    /// A search result arrived from the gossip network.
+    SearchResult(SearchResult),
+    /// A search query arrived from the gossip network — daemon should check
+    /// its local shares and call `PublishSearchResult` for each match.
+    SearchQueryReceived(SearchQuery),
     /// A fatal error in the node task.
     FatalError(String),
 }

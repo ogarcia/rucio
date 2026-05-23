@@ -9,6 +9,7 @@ pub mod search;
 pub mod shares;
 pub mod status;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -19,6 +20,26 @@ use tokio::sync::mpsc;
 use crate::config::Config;
 use crate::db::Db;
 use crate::node::messages::NodeCmd;
+use rucio_core::api::search::SearchResultResponse;
+
+// ---------------------------------------------------------------------------
+// SearchStore
+// ---------------------------------------------------------------------------
+
+/// In-memory accumulator for search results keyed by query_id.
+#[derive(Debug)]
+pub struct SearchEntry {
+    pub results: Vec<SearchResultResponse>,
+    /// Set to false after the TTL window closes.
+    pub pending: bool,
+    /// Monotonic instant when the query was started (for TTL expiry).
+    pub started_at: Instant,
+}
+
+pub type SearchStore = Arc<RwLock<HashMap<String, SearchEntry>>>;
+
+/// How long to keep a search entry open for incoming results.
+pub const SEARCH_WINDOW_SECS: u64 = 30;
 
 // ---------------------------------------------------------------------------
 // Shared application state
@@ -37,6 +58,8 @@ pub struct AppState {
     pub started_at: Instant,
     /// Current node status; updated by the node event loop.
     pub node_status: Arc<RwLock<NodeStatus>>,
+    /// In-memory search result accumulator.
+    pub search_store: SearchStore,
 }
 
 /// Live node status kept in memory and updated by the event loop.
