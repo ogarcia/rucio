@@ -407,11 +407,11 @@ async fn post_download_invalid_magnet_returns_400() {
 }
 
 #[tokio::test]
-async fn post_download_missing_provider_returns_400() {
+async fn post_download_empty_providers_returns_202() {
+    // providers is now optional — empty list triggers DHT-only discovery.
     let (state, _rx, _dl_rx, _dir) = test_state().await;
     let app = router(state);
 
-    // Valid magnet but empty providers list
     let hash = "a".repeat(64);
     let body = format!(r#"{{"magnet":"rucio:{hash}?name=test.bin&size=1024","providers":[]}}"#);
 
@@ -427,7 +427,31 @@ async fn post_download_missing_provider_returns_400() {
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+}
+
+#[tokio::test]
+async fn post_download_no_providers_field_returns_202() {
+    // providers field can be omitted entirely (serde default = []).
+    let (state, _rx, _dl_rx, _dir) = test_state().await;
+    let app = router(state);
+
+    let hash = "c".repeat(64);
+    let body = format!(r#"{{"magnet":"rucio:{hash}?name=test.bin&size=1024"}}"#);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/downloads")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
 }
 
 #[tokio::test]

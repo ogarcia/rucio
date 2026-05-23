@@ -3,7 +3,10 @@
 pub struct StartDownloadRequest {
     pub magnet: String,
     /// PeerIds of known providers (from search results).
-    /// Passing multiple providers enables multi-source parallel download.
+    /// Optional — if omitted or empty the daemon will discover providers via
+    /// Kademlia DHT automatically.  Supplying providers from a gossip search
+    /// result enables an immediate fast start while DHT runs in parallel.
+    #[serde(default)]
     pub providers: Vec<String>,
 }
 

@@ -186,26 +186,25 @@ impl DownloadEngine {
     pub async fn start(&mut self, magnet: &str, providers: Vec<PeerId>, _now: u64) -> Result<()> {
         let info = parse_magnet(magnet)?;
 
-        if providers.is_empty() {
-            bail!("at least one provider is required to start a download");
-        }
         if self.active.contains_key(&info.root_hash)
             || self.pending_manifests.contains_key(&info.root_hash)
         {
             bail!("download already active for this hash");
         }
 
-        // Request the manifest from the first provider; others will serve as
-        // chunk sources once the download is active.
-        let first = providers[0];
-        self.request_manifest(info.root_hash, first).await;
-
-        // Also ask Kademlia for additional providers — they will be added
-        // dynamically via add_providers() as they arrive.
+        // Always ask Kademlia for providers — they will be added dynamically
+        // via add_providers() as they arrive, even if we already have some.
         let _ = self
             .cmd_tx
             .send(NodeCmd::FindProviders(info.root_hash.to_vec()))
             .await;
+
+        // If we already have at least one provider (e.g. from a gossip search
+        // result), request the manifest immediately for a fast start.
+        // Otherwise we wait for DHT to return providers via add_providers().
+        if let Some(&first) = providers.first() {
+            self.request_manifest(info.root_hash, first).await;
+        }
 
         self.pending_manifests.insert(
             info.root_hash,
@@ -218,7 +217,7 @@ impl DownloadEngine {
 
         info!(
             root_hash = hex::encode(info.root_hash),
-            "Manifest requested"
+            "Download queued — waiting for manifest"
         );
         Ok(())
     }
@@ -248,16 +247,24 @@ impl DownloadEngine {
                 if existing.contains(&p) {
                     continue;
                 }
-                info!(%p, root_hash = hex::encode(root_hash), "New provider added");
+                info!(%p, root_hash = hex::encode(root_hash), "New provider added to active download");
                 dl.providers.push(p);
             }
             self.dispatch_requests(root_hash).await;
         } else if let Some(pm) = self.pending_manifests.get_mut(&root_hash) {
+            let had_providers = !pm.providers.is_empty();
             let existing: HashSet<PeerId> = pm.providers.iter().copied().collect();
             for p in new_peers {
                 if !existing.contains(&p) {
+                    info!(%p, root_hash = hex::encode(root_hash), "New provider added to pending manifest");
                     pm.providers.push(p);
                 }
+            }
+            // If we had no providers before (pure DHT-only start), kick off the
+            // manifest request now that we have our first peer.
+            if !had_providers && let Some(&first) = pm.providers.first() {
+                pm.requested_at = Instant::now();
+                self.request_manifest(root_hash, first).await;
             }
         }
     }
@@ -1036,14 +1043,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn start_no_providers_returns_error() {
+    async fn start_no_providers_succeeds_and_queues_find_providers() {
         let tmp = tempfile::tempdir().unwrap();
-        let (mut engine, _rx, _db_dir) = make_engine(&tmp).await;
+        let (mut engine, mut rx, _db_dir) = make_engine(&tmp).await;
         let hash = [0xccu8; 32];
         let magnet = fake_magnet(&hash, "nop.bin", 256);
 
-        let err = engine.start(&magnet, vec![], 0).await.unwrap_err();
-        assert!(err.to_string().contains("at least one provider"));
+        // Providers-less start should succeed — discovery via DHT.
+        engine.start(&magnet, vec![], 0).await.unwrap();
+
+        // Should have enqueued a FindProviders command.
+        let cmd = rx.try_recv().unwrap();
+        assert!(matches!(cmd, NodeCmd::FindProviders(k) if k == hash.as_slice()));
+
+        // Entry should be in pending_manifests (no manifest request yet).
+        let pm = engine.pending_manifests.get(&hash).unwrap();
+        assert!(pm.providers.is_empty(), "no providers before DHT responds");
     }
 
     // -----------------------------------------------------------------------

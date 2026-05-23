@@ -45,16 +45,17 @@ pub async fn list_downloads(State(state): State<AppState>) -> Json<DownloadsResp
 ///
 /// Body: `{ "magnet": "rucio:<hash>?name=<name>&size=<size>", "providers": ["<peer_id>", ...] }`
 ///
-/// The `providers` list contains the PeerIds of peers that hold the file,
-/// typically obtained from search results.  Passing multiple providers enables
-/// multi-source parallel download.
+/// `providers` is optional.  When omitted (or empty) the daemon discovers
+/// peers via Kademlia DHT automatically.  Supplying providers from a gossip
+/// search result allows the download to start immediately while DHT runs in
+/// parallel for additional sources.
 #[utoipa::path(
     post,
     path = "/api/v1/downloads",
     request_body = StartDownloadRequest,
     responses(
         (status = 202, description = "Download queued"),
-        (status = 400, description = "Invalid magnet link or no providers supplied")
+        (status = 400, description = "Invalid magnet link")
     )
 )]
 pub async fn start_download(
@@ -66,14 +67,23 @@ pub async fn start_download(
         return StatusCode::BAD_REQUEST;
     }
 
-    if req.providers.is_empty() {
-        tracing::warn!("Download requested without any providers");
-        return StatusCode::BAD_REQUEST;
-    }
+    // Parse provider strings; skip any that are not valid PeerIds with a warning.
+    let providers: Vec<String> = req
+        .providers
+        .into_iter()
+        .filter(|s| {
+            if s.parse::<libp2p::PeerId>().is_ok() {
+                true
+            } else {
+                tracing::warn!(peer = %s, "Ignoring malformed PeerId in providers list");
+                false
+            }
+        })
+        .collect();
 
     let dl_req = DownloadRequest::Start {
         magnet: req.magnet.clone(),
-        providers: req.providers,
+        providers,
     };
 
     match state.download_tx.send(dl_req).await {
