@@ -108,6 +108,9 @@ struct LoopState {
     /// Pending inbound manifest request channels keyed by a monotonic id.
     pending_manifest_channels: HashMap<u64, ResponseChannel<ManifestResponse>>,
     next_channel_id: u64,
+    /// Gossipsub messages that failed with InsufficientPeers, queued for
+    /// retry when a peer subscribes to the relevant topic.
+    pending_publishes: Vec<(IdentTopic, Vec<u8>, String)>,
 }
 
 impl LoopState {
@@ -120,6 +123,7 @@ impl LoopState {
             pending_chunk_channels: HashMap::new(),
             pending_manifest_channels: HashMap::new(),
             next_channel_id: 0,
+            pending_publishes: Vec::new(),
         }
     }
 
@@ -182,10 +186,10 @@ async fn run_loop(
                         state.provider_queries.insert(qid, key);
                     }
                     Some(NodeCmd::Search(query)) => {
-                        publish_json(&mut swarm, &topic_query, &query, "search query");
+                        publish_json(&mut swarm, &topic_query, &query, "search query", &mut state.pending_publishes);
                     }
                     Some(NodeCmd::PublishSearchResult(result)) => {
-                        publish_json(&mut swarm, &topic_result, &result, "search result");
+                        publish_json(&mut swarm, &topic_result, &result, "search result", &mut state.pending_publishes);
                     }
                     Some(NodeCmd::RequestChunk { peer, request, id_tx }) => {
                         let request_id = swarm.behaviour_mut().transfer.send_request(&peer, request);
@@ -233,17 +237,21 @@ fn publish_json<T: serde::Serialize>(
     topic: &IdentTopic,
     value: &T,
     label: &str,
+    pending: &mut Vec<(IdentTopic, Vec<u8>, String)>,
 ) {
     match serde_json::to_vec(value) {
         Ok(bytes) => {
-            if let Err(e) = swarm
+            match swarm
                 .behaviour_mut()
                 .gossipsub
-                .publish(topic.clone(), bytes)
+                .publish(topic.clone(), bytes.clone())
             {
-                debug!("Could not publish {label}: {e}");
-            } else {
-                debug!("Published {label}");
+                Ok(_) => debug!("Published {label}"),
+                Err(gossipsub::PublishError::NoPeersSubscribedToTopic) => {
+                    debug!("No mesh peers yet for {label} — queued for retry");
+                    pending.push((topic.clone(), bytes, label.to_string()));
+                }
+                Err(e) => warn!("Could not publish {label}: {e}"),
             }
         }
         Err(e) => warn!("Failed to serialise {label}: {e}"),
@@ -390,7 +398,30 @@ async fn on_swarm_event(
             }
 
             RucioBehaviourEvent::Gossipsub(gs_event) => {
+                let subscribed = matches!(gs_event, gossipsub::Event::Subscribed { .. });
                 on_gossipsub_event(gs_event, event_tx).await;
+                // When a new peer joins a topic, retry any queued publishes
+                // that previously failed with InsufficientPeers.
+                if subscribed && !state.pending_publishes.is_empty() {
+                    let pending = std::mem::take(&mut state.pending_publishes);
+                    debug!(
+                        "Retrying {} queued publish(es) after peer subscription",
+                        pending.len()
+                    );
+                    for (topic, bytes, label) in pending {
+                        match swarm
+                            .behaviour_mut()
+                            .gossipsub
+                            .publish(topic.clone(), bytes.clone())
+                        {
+                            Ok(_) => debug!("Retry published {label}"),
+                            Err(gossipsub::PublishError::NoPeersSubscribedToTopic) => {
+                                state.pending_publishes.push((topic, bytes, label));
+                            }
+                            Err(e) => warn!("Retry publish {label} failed: {e}"),
+                        }
+                    }
+                }
             }
 
             RucioBehaviourEvent::Transfer(tr_event) => {
