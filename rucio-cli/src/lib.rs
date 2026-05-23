@@ -45,7 +45,11 @@ pub enum Commands {
         provider: Option<String>,
     },
     /// List active and completed downloads
-    Downloads,
+    Downloads {
+        /// Refresh the table every second until all downloads finish
+        #[arg(short, long)]
+        watch: bool,
+    },
     /// Cancel a download
     Cancel {
         /// Root hash of the download (hex)
@@ -81,7 +85,7 @@ pub async fn run() -> Result<()> {
         Commands::Shares => cmd::shares::list(&client).await,
         Commands::Add { path } => cmd::shares::add(&client, &path).await,
         Commands::Remove { target } => cmd::shares::remove(&client, &target).await,
-        Commands::Downloads => cmd::downloads::list(&client).await,
+        Commands::Downloads { watch } => cmd::downloads::list(&client, watch).await,
         Commands::Get { target, provider } => {
             cmd::downloads::start(&client, &target, provider.as_deref()).await
         }
