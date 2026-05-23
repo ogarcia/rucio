@@ -1,11 +1,11 @@
 /// POST /api/v1/downloads
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct StartDownloadRequest {
     pub magnet: String,
 }
 
 /// State of a download.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub enum DownloadState {
     Queued,
     Downloading,
@@ -15,7 +15,7 @@ pub enum DownloadState {
 }
 
 /// Response for a single download.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct DownloadResponse {
     pub root_hash: String,
     pub name: Option<String>,
@@ -26,7 +26,7 @@ pub struct DownloadResponse {
 }
 
 /// GET /api/v1/downloads
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct DownloadsResponse {
     pub downloads: Vec<DownloadResponse>,
 }

@@ -1,5 +1,5 @@
 /// Connectivity class of a node, inspired by eMule's LowID/HighID.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub enum NodeClass {
     /// Node has a publicly reachable address. Can serve chunks to any peer.
     HighId,
@@ -11,7 +11,7 @@ pub enum NodeClass {
 }
 
 /// Basic information about a connected peer.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct PeerInfo {
     pub peer_id: String,
     pub addresses: Vec<String>,
@@ -19,7 +19,7 @@ pub struct PeerInfo {
 }
 
 /// Status of the local node.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct NodeStatus {
     pub peer_id: String,
     pub class: NodeClass,

@@ -1,13 +1,13 @@
 use crate::protocol::file::FileDescriptor;
 
 /// POST /api/v1/shares
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct AddShareRequest {
     pub path: String,
 }
 
 /// Response for a single shared file.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct ShareResponse {
     pub root_hash: String,
     pub name: String,
@@ -17,7 +17,7 @@ pub struct ShareResponse {
 }
 
 /// GET /api/v1/shares
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct SharesResponse {
     pub shares: Vec<ShareResponse>,
 }

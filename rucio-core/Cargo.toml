@@ -18,3 +18,4 @@ hex         = { workspace = true }
 uuid        = { workspace = true }
 tokio       = { workspace = true }
 tracing     = { workspace = true }
+utoipa      = { workspace = true }
