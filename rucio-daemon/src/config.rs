@@ -73,6 +73,21 @@ impl Default for StorageConfig {
     }
 }
 
+// --- Well-known bootstrap nodes ----------------------------------------------
+//
+// These are the hardcoded fallback bootstrap peers used when the user has not
+// configured any in [network] bootstrap_peers.
+//
+// TODO: populate this list once we have funded infrastructure.
+//       Format: "/ip4/<addr>/tcp/<port>/p2p/<PeerId>"
+//
+// Example (placeholder — not a real node):
+//   "/ip4/bootstrap.rucio.example/tcp/4321/p2p/12D3KooWXXXXXXXX..."
+//
+const BUILTIN_BOOTSTRAP_PEERS: &[&str] = &[
+    // (none yet — add here when infrastructure is available)
+];
+
 // --- Loading -----------------------------------------------------------------
 
 impl Config {
@@ -89,6 +104,25 @@ impl Config {
             Ok(config)
         } else {
             Ok(Config::default())
+        }
+    }
+
+    /// Returns the bootstrap peers to use at startup.
+    ///
+    /// If the user has configured peers in `[network] bootstrap_peers` those
+    /// are used exclusively.  Otherwise the built-in fallback list is returned.
+    /// This lets operators run a fully private network by setting at least one
+    /// peer in the config, while giving out-of-the-box users automatic access
+    /// to the public network once `BUILTIN_BOOTSTRAP_PEERS` is populated.
+    pub fn effective_bootstrap_peers(&self) -> Vec<&str> {
+        if !self.network.bootstrap_peers.is_empty() {
+            self.network
+                .bootstrap_peers
+                .iter()
+                .map(String::as_str)
+                .collect()
+        } else {
+            BUILTIN_BOOTSTRAP_PEERS.to_vec()
         }
     }
 

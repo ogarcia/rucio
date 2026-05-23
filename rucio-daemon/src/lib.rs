@@ -33,7 +33,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     // --- Node ---------------------------------------------------------------
     let mut handle = node::task::spawn(&config.node).await?;
 
-    for addr_str in &config.network.bootstrap_peers {
+    for addr_str in config.effective_bootstrap_peers() {
         match addr_str.parse() {
             Ok(addr) => {
                 handle
@@ -44,7 +44,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
             Err(e) => warn!("Invalid bootstrap peer address {addr_str}: {e}"),
         }
     }
-    if !config.network.bootstrap_peers.is_empty() {
+    if !config.effective_bootstrap_peers().is_empty() {
         handle
             .cmd_tx
             .send(node::messages::NodeCmd::KadBootstrapPeersReady)
