@@ -1,0 +1,27 @@
+[package]
+name        = "rucio-daemon"
+description = "Rucio P2P daemon — libp2p node and REST API"
+version.workspace     = true
+edition.workspace     = true
+license.workspace     = true
+authors.workspace     = true
+repository.workspace  = true
+
+[[bin]]
+name = "ruciod"
+path = "src/main.rs"
+
+[dependencies]
+rucio-core          = { path = "../rucio-core" }
+tokio               = { workspace = true }
+axum                = { workspace = true }
+sqlx                = { workspace = true }
+libp2p              = { workspace = true }
+serde               = { workspace = true }
+serde_json          = { workspace = true }
+toml                = { workspace = true }
+thiserror           = { workspace = true }
+anyhow              = { workspace = true }
+tracing             = { workspace = true }
+tracing-subscriber  = { workspace = true }
+dirs                = { workspace = true }

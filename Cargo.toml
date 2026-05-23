@@ -1,0 +1,70 @@
+[workspace]
+members = [
+    "rucio-core",
+    "rucio-daemon",
+    "rucio-cli",
+    "rucio",
+]
+resolver = "2"
+
+[workspace.package]
+version     = "0.1.0"
+edition     = "2021"
+license     = "GPL-3.0-only"
+authors     = []
+repository  = "https://github.com/YOUR_USERNAME/rucio"
+
+[workspace.dependencies]
+# async
+tokio       = { version = "1", features = ["full"] }
+
+# serialización
+serde       = { version = "1", features = ["derive"] }
+serde_json  = "1"
+
+# hashing
+blake3      = "1"
+
+# p2p
+libp2p      = { version = "0.54", features = [
+    "tokio",
+    "tcp",
+    "quic",
+    "noise",
+    "yamux",
+    "kad",
+    "gossipsub",
+    "mdns",
+    "dcutr",
+    "relay",
+    "identify",
+    "macros",
+] }
+
+# http
+axum        = { version = "0.7", features = ["macros"] }
+
+# db
+sqlx        = { version = "0.7", features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
+
+# config
+toml        = "0.8"
+
+# cli
+clap        = { version = "4", features = ["derive"] }
+
+# http client (para rucio-cli)
+reqwest     = { version = "0.12", features = ["json"] }
+
+# error handling
+thiserror   = "1"
+anyhow      = "1"
+
+# utils
+hex         = "0.4"
+uuid        = { version = "1", features = ["v4"] }
+dirs        = "5"
+
+# logging
+tracing             = "0.1"
+tracing-subscriber  = { version = "0.3", features = ["env-filter"] }

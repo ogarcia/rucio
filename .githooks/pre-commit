@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Pre-commit hook: blocks commits whose staged code is not formatted
+# or fails clippy. `cargo test` is intentionally NOT run here —
+# tests are CI's job; the hook keeps the local feedback loop fast.
+#
+# Activate once per clone:
+#   git config core.hooksPath .githooks
+
+set -euo pipefail
+
+if ! cargo fmt --all -- --check; then
+    echo
+    echo "✗ rustfmt found unformatted code. Run: cargo fmt --all" >&2
+    exit 1
+fi
+
+if ! cargo clippy --all-targets --all-features -- -D warnings; then
+    echo
+    echo "✗ clippy reported warnings. Fix them before committing." >&2
+    exit 1
+fi
