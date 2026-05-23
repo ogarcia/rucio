@@ -2,11 +2,11 @@
 #
 # Produces two independent runtime images:
 #
-#   ruciod  →  tag "master" / "vX.Y.Z" / "latest"
+#   ruciod  →  tag "master" / "0.1.0" / "latest"
 #              Only the daemon binary.  Use this for production nodes,
 #              bootstrap servers and VPS deployments.
 #
-#   full    →  tag "master-full" / "vX.Y.Z-full" / "latest-full"
+#   full    →  tag "master-full" / "0.1.0-full" / "latest-full"
 #              Both ruciod (daemon) and rucio (CLI).  Use this for
 #              development, debugging, or inspecting a running node.
 #
