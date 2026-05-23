@@ -38,33 +38,7 @@ RUN apk add --no-cache musl-dev
 
 WORKDIR /app
 
-# Copy workspace manifests first so dependency layers are cached
-# independently of source changes.
-COPY Cargo.toml Cargo.lock ./
-COPY rucio-core/Cargo.toml   rucio-core/Cargo.toml
-COPY rucio-daemon/Cargo.toml rucio-daemon/Cargo.toml
-COPY rucio-cli/Cargo.toml    rucio-cli/Cargo.toml
-COPY rucio/Cargo.toml        rucio/Cargo.toml
-
-# Stub out every lib/bin so `cargo build` can resolve and cache all
-# dependencies without needing the real source.
-RUN mkdir -p rucio-core/src rucio-daemon/src rucio-cli/src rucio/src && \
-    echo 'pub fn _stub() {}' > rucio-core/src/lib.rs && \
-    echo 'fn main() {}' > rucio-daemon/src/main.rs && \
-    echo 'pub fn _stub() {}' > rucio-daemon/src/lib.rs && \
-    echo 'fn main() {}' > rucio-cli/src/main.rs && \
-    echo 'pub fn _stub() {}' > rucio-cli/src/lib.rs && \
-    echo 'fn main() {}' > rucio/src/main.rs
-
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/app/target \
-    cargo build --release --locked 2>/dev/null || true
-
-# Now copy the real source and do the final build.
-COPY rucio-core/src   rucio-core/src
-COPY rucio-daemon/src rucio-daemon/src
-COPY rucio-cli/src    rucio-cli/src
-COPY rucio/src        rucio/src
+COPY . .
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/target \
