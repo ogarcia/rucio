@@ -1,0 +1,24 @@
+# Build artifacts — largest exclusion, speeds up context transfer significantly
+target/
+
+# Tests — not needed inside the container build
+tests/
+
+# Git and CI metadata
+.git/
+.github/
+.githooks/
+
+# Editor and OS noise
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+
+# Docs and specs
+SPEC.md
+*.md
+
+# Redundant symlink — we reference Containerfile explicitly in CI
+Dockerfile
