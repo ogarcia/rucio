@@ -26,6 +26,11 @@
 
 # ── Stage 1a: compile from source (default local path) ──────────────────────
 
+# ARG declared before the first FROM so it is available as a global
+# build argument. Default is 'builder' (local compile); CI passes
+# --build-arg BUILDER=prebuilt to skip compilation and use dist/.
+ARG BUILDER=builder
+
 FROM rust:1-alpine3.23 AS builder
 
 # musl-dev: C headers needed by ring (pulled in by rustls via reqwest).
@@ -48,7 +53,6 @@ COPY dist/rucio  /usr/bin/rucio
 
 # ── Stage 1c: indirection — points to 'builder' or 'prebuilt' via build arg ─
 
-ARG BUILDER=builder
 FROM ${BUILDER} AS bins
 
 # ── Stage 2: runtime – daemon only (tag: master / vX.Y.Z / latest) ──────────
