@@ -1,5 +1,6 @@
 pub mod client;
 pub mod cmd;
+pub mod state;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -35,11 +36,11 @@ pub enum Commands {
     },
     /// List shared files
     Shares,
-    /// Start downloading a file
+    /// Download a file (by search result index or magnet link)
     Get {
-        /// Magnet link (rucio:<hash>...)
-        magnet: String,
-        /// PeerId of the provider (from search results)
+        /// Search result index (e.g. 1) or a full magnet link (rucio:<hash>...)
+        target: String,
+        /// PeerId of the provider — only needed when target is a magnet link
         #[arg(long)]
         provider: Option<String>,
     },
@@ -81,8 +82,8 @@ pub async fn run() -> Result<()> {
         Commands::Add { path } => cmd::shares::add(&client, &path).await,
         Commands::Remove { target } => cmd::shares::remove(&client, &target).await,
         Commands::Downloads => cmd::downloads::list(&client).await,
-        Commands::Get { magnet, provider } => {
-            cmd::downloads::start(&client, &magnet, provider.as_deref()).await
+        Commands::Get { target, provider } => {
+            cmd::downloads::start(&client, &target, provider.as_deref()).await
         }
         Commands::Cancel { hash } => cmd::downloads::cancel(&client, &hash).await,
         Commands::Search { keywords } => cmd::search::search(&client, keywords).await,

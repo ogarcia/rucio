@@ -1,9 +1,10 @@
-//! `rucio downloads`, `rucio get <magnet>`, `rucio cancel <hash>`
+//! `rucio downloads`, `rucio get <target>`, `rucio cancel <hash>`
 
 use anyhow::{Result, bail};
 use tabled::{Table, Tabled};
 
 use crate::client::ApiClient;
+use crate::state::LastSearch;
 
 pub async fn list(client: &ApiClient) -> Result<()> {
     let resp = client.list_downloads().await?;
@@ -51,11 +52,30 @@ pub async fn list(client: &ApiClient) -> Result<()> {
     Ok(())
 }
 
-pub async fn start(client: &ApiClient, magnet: &str, provider: Option<&str>) -> Result<()> {
-    if provider.is_none() {
-        eprintln!("Warning: no --provider specified. Use search results to get a provider PeerId.");
-    }
-    client.start_download(magnet, provider).await?;
+/// Start a download.
+///
+/// `target` is either:
+///   - a 1-based integer index into the last search results, or
+///   - a full `rucio:<hash>...` magnet link (requires `--provider`)
+pub async fn start(client: &ApiClient, target: &str, provider: Option<&str>) -> Result<()> {
+    let (magnet, resolved_provider) = if let Ok(idx) = target.trim().parse::<usize>() {
+        // Numeric index — look up in last search state.
+        let state = LastSearch::load();
+        let entry = state.get(idx).ok_or_else(|| {
+            anyhow::anyhow!("No result #{idx} in last search. Run `rucio search` first.")
+        })?;
+        (entry.magnet.clone(), entry.provider.clone())
+    } else {
+        // Treat as a raw magnet link.
+        let p = provider.ok_or_else(|| {
+            anyhow::anyhow!("--provider <PeerId> is required when passing a magnet link directly")
+        })?;
+        (target.to_string(), p.to_string())
+    };
+
+    client
+        .start_download(&magnet, Some(&resolved_provider))
+        .await?;
     println!("Download queued.");
     Ok(())
 }
