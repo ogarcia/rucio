@@ -114,6 +114,13 @@ struct LoopState {
     /// Peers whose outgoing connection attempt failed; will be retried after
     /// a short delay to recover from simultaneous-open handshake collisions.
     retry_dials: HashMap<PeerId, (Vec<Multiaddr>, tokio::time::Instant)>,
+    /// Set to true once `KadBootstrapPeersReady` is received — signals that
+    /// at least one bootstrap peer was configured and we should call
+    /// `Kademlia::bootstrap()` on the first successful connection.
+    has_bootstrap_peers: bool,
+    /// Set to true after we have fired `Kademlia::bootstrap()` at least once
+    /// so we don't repeat it on every subsequent connection.
+    kad_bootstrapped: bool,
 }
 
 impl LoopState {
@@ -128,6 +135,8 @@ impl LoopState {
             next_channel_id: 0,
             pending_publishes: Vec::new(),
             retry_dials: HashMap::new(),
+            has_bootstrap_peers: false,
+            kad_bootstrapped: false,
         }
     }
 
@@ -201,6 +210,10 @@ async fn run_loop(
                         if let Err(e) = swarm.dial(addr) {
                             warn!("Dial failed: {e}");
                         }
+                    }
+                    Some(NodeCmd::KadBootstrapPeersReady) => {
+                        state.has_bootstrap_peers = true;
+                        info!("Bootstrap peers ready — will run Kademlia bootstrap on first connection");
                     }
                     Some(NodeCmd::StartProviding(key)) => {
                         let record_key = kad::RecordKey::new(&key);
@@ -328,6 +341,18 @@ async fn on_swarm_event(
             swarm.behaviour_mut().gossipsub.add_explicit_peer(&pid);
             // Connection succeeded — no need to retry.
             state.retry_dials.remove(&pid);
+            // If bootstrap peers were configured and we haven't bootstrapped
+            // yet, fire Kademlia::bootstrap() now that we have at least one
+            // live connection.
+            if state.has_bootstrap_peers && !state.kad_bootstrapped {
+                match swarm.behaviour_mut().kademlia.bootstrap() {
+                    Ok(qid) => {
+                        info!(?qid, "Kademlia bootstrap started");
+                        state.kad_bootstrapped = true;
+                    }
+                    Err(e) => warn!("Kademlia bootstrap error: {e:?}"),
+                }
+            }
         }
         SwarmEvent::ConnectionClosed {
             peer_id: pid,

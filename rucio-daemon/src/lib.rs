@@ -44,6 +44,12 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
             Err(e) => warn!("Invalid bootstrap peer address {addr_str}: {e}"),
         }
     }
+    if !config.network.bootstrap_peers.is_empty() {
+        handle
+            .cmd_tx
+            .send(node::messages::NodeCmd::KadBootstrapPeersReady)
+            .await?;
+    }
 
     // Shared live node status
     let node_status = Arc::new(RwLock::new(api::NodeStatus::default()));

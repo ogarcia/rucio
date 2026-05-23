@@ -53,6 +53,10 @@ pub enum NodeCmd {
         channel_id: u64,
         response: ManifestResponse,
     },
+    /// All bootstrap peer addresses have been submitted via `AddBootstrapPeer`.
+    /// The node task will call `Kademlia::bootstrap()` as soon as the first
+    /// connection to any of those peers is established.
+    KadBootstrapPeersReady,
     /// Gracefully stop the node task.
     Shutdown,
 }
