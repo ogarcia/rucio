@@ -11,7 +11,7 @@ use client::ApiClient;
 #[command(name = "rucio", about = "Rucio P2P file sharing client", version)]
 pub struct Cli {
     /// Daemon API address
-    #[arg(long, default_value = "http://127.0.0.1:7070")]
+    #[arg(long, default_value = "http://127.0.0.1:7070", env = "RUCIO_API")]
     pub api: String,
 
     #[command(subcommand)]
