@@ -149,7 +149,13 @@ pub async fn remove_share(
     };
 
     match db::shares::delete_by_hash(&state.db, &arr).await {
-        Ok(true) => StatusCode::NO_CONTENT,
+        Ok(true) => {
+            let _ = state
+                .node_cmd
+                .send(crate::node::messages::NodeCmd::StopProviding(arr.to_vec()))
+                .await;
+            StatusCode::NO_CONTENT
+        }
         Ok(false) => StatusCode::NOT_FOUND,
         Err(e) => {
             tracing::error!("DB error removing share: {e}");
@@ -182,7 +188,20 @@ pub async fn remove_shares_by_path(
     Query(q): Query<RemoveByPathQuery>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     match db::shares::delete_by_path_prefix(&state.db, &q.path).await {
-        Ok(n) => (StatusCode::OK, Json(serde_json::json!({ "removed": n }))),
+        Ok(hashes) => {
+            let removed = hashes.len() as u64;
+            // Stop providing each deleted hash in Kademlia.
+            for hash in hashes {
+                let _ = state
+                    .node_cmd
+                    .send(crate::node::messages::NodeCmd::StopProviding(hash))
+                    .await;
+            }
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({ "removed": removed })),
+            )
+        }
         Err(e) => {
             tracing::error!("DB error removing shares by path: {e}");
             (

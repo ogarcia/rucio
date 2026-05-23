@@ -75,6 +75,25 @@ pub async fn run() -> Result<()> {
         }
     }
 
+    // Re-announce all previously shared files to Kademlia so the DHT
+    // knows we are a provider even after a restart.
+    match db::shares::list(&db).await {
+        Ok(shares) => {
+            for share in &shares {
+                let _ = handle
+                    .cmd_tx
+                    .send(node::messages::NodeCmd::StartProviding(
+                        share.root_hash.clone(),
+                    ))
+                    .await;
+            }
+            if !shares.is_empty() {
+                info!("Re-announced {} share(s) to Kademlia", shares.len());
+            }
+        }
+        Err(e) => warn!("Could not load shares for re-announcement: {e}"),
+    }
+
     // --- Download engine ----------------------------------------------------
     let dest_dir = config.storage.download_dir.clone();
     let mut engine = transfer::DownloadEngine::new(db.clone(), handle.cmd_tx.clone(), dest_dir);

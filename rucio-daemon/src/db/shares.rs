@@ -103,8 +103,8 @@ pub async fn delete_by_hash(db: &Db, root_hash: &[u8; 32]) -> Result<bool> {
 /// Delete all shared files whose `path` starts with `prefix`.
 ///
 /// Use this to remove a whole directory tree: pass the directory path.
-/// Returns the number of rows deleted.
-pub async fn delete_by_path_prefix(db: &Db, prefix: &str) -> Result<u64> {
+/// Returns the root hashes of the deleted files.
+pub async fn delete_by_path_prefix(db: &Db, prefix: &str) -> Result<Vec<Vec<u8>>> {
     // Ensure the prefix ends with the path separator so we don't accidentally
     // match "/home/user/movies-extra" when asked to remove "/home/user/movies".
     let pattern = if prefix.ends_with(std::path::MAIN_SEPARATOR) {
@@ -113,15 +113,22 @@ pub async fn delete_by_path_prefix(db: &Db, prefix: &str) -> Result<u64> {
         format!("{prefix}{}%", std::path::MAIN_SEPARATOR)
     };
 
-    // Also match the exact path in case a single file was passed.
-    let affected = sqlx::query("DELETE FROM shared_files WHERE path = ?1 OR path LIKE ?2")
+    // Fetch hashes first, then delete.
+    let rows = sqlx::query("SELECT root_hash FROM shared_files WHERE path = ?1 OR path LIKE ?2")
+        .bind(prefix)
+        .bind(&pattern)
+        .fetch_all(db)
+        .await?;
+
+    let hashes: Vec<Vec<u8>> = rows.iter().map(|r| r.get("root_hash")).collect();
+
+    sqlx::query("DELETE FROM shared_files WHERE path = ?1 OR path LIKE ?2")
         .bind(prefix)
         .bind(&pattern)
         .execute(db)
-        .await?
-        .rows_affected();
+        .await?;
 
-    Ok(affected)
+    Ok(hashes)
 }
 
 // ---------------------------------------------------------------------------
@@ -253,7 +260,7 @@ mod tests {
         }
 
         let removed = delete_by_path_prefix(&db, "/music").await.unwrap();
-        assert_eq!(removed, 2);
+        assert_eq!(removed.len(), 2);
 
         let remaining = list(&db).await.unwrap();
         assert_eq!(remaining.len(), 1);
@@ -284,7 +291,7 @@ mod tests {
         }
 
         let removed = delete_by_path_prefix(&db, "/music").await.unwrap();
-        assert_eq!(removed, 1);
+        assert_eq!(removed.len(), 1);
 
         let remaining = list(&db).await.unwrap();
         assert_eq!(remaining.len(), 1);

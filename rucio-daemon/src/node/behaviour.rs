@@ -39,7 +39,11 @@ impl RucioBehaviour {
 
         let kademlia_config = kad::Config::new(libp2p::StreamProtocol::new("/rucio/kad/1.0.0"));
         let store = kad::store::MemoryStore::new(peer_id);
-        let kademlia = kad::Behaviour::with_config(peer_id, store, kademlia_config);
+        let mut kademlia = kad::Behaviour::with_config(peer_id, store, kademlia_config);
+        // Run as a full DHT server so provider records are stored and
+        // propagated to other peers.  Without this libp2p defaults to client
+        // mode and start_providing() records are never forwarded.
+        kademlia.set_mode(Some(kad::Mode::Server));
 
         let mdns = mdns::tokio::Behaviour::new(mdns::Config::default(), peer_id)?;
 
