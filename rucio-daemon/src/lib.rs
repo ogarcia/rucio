@@ -119,6 +119,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     });
 
     // --- Main loop ----------------------------------------------------------
+    let mut manifest_tick = tokio::time::interval(tokio::time::Duration::from_secs(2));
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
@@ -126,18 +127,28 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                 let _ = handle.cmd_tx.send(node::messages::NodeCmd::Shutdown).await;
                 break;
             }
+            _ = manifest_tick.tick() => {
+                engine.tick_manifest_timeouts().await;
+            }
             dl_req = download_rx.recv() => {
                 if let Some(req) = dl_req {
-                    let providers: Vec<libp2p::PeerId> = req.providers
-                        .iter()
-                        .filter_map(|s| s.parse().ok())
-                        .collect();
-                    if providers.is_empty() {
-                        warn!("Download request has no valid provider PeerIds");
-                    } else {
-                        match engine.start(&req.magnet, providers, now_secs()).await {
-                            Ok(()) => info!("Download started"),
-                            Err(e) => warn!("Failed to start download: {e}"),
+                    match req {
+                        api::DownloadRequest::Start { magnet, providers } => {
+                            let peers: Vec<libp2p::PeerId> = providers
+                                .iter()
+                                .filter_map(|s| s.parse().ok())
+                                .collect();
+                            if peers.is_empty() {
+                                warn!("Download request has no valid provider PeerIds");
+                            } else {
+                                match engine.start(&magnet, peers, now_secs()).await {
+                                    Ok(()) => info!("Download started"),
+                                    Err(e) => warn!("Failed to start download: {e}"),
+                                }
+                            }
+                        }
+                        api::DownloadRequest::Cancel { download_id } => {
+                            engine.cancel(download_id).await;
                         }
                     }
                 }

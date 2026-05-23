@@ -318,15 +318,13 @@ async fn on_swarm_event(
                         }
                         for (pid, addrs) in by_peer {
                             info!(%pid, "mDNS discovered peer");
-                            // Dial the peer so the TCP connection is established
-                            // and Gossipsub can form the mesh.
-                            for addr in &addrs {
-                                let dial_opts = libp2p::swarm::dial_opts::DialOpts::peer_id(pid)
-                                    .addresses(vec![addr.clone()])
-                                    .build();
-                                if let Err(e) = swarm.dial(dial_opts) {
-                                    debug!(%pid, %addr, "mDNS dial failed: {e}");
-                                }
+                            // Single dial with all known addresses; libp2p
+                            // will try them in order and stop on first success.
+                            let dial_opts = libp2p::swarm::dial_opts::DialOpts::peer_id(pid)
+                                .addresses(addrs.clone())
+                                .build();
+                            if let Err(e) = swarm.dial(dial_opts) {
+                                debug!(%pid, "mDNS dial failed: {e}");
                             }
                             let _ = event_tx
                                 .send(NodeEvent::PeerDiscovered {

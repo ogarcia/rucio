@@ -42,12 +42,16 @@ pub const SEARCH_WINDOW_SECS: u64 = 30;
 // DownloadRequest — sent from API handlers to the download engine
 // ---------------------------------------------------------------------------
 
-/// A request to start a download, sent from an API handler to the main loop.
-pub struct DownloadRequest {
-    pub magnet: String,
-    /// Known providers (PeerId strings). At least one is required; more will
-    /// be discovered via Kademlia and added dynamically.
-    pub providers: Vec<String>,
+/// A message from an API handler to the main-loop download engine.
+pub enum DownloadRequest {
+    /// Start a new download.
+    Start {
+        magnet: String,
+        /// Known providers (PeerId strings). At least one is required.
+        providers: Vec<String>,
+    },
+    /// Cancel an in-flight download by its DB id.
+    Cancel { download_id: i64 },
 }
 
 // ---------------------------------------------------------------------------

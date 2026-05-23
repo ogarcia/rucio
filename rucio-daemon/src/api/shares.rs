@@ -3,15 +3,14 @@
 //! DELETE /api/v1/shares/:hash
 //! DELETE /api/v1/shares          (query param: path=<prefix>)
 
-use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use axum::Json;
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::StatusCode;
 use rucio_core::api::shares::{AddShareRequest, AddShareResponse, ShareResponse, SharesResponse};
 use rucio_core::protocol::chunk::CHUNK_SIZE;
 use serde::Deserialize;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::api::AppState;
 use crate::db;
@@ -37,7 +36,7 @@ pub async fn list_shares(State(state): State<AppState>) -> Json<SharesResponse> 
             root_hash: hex::encode(&r.root_hash),
             name: r.name,
             size: r.size as u64,
-            chunk_count: 0, // TODO: join with chunks table
+            chunk_count: r.chunk_count as usize,
             mime_type: r.mime_type,
             path: r.path,
         })
@@ -246,7 +245,7 @@ async fn index_file(db: &crate::db::Db, path: &Path) -> anyhow::Result<[u8; 32]>
     let path_owned = path.to_path_buf();
 
     // Run blocking I/O on a dedicated thread
-    let (root_hash, file_size, chunks) =
+    let (root_hash, file_size, chunks, mime_type) =
         tokio::task::spawn_blocking(move || hash_file(&path_owned)).await??;
 
     let name = path
@@ -265,7 +264,7 @@ async fn index_file(db: &crate::db::Db, path: &Path) -> anyhow::Result<[u8; 32]>
             root_hash: &root_hash,
             name: &name,
             size: file_size,
-            mime_type: None, // TODO: mime detection
+            mime_type: mime_type.as_deref(),
             path: &path.to_string_lossy(),
             chunk_size: CHUNK_SIZE,
             added_at: now,
@@ -278,11 +277,11 @@ async fn index_file(db: &crate::db::Db, path: &Path) -> anyhow::Result<[u8; 32]>
     Ok(root_hash)
 }
 
-/// (root_hash, file_size_bytes, chunks: Vec<(chunk_idx, chunk_hash, chunk_size)>)
-type HashFileResult = ([u8; 32], u64, Vec<(u32, [u8; 32], u32)>);
+/// (root_hash, file_size_bytes, chunks, mime_type)
+type HashFileResult = ([u8; 32], u64, Vec<(u32, [u8; 32], u32)>, Option<String>);
 
 /// Read a file, split into CHUNK_SIZE chunks, compute per-chunk BLAKE3 hashes
-/// and the Merkle root hash.
+/// and the Merkle root hash. Also sniff the MIME type from magic bytes.
 fn hash_file(path: &Path) -> anyhow::Result<HashFileResult> {
     use std::io::Read;
 
@@ -293,6 +292,9 @@ fn hash_file(path: &Path) -> anyhow::Result<HashFileResult> {
 
     let chunk_sz = CHUNK_SIZE as usize;
     let mut buf = vec![0u8; chunk_sz];
+
+    // Read first chunk to both sniff MIME and start hashing.
+    let mut header_buf: Option<Vec<u8>> = None;
 
     loop {
         let mut bytes_read = 0;
@@ -311,6 +313,10 @@ fn hash_file(path: &Path) -> anyhow::Result<HashFileResult> {
             break;
         }
         let chunk_data = &buf[..bytes_read];
+        if header_buf.is_none() {
+            // Keep the first 8 KiB for MIME sniffing.
+            header_buf = Some(chunk_data[..bytes_read.min(8192)].to_vec());
+        }
         let hash = *blake3::hash(chunk_data).as_bytes();
         chunks.push((idx, hash, bytes_read as u32));
         file_size += bytes_read as u64;
@@ -329,5 +335,49 @@ fn hash_file(path: &Path) -> anyhow::Result<HashFileResult> {
         *hasher.finalize().as_bytes()
     };
 
-    Ok((root_hash, file_size, chunks))
+    let mime_type = detect_mime(path, header_buf.as_deref());
+
+    Ok((root_hash, file_size, chunks, mime_type))
+}
+
+/// Detect the MIME type of a file using magic bytes first, then file extension
+/// as a fallback.
+fn detect_mime(path: &Path, header: Option<&[u8]>) -> Option<String> {
+    // 1. Magic-byte sniffing via the `infer` crate.
+    if let Some(kind) = header.and_then(infer::get) {
+        return Some(kind.mime_type().to_string());
+    }
+    // 2. Extension-based fallback using a minimal built-in map.
+    let ext = path.extension()?.to_str()?.to_lowercase();
+    let mime = match ext.as_str() {
+        "txt" => "text/plain",
+        "html" | "htm" => "text/html",
+        "css" => "text/css",
+        "js" => "application/javascript",
+        "json" => "application/json",
+        "xml" => "application/xml",
+        "pdf" => "application/pdf",
+        "zip" => "application/zip",
+        "gz" | "tgz" => "application/gzip",
+        "tar" => "application/x-tar",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "mp3" => "audio/mpeg",
+        "ogg" => "audio/ogg",
+        "wav" => "audio/wav",
+        "flac" => "audio/flac",
+        "mp4" => "video/mp4",
+        "mkv" => "video/x-matroska",
+        "webm" => "video/webm",
+        "avi" => "video/x-msvideo",
+        "rs" => "text/x-rust",
+        "py" => "text/x-python",
+        "toml" => "application/toml",
+        "yaml" | "yml" => "application/yaml",
+        _ => return None,
+    };
+    Some(mime.to_string())
 }

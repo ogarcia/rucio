@@ -33,6 +33,7 @@ async-trait = { workspace = true }
 urlencoding = { workspace = true }
 dirs                = { workspace = true }
 clap                = { workspace = true }
+infer               = { workspace = true }
 
 [dev-dependencies]
 tower               = { version = "0.5", features = ["util"] }

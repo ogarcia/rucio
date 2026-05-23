@@ -132,6 +132,21 @@ pub async fn set_status(
     Ok(())
 }
 
+/// Mark any pending/active download for `root_hash` as failed.
+/// Used when the manifest cannot be retrieved from any provider.
+pub async fn fail_by_hash(db: &Db, root_hash: &[u8; 32]) -> Result<()> {
+    sqlx::query(
+        "UPDATE downloads SET status = 'error', error_msg = 'manifest timeout: all providers exhausted', \
+         updated_at = ?1 \
+         WHERE root_hash = ?2 AND status IN ('pending', 'active')",
+    )
+    .bind(now_secs() as i64)
+    .bind(root_hash.as_slice())
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

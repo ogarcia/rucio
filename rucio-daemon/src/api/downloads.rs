@@ -73,7 +73,7 @@ pub async fn start_download(
         }
     };
 
-    let dl_req = DownloadRequest {
+    let dl_req = DownloadRequest::Start {
         magnet: req.magnet.clone(),
         providers: vec![provider],
     };
@@ -102,7 +102,14 @@ pub async fn start_download(
 )]
 pub async fn cancel_download(State(state): State<AppState>, Path(id): Path<i64>) -> StatusCode {
     match crate::db::downloads::set_status(&state.db, id, "cancelled", None).await {
-        Ok(()) => StatusCode::NO_CONTENT,
+        Ok(()) => {
+            // Notify the engine so it stops sending chunk requests.
+            let _ = state
+                .download_tx
+                .send(DownloadRequest::Cancel { download_id: id })
+                .await;
+            StatusCode::NO_CONTENT
+        }
         Err(e) => {
             tracing::error!("DB error cancelling download {id}: {e}");
             StatusCode::INTERNAL_SERVER_ERROR

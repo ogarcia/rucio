@@ -24,6 +24,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
+use std::time::Instant;
 
 use anyhow::{Result, anyhow, bail};
 use libp2p::{PeerId, request_response::OutboundRequestId};
@@ -46,6 +47,9 @@ use crate::node::messages::NodeCmd;
 
 /// Maximum simultaneous chunk requests **per provider peer**.
 const SLOTS_PER_PEER: usize = 4;
+
+/// How long to wait for a manifest response before trying another peer.
+const MANIFEST_TIMEOUT_SECS: u64 = 10;
 
 // ---------------------------------------------------------------------------
 // Magnet parser
@@ -104,6 +108,14 @@ pub fn parse_magnet(magnet: &str) -> Result<MagnetInfo> {
 /// Download waiting for the manifest to arrive.
 struct PendingManifest {
     providers: Vec<PeerId>,
+    /// Index into `providers` of the peer we last requested from.
+    attempt: usize,
+    /// When the last manifest request was sent.
+    requested_at: Instant,
+    /// DB download id, if the row was created before the manifest arrived.
+    /// Set to `None` if the download hasn't been written to the DB yet (i.e.
+    /// the manifest request was started but not yet enqueued).
+    download_id: Option<i64>,
 }
 
 /// Per-peer slot tracking for an active download.
@@ -199,8 +211,15 @@ impl DownloadEngine {
             .send(NodeCmd::FindProviders(info.root_hash.to_vec()))
             .await;
 
-        self.pending_manifests
-            .insert(info.root_hash, PendingManifest { providers });
+        self.pending_manifests.insert(
+            info.root_hash,
+            PendingManifest {
+                providers,
+                attempt: 0,
+                requested_at: Instant::now(),
+                download_id: None,
+            },
+        );
 
         info!(
             root_hash = hex::encode(info.root_hash),
@@ -245,6 +264,93 @@ impl DownloadEngine {
                     pm.providers.push(p);
                 }
             }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Manifest timeout / retry
+    // -----------------------------------------------------------------------
+
+    /// Check all pending manifest requests. For any that have exceeded
+    /// `MANIFEST_TIMEOUT_SECS`, try the next provider in the list.
+    /// Entries that have exhausted all providers are dropped and the download
+    /// is marked failed in the DB.
+    pub async fn tick_manifest_timeouts(&mut self) {
+        let mut failed: Vec<[u8; 32]> = Vec::new();
+
+        for (root_hash, pm) in &mut self.pending_manifests {
+            if pm.requested_at.elapsed().as_secs() < MANIFEST_TIMEOUT_SECS {
+                continue;
+            }
+            // Try next provider.
+            let next_attempt = pm.attempt + 1;
+            if next_attempt < pm.providers.len() {
+                let peer = pm.providers[next_attempt];
+                warn!(
+                    root_hash = hex::encode(root_hash),
+                    attempt = next_attempt,
+                    %peer,
+                    "Manifest timed out — retrying with next provider"
+                );
+                pm.attempt = next_attempt;
+                pm.requested_at = Instant::now();
+                let (id_tx, _) = oneshot::channel();
+                let _ = self
+                    .cmd_tx
+                    .send(NodeCmd::RequestManifest {
+                        peer,
+                        request: ManifestRequest {
+                            root_hash: *root_hash,
+                        },
+                        id_tx,
+                    })
+                    .await;
+            } else {
+                warn!(
+                    root_hash = hex::encode(root_hash),
+                    "Manifest timed out — all providers exhausted, failing download"
+                );
+                failed.push(*root_hash);
+            }
+        }
+
+        for root_hash in failed {
+            self.pending_manifests.remove(&root_hash);
+            // Best-effort DB update — no db_id available at this stage so we
+            // match by root_hash.
+            if let Err(e) = db::downloads::fail_by_hash(&self.db, &root_hash).await {
+                warn!(
+                    root_hash = hex::encode(root_hash),
+                    "Could not mark download failed: {e}"
+                );
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Cancel
+    // -----------------------------------------------------------------------
+
+    /// Stop tracking a download identified by its DB id.
+    /// In-flight chunk requests will be silently ignored when they arrive.
+    pub async fn cancel(&mut self, download_id: i64) {
+        // Check pending manifests first.
+        self.pending_manifests
+            .retain(|_, pm| pm.download_id != Some(download_id));
+
+        // Check active downloads.
+        let hash = self
+            .active
+            .iter()
+            .find(|(_, dl)| dl.download_id == download_id)
+            .map(|(h, _)| *h);
+        if let Some(h) = hash {
+            self.active.remove(&h);
+            info!(
+                download_id,
+                root_hash = hex::encode(h),
+                "Download cancelled"
+            );
         }
     }
 

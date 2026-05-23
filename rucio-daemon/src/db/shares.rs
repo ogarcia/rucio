@@ -16,6 +16,7 @@ pub struct SharedFileRow {
     pub path: String,
     pub chunk_size: i64,
     pub added_at: i64,
+    pub chunk_count: i64,
 }
 
 /// Parameters for inserting a new shared file.
@@ -65,11 +66,16 @@ pub async fn insert(db: &Db, f: NewSharedFile<'_>) -> Result<i64> {
     Ok(file_id)
 }
 
-/// List all shared files.
+/// List all shared files, including their chunk count.
 pub async fn list(db: &Db) -> Result<Vec<SharedFileRow>> {
     let rows = sqlx::query(
-        "SELECT id, root_hash, name, size, mime_type, path, chunk_size, added_at
-         FROM shared_files ORDER BY added_at DESC",
+        "SELECT sf.id, sf.root_hash, sf.name, sf.size, sf.mime_type, sf.path,
+                sf.chunk_size, sf.added_at,
+                COUNT(c.id) AS chunk_count
+         FROM shared_files sf
+         LEFT JOIN chunks c ON c.shared_file_id = sf.id
+         GROUP BY sf.id
+         ORDER BY sf.added_at DESC",
     )
     .fetch_all(db)
     .await?;
@@ -85,6 +91,7 @@ pub async fn list(db: &Db) -> Result<Vec<SharedFileRow>> {
             path: r.get("path"),
             chunk_size: r.get("chunk_size"),
             added_at: r.get("added_at"),
+            chunk_count: r.get("chunk_count"),
         })
         .collect())
 }
