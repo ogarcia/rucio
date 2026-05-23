@@ -47,7 +47,7 @@ mkdir -p \
 cat > "$TEST_DIR/node-a/config.toml" <<EOF
 [node]
 identity_path = "$TEST_DIR/node-a/identity.key"
-listen_addrs  = ["/ip4/127.0.0.1/tcp/14321"]
+listen_addrs  = ["/ip4/0.0.0.0/tcp/14321"]
 
 [api]
 listen = "127.0.0.1:17070"
@@ -64,7 +64,7 @@ EOF
 cat > "$TEST_DIR/node-b/config.toml" <<EOF
 [node]
 identity_path = "$TEST_DIR/node-b/identity.key"
-listen_addrs  = ["/ip4/127.0.0.1/tcp/14322"]
+listen_addrs  = ["/ip4/0.0.0.0/tcp/14322"]
 
 [api]
 listen = "127.0.0.1:17071"
