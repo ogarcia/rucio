@@ -330,6 +330,32 @@ impl DownloadEngine {
     }
 
     // -----------------------------------------------------------------------
+    // Periodic provider refresh
+    // -----------------------------------------------------------------------
+
+    /// Re-issue `FindProviders` for every in-progress download so that peers
+    /// that joined the network after the download started are discovered and
+    /// added as additional chunk sources.
+    ///
+    /// Called every `PROVIDER_REFRESH_SECS` from the main loop.
+    pub async fn tick_provider_refresh(&mut self) {
+        let hashes: Vec<[u8; 32]> = self
+            .active
+            .keys()
+            .chain(self.pending_manifests.keys())
+            .copied()
+            .collect();
+
+        for hash in hashes {
+            debug!(root_hash = hex::encode(hash), "Refreshing provider lookup");
+            let _ = self
+                .cmd_tx
+                .send(NodeCmd::FindProviders(hash.to_vec()))
+                .await;
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Cancel
     // -----------------------------------------------------------------------
 
@@ -1121,6 +1147,52 @@ mod tests {
         let (mut engine, _rx, _db_dir) = make_engine(&tmp).await;
         // Should not panic
         engine.cancel(999, vec![0u8; 32]).await;
+    }
+
+    // -----------------------------------------------------------------------
+    // tick_provider_refresh() — re-issues FindProviders for active downloads
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn tick_provider_refresh_emits_find_providers_for_active_and_pending() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut engine, mut rx, _db_dir) = make_engine(&tmp).await;
+
+        let hash_a = [0xaau8; 32];
+        let hash_b = [0xbbu8; 32];
+        let p = peer(1);
+
+        // One pending manifest, one active download (simulate by inserting directly).
+        engine
+            .start(&fake_magnet(&hash_a, "a.bin", 100), vec![p], 0)
+            .await
+            .unwrap();
+        // Drain the initial FindProviders + RequestManifest from start()
+        while rx.try_recv().is_ok() {}
+
+        // Insert a second hash directly into pending_manifests (no provider).
+        engine.pending_manifests.insert(
+            hash_b,
+            crate::transfer::PendingManifest {
+                providers: vec![],
+                attempt: 0,
+                requested_at: std::time::Instant::now(),
+            },
+        );
+
+        engine.tick_provider_refresh().await;
+
+        // Should have emitted FindProviders for both hashes.
+        let mut found = std::collections::HashSet::new();
+        while let Ok(cmd) = rx.try_recv() {
+            if let NodeCmd::FindProviders(k) = cmd {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&k);
+                found.insert(arr);
+            }
+        }
+        assert!(found.contains(&hash_a), "expected FindProviders for hash_a");
+        assert!(found.contains(&hash_b), "expected FindProviders for hash_b");
     }
 
     // -----------------------------------------------------------------------

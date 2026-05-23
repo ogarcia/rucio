@@ -120,6 +120,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
 
     // --- Main loop ----------------------------------------------------------
     let mut manifest_tick = tokio::time::interval(tokio::time::Duration::from_secs(2));
+    let mut provider_refresh_tick = tokio::time::interval(tokio::time::Duration::from_secs(30));
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
@@ -130,6 +131,9 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
             _ = manifest_tick.tick() => {
                 engine.tick_manifest_timeouts().await;
             }
+            _ = provider_refresh_tick.tick() => {
+                engine.tick_provider_refresh().await;
+            }
             dl_req = download_rx.recv() => {
                 if let Some(req) = dl_req {
                     match req {
@@ -138,13 +142,9 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                                 .iter()
                                 .filter_map(|s| s.parse().ok())
                                 .collect();
-                            if peers.is_empty() {
-                                warn!("Download request has no valid provider PeerIds");
-                            } else {
-                                match engine.start(&magnet, peers, now_secs()).await {
-                                    Ok(()) => info!("Download started"),
-                                    Err(e) => warn!("Failed to start download: {e}"),
-                                }
+                            match engine.start(&magnet, peers, now_secs()).await {
+                                Ok(()) => info!("Download started"),
+                                Err(e) => warn!("Failed to start download: {e}"),
                             }
                         }
                         api::DownloadRequest::Cancel { download_id, root_hash } => {
