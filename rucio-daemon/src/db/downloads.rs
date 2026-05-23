@@ -171,20 +171,18 @@ fn now_secs() -> u64 {
 mod tests {
     use super::*;
 
-    async fn test_db() -> Db {
-        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-        use std::str::FromStr;
+    async fn test_db() -> (Db, tempfile::TempDir) {
+        use sqlx::sqlite::SqlitePoolOptions;
 
-        let opts = SqliteConnectOptions::from_str("sqlite::memory:")
-            .unwrap()
-            .foreign_keys(true);
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("sqlite://{}?mode=rwc", dir.path().join("test.db").display());
         let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(opts)
+            .max_connections(4)
+            .connect(&url)
             .await
             .unwrap();
         super::super::apply_schema(&pool).await.unwrap();
-        pool
+        (pool, dir)
     }
 
     fn hash(seed: u8) -> [u8; 32] {
@@ -197,7 +195,7 @@ mod tests {
 
     #[tokio::test]
     async fn enqueue_and_list() {
-        let db = test_db().await;
+        let (db, _dir) = test_db().await;
         let id = enqueue(
             &db,
             &hash(1),
@@ -221,7 +219,7 @@ mod tests {
 
     #[tokio::test]
     async fn chunk_done_updates_bytes() {
-        let db = test_db().await;
+        let (db, _dir) = test_db().await;
         let id = enqueue(
             &db,
             &hash(2),
@@ -242,7 +240,7 @@ mod tests {
 
     #[tokio::test]
     async fn chunk_done_twice_accumulates() {
-        let db = test_db().await;
+        let (db, _dir) = test_db().await;
         let id = enqueue(
             &db,
             &hash(3),
@@ -264,7 +262,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_status_completed() {
-        let db = test_db().await;
+        let (db, _dir) = test_db().await;
         let id = enqueue(
             &db,
             &hash(4),
@@ -286,7 +284,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_status_error_stores_message() {
-        let db = test_db().await;
+        let (db, _dir) = test_db().await;
         let id = enqueue(&db, &hash(5), "doc.pdf", 512, "/tmp/doc.pdf", 1_000, &[])
             .await
             .unwrap();
@@ -302,7 +300,7 @@ mod tests {
 
     #[tokio::test]
     async fn download_chunks_cascade_on_delete() {
-        let db = test_db().await;
+        let (db, _dir) = test_db().await;
         let id = enqueue(
             &db,
             &hash(6),

@@ -146,23 +146,22 @@ pub async fn delete_by_path_prefix(db: &Db, prefix: &str) -> Result<Vec<Vec<u8>>
 mod tests {
     use super::*;
 
-    /// Open an in-memory SQLite DB with the full schema applied.
-    async fn test_db() -> Db {
-        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-        use std::str::FromStr;
+    /// Open a temporary-file SQLite DB with the full schema applied.
+    ///
+    /// Returns `(pool, TempDir)` — the caller must keep `TempDir` alive for
+    /// the duration of the test or the underlying file will be deleted.
+    async fn test_db() -> (Db, tempfile::TempDir) {
+        use sqlx::sqlite::SqlitePoolOptions;
 
-        let opts = SqliteConnectOptions::from_str("sqlite::memory:")
-            .unwrap()
-            .foreign_keys(true);
-        // max_connections(1) is critical: each connection to ":memory:" gets
-        // its own independent database, so we must pin the pool to one conn.
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("sqlite://{}?mode=rwc", dir.path().join("test.db").display());
         let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(opts)
+            .max_connections(4)
+            .connect(&url)
             .await
             .unwrap();
         super::super::apply_schema(&pool).await.unwrap();
-        pool
+        (pool, dir)
     }
 
     fn dummy_hash(seed: u8) -> [u8; 32] {
@@ -177,7 +176,7 @@ mod tests {
 
     #[tokio::test]
     async fn insert_and_list() {
-        let db = test_db().await;
+        let (db, _dir) = test_db().await;
         let hash = dummy_hash(1);
         let chunks = dummy_chunks(3);
 
@@ -208,7 +207,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_by_hash_existing() {
-        let db = test_db().await;
+        let (db, _dir) = test_db().await;
         let hash = dummy_hash(2);
         insert(
             &db,
@@ -234,14 +233,14 @@ mod tests {
 
     #[tokio::test]
     async fn delete_by_hash_missing() {
-        let db = test_db().await;
+        let (db, _dir) = test_db().await;
         let deleted = delete_by_hash(&db, &dummy_hash(99)).await.unwrap();
         assert!(!deleted);
     }
 
     #[tokio::test]
     async fn delete_by_path_prefix_directory() {
-        let db = test_db().await;
+        let (db, _dir) = test_db().await;
 
         // Insert three files: two inside /music, one outside.
         for (seed, path) in [
@@ -276,7 +275,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_by_path_prefix_no_partial_match() {
-        let db = test_db().await;
+        let (db, _dir) = test_db().await;
 
         // "/music-extra" must NOT be removed when prefix is "/music".
         for (seed, path) in [(1u8, "/music/a.mp3"), (2u8, "/music-extra/b.mp3")] {
@@ -307,7 +306,7 @@ mod tests {
 
     #[tokio::test]
     async fn chunks_cascade_on_file_delete() {
-        let db = test_db().await;
+        let (db, _dir) = test_db().await;
         let hash = dummy_hash(5);
         let chunks = dummy_chunks(4);
 
