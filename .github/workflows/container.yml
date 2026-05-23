@@ -22,9 +22,42 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  # ── Compile binaries once ──────────────────────────────────────────────────
+  build:
+    name: Compile binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install musl tools
+        run: sudo apt-get install -y musl-tools
+
+      - name: Build
+        run: cargo build --release --locked --target x86_64-unknown-linux-musl
+
+      - name: Prepare dist/
+        run: |
+          mkdir dist
+          cp target/x86_64-unknown-linux-musl/release/ruciod dist/
+          cp target/x86_64-unknown-linux-musl/release/rucio  dist/
+          strip dist/ruciod dist/rucio
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries
+          path: dist/
+          retention-days: 1
+
   # ── daemon-only image (tag: master / vX.Y.Z / latest) ─────────────────────
-  ruciod:
+  image-ruciod:
     name: Build ruciod image
+    needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -32,6 +65,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: binaries
+          path: dist/
 
       - uses: docker/setup-buildx-action@v3
 
@@ -49,22 +87,19 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            # branch push → "master"
             type=ref,event=branch
-            # PR → "pr-<N>"
             type=ref,event=pr
-            # semver tag 0.1.0 → "0.1.0" and "0.1"
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            # semver tag → "latest"
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') }}
 
-      - name: Build and push (ruciod stage)
+      - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Containerfile
           target: ruciod
+          build-args: BUILDER=prebuilt
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -72,8 +107,9 @@ jobs:
           cache-to: type=gha,mode=max,scope=ruciod
 
   # ── full image (tag: master-full / vX.Y.Z-full / latest-full) ─────────────
-  full:
+  image-full:
     name: Build full image
+    needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -81,6 +117,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: binaries
+          path: dist/
 
       - uses: docker/setup-buildx-action@v3
 
@@ -98,22 +139,19 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            # branch push → "master-full"
             type=ref,event=branch,suffix=-full
-            # PR → "pr-<N>-full"
             type=ref,event=pr,suffix=-full
-            # semver tag 0.1.0 → "0.1.0-full" and "0.1-full"
             type=semver,pattern={{version}},suffix=-full
             type=semver,pattern={{major}}.{{minor}},suffix=-full
-            # semver tag → "latest-full"
             type=raw,value=latest-full,enable=${{ startsWith(github.ref, 'refs/tags/') }}
 
-      - name: Build and push (full stage)
+      - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Containerfile
           target: full
+          build-args: BUILDER=prebuilt
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

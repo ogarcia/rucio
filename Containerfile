@@ -1,26 +1,22 @@
 # syntax=docker/dockerfile:1.7
 #
-# Two-stage build producing two independent runtime images:
+# Produces two independent runtime images:
 #
-#   ruciod-only  →  tag "master" / "vX.Y.Z" / "latest"
-#                   Only the daemon binary.  Use this for production
-#                   nodes, bootstrap servers and VPS deployments.
+#   ruciod  →  tag "master" / "vX.Y.Z" / "latest"
+#              Only the daemon binary.  Use this for production nodes,
+#              bootstrap servers and VPS deployments.
 #
-#   full         →  tag "master-full" / "vX.Y.Z-full" / "latest-full"
-#                   Both ruciod (daemon) and rucio (CLI).  Use this for
-#                   development, debugging, or when you want to inspect
-#                   a running node from inside the container.
+#   full    →  tag "master-full" / "vX.Y.Z-full" / "latest-full"
+#              Both ruciod (daemon) and rucio (CLI).  Use this for
+#              development, debugging, or inspecting a running node.
 #
-# Build notes:
-#   - Both images compile against musl so the result is a fully static
-#     binary with no glibc runtime dependency.
-#   - SQLite is compiled in via the bundled feature of sqlx; no system
-#     libsqlite3 needed at runtime.
-#   - TLS is handled by rustls (pure Rust); ca-certificates is included
-#     in the runtime image only as a courtesy for future HTTPS calls
-#     and can be dropped if not needed.
-#   - The `rucio` user runs with a fixed UID/GID (10001) so that
-#     bind-mounted volumes keep consistent ownership across rebuilds.
+# Local build (compiles from source):
+#   podman build --target ruciod -t rucio:dev .
+#   podman build --target full   -t rucio:dev-full .
+#
+# CI build (binaries pre-compiled and placed in dist/):
+#   podman build --target ruciod --build-arg BUILDER=prebuilt .
+#   podman build --target full   --build-arg BUILDER=prebuilt .
 #
 # Environment variables (runtime):
 #   RUCIOD_CONFIG   Path to the daemon config file
@@ -28,7 +24,7 @@
 #   RUCIO_API       Daemon API URL used by the rucio CLI
 #                   (default: http://127.0.0.1:7070)
 
-# ── Stage 1: compile ────────────────────────────────────────────────────────
+# ── Stage 1a: compile from source (default local path) ──────────────────────
 
 FROM rust:1-alpine3.23 AS builder
 
@@ -37,13 +33,23 @@ FROM rust:1-alpine3.23 AS builder
 RUN apk add --no-cache musl-dev
 
 WORKDIR /app
-
 COPY . .
 
 RUN cargo build --release --locked && \
     cp target/release/ruciod /usr/bin/ruciod && \
     cp target/release/rucio  /usr/bin/rucio  && \
     strip /usr/bin/ruciod /usr/bin/rucio
+
+# ── Stage 1b: pre-built binaries injected from CI (dist/ in build context) ──
+
+FROM scratch AS prebuilt
+COPY dist/ruciod /usr/bin/ruciod
+COPY dist/rucio  /usr/bin/rucio
+
+# ── Stage 1c: indirection — points to 'builder' or 'prebuilt' via build arg ─
+
+ARG BUILDER=builder
+FROM ${BUILDER} AS bins
 
 # ── Stage 2: runtime – daemon only (tag: master / vX.Y.Z / latest) ──────────
 
@@ -55,13 +61,11 @@ RUN apk add --no-cache ca-certificates && \
     mkdir -p /etc/rucio /var/lib/rucio && \
     chown -R rucio:rucio /var/lib/rucio /etc/rucio
 
-COPY --from=builder /usr/bin/ruciod /usr/bin/ruciod
+COPY --from=bins /usr/bin/ruciod /usr/bin/ruciod
 
 USER rucio
 WORKDIR /var/lib/rucio
 
-# RUCIOD_CONFIG lets operators inject a config file via a bind-mount
-# or a ConfigMap without rebuilding the image.
 ENV RUCIOD_CONFIG=/etc/rucio/config.toml
 
 EXPOSE 4321/tcp
@@ -79,8 +83,8 @@ RUN apk add --no-cache ca-certificates && \
     mkdir -p /etc/rucio /var/lib/rucio && \
     chown -R rucio:rucio /var/lib/rucio /etc/rucio
 
-COPY --from=builder /usr/bin/ruciod /usr/bin/ruciod
-COPY --from=builder /usr/bin/rucio  /usr/bin/rucio
+COPY --from=bins /usr/bin/ruciod /usr/bin/ruciod
+COPY --from=bins /usr/bin/rucio  /usr/bin/rucio
 
 USER rucio
 WORKDIR /var/lib/rucio

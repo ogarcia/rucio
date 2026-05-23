@@ -1,6 +1,9 @@
 # Build artifacts — largest exclusion, speeds up context transfer significantly
 target/
 
+# Pre-built binaries injected by CI (not present in local builds)
+# dist/ is intentionally NOT excluded — it must be available when
+# building with --build-arg BUILDER=prebuilt
 # Tests — not needed inside the container build
 tests/
 
