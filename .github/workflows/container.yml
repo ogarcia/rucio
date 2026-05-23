@@ -54,7 +54,7 @@ jobs:
           path: dist/
           retention-days: 1
 
-  # ── daemon-only image (tag: master / vX.Y.Z / latest) ─────────────────────
+  # ── daemon-only image (tag: master / 0.1.0 / latest) ─────────────────────
   image-ruciod:
     name: Build ruciod image
     needs: build
@@ -106,7 +106,7 @@ jobs:
           cache-from: type=gha,scope=ruciod
           cache-to: type=gha,mode=max,scope=ruciod
 
-  # ── full image (tag: master-full / vX.Y.Z-full / latest-full) ─────────────
+  # ── full image (tag: master-full / 0.1.0-full / latest-full) ─────────────
   image-full:
     name: Build full image
     needs: build
