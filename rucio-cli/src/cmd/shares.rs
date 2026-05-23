@@ -1,4 +1,4 @@
-//! `rucio shares`, `rucio add <path>`, `rucio remove <hash>`
+//! `rucio shares`, `rucio add <path>`, `rucio remove <hash|path>`
 
 use anyhow::Result;
 use tabled::{Table, Tabled};
@@ -23,8 +23,8 @@ pub async fn list(client: &ApiClient) -> Result<()> {
         size: String,
         #[tabled(rename = "Chunks")]
         chunks: usize,
-        #[tabled(rename = "MIME")]
-        mime: String,
+        #[tabled(rename = "Path")]
+        path: String,
     }
 
     let rows: Vec<Row> = resp
@@ -35,7 +35,7 @@ pub async fn list(client: &ApiClient) -> Result<()> {
             name: s.name,
             size: human_size(s.size),
             chunks: s.chunk_count,
-            mime: s.mime_type.unwrap_or_else(|| "-".to_string()),
+            path: s.path,
         })
         .collect();
 
@@ -44,14 +44,32 @@ pub async fn list(client: &ApiClient) -> Result<()> {
 }
 
 pub async fn add(client: &ApiClient, path: &str) -> Result<()> {
-    client.add_share(path).await?;
-    println!("Share queued: {path}");
+    let resp = client.add_share(path).await?;
+    println!("Queued {} file(s) for indexing.", resp.queued);
+    if !resp.errors.is_empty() {
+        println!("{} file(s) could not be read:", resp.errors.len());
+        for e in &resp.errors {
+            println!("  {e}");
+        }
+    }
     Ok(())
 }
 
-pub async fn remove(client: &ApiClient, hash: &str) -> Result<()> {
-    client.remove_share(hash).await?;
-    println!("Removed share: {hash}");
+/// Remove by hash (single file) or by path (file or directory tree).
+pub async fn remove(client: &ApiClient, target: &str) -> Result<()> {
+    // Heuristic: if it looks like a 64-char hex string it's a hash,
+    // otherwise treat it as a filesystem path.
+    if target.len() == 64 && target.chars().all(|c| c.is_ascii_hexdigit()) {
+        client.remove_share(target).await?;
+        println!("Removed share: {target}");
+    } else {
+        let n = client.remove_shares_by_path(target).await?;
+        match n {
+            0 => println!("No shares found under: {target}"),
+            1 => println!("Removed 1 share."),
+            n => println!("Removed {n} shares."),
+        }
+    }
     Ok(())
 }
 

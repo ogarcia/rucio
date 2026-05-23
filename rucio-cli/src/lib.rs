@@ -28,10 +28,10 @@ pub enum Commands {
         /// Path to the file to share
         path: String,
     },
-    /// Stop sharing a file
+    /// Stop sharing a file or directory
     Remove {
-        /// Root hash of the file (hex)
-        hash: String,
+        /// Root hash (hex) of a single file, or filesystem path (file or directory)
+        target: String,
     },
     /// List shared files
     Shares,
@@ -76,7 +76,7 @@ pub async fn run() -> Result<()> {
         Commands::Peers => cmd::status::peers(&client).await,
         Commands::Shares => cmd::shares::list(&client).await,
         Commands::Add { path } => cmd::shares::add(&client, &path).await,
-        Commands::Remove { hash } => cmd::shares::remove(&client, &hash).await,
+        Commands::Remove { target } => cmd::shares::remove(&client, &target).await,
         Commands::Downloads => cmd::downloads::list(&client).await,
         Commands::Get { magnet } => cmd::downloads::start(&client, &magnet).await,
         Commands::Cancel { hash } => cmd::downloads::cancel(&client, &hash).await,

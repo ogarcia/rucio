@@ -17,6 +17,7 @@ pub enum DownloadState {
 /// Response for a single download.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct DownloadResponse {
+    pub id: i64,
     pub root_hash: String,
     pub name: Option<String>,
     pub size: Option<u64>,

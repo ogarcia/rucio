@@ -27,6 +27,7 @@ pub async fn list_downloads(State(state): State<AppState>) -> Json<DownloadsResp
     let downloads = rows
         .into_iter()
         .map(|r| DownloadResponse {
+            id: r.id,
             root_hash: hex::encode(&r.root_hash),
             name: Some(r.name),
             size: Some(r.total_size as u64),

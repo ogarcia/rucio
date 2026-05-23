@@ -12,7 +12,7 @@ use rucio_core::api::{
     config::ConfigResponse,
     downloads::{DownloadResponse, DownloadsResponse, StartDownloadRequest},
     search::{SearchRequest, SearchResultsResponse, SearchStartedResponse},
-    shares::{AddShareRequest, SharesResponse},
+    shares::{AddShareRequest, AddShareResponse, SharesResponse},
     status::{PeersResponse, StatusResponse},
 };
 
@@ -127,30 +127,41 @@ impl ApiClient {
         self.get("/api/v1/shares").await
     }
 
-    pub async fn add_share(&self, path: &str) -> Result<()> {
-        // POST returns 202 with no body
-        let url = format!("{}/api/v1/shares", self.base);
-        let resp = self
-            .inner
-            .post(&url)
-            .json(&AddShareRequest {
+    pub async fn add_share(&self, path: &str) -> Result<AddShareResponse> {
+        self.post(
+            "/api/v1/shares",
+            &AddShareRequest {
                 path: path.to_string(),
-            })
-            .send()
-            .await
-            .with_context(|| format!("POST {url}"))?;
-
-        if resp.status().is_success() {
-            Ok(())
-        } else {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            bail!("POST {url} → {status}: {body}");
-        }
+            },
+        )
+        .await
     }
 
     pub async fn remove_share(&self, hash: &str) -> Result<()> {
         self.delete(&format!("/api/v1/shares/{hash}")).await
+    }
+
+    pub async fn remove_shares_by_path(&self, path: &str) -> Result<u64> {
+        let url = format!(
+            "{}/api/v1/shares?path={}",
+            self.base,
+            urlencoding::encode(path)
+        );
+        let resp = self
+            .inner
+            .delete(&url)
+            .send()
+            .await
+            .with_context(|| format!("DELETE {url}"))?;
+
+        if resp.status().is_success() {
+            let body: serde_json::Value = resp.json().await.unwrap_or_default();
+            Ok(body["removed"].as_u64().unwrap_or(0))
+        } else {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            bail!("DELETE {url} → {status}: {body}");
+        }
     }
 
     // -----------------------------------------------------------------------

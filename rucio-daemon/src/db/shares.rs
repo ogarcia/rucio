@@ -67,9 +67,12 @@ pub async fn insert(db: &Db, f: NewSharedFile<'_>) -> Result<i64> {
 
 /// List all shared files.
 pub async fn list(db: &Db) -> Result<Vec<SharedFileRow>> {
-    let rows = sqlx::query("SELECT id, root_hash, name, size, mime_type, path, chunk_size, added_at FROM shared_files ORDER BY added_at DESC")
-        .fetch_all(db)
-        .await?;
+    let rows = sqlx::query(
+        "SELECT id, root_hash, name, size, mime_type, path, chunk_size, added_at
+         FROM shared_files ORDER BY added_at DESC",
+    )
+    .fetch_all(db)
+    .await?;
 
     Ok(rows
         .iter()
@@ -87,11 +90,36 @@ pub async fn list(db: &Db) -> Result<Vec<SharedFileRow>> {
 }
 
 /// Delete a shared file (and its chunks via CASCADE) by root hash.
-pub async fn delete(db: &Db, root_hash: &[u8; 32]) -> Result<bool> {
+/// Returns `true` if a row was deleted.
+pub async fn delete_by_hash(db: &Db, root_hash: &[u8; 32]) -> Result<bool> {
     let affected = sqlx::query("DELETE FROM shared_files WHERE root_hash = ?1")
         .bind(root_hash.as_slice())
         .execute(db)
         .await?
         .rows_affected();
     Ok(affected > 0)
+}
+
+/// Delete all shared files whose `path` starts with `prefix`.
+///
+/// Use this to remove a whole directory tree: pass the directory path.
+/// Returns the number of rows deleted.
+pub async fn delete_by_path_prefix(db: &Db, prefix: &str) -> Result<u64> {
+    // Ensure the prefix ends with the path separator so we don't accidentally
+    // match "/home/user/movies-extra" when asked to remove "/home/user/movies".
+    let pattern = if prefix.ends_with(std::path::MAIN_SEPARATOR) {
+        format!("{prefix}%")
+    } else {
+        format!("{prefix}{}%", std::path::MAIN_SEPARATOR)
+    };
+
+    // Also match the exact path in case a single file was passed.
+    let affected = sqlx::query("DELETE FROM shared_files WHERE path = ?1 OR path LIKE ?2")
+        .bind(prefix)
+        .bind(&pattern)
+        .execute(db)
+        .await?
+        .rows_affected();
+
+    Ok(affected)
 }

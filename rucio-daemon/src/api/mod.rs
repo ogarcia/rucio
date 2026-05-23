@@ -65,6 +65,7 @@ fn v1_router() -> Router<AppState> {
         // shares
         .route("/shares", routing::get(shares::list_shares))
         .route("/shares", routing::post(shares::add_share))
+        .route("/shares", routing::delete(shares::remove_shares_by_path))
         .route("/shares/{hash}", routing::delete(shares::remove_share))
         // downloads
         .route("/downloads", routing::get(downloads::list_downloads))

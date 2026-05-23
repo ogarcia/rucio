@@ -66,6 +66,7 @@ hex         = "0.4"
 uuid        = { version = "1", features = ["v4"] }
 dirs        = "6"
 tabled      = "0.20"
+urlencoding = "2.1"
 
 # logging
 tracing             = "0.1"

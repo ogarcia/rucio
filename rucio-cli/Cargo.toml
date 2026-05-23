@@ -21,3 +21,4 @@ serde_json  = { workspace = true }
 anyhow      = { workspace = true }
 tracing     = { workspace = true }
 tabled      = { workspace = true }
+urlencoding = { workspace = true }
