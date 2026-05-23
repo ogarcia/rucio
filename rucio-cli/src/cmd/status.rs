@@ -20,6 +20,19 @@ pub async fn status(client: &ApiClient) -> Result<()> {
         for addr in &s.listen_addrs {
             println!("  {addr}");
         }
+        println!();
+        println!("Bootstrap multiaddrs (paste into another node's config.toml):");
+        for addr in &s.listen_addrs {
+            // Skip loopback and unspecified addresses — not useful as bootstrap peers.
+            if addr.contains("/127.0.0.1")
+                || addr.contains("/::1")
+                || addr.contains("/0.0.0.0")
+                || addr.contains("/::")
+            {
+                continue;
+            }
+            println!("  {addr}/p2p/{}", s.peer_id);
+        }
     }
     Ok(())
 }

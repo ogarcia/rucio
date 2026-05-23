@@ -79,10 +79,19 @@ impl Default for StorageConfig {
 // configured any in [network] bootstrap_peers.
 //
 // TODO: populate this list once we have funded infrastructure.
-//       Format: "/ip4/<addr>/tcp/<port>/p2p/<PeerId>"
 //
-// Example (placeholder — not a real node):
-//   "/ip4/bootstrap.rucio.example/tcp/4321/p2p/12D3KooWXXXXXXXX..."
+// Format:
+//   IPv4:  "/ip4/1.2.3.4/tcp/4321/p2p/12D3KooWXXXXXXXX..."
+//   IPv6:  "/ip6/2001:db8::1/tcp/4321/p2p/12D3KooWXXXXXXXX..."
+//
+// How to obtain the PeerId of a node:
+//   Run `ruciod` once to generate a persistent identity key, then run
+//   `rucio status` — it prints the PeerId and the full multiaddrs ready
+//   to paste here or into a client's config.toml bootstrap_peers list.
+//
+// Example entries (not real nodes):
+//   "/ip4/203.0.113.10/tcp/4321/p2p/12D3KooWXXXXXXXX...",
+//   "/ip6/2001:db8:cafe::1/tcp/4321/p2p/12D3KooWXXXXXXXX...",
 //
 const BUILTIN_BOOTSTRAP_PEERS: &[&str] = &[
     // (none yet — add here when infrastructure is available)
