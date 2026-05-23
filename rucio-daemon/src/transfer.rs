@@ -166,6 +166,10 @@ pub struct DownloadEngine {
     dest_dir: PathBuf,
     pending_manifests: HashMap<[u8; 32], PendingManifest>,
     active: HashMap<[u8; 32], ActiveDownload>,
+    /// All peers known to have a given file, discovered via DHT or PEX.
+    /// Updated by add_providers() regardless of whether a download is active.
+    /// Used by serve_chunk() to populate PEX data in chunk responses.
+    known_providers: HashMap<[u8; 32], Vec<PeerId>>,
 }
 
 impl DownloadEngine {
@@ -176,6 +180,7 @@ impl DownloadEngine {
             dest_dir,
             pending_manifests: HashMap::new(),
             active: HashMap::new(),
+            known_providers: HashMap::new(),
         }
     }
 
@@ -241,6 +246,19 @@ impl DownloadEngine {
     // -----------------------------------------------------------------------
 
     pub async fn add_providers(&mut self, root_hash: [u8; 32], new_peers: Vec<PeerId>) {
+        // Always update the global known_providers map — used for PEX even
+        // when we are not downloading this file ourselves.
+        const MAX_KNOWN: usize = 32;
+        {
+            let known = self.known_providers.entry(root_hash).or_default();
+            let existing: HashSet<PeerId> = known.iter().copied().collect();
+            for &p in &new_peers {
+                if !existing.contains(&p) && known.len() < MAX_KNOWN {
+                    known.push(p);
+                }
+            }
+        }
+
         if let Some(dl) = self.active.get_mut(&root_hash) {
             let existing: HashSet<PeerId> = dl.providers.iter().copied().collect();
             for p in new_peers {
@@ -667,7 +685,13 @@ impl DownloadEngine {
         }
 
         match response {
-            ChunkResponse::Ok { data } => {
+            ChunkResponse::Ok {
+                data,
+                peers: pex_peers,
+            } => {
+                // Process PEX peers — parse before mutably borrowing self further.
+                let pex: Vec<PeerId> = pex_peers.iter().filter_map(|s| s.parse().ok()).collect();
+
                 let (expected_hash, chunk_size) = match dl.chunk_meta.get(&chunk_idx) {
                     Some(v) => *v,
                     None => {
@@ -704,6 +728,12 @@ impl DownloadEngine {
                 }
 
                 debug!(chunk_idx, %peer, "Chunk written");
+
+                // Incorporate PEX peers from this response.
+                if !pex.is_empty() {
+                    debug!(count = pex.len(), "PEX peers received");
+                    self.add_providers(root_hash, pex).await;
+                }
 
                 if self.active[&root_hash].is_complete() {
                     if let Err(e) =
@@ -760,11 +790,26 @@ impl DownloadEngine {
     // -----------------------------------------------------------------------
 
     pub async fn serve_chunk(&self, _peer: PeerId, request: ChunkRequest, channel_id: u64) {
+        const MAX_PEX_PEERS: usize = 8;
+
+        // Collect PEX peers before spawning — known_providers is not Send.
+        let pex_peers: Vec<String> = self
+            .known_providers
+            .get(&request.root_hash)
+            .map(|peers| {
+                peers
+                    .iter()
+                    .take(MAX_PEX_PEERS)
+                    .map(|p| p.to_base58())
+                    .collect()
+            })
+            .unwrap_or_default();
+
         let db = self.db.clone();
         let cmd_tx = self.cmd_tx.clone();
 
         tokio::spawn(async move {
-            let response = read_chunk_from_db(&db, &request).await;
+            let response = read_chunk_from_db(&db, &request, pex_peers).await;
             let _ = cmd_tx
                 .send(NodeCmd::RespondChunk {
                     channel_id,
@@ -790,7 +835,11 @@ async fn write_chunk(path: &PathBuf, offset: u64, data: &[u8]) -> Result<()> {
     Ok(())
 }
 
-async fn read_chunk_from_db(db: &Db, request: &ChunkRequest) -> ChunkResponse {
+async fn read_chunk_from_db(
+    db: &Db,
+    request: &ChunkRequest,
+    pex_peers: Vec<String>,
+) -> ChunkResponse {
     let row = sqlx::query(
         "SELECT c.idx, c.size, sf.path, sf.chunk_size
          FROM chunks c
@@ -816,7 +865,10 @@ async fn read_chunk_from_db(db: &Db, request: &ChunkRequest) -> ChunkResponse {
 
     let offset = idx as u64 * chunk_size as u64;
     match read_file_range(&path, offset, size as usize).await {
-        Ok(data) => ChunkResponse::Ok { data },
+        Ok(data) => ChunkResponse::Ok {
+            data,
+            peers: pex_peers,
+        },
         Err(e) => ChunkResponse::Error(e.to_string()),
     }
 }
@@ -1357,6 +1409,7 @@ mod tests {
                 peer(1),
                 ChunkResponse::Ok {
                     data: vec![1, 2, 3],
+                    peers: vec![],
                 },
             )
             .await;
@@ -1419,6 +1472,7 @@ mod tests {
                 p,
                 ChunkResponse::Ok {
                     data: b"wrong data!!".to_vec(),
+                    peers: vec![],
                 },
             )
             .await;
@@ -1497,6 +1551,7 @@ mod tests {
                 p,
                 ChunkResponse::Ok {
                     data: data.to_vec(),
+                    peers: vec![],
                 },
             )
             .await;
@@ -1508,5 +1563,44 @@ mod tests {
         );
         // File should exist on disk
         assert!(tmp.path().join("ok.bin").exists());
+    }
+
+    // PEX: add_providers always updates known_providers regardless of download
+    // state, and also merges into active[hash].providers when a download is live.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pex_peers_added_to_known_providers_and_active() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (mut engine, rx, _db_dir) = make_engine(&tmp).await;
+        let (acker, stop) = spawn_acker(rx);
+
+        let magnet = format!("rucio:{}?name=pex.bin&size=1024", hex::encode([0xAAu8; 32]));
+        let hash: [u8; 32] = [0xAAu8; 32];
+
+        engine.start(&magnet, vec![peer(1)], 0).await.unwrap();
+
+        let pex_peer = peer(42);
+
+        // Add via add_providers while in pending_manifests state.
+        engine.add_providers(hash, vec![pex_peer]).await;
+
+        // Should be in known_providers unconditionally.
+        assert!(
+            engine
+                .known_providers
+                .get(&hash)
+                .is_some_and(|v| v.contains(&pex_peer)),
+            "PEX peer must be in known_providers"
+        );
+        // Should also be in pending_manifests providers.
+        assert!(
+            engine
+                .pending_manifests
+                .get(&hash)
+                .is_some_and(|pm| pm.providers.contains(&pex_peer)),
+            "PEX peer must be in pending_manifest providers"
+        );
+
+        let _ = stop.send(());
+        let _ = acker.await;
     }
 }

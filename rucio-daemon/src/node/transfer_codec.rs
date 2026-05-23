@@ -13,7 +13,7 @@ pub struct TransferProtocol;
 
 impl AsRef<str> for TransferProtocol {
     fn as_ref(&self) -> &str {
-        "/rucio/transfer/1.0.0"
+        "/rucio/transfer/2.0.0"
     }
 }
 
