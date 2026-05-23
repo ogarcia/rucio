@@ -48,8 +48,8 @@ RUN cargo build --release --locked && \
 # ── Stage 1b: pre-built binaries injected from CI (dist/ in build context) ──
 
 FROM scratch AS prebuilt
-COPY dist/ruciod /usr/bin/ruciod
-COPY dist/rucio  /usr/bin/rucio
+COPY --chmod=0755 dist/ruciod /usr/bin/ruciod
+COPY --chmod=0755 dist/rucio  /usr/bin/rucio
 
 # ── Stage 1c: indirection — points to 'builder' or 'prebuilt' via build arg ─
 
