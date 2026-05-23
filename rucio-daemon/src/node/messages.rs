@@ -3,6 +3,7 @@
 
 use libp2p::{Multiaddr, PeerId, request_response::OutboundRequestId};
 use rucio_core::protocol::{
+    manifest::{ManifestRequest, ManifestResponse},
     node::NodeClass,
     search::{SearchQuery, SearchResult},
     transfer::{ChunkRequest, ChunkResponse},
@@ -32,6 +33,16 @@ pub enum NodeCmd {
     RespondChunk {
         channel_id: u64,
         response: ChunkResponse,
+    },
+    /// Request the manifest for a file from a remote peer.
+    RequestManifest {
+        peer: PeerId,
+        request: ManifestRequest,
+    },
+    /// Send a manifest response back to a peer that requested it.
+    RespondManifest {
+        channel_id: u64,
+        response: ManifestResponse,
     },
     /// Gracefully stop the node task.
     Shutdown,
@@ -81,7 +92,18 @@ pub enum NodeEvent {
     ChunkRequested {
         peer: PeerId,
         request: ChunkRequest,
-        /// Opaque channel handle; pass back to NodeCmd::RespondChunk.
+        channel_id: u64,
+    },
+    /// A manifest response arrived for a request we sent.
+    ManifestReceived {
+        request_id: OutboundRequestId,
+        peer: PeerId,
+        response: ManifestResponse,
+    },
+    /// A remote peer sent us a manifest request — we must respond.
+    ManifestRequested {
+        peer: PeerId,
+        request: ManifestRequest,
         channel_id: u64,
     },
     /// A fatal error in the node task.

@@ -1,25 +1,20 @@
 //! Composite libp2p behaviour for Rucio.
-//!
-//! Combines:
-//! - **Identify**          — announces our listen addresses and agent version
-//! - **Kademlia**          — DHT for content-provider records
-//! - **mDNS**              — local peer discovery (LAN / development)
-//! - **Gossipsub**         — search query / result propagation
-//! - **RequestResponse**   — chunk transfer protocol `/rucio/transfer/1.0.0`
 
 use libp2p::{gossipsub, identify, kad, mdns, request_response, swarm::NetworkBehaviour};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
 
+use super::manifest_codec::{ManifestCodec, ManifestProtocol};
 use super::transfer_codec::{TransferCodec, TransferProtocol};
+use rucio_core::protocol::manifest::{ManifestRequest, ManifestResponse};
 use rucio_core::protocol::transfer::{ChunkRequest, ChunkResponse};
 
 pub const TOPIC_SEARCH: &str = "/rucio/search/1.0.0";
 pub const TOPIC_SEARCH_RESULT: &str = "/rucio/search/result/1.0.0";
 
-/// Convenience alias for the transfer request-response behaviour.
 pub type TransferBehaviour = request_response::Behaviour<TransferCodec>;
+pub type ManifestBehaviour = request_response::Behaviour<ManifestCodec>;
 
 /// The combined network behaviour.
 #[derive(NetworkBehaviour)]
@@ -29,6 +24,7 @@ pub struct RucioBehaviour {
     pub mdns: mdns::tokio::Behaviour,
     pub gossipsub: gossipsub::Behaviour,
     pub transfer: TransferBehaviour,
+    pub manifest: ManifestBehaviour,
 }
 
 impl RucioBehaviour {
@@ -69,17 +65,24 @@ impl RucioBehaviour {
             request_response::Config::default(),
         );
 
+        let manifest = request_response::Behaviour::new(
+            vec![(ManifestProtocol, request_response::ProtocolSupport::Full)],
+            request_response::Config::default(),
+        );
+
         Ok(Self {
             identify,
             kademlia,
             mdns,
             gossipsub,
             transfer,
+            manifest,
         })
     }
 }
 
-// Re-export types needed by task.rs
 pub use request_response::{OutboundRequestId, ResponseChannel};
 pub type TransferRequest = ChunkRequest;
 pub type TransferResponse = ChunkResponse;
+pub type ManifestReq = ManifestRequest;
+pub type ManifestResp = ManifestResponse;

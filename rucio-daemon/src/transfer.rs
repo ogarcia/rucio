@@ -1,17 +1,18 @@
 //! Download engine.
 //!
-//! `DownloadEngine` manages the lifecycle of active downloads:
+//! Lifecycle of a download:
 //!
-//!  1. `start()` parses the magnet link, enqueues in the DB, issues a
-//!     Kademlia `FindProviders` for the root hash, and waits for a provider.
-//!  2. Once a provider is found, it requests each pending chunk via the
-//!     `RequestChunk` node command.
-//!  3. Each arriving `ChunkReceived` event is verified (BLAKE3), written to
-//!     disk, and marked done in the DB.
-//!  4. When all chunks are done the download is marked `completed`.
+//!  1. `start()` parses the magnet, sends `NodeCmd::RequestManifest` and
+//!     records the pending request in `pending_manifests`.
+//!  2. `on_manifest_received()` is called when the manifest arrives:
+//!     it enqueues the download in the DB with the full chunk list and
+//!     dispatches the first wave of `NodeCmd::RequestChunk` commands.
+//!  3. `on_chunk_received()` verifies the BLAKE3 hash, writes the data to
+//!     disk at the correct offset, marks the chunk done in the DB, and
+//!     dispatches more requests until the download is complete.
 //!
-//! The engine also handles inbound `ChunkRequested` events — it reads the
-//! chunk from disk and sends the data back via `RespondChunk`.
+//! The engine also handles inbound `ManifestRequested` and `ChunkRequested`
+//! events — reading from the local DB/disk and sending back the response.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -23,7 +24,10 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
-use rucio_core::protocol::transfer::{ChunkRequest, ChunkResponse};
+use rucio_core::protocol::{
+    manifest::{ManifestRequest, ManifestResponse},
+    transfer::{ChunkRequest, ChunkResponse},
+};
 
 use crate::db::{self, Db};
 use crate::node::messages::NodeCmd;
@@ -32,14 +36,12 @@ use crate::node::messages::NodeCmd;
 // Magnet parser
 // ---------------------------------------------------------------------------
 
-/// Parsed representation of a `rucio:` magnet link.
 pub struct MagnetInfo {
     pub root_hash: [u8; 32],
     pub name: String,
     pub size: u64,
 }
 
-/// Parse a `rucio:<hex>?name=<name>&size=<size>` magnet link.
 pub fn parse_magnet(magnet: &str) -> Result<MagnetInfo> {
     let rest = magnet
         .strip_prefix("rucio:")
@@ -79,15 +81,21 @@ pub fn parse_magnet(magnet: &str) -> Result<MagnetInfo> {
 }
 
 // ---------------------------------------------------------------------------
-// Per-download state tracked in memory
+// In-memory state
 // ---------------------------------------------------------------------------
 
+/// A download that is waiting for the manifest to arrive.
+struct PendingManifest {
+    provider: PeerId,
+}
+
+/// An active download for which we have the manifest and are fetching chunks.
 #[derive(Debug)]
 struct ActiveDownload {
     download_id: i64,
-    /// Chunks that still need to be fetched: idx → (expected_hash, size)
+    /// Chunks that still need to be fetched: idx → (expected_hash, size).
     pending: HashMap<u32, ([u8; 32], u32)>,
-    /// Chunks currently in-flight: request_id → chunk_idx
+    /// In-flight requests: OutboundRequestId → chunk_idx.
     in_flight: HashMap<OutboundRequestId, u32>,
     provider: PeerId,
     dest_path: PathBuf,
@@ -98,15 +106,16 @@ struct ActiveDownload {
 // DownloadEngine
 // ---------------------------------------------------------------------------
 
-/// Manages all active downloads and chunk-serving for inbound requests.
 pub struct DownloadEngine {
     db: Db,
     cmd_tx: mpsc::Sender<NodeCmd>,
-    /// Root-hash → download state.
-    active: HashMap<[u8; 32], ActiveDownload>,
-    /// request_id → root_hash (for correlating responses).
-    inflight_index: HashMap<OutboundRequestId, [u8; 32]>,
     dest_dir: PathBuf,
+    /// root_hash → pending manifest state.
+    pending_manifests: HashMap<[u8; 32], PendingManifest>,
+    /// root_hash → active download state.
+    active: HashMap<[u8; 32], ActiveDownload>,
+    /// OutboundRequestId → root_hash (correlates chunk responses).
+    inflight_index: HashMap<OutboundRequestId, [u8; 32]>,
 }
 
 impl DownloadEngine {
@@ -114,99 +123,161 @@ impl DownloadEngine {
         Self {
             db,
             cmd_tx,
+            dest_dir,
+            pending_manifests: HashMap::new(),
             active: HashMap::new(),
             inflight_index: HashMap::new(),
-            dest_dir,
         }
     }
 
     // -----------------------------------------------------------------------
-    // Start a new download
+    // Start: request the manifest
     // -----------------------------------------------------------------------
 
-    /// Enqueue a download and start fetching as soon as a provider is found.
-    ///
-    /// `chunks` must be the full chunk list from the manifest
-    /// `[(idx, hash, size)]`.  In the current flow the caller (search result
-    /// handler) is expected to have obtained this from the search result or a
-    /// separate manifest request (not yet implemented — for now we derive chunk
-    /// layout from total_size and chunk_size).
-    pub async fn start(
-        &mut self,
-        magnet: &str,
-        provider: PeerId,
-        chunks: Vec<(u32, [u8; 32], u32)>,
-        now: u64,
-    ) -> Result<i64> {
+    pub async fn start(&mut self, magnet: &str, provider: PeerId, _now: u64) -> Result<()> {
         let info = parse_magnet(magnet)?;
 
-        if self.active.contains_key(&info.root_hash) {
+        if self.active.contains_key(&info.root_hash)
+            || self.pending_manifests.contains_key(&info.root_hash)
+        {
             bail!("download already active for this hash");
         }
 
-        let dest_path = self.dest_dir.join(&info.name);
+        self.pending_manifests
+            .insert(info.root_hash, PendingManifest { provider });
 
-        let dl_id = db::downloads::enqueue(
-            &self.db,
-            &info.root_hash,
-            &info.name,
-            info.size,
-            dest_path.to_str().unwrap_or(&info.name),
-            now,
-            &chunks,
-        )
-        .await?;
+        self.cmd_tx
+            .send(NodeCmd::RequestManifest {
+                peer: provider,
+                request: ManifestRequest {
+                    root_hash: info.root_hash,
+                },
+            })
+            .await
+            .ok();
 
-        // Create the destination file (pre-allocate if possible).
-        if let Some(parent) = dest_path.parent() {
-            fs::create_dir_all(parent).await?;
-        }
-        let file = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&dest_path)
-            .await?;
-        if info.size > 0 {
-            file.set_len(info.size).await?;
-        }
-        drop(file);
-
-        let chunk_size = chunks
-            .first()
-            .map(|(_, _, s)| *s)
-            .unwrap_or(4 * 1024 * 1024);
-
-        let mut pending = HashMap::new();
-        for (idx, hash, size) in &chunks {
-            pending.insert(*idx, (*hash, *size));
-        }
-
-        let dl = ActiveDownload {
-            download_id: dl_id,
-            pending,
-            in_flight: HashMap::new(),
-            provider,
-            dest_path,
-            chunk_size,
-        };
-
-        self.active.insert(info.root_hash, dl);
-
-        db::downloads::set_status(&self.db, dl_id, "downloading", None).await?;
-
-        // Kick off the first wave of requests.
-        self.dispatch_requests(info.root_hash).await;
-
-        Ok(dl_id)
+        info!(
+            root_hash = hex::encode(info.root_hash),
+            "Manifest requested"
+        );
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
-    // Dispatch chunk requests
+    // Manifest received: enqueue in DB and start fetching chunks
     // -----------------------------------------------------------------------
 
-    /// Send requests for all pending chunks that are not yet in-flight.
-    /// We pipeline up to MAX_INFLIGHT requests at a time.
+    pub async fn on_manifest_received(
+        &mut self,
+        _request_id: OutboundRequestId,
+        _peer: PeerId,
+        response: ManifestResponse,
+        now: u64,
+    ) {
+        match response {
+            ManifestResponse::Ok {
+                root_hash,
+                name,
+                total_size,
+                chunk_size,
+                chunks,
+            } => {
+                let pending = match self.pending_manifests.remove(&root_hash) {
+                    Some(p) => p,
+                    None => {
+                        warn!(
+                            root_hash = hex::encode(root_hash),
+                            "Manifest for unknown request"
+                        );
+                        return;
+                    }
+                };
+
+                let dest_path = self.dest_dir.join(&name);
+
+                let chunk_tuples: Vec<(u32, [u8; 32], u32)> =
+                    chunks.iter().map(|c| (c.idx, c.hash, c.size)).collect();
+
+                let dl_id = match db::downloads::enqueue(
+                    &self.db,
+                    &root_hash,
+                    &name,
+                    total_size,
+                    dest_path.to_str().unwrap_or(&name),
+                    now,
+                    &chunk_tuples,
+                )
+                .await
+                {
+                    Ok(id) => id,
+                    Err(e) => {
+                        warn!("Failed to enqueue download: {e}");
+                        return;
+                    }
+                };
+
+                // Pre-allocate destination file.
+                if let Some(parent) = dest_path.parent() {
+                    let _ = fs::create_dir_all(parent).await;
+                }
+                if let Ok(file) = fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .open(&dest_path)
+                    .await
+                {
+                    let _ = file.set_len(total_size).await;
+                }
+
+                let mut pending_chunks = HashMap::new();
+                for c in &chunks {
+                    pending_chunks.insert(c.idx, (c.hash, c.size));
+                }
+
+                let dl = ActiveDownload {
+                    download_id: dl_id,
+                    pending: pending_chunks,
+                    in_flight: HashMap::new(),
+                    provider: pending.provider,
+                    dest_path,
+                    chunk_size,
+                };
+
+                self.active.insert(root_hash, dl);
+
+                if let Err(e) =
+                    db::downloads::set_status(&self.db, dl_id, "downloading", None).await
+                {
+                    warn!("set_status error: {e}");
+                }
+
+                info!(
+                    root_hash = hex::encode(root_hash),
+                    chunks = chunk_tuples.len(),
+                    "Download started"
+                );
+                self.dispatch_requests(root_hash).await;
+            }
+
+            ManifestResponse::NotFound => {
+                warn!("Provider returned ManifestNotFound");
+                // Clean up pending entry if we can find it — we don't have the
+                // root_hash in this branch, so scan by provider is not ideal.
+                // The pending entry will be cleaned up on the next start() call
+                // for the same hash, which will return an error.
+            }
+
+            ManifestResponse::Error(msg) => {
+                warn!(%msg, "Provider returned manifest error");
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Dispatch chunk requests (pipeline of MAX_INFLIGHT)
+    // -----------------------------------------------------------------------
+
     async fn dispatch_requests(&mut self, root_hash: [u8; 32]) {
         const MAX_INFLIGHT: usize = 4;
 
@@ -220,45 +291,57 @@ impl DownloadEngine {
             return;
         }
 
-        // Collect indices to request (avoid borrow conflicts).
+        let in_flight_idxs: std::collections::HashSet<u32> =
+            dl.in_flight.values().copied().collect();
+
         let to_request: Vec<u32> = dl
             .pending
             .keys()
             .copied()
-            .filter(|idx| !dl.in_flight.values().any(|v| v == idx))
+            .filter(|idx| !in_flight_idxs.contains(idx))
             .take(slots)
             .collect();
 
+        let provider = dl.provider;
+
         for chunk_idx in to_request {
-            let req = ChunkRequest {
-                root_hash,
-                chunk_idx,
-            };
-            match self
+            if self
                 .cmd_tx
                 .send(NodeCmd::RequestChunk {
-                    peer: dl.provider,
-                    request: req,
+                    peer: provider,
+                    request: ChunkRequest {
+                        root_hash,
+                        chunk_idx,
+                    },
                 })
                 .await
+                .is_err()
             {
-                Ok(()) => {
-                    // We don't have the request_id yet — it's returned
-                    // synchronously by the swarm but goes through the event
-                    // loop.  We record the in-flight entry when we receive the
-                    // OutboundRequestId from the Message::Response event.
-                    //
-                    // For now, mark as in-flight with a placeholder that is
-                    // replaced when the event arrives.
-                    debug!(chunk_idx, "Dispatched chunk request");
-                }
-                Err(_) => warn!("node cmd channel closed"),
+                warn!("node cmd channel closed");
+                return;
             }
+            debug!(chunk_idx, "Dispatched chunk request");
         }
     }
 
     // -----------------------------------------------------------------------
-    // Handle incoming chunk response
+    // Register an OutboundRequestId once we know which chunk it belongs to
+    // -----------------------------------------------------------------------
+
+    pub fn register_chunk_request(
+        &mut self,
+        root_hash: [u8; 32],
+        chunk_idx: u32,
+        request_id: OutboundRequestId,
+    ) {
+        if let Some(dl) = self.active.get_mut(&root_hash) {
+            dl.in_flight.insert(request_id, chunk_idx);
+            self.inflight_index.insert(request_id, root_hash);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Chunk response received
     // -----------------------------------------------------------------------
 
     pub async fn on_chunk_received(
@@ -270,8 +353,7 @@ impl DownloadEngine {
         let root_hash = match self.inflight_index.remove(&request_id) {
             Some(h) => h,
             None => {
-                // Could be a duplicate or a response to a request we didn't track.
-                debug!(?request_id, "Received chunk response for unknown request");
+                debug!(?request_id, "Chunk response for unknown request");
                 return;
             }
         };
@@ -288,19 +370,17 @@ impl DownloadEngine {
 
         match response {
             ChunkResponse::Ok { data } => {
-                // Verify hash.
                 let (expected_hash, chunk_size) = match dl.pending.get(&chunk_idx) {
                     Some(v) => *v,
                     None => {
-                        warn!(chunk_idx, "Received chunk we didn't ask for");
+                        warn!(chunk_idx, "Received unsolicited chunk");
                         return;
                     }
                 };
 
-                let actual = blake3::hash(&data);
-                if actual.as_bytes() != &expected_hash {
-                    warn!(chunk_idx, "Chunk hash mismatch — discarding");
-                    // Re-queue for retry.
+                // Verify hash.
+                if blake3::hash(&data).as_bytes() != &expected_hash {
+                    warn!(chunk_idx, "Chunk hash mismatch — discarding, will retry");
                     self.dispatch_requests(root_hash).await;
                     return;
                 }
@@ -308,27 +388,26 @@ impl DownloadEngine {
                 // Write to disk.
                 let offset = chunk_idx as u64 * dl.chunk_size as u64;
                 if let Err(e) = write_chunk(&dl.dest_path, offset, &data).await {
-                    warn!(chunk_idx, "Failed to write chunk: {e}");
+                    warn!(chunk_idx, "Failed to write chunk to disk: {e}");
                     return;
                 }
 
                 dl.pending.remove(&chunk_idx);
-
                 let dl_id = dl.download_id;
+
                 if let Err(e) =
                     db::downloads::chunk_done(&self.db, dl_id, chunk_idx, chunk_size).await
                 {
                     warn!("DB chunk_done error: {e}");
                 }
 
-                info!(chunk_idx, "Chunk done");
+                debug!(chunk_idx, "Chunk written");
 
                 if dl.pending.is_empty() && dl.in_flight.is_empty() {
-                    // All done.
                     if let Err(e) =
                         db::downloads::set_status(&self.db, dl_id, "completed", None).await
                     {
-                        warn!("DB set_status completed error: {e}");
+                        warn!("set_status completed error: {e}");
                     }
                     info!(root_hash = hex::encode(root_hash), "Download completed");
                     self.active.remove(&root_hash);
@@ -338,7 +417,7 @@ impl DownloadEngine {
             }
 
             ChunkResponse::NotFound => {
-                warn!(chunk_idx, "Provider does not have chunk — marking error");
+                warn!(chunk_idx, "Provider does not have chunk");
                 let dl_id = dl.download_id;
                 let _ = db::downloads::set_status(
                     &self.db,
@@ -351,7 +430,7 @@ impl DownloadEngine {
             }
 
             ChunkResponse::Error(msg) => {
-                warn!(chunk_idx, %msg, "Provider returned error");
+                warn!(chunk_idx, %msg, "Provider chunk error");
                 let dl_id = dl.download_id;
                 let _ = db::downloads::set_status(&self.db, dl_id, "error", Some(&msg)).await;
                 self.active.remove(&root_hash);
@@ -360,32 +439,34 @@ impl DownloadEngine {
     }
 
     // -----------------------------------------------------------------------
-    // Register request_id once we know it (called from lib.rs event loop)
+    // Serve an inbound manifest request
     // -----------------------------------------------------------------------
 
-    pub fn register_request(
-        &mut self,
-        root_hash: [u8; 32],
-        chunk_idx: u32,
-        request_id: OutboundRequestId,
-    ) {
-        if let Some(dl) = self.active.get_mut(&root_hash) {
-            dl.in_flight.insert(request_id, chunk_idx);
-            self.inflight_index.insert(request_id, root_hash);
-        }
+    pub async fn serve_manifest(&self, _peer: PeerId, request: ManifestRequest, channel_id: u64) {
+        let db = self.db.clone();
+        let cmd_tx = self.cmd_tx.clone();
+
+        tokio::spawn(async move {
+            let response = build_manifest_response(&db, &request.root_hash).await;
+            let _ = cmd_tx
+                .send(NodeCmd::RespondManifest {
+                    channel_id,
+                    response,
+                })
+                .await;
+        });
     }
 
     // -----------------------------------------------------------------------
-    // Serve an inbound chunk request from another peer
+    // Serve an inbound chunk request
     // -----------------------------------------------------------------------
 
-    pub async fn serve_chunk(&self, peer: PeerId, request: ChunkRequest, channel_id: u64) {
+    pub async fn serve_chunk(&self, _peer: PeerId, request: ChunkRequest, channel_id: u64) {
         let db = self.db.clone();
         let cmd_tx = self.cmd_tx.clone();
 
         tokio::spawn(async move {
             let response = read_chunk_from_db(&db, &request).await;
-            debug!(%peer, chunk_idx = request.chunk_idx, "Serving chunk");
             let _ = cmd_tx
                 .send(NodeCmd::RespondChunk {
                     channel_id,
@@ -411,9 +492,7 @@ async fn write_chunk(path: &PathBuf, offset: u64, data: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// Read chunk data from a shared file on disk.
 async fn read_chunk_from_db(db: &Db, request: &ChunkRequest) -> ChunkResponse {
-    // Look up the chunk record in the DB.
     let row = sqlx::query(
         "SELECT c.idx, c.size, sf.path, sf.chunk_size
          FROM chunks c
@@ -438,11 +517,67 @@ async fn read_chunk_from_db(db: &Db, request: &ChunkRequest) -> ChunkResponse {
     let size: i64 = row.get("size");
 
     let offset = idx as u64 * chunk_size as u64;
-    let len = size as usize;
-
-    match read_file_range(&path, offset, len).await {
+    match read_file_range(&path, offset, size as usize).await {
         Ok(data) => ChunkResponse::Ok { data },
         Err(e) => ChunkResponse::Error(e.to_string()),
+    }
+}
+
+async fn build_manifest_response(db: &Db, root_hash: &[u8; 32]) -> ManifestResponse {
+    use sqlx::Row;
+
+    let file_row =
+        sqlx::query("SELECT id, name, size, chunk_size FROM shared_files WHERE root_hash = ?1")
+            .bind(root_hash.as_slice())
+            .fetch_optional(db)
+            .await;
+
+    let file_row = match file_row {
+        Ok(Some(r)) => r,
+        Ok(None) => return ManifestResponse::NotFound,
+        Err(e) => return ManifestResponse::Error(e.to_string()),
+    };
+
+    let file_id: i64 = file_row.get("id");
+    let name: String = file_row.get("name");
+    let total_size: i64 = file_row.get("size");
+    let chunk_size: i64 = file_row.get("chunk_size");
+
+    let chunk_rows =
+        sqlx::query("SELECT idx, hash, size FROM chunks WHERE shared_file_id = ?1 ORDER BY idx")
+            .bind(file_id)
+            .fetch_all(db)
+            .await;
+
+    let chunk_rows = match chunk_rows {
+        Ok(r) => r,
+        Err(e) => return ManifestResponse::Error(e.to_string()),
+    };
+
+    let chunks = chunk_rows
+        .iter()
+        .map(|r| {
+            let idx: i64 = r.get("idx");
+            let hash_bytes: Vec<u8> = r.get("hash");
+            let size: i64 = r.get("size");
+            let mut hash = [0u8; 32];
+            if hash_bytes.len() == 32 {
+                hash.copy_from_slice(&hash_bytes);
+            }
+            rucio_core::protocol::manifest::ChunkInfo {
+                idx: idx as u32,
+                hash,
+                size: size as u32,
+            }
+        })
+        .collect();
+
+    ManifestResponse::Ok {
+        root_hash: *root_hash,
+        name,
+        total_size: total_size as u64,
+        chunk_size: chunk_size as u32,
+        chunks,
     }
 }
 

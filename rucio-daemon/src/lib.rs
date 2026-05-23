@@ -111,8 +111,8 @@ pub async fn run() -> Result<()> {
                 if let Some(req) = dl_req {
                     match req.provider.parse::<libp2p::PeerId>() {
                         Ok(peer) => {
-                            match engine.start(&req.magnet, peer, req.chunks, now_secs()).await {
-                                Ok(id) => info!(download_id = id, "Download started"),
+                            match engine.start(&req.magnet, peer, now_secs()).await {
+                                Ok(()) => info!("Download started"),
                                 Err(e) => warn!("Failed to start download: {e}"),
                             }
                         }
@@ -164,6 +164,12 @@ pub async fn run() -> Result<()> {
                     }
                     Some(node::messages::NodeEvent::ChunkRequested { peer, request, channel_id }) => {
                         engine.serve_chunk(peer, request, channel_id).await;
+                    }
+                    Some(node::messages::NodeEvent::ManifestReceived { request_id, peer, response }) => {
+                        engine.on_manifest_received(request_id, peer, response, now_secs()).await;
+                    }
+                    Some(node::messages::NodeEvent::ManifestRequested { peer, request, channel_id }) => {
+                        engine.serve_manifest(peer, request, channel_id).await;
                     }
                     Some(node::messages::NodeEvent::FatalError(e)) => {
                         tracing::error!("Node fatal error: {e}");

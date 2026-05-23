@@ -10,6 +10,7 @@ use libp2p::{
     swarm::SwarmEvent,
 };
 use rucio_core::protocol::{
+    manifest::{ManifestRequest, ManifestResponse},
     search::{SearchQuery, SearchResult},
     transfer::{ChunkRequest, ChunkResponse},
 };
@@ -103,7 +104,9 @@ struct LoopState {
     provider_queries: HashMap<QueryId, Vec<u8>>,
     classifier: ClassificationState,
     /// Pending inbound chunk request channels keyed by a monotonic id.
-    pending_channels: HashMap<u64, ResponseChannel<ChunkResponse>>,
+    pending_chunk_channels: HashMap<u64, ResponseChannel<ChunkResponse>>,
+    /// Pending inbound manifest request channels keyed by a monotonic id.
+    pending_manifest_channels: HashMap<u64, ResponseChannel<ManifestResponse>>,
     next_channel_id: u64,
 }
 
@@ -114,15 +117,23 @@ impl LoopState {
             ready_sent: false,
             provider_queries: HashMap::new(),
             classifier: ClassificationState::default(),
-            pending_channels: HashMap::new(),
+            pending_chunk_channels: HashMap::new(),
+            pending_manifest_channels: HashMap::new(),
             next_channel_id: 0,
         }
     }
 
-    fn store_channel(&mut self, ch: ResponseChannel<ChunkResponse>) -> u64 {
+    fn store_chunk_channel(&mut self, ch: ResponseChannel<ChunkResponse>) -> u64 {
         let id = self.next_channel_id;
         self.next_channel_id += 1;
-        self.pending_channels.insert(id, ch);
+        self.pending_chunk_channels.insert(id, ch);
+        id
+    }
+
+    fn store_manifest_channel(&mut self, ch: ResponseChannel<ManifestResponse>) -> u64 {
+        let id = self.next_channel_id;
+        self.next_channel_id += 1;
+        self.pending_manifest_channels.insert(id, ch);
         id
     }
 }
@@ -180,12 +191,24 @@ async fn run_loop(
                         swarm.behaviour_mut().transfer.send_request(&peer, request);
                     }
                     Some(NodeCmd::RespondChunk { channel_id, response }) => {
-                        if let Some(ch) = state.pending_channels.remove(&channel_id) {
+                        if let Some(ch) = state.pending_chunk_channels.remove(&channel_id) {
                             if let Err(e) = swarm.behaviour_mut().transfer.send_response(ch, response) {
                                 warn!("Failed to send chunk response: {e:?}");
                             }
                         } else {
                             warn!(%channel_id, "RespondChunk: unknown channel id");
+                        }
+                    }
+                    Some(NodeCmd::RequestManifest { peer, request }) => {
+                        swarm.behaviour_mut().manifest.send_request(&peer, request);
+                    }
+                    Some(NodeCmd::RespondManifest { channel_id, response }) => {
+                        if let Some(ch) = state.pending_manifest_channels.remove(&channel_id) {
+                            if let Err(e) = swarm.behaviour_mut().manifest.send_response(ch, response) {
+                                warn!("Failed to send manifest response: {e:?}");
+                            }
+                        } else {
+                            warn!(%channel_id, "RespondManifest: unknown channel id");
                         }
                     }
                 }
@@ -371,6 +394,10 @@ async fn on_swarm_event(
             RucioBehaviourEvent::Transfer(tr_event) => {
                 on_transfer_event(tr_event, event_tx, state).await;
             }
+
+            RucioBehaviourEvent::Manifest(mn_event) => {
+                on_manifest_event(mn_event, event_tx, state).await;
+            }
         },
 
         _ => {}
@@ -454,7 +481,7 @@ async fn on_transfer_event(
             ..
         } => {
             debug!(%peer, chunk_idx = request.chunk_idx, "Received chunk request");
-            let channel_id = state.store_channel(channel);
+            let channel_id = state.store_chunk_channel(channel);
             let _ = event_tx
                 .send(NodeEvent::ChunkRequested {
                     peer,
@@ -469,6 +496,64 @@ async fn on_transfer_event(
         }
         request_response::Event::InboundFailure { peer, error, .. } => {
             warn!(%peer, %error, "Inbound chunk request failed");
+        }
+        request_response::Event::ResponseSent { .. } => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Manifest (request-response) handler
+// ---------------------------------------------------------------------------
+
+async fn on_manifest_event(
+    event: request_response::Event<ManifestRequest, ManifestResponse>,
+    event_tx: &mpsc::Sender<NodeEvent>,
+    state: &mut LoopState,
+) {
+    match event {
+        request_response::Event::Message {
+            peer,
+            message:
+                request_response::Message::Response {
+                    request_id,
+                    response,
+                },
+            ..
+        } => {
+            debug!(%peer, "Received manifest response");
+            let _ = event_tx
+                .send(NodeEvent::ManifestReceived {
+                    request_id,
+                    peer,
+                    response,
+                })
+                .await;
+        }
+
+        request_response::Event::Message {
+            peer,
+            message:
+                request_response::Message::Request {
+                    request, channel, ..
+                },
+            ..
+        } => {
+            debug!(%peer, root_hash = hex::encode(request.root_hash), "Received manifest request");
+            let channel_id = state.store_manifest_channel(channel);
+            let _ = event_tx
+                .send(NodeEvent::ManifestRequested {
+                    peer,
+                    request,
+                    channel_id,
+                })
+                .await;
+        }
+
+        request_response::Event::OutboundFailure { peer, error, .. } => {
+            warn!(%peer, %error, "Outbound manifest request failed");
+        }
+        request_response::Event::InboundFailure { peer, error, .. } => {
+            warn!(%peer, %error, "Inbound manifest request failed");
         }
         request_response::Event::ResponseSent { .. } => {}
     }

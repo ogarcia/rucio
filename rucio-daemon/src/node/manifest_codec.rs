@@ -1,34 +1,34 @@
-//! Codec for the `/rucio/transfer/1.0.0` request-response protocol.
+//! Codec for the `/rucio/manifest/1.0.0` request-response protocol.
 
 use async_trait::async_trait;
 use libp2p::futures::{AsyncRead, AsyncWrite};
 use libp2p::request_response;
-use rucio_core::protocol::transfer::{ChunkRequest, ChunkResponse};
+use rucio_core::protocol::manifest::{ManifestRequest, ManifestResponse};
 use std::io;
 
 use super::codec_utils::{read_framed, write_framed};
 
 #[derive(Debug, Clone)]
-pub struct TransferProtocol;
+pub struct ManifestProtocol;
 
-impl AsRef<str> for TransferProtocol {
+impl AsRef<str> for ManifestProtocol {
     fn as_ref(&self) -> &str {
-        "/rucio/transfer/1.0.0"
+        "/rucio/manifest/1.0.0"
     }
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct TransferCodec;
+pub struct ManifestCodec;
 
 #[async_trait]
-impl request_response::Codec for TransferCodec {
-    type Protocol = TransferProtocol;
-    type Request = ChunkRequest;
-    type Response = ChunkResponse;
+impl request_response::Codec for ManifestCodec {
+    type Protocol = ManifestProtocol;
+    type Request = ManifestRequest;
+    type Response = ManifestResponse;
 
     async fn read_request<T>(
         &mut self,
-        _: &TransferProtocol,
+        _: &ManifestProtocol,
         io: &mut T,
     ) -> io::Result<Self::Request>
     where
@@ -39,7 +39,7 @@ impl request_response::Codec for TransferCodec {
 
     async fn read_response<T>(
         &mut self,
-        _: &TransferProtocol,
+        _: &ManifestProtocol,
         io: &mut T,
     ) -> io::Result<Self::Response>
     where
@@ -50,7 +50,7 @@ impl request_response::Codec for TransferCodec {
 
     async fn write_request<T>(
         &mut self,
-        _: &TransferProtocol,
+        _: &ManifestProtocol,
         io: &mut T,
         req: Self::Request,
     ) -> io::Result<()>
@@ -62,7 +62,7 @@ impl request_response::Codec for TransferCodec {
 
     async fn write_response<T>(
         &mut self,
-        _: &TransferProtocol,
+        _: &ManifestProtocol,
         io: &mut T,
         resp: Self::Response,
     ) -> io::Result<()>
