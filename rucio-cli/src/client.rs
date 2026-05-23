@@ -172,14 +172,14 @@ impl ApiClient {
         self.get("/api/v1/downloads").await
     }
 
-    pub async fn start_download(&self, magnet: &str, provider: Option<&str>) -> Result<()> {
+    pub async fn start_download(&self, magnet: &str, providers: Vec<String>) -> Result<()> {
         let url = format!("{}/api/v1/downloads", self.base);
         let resp = self
             .inner
             .post(&url)
             .json(&StartDownloadRequest {
                 magnet: magnet.to_string(),
-                provider: provider.map(|s| s.to_string()),
+                providers,
             })
             .send()
             .await

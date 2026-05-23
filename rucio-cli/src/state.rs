@@ -14,7 +14,8 @@ pub struct CachedResult {
     pub name: String,
     pub size: u64,
     pub magnet: String,
-    pub provider: String,
+    /// All known providers for this file (same hash, different peers).
+    pub providers: Vec<String>,
 }
 
 /// The full last-search state written to disk.

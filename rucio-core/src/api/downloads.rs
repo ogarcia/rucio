@@ -2,8 +2,9 @@
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct StartDownloadRequest {
     pub magnet: String,
-    /// PeerId of the provider (from a search result).
-    pub provider: Option<String>,
+    /// PeerIds of known providers (from search results).
+    /// Passing multiple providers enables multi-source parallel download.
+    pub providers: Vec<String>,
 }
 
 /// State of a download.

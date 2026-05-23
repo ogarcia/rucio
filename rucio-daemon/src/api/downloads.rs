@@ -43,17 +43,18 @@ pub async fn list_downloads(State(state): State<AppState>) -> Json<DownloadsResp
 
 /// POST /api/v1/downloads
 ///
-/// Body: `{ "magnet": "rucio:<hash>?name=<name>&size=<size>", "provider": "<peer_id>" }`
+/// Body: `{ "magnet": "rucio:<hash>?name=<name>&size=<size>", "providers": ["<peer_id>", ...] }`
 ///
-/// The `provider` field is the PeerId string of the peer that holds the file,
-/// typically obtained from a search result.
+/// The `providers` list contains the PeerIds of peers that hold the file,
+/// typically obtained from search results.  Passing multiple providers enables
+/// multi-source parallel download.
 #[utoipa::path(
     post,
     path = "/api/v1/downloads",
     request_body = StartDownloadRequest,
     responses(
         (status = 202, description = "Download queued"),
-        (status = 400, description = "Invalid magnet link or missing provider")
+        (status = 400, description = "Invalid magnet link or no providers supplied")
     )
 )]
 pub async fn start_download(
@@ -65,17 +66,14 @@ pub async fn start_download(
         return StatusCode::BAD_REQUEST;
     }
 
-    let provider = match &req.provider {
-        Some(p) if !p.is_empty() => p.clone(),
-        _ => {
-            tracing::warn!("Download requested without provider");
-            return StatusCode::BAD_REQUEST;
-        }
-    };
+    if req.providers.is_empty() {
+        tracing::warn!("Download requested without any providers");
+        return StatusCode::BAD_REQUEST;
+    }
 
     let dl_req = DownloadRequest::Start {
         magnet: req.magnet.clone(),
-        providers: vec![provider],
+        providers: req.providers,
     };
 
     match state.download_tx.send(dl_req).await {

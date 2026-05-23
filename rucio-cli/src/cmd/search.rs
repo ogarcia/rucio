@@ -3,8 +3,12 @@
 //! Starts an async search, then polls every second until the daemon reports
 //! `pending = false` or a timeout is reached.
 //!
-//! Results are saved to `~/.local/share/rucio/last_search.json` so that
-//! `rucio get <N>` can reference them without re-typing magnet links.
+//! Results are deduplicated by root_hash so that the same file offered by
+//! multiple peers is shown as a single row with a "Sources" count.  All
+//! provider PeerIds are saved in `~/.local/share/rucio/last_search.json`
+//! so that `rucio get <N>` can start a multi-source download automatically.
+
+use std::collections::HashMap;
 
 use anyhow::Result;
 use tabled::{Table, Tabled};
@@ -33,23 +37,31 @@ pub async fn search(client: &ApiClient, keywords: Vec<String>) -> Result<()> {
         let resp = client.poll_search(&query_id).await?;
 
         if !resp.results.is_empty() || !resp.pending {
-            let cached: Vec<CachedResult> = resp
-                .results
-                .iter()
-                .map(|r| CachedResult {
-                    name: r.name.clone(),
-                    size: r.size,
-                    magnet: r.magnet.clone(),
-                    provider: r.provider.clone(),
-                })
-                .collect();
+            // Deduplicate by root_hash: group all providers for the same file.
+            let mut grouped: Vec<CachedResult> = Vec::new();
+            let mut hash_to_idx: HashMap<String, usize> = HashMap::new();
 
-            let state = LastSearch { results: cached };
+            for r in &resp.results {
+                if let Some(&idx) = hash_to_idx.get(&r.root_hash) {
+                    grouped[idx].providers.push(r.provider.clone());
+                } else {
+                    let idx = grouped.len();
+                    hash_to_idx.insert(r.root_hash.clone(), idx);
+                    grouped.push(CachedResult {
+                        name: r.name.clone(),
+                        size: r.size,
+                        magnet: r.magnet.clone(),
+                        providers: vec![r.provider.clone()],
+                    });
+                }
+            }
+
+            let state = LastSearch { results: grouped };
             if let Err(e) = state.save() {
                 eprintln!("Warning: could not save search state: {e}");
             }
 
-            print_results(&resp.results);
+            print_results(&state.results);
             if resp.pending {
                 println!("(search still in progress — showing results so far)");
             }
@@ -65,7 +77,7 @@ pub async fn search(client: &ApiClient, keywords: Vec<String>) -> Result<()> {
     Ok(())
 }
 
-fn print_results(results: &[rucio_core::api::search::SearchResultResponse]) {
+fn print_results(results: &[CachedResult]) {
     if results.is_empty() {
         println!("No results found.");
         return;
@@ -79,8 +91,8 @@ fn print_results(results: &[rucio_core::api::search::SearchResultResponse]) {
         name: String,
         #[tabled(rename = "Size")]
         size: String,
-        #[tabled(rename = "Provider")]
-        provider: String,
+        #[tabled(rename = "Sources")]
+        sources: usize,
     }
 
     let rows: Vec<Row> = results
@@ -90,7 +102,7 @@ fn print_results(results: &[rucio_core::api::search::SearchResultResponse]) {
             idx: i + 1,
             name: r.name.clone(),
             size: human_size(r.size),
-            provider: truncate(&r.provider, 24),
+            sources: r.providers.len(),
         })
         .collect();
 
@@ -113,13 +125,5 @@ fn human_size(bytes: u64) -> String {
         format!("{val:.1} {unit}")
     } else {
         format!("{val:.0} {unit}")
-    }
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}…", &s[..max])
     }
 }

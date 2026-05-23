@@ -58,24 +58,22 @@ pub async fn list(client: &ApiClient) -> Result<()> {
 ///   - a 1-based integer index into the last search results, or
 ///   - a full `rucio:<hash>...` magnet link (requires `--provider`)
 pub async fn start(client: &ApiClient, target: &str, provider: Option<&str>) -> Result<()> {
-    let (magnet, resolved_provider) = if let Ok(idx) = target.trim().parse::<usize>() {
+    let (magnet, providers) = if let Ok(idx) = target.trim().parse::<usize>() {
         // Numeric index — look up in last search state.
         let state = LastSearch::load();
         let entry = state.get(idx).ok_or_else(|| {
             anyhow::anyhow!("No result #{idx} in last search. Run `rucio search` first.")
         })?;
-        (entry.magnet.clone(), entry.provider.clone())
+        (entry.magnet.clone(), entry.providers.clone())
     } else {
         // Treat as a raw magnet link.
         let p = provider.ok_or_else(|| {
             anyhow::anyhow!("--provider <PeerId> is required when passing a magnet link directly")
         })?;
-        (target.to_string(), p.to_string())
+        (target.to_string(), vec![p.to_string()])
     };
 
-    client
-        .start_download(&magnet, Some(&resolved_provider))
-        .await?;
+    client.start_download(&magnet, providers).await?;
     println!("Download queued.");
     Ok(())
 }

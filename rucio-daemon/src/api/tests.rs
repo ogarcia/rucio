@@ -396,7 +396,7 @@ async fn post_download_invalid_magnet_returns_400() {
                 .uri("/api/v1/downloads")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    r#"{"magnet":"not-a-valid-magnet","provider":"12D3KooWTest"}"#,
+                    r#"{"magnet":"not-a-valid-magnet","providers":["12D3KooWTest"]}"#,
                 ))
                 .unwrap(),
         )
@@ -411,9 +411,9 @@ async fn post_download_missing_provider_returns_400() {
     let (state, _rx, _dl_rx, _dir) = test_state().await;
     let app = router(state);
 
-    // Valid magnet but no provider
+    // Valid magnet but empty providers list
     let hash = "a".repeat(64);
-    let body = format!(r#"{{"magnet":"rucio:{hash}?name=test.bin&size=1024"}}"#);
+    let body = format!(r#"{{"magnet":"rucio:{hash}?name=test.bin&size=1024","providers":[]}}"#);
 
     let resp = app
         .oneshot(
@@ -437,7 +437,7 @@ async fn post_download_valid_returns_202() {
 
     let hash = "b".repeat(64);
     let body = format!(
-        r#"{{"magnet":"rucio:{hash}?name=test.bin&size=1024","provider":"12D3KooWAbcDef"}}"#
+        r#"{{"magnet":"rucio:{hash}?name=test.bin&size=1024","providers":["12D3KooWAbcDef"]}}"#
     );
 
     let resp = app
