@@ -6,9 +6,9 @@
 use anyhow::{Context, Result};
 use libp2p::futures::StreamExt;
 use libp2p::{
+    Multiaddr, SwarmBuilder,
     kad::{self, QueryId},
     swarm::SwarmEvent,
-    Multiaddr, SwarmBuilder,
 };
 use std::collections::HashSet;
 use tokio::sync::mpsc;
@@ -246,18 +246,18 @@ async fn handle_swarm_event(
                 match kad_event {
                     Event::OutboundQueryProgressed { id, result, .. } => {
                         use kad::QueryResult;
-                        if let QueryResult::GetProviders(Ok(
-                            kad::GetProvidersOk::FoundProviders { providers, .. },
-                        )) = result
+                        if let QueryResult::GetProviders(Ok(kad::GetProvidersOk::FoundProviders {
+                            providers,
+                            ..
+                        })) = result
+                            && let Some(key) = provider_queries.get(&id)
                         {
-                            if let Some(key) = provider_queries.get(&id) {
-                                let _ = event_tx
-                                    .send(NodeEvent::ProvidersFound {
-                                        key: key.clone(),
-                                        providers: providers.into_iter().collect(),
-                                    })
-                                    .await;
-                            }
+                            let _ = event_tx
+                                .send(NodeEvent::ProvidersFound {
+                                    key: key.clone(),
+                                    providers: providers.into_iter().collect(),
+                                })
+                                .await;
                         }
                     }
                     Event::RoutingUpdated { peer, .. } => {

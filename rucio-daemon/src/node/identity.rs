@@ -5,7 +5,7 @@
 //! created automatically; on subsequent runs the same PeerId is restored.
 
 use anyhow::{Context, Result};
-use libp2p::identity::{ed25519, Keypair};
+use libp2p::identity::{Keypair, ed25519};
 use std::path::Path;
 use tracing::{info, warn};
 
