@@ -1,27 +1,17 @@
 //! Internal message bus between the libp2p node task and the rest of the
-//! daemon (API server, DB layer, etc.).
-//!
-//! The node task owns the swarm and exposes two channels:
-//!
-//! ```text
-//!   caller  ──[NodeCmd]──►  node task
-//!   caller  ◄─[NodeEvent]── node task
-//! ```
-//!
-//! All interaction with the network goes through these types — no other
-//! module imports libp2p types directly.
+//! daemon (API server, DB layer, transfer engine, etc.).
 
-use libp2p::{Multiaddr, PeerId};
+use libp2p::{Multiaddr, PeerId, request_response::OutboundRequestId};
 use rucio_core::protocol::{
     node::NodeClass,
     search::{SearchQuery, SearchResult},
+    transfer::{ChunkRequest, ChunkResponse},
 };
 
 // ---------------------------------------------------------------------------
 // Commands (caller → node)
 // ---------------------------------------------------------------------------
 
-/// Commands that external code can send to the running node.
 #[derive(Debug)]
 pub enum NodeCmd {
     /// Add a bootstrap peer address and dial it.
@@ -34,8 +24,15 @@ pub enum NodeCmd {
     FindProviders(Vec<u8>),
     /// Publish a search query on the gossip network.
     Search(SearchQuery),
-    /// Publish a search result on the gossip network (response to a query).
+    /// Publish a search result on the gossip network.
     PublishSearchResult(SearchResult),
+    /// Request a single chunk from a remote peer.
+    RequestChunk { peer: PeerId, request: ChunkRequest },
+    /// Send a chunk response back to a peer that requested it.
+    RespondChunk {
+        channel_id: u64,
+        response: ChunkResponse,
+    },
     /// Gracefully stop the node task.
     Shutdown,
 }
@@ -44,7 +41,6 @@ pub enum NodeCmd {
 // Events (node → caller)
 // ---------------------------------------------------------------------------
 
-/// Events emitted by the running node.
 #[derive(Debug)]
 pub enum NodeEvent {
     /// The node is ready: identity and listen addresses are confirmed.
@@ -73,9 +69,21 @@ pub enum NodeEvent {
     },
     /// A search result arrived from the gossip network.
     SearchResult(SearchResult),
-    /// A search query arrived from the gossip network — daemon should check
-    /// its local shares and call `PublishSearchResult` for each match.
+    /// A search query arrived — daemon should check local shares and reply.
     SearchQueryReceived(SearchQuery),
+    /// A chunk response arrived for a request we sent.
+    ChunkReceived {
+        request_id: OutboundRequestId,
+        peer: PeerId,
+        response: ChunkResponse,
+    },
+    /// A remote peer sent us a chunk request — we must respond.
+    ChunkRequested {
+        peer: PeerId,
+        request: ChunkRequest,
+        /// Opaque channel handle; pass back to NodeCmd::RespondChunk.
+        channel_id: u64,
+    },
     /// A fatal error in the node task.
     FatalError(String),
 }

@@ -39,6 +39,7 @@ libp2p      = { version = "0.56", features = [
     "relay",
     "identify",
     "macros",
+    "request-response",
 ] }
 
 # http
@@ -67,6 +68,9 @@ uuid        = { version = "1", features = ["v4"] }
 dirs        = "6"
 tabled      = "0.20"
 urlencoding = "2.1"
+
+postcard    = { version = "1", features = ["alloc"] }
+async-trait = "0.1"
 
 # logging
 tracing             = "0.1"

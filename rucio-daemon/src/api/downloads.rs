@@ -9,7 +9,8 @@ use rucio_core::api::downloads::{
     DownloadResponse, DownloadState, DownloadsResponse, StartDownloadRequest,
 };
 
-use crate::api::AppState;
+use crate::api::{AppState, DownloadRequest};
+use crate::transfer::parse_magnet;
 
 /// GET /api/v1/downloads
 #[utoipa::path(
@@ -41,22 +42,53 @@ pub async fn list_downloads(State(state): State<AppState>) -> Json<DownloadsResp
 }
 
 /// POST /api/v1/downloads
+///
+/// Body: `{ "magnet": "rucio:<hash>?name=<name>&size=<size>", "provider": "<peer_id>" }`
+///
+/// The `provider` field is the PeerId string of the peer that holds the file,
+/// typically obtained from a search result.
 #[utoipa::path(
     post,
     path = "/api/v1/downloads",
     request_body = StartDownloadRequest,
     responses(
         (status = 202, description = "Download queued"),
-        (status = 400, description = "Invalid magnet link")
+        (status = 400, description = "Invalid magnet link or missing provider")
     )
 )]
 pub async fn start_download(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Json(req): Json<StartDownloadRequest>,
 ) -> StatusCode {
-    // TODO: parse magnet, resolve providers via DHT, enqueue in DB
-    tracing::info!(magnet = %req.magnet, "Download requested (not yet implemented)");
-    StatusCode::ACCEPTED
+    // Validate magnet early so we return 400 synchronously.
+    if parse_magnet(&req.magnet).is_err() {
+        return StatusCode::BAD_REQUEST;
+    }
+
+    let provider = match &req.provider {
+        Some(p) if !p.is_empty() => p.clone(),
+        _ => {
+            tracing::warn!("Download requested without provider");
+            return StatusCode::BAD_REQUEST;
+        }
+    };
+
+    let dl_req = DownloadRequest {
+        magnet: req.magnet.clone(),
+        provider,
+        chunks: vec![], // engine will derive from manifest (TODO)
+    };
+
+    match state.download_tx.send(dl_req).await {
+        Ok(()) => {
+            tracing::info!(magnet = %req.magnet, "Download queued");
+            StatusCode::ACCEPTED
+        }
+        Err(_) => {
+            tracing::error!("Download channel closed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    }
 }
 
 /// DELETE /api/v1/downloads/:id

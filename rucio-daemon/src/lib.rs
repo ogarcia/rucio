@@ -2,12 +2,12 @@ pub mod api;
 pub mod config;
 pub mod db;
 pub mod node;
+pub mod transfer;
 
+use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
-
-use anyhow::Result;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
@@ -33,7 +33,6 @@ pub async fn run() -> Result<()> {
     // --- Node ---------------------------------------------------------------
     let mut handle = node::task::spawn(&config.node).await?;
 
-    // Dial bootstrap peers from config
     for addr_str in &config.network.bootstrap_peers {
         match addr_str.parse() {
             Ok(addr) => {
@@ -46,7 +45,7 @@ pub async fn run() -> Result<()> {
         }
     }
 
-    // Shared live node status (updated as events arrive)
+    // Shared live node status
     let node_status = Arc::new(RwLock::new(api::NodeStatus::default()));
 
     // In-memory search store
@@ -76,6 +75,12 @@ pub async fn run() -> Result<()> {
         }
     }
 
+    // --- Download engine ----------------------------------------------------
+    let dest_dir = config.storage.download_dir.clone();
+    let mut engine = transfer::DownloadEngine::new(db.clone(), handle.cmd_tx.clone(), dest_dir);
+
+    let (download_tx, mut download_rx) = tokio::sync::mpsc::channel::<api::DownloadRequest>(32);
+
     // --- API server ---------------------------------------------------------
     let app_state = api::AppState {
         db: db.clone(),
@@ -84,6 +89,7 @@ pub async fn run() -> Result<()> {
         started_at: Instant::now(),
         node_status: Arc::clone(&node_status),
         search_store: Arc::clone(&search_store),
+        download_tx,
     };
 
     let listen_addr = config.api.listen.clone();
@@ -100,6 +106,19 @@ pub async fn run() -> Result<()> {
                 info!("Received Ctrl-C, shutting down");
                 let _ = handle.cmd_tx.send(node::messages::NodeCmd::Shutdown).await;
                 break;
+            }
+            dl_req = download_rx.recv() => {
+                if let Some(req) = dl_req {
+                    match req.provider.parse::<libp2p::PeerId>() {
+                        Ok(peer) => {
+                            match engine.start(&req.magnet, peer, req.chunks, now_secs()).await {
+                                Ok(id) => info!(download_id = id, "Download started"),
+                                Err(e) => warn!("Failed to start download: {e}"),
+                            }
+                        }
+                        Err(e) => warn!("Invalid provider PeerId: {e}"),
+                    }
+                }
             }
             event = handle.event_rx.recv() => {
                 match event {
@@ -130,7 +149,6 @@ pub async fn run() -> Result<()> {
                         node_status.write().await.node_class = class;
                     }
                     Some(node::messages::NodeEvent::SearchQueryReceived(query)) => {
-                        // Check our shares and respond for each match.
                         let peer_id = node_status.read().await.peer_id.clone();
                         let cmd_tx = handle.cmd_tx.clone();
                         let db2 = db.clone();
@@ -140,6 +158,12 @@ pub async fn run() -> Result<()> {
                     }
                     Some(node::messages::NodeEvent::SearchResult(result)) => {
                         accumulate_result(result, &search_store).await;
+                    }
+                    Some(node::messages::NodeEvent::ChunkReceived { request_id, peer, response }) => {
+                        engine.on_chunk_received(request_id, peer, response).await;
+                    }
+                    Some(node::messages::NodeEvent::ChunkRequested { peer, request, channel_id }) => {
+                        engine.serve_chunk(peer, request, channel_id).await;
                     }
                     Some(node::messages::NodeEvent::FatalError(e)) => {
                         tracing::error!("Node fatal error: {e}");
@@ -159,7 +183,6 @@ pub async fn run() -> Result<()> {
 // Search helpers
 // ---------------------------------------------------------------------------
 
-/// Look up matching local shares and publish a SearchResult for each one.
 async fn respond_to_query(
     query: SearchQuery,
     peer_id: String,
@@ -206,16 +229,13 @@ async fn respond_to_query(
     }
 }
 
-/// Insert an incoming SearchResult into the in-memory store.
 async fn accumulate_result(result: SearchResult, store: &api::SearchStore) {
     let mut map = store.write().await;
 
-    // Only accumulate results for queries we originated.
     if let Some(entry) = map.get_mut(&result.query_id.0) {
         if !entry.pending {
-            return; // window already closed
+            return;
         }
-        // Deduplicate by (root_hash, provider).
         let already_have = entry
             .results
             .iter()

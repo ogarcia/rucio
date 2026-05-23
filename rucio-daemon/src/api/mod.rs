@@ -28,40 +28,45 @@ use rucio_core::api::search::SearchResultResponse;
 // SearchStore
 // ---------------------------------------------------------------------------
 
-/// In-memory accumulator for search results keyed by query_id.
 #[derive(Debug)]
 pub struct SearchEntry {
     pub results: Vec<SearchResultResponse>,
-    /// Set to false after the TTL window closes.
     pub pending: bool,
-    /// Monotonic instant when the query was started (for TTL expiry).
     pub started_at: Instant,
 }
 
 pub type SearchStore = Arc<RwLock<HashMap<String, SearchEntry>>>;
-
-/// How long to keep a search entry open for incoming results.
 pub const SEARCH_WINDOW_SECS: u64 = 30;
+
+// ---------------------------------------------------------------------------
+// DownloadRequest — sent from API handlers to the download engine
+// ---------------------------------------------------------------------------
+
+/// A request to start a download, sent from an API handler to the main loop.
+pub struct DownloadRequest {
+    pub magnet: String,
+    /// PeerId of the provider (from the search result).
+    pub provider: String,
+    /// Chunk list: (idx, hash_hex, size) — empty means engine will derive
+    /// from total_size/chunk_size (not yet implemented).
+    pub chunks: Vec<(u32, [u8; 32], u32)>,
+}
 
 // ---------------------------------------------------------------------------
 // Shared application state
 // ---------------------------------------------------------------------------
 
 /// State shared across all API handlers via `axum::extract::State`.
-///
-/// Wrapped in `Arc` so axum can clone it cheaply into every request.
 #[derive(Clone)]
 pub struct AppState {
     pub db: Db,
     pub config: Arc<Config>,
-    /// Channel to send commands to the libp2p node task.
     pub node_cmd: mpsc::Sender<NodeCmd>,
-    /// Monotonic instant when the daemon started (for uptime calculation).
     pub started_at: Instant,
-    /// Current node status; updated by the node event loop.
     pub node_status: Arc<RwLock<NodeStatus>>,
-    /// In-memory search result accumulator.
     pub search_store: SearchStore,
+    /// Channel to request new downloads from the engine in the main loop.
+    pub download_tx: mpsc::Sender<DownloadRequest>,
 }
 
 /// Live node status kept in memory and updated by the event loop.

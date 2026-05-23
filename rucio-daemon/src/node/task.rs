@@ -3,12 +3,16 @@
 use anyhow::{Context, Result};
 use libp2p::futures::StreamExt;
 use libp2p::{
-    Multiaddr, SwarmBuilder,
+    Multiaddr, PeerId, SwarmBuilder,
     gossipsub::{self, IdentTopic},
     kad::{self, QueryId},
+    request_response::{self, ResponseChannel},
     swarm::SwarmEvent,
 };
-use rucio_core::protocol::search::{SearchQuery, SearchResult};
+use rucio_core::protocol::{
+    search::{SearchQuery, SearchResult},
+    transfer::{ChunkRequest, ChunkResponse},
+};
 use std::collections::{HashMap, HashSet};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
@@ -55,7 +59,7 @@ pub async fn spawn(cfg: &NodeConfig) -> Result<NodeHandle> {
         })
         .collect();
 
-    let behaviour = RucioBehaviour::new(&keypair, peer_id)?;
+    let behaviour = super::behaviour::RucioBehaviour::new(&keypair, peer_id)?;
     let mut swarm = SwarmBuilder::with_existing_identity(keypair)
         .with_tokio()
         .with_tcp(
@@ -69,7 +73,6 @@ pub async fn spawn(cfg: &NodeConfig) -> Result<NodeHandle> {
         .context("attaching behaviour")?
         .build();
 
-    // Subscribe to gossipsub topics before entering the event loop.
     let topic_query = IdentTopic::new(TOPIC_SEARCH);
     let topic_result = IdentTopic::new(TOPIC_SEARCH_RESULT);
     if let Err(e) = swarm.behaviour_mut().gossipsub.subscribe(&topic_query) {
@@ -99,6 +102,9 @@ struct LoopState {
     ready_sent: bool,
     provider_queries: HashMap<QueryId, Vec<u8>>,
     classifier: ClassificationState,
+    /// Pending inbound chunk request channels keyed by a monotonic id.
+    pending_channels: HashMap<u64, ResponseChannel<ChunkResponse>>,
+    next_channel_id: u64,
 }
 
 impl LoopState {
@@ -108,7 +114,16 @@ impl LoopState {
             ready_sent: false,
             provider_queries: HashMap::new(),
             classifier: ClassificationState::default(),
+            pending_channels: HashMap::new(),
+            next_channel_id: 0,
         }
+    }
+
+    fn store_channel(&mut self, ch: ResponseChannel<ChunkResponse>) -> u64 {
+        let id = self.next_channel_id;
+        self.next_channel_id += 1;
+        self.pending_channels.insert(id, ch);
+        id
     }
 }
 
@@ -118,7 +133,7 @@ impl LoopState {
 
 async fn run_loop(
     mut swarm: libp2p::Swarm<RucioBehaviour>,
-    peer_id: libp2p::PeerId,
+    peer_id: PeerId,
     mut cmd_rx: mpsc::Receiver<NodeCmd>,
     event_tx: mpsc::Sender<NodeEvent>,
 ) {
@@ -161,6 +176,18 @@ async fn run_loop(
                     Some(NodeCmd::PublishSearchResult(result)) => {
                         publish_json(&mut swarm, &topic_result, &result, "search result");
                     }
+                    Some(NodeCmd::RequestChunk { peer, request }) => {
+                        swarm.behaviour_mut().transfer.send_request(&peer, request);
+                    }
+                    Some(NodeCmd::RespondChunk { channel_id, response }) => {
+                        if let Some(ch) = state.pending_channels.remove(&channel_id) {
+                            if let Err(e) = swarm.behaviour_mut().transfer.send_response(ch, response) {
+                                warn!("Failed to send chunk response: {e:?}");
+                            }
+                        } else {
+                            warn!(%channel_id, "RespondChunk: unknown channel id");
+                        }
+                    }
                 }
             }
 
@@ -189,7 +216,6 @@ fn publish_json<T: serde::Serialize>(
                 .gossipsub
                 .publish(topic.clone(), bytes)
             {
-                // InsufficientPeers is expected when there are no mesh peers yet.
                 debug!("Could not publish {label}: {e}");
             } else {
                 debug!("Published {label}");
@@ -207,7 +233,7 @@ async fn on_swarm_event(
     event: SwarmEvent<RucioBehaviourEvent>,
     event_tx: &mpsc::Sender<NodeEvent>,
     state: &mut LoopState,
-    peer_id: libp2p::PeerId,
+    peer_id: PeerId,
     swarm: &mut libp2p::Swarm<RucioBehaviour>,
 ) {
     match event {
@@ -253,7 +279,7 @@ async fn on_swarm_event(
                 use libp2p::mdns::Event;
                 match mdns_event {
                     Event::Discovered(peers) => {
-                        let mut by_peer: HashMap<libp2p::PeerId, Vec<Multiaddr>> = HashMap::new();
+                        let mut by_peer: HashMap<PeerId, Vec<Multiaddr>> = HashMap::new();
                         for (pid, addr) in peers {
                             by_peer.entry(pid).or_default().push(addr);
                         }
@@ -341,6 +367,10 @@ async fn on_swarm_event(
             RucioBehaviourEvent::Gossipsub(gs_event) => {
                 on_gossipsub_event(gs_event, event_tx).await;
             }
+
+            RucioBehaviourEvent::Transfer(tr_event) => {
+                on_transfer_event(tr_event, event_tx, state).await;
+            }
         },
 
         _ => {}
@@ -348,7 +378,7 @@ async fn on_swarm_event(
 }
 
 // ---------------------------------------------------------------------------
-// Gossipsub event handler
+// Gossipsub handler
 // ---------------------------------------------------------------------------
 
 async fn on_gossipsub_event(event: gossipsub::Event, event_tx: &mpsc::Sender<NodeEvent>) {
@@ -375,11 +405,71 @@ async fn on_gossipsub_event(event: gossipsub::Event, event_tx: &mpsc::Sender<Nod
             }
         }
         gossipsub::Event::Subscribed { peer_id, topic } => {
-            debug!(%peer_id, %topic, "Peer subscribed to topic");
+            debug!(%peer_id, %topic, "Peer subscribed");
         }
         gossipsub::Event::Unsubscribed { peer_id, topic } => {
-            debug!(%peer_id, %topic, "Peer unsubscribed from topic");
+            debug!(%peer_id, %topic, "Peer unsubscribed");
         }
         _ => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Transfer (request-response) handler
+// ---------------------------------------------------------------------------
+
+async fn on_transfer_event(
+    event: request_response::Event<ChunkRequest, ChunkResponse>,
+    event_tx: &mpsc::Sender<NodeEvent>,
+    state: &mut LoopState,
+) {
+    match event {
+        // We received a response for a request we sent.
+        request_response::Event::Message {
+            peer,
+            message:
+                request_response::Message::Response {
+                    request_id,
+                    response,
+                },
+            ..
+        } => {
+            debug!(%peer, "Received chunk response");
+            let _ = event_tx
+                .send(NodeEvent::ChunkReceived {
+                    request_id,
+                    peer,
+                    response,
+                })
+                .await;
+        }
+
+        // A remote peer is requesting a chunk from us.
+        request_response::Event::Message {
+            peer,
+            message:
+                request_response::Message::Request {
+                    request, channel, ..
+                },
+            ..
+        } => {
+            debug!(%peer, chunk_idx = request.chunk_idx, "Received chunk request");
+            let channel_id = state.store_channel(channel);
+            let _ = event_tx
+                .send(NodeEvent::ChunkRequested {
+                    peer,
+                    request,
+                    channel_id,
+                })
+                .await;
+        }
+
+        request_response::Event::OutboundFailure { peer, error, .. } => {
+            warn!(%peer, %error, "Outbound chunk request failed");
+        }
+        request_response::Event::InboundFailure { peer, error, .. } => {
+            warn!(%peer, %error, "Inbound chunk request failed");
+        }
+        request_response::Event::ResponseSent { .. } => {}
     }
 }

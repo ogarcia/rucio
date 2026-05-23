@@ -39,6 +39,7 @@ async fn test_state() -> (AppState, mpsc::Receiver<NodeCmd>) {
     crate::db::apply_schema(&db).await.unwrap();
 
     let (cmd_tx, cmd_rx) = mpsc::channel::<NodeCmd>(16);
+    let (download_tx, _download_rx) = mpsc::channel::<crate::api::DownloadRequest>(16);
 
     let node_status = Arc::new(RwLock::new(NodeStatus {
         peer_id: "QmTestPeer".to_string(),
@@ -53,6 +54,7 @@ async fn test_state() -> (AppState, mpsc::Receiver<NodeCmd>) {
         started_at: Instant::now(),
         node_status,
         search_store,
+        download_tx,
     };
     (state, cmd_rx)
 }

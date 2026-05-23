@@ -179,6 +179,7 @@ impl ApiClient {
             .post(&url)
             .json(&StartDownloadRequest {
                 magnet: magnet.to_string(),
+                provider: None,
             })
             .send()
             .await

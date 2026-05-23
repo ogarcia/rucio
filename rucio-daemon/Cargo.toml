@@ -28,6 +28,9 @@ utoipa              = { workspace = true }
 hex         = { workspace = true }
 uuid        = { workspace = true }
 blake3      = { workspace = true }
+postcard    = { workspace = true }
+async-trait = { workspace = true }
+urlencoding = { workspace = true }
 dirs                = { workspace = true }
 
 [dev-dependencies]
