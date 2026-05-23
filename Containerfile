@@ -36,10 +36,6 @@ FROM rust:1-alpine3.23 AS builder
 # Everything else in the dependency tree is pure Rust.
 RUN apk add --no-cache musl-dev
 
-# Explicit musl target so cargo links statically even on the Alpine
-# toolchain, which defaults to dynamic linking for some crates.
-RUN rustup target add x86_64-unknown-linux-musl
-
 WORKDIR /app
 
 # Copy workspace manifests first so dependency layers are cached
@@ -62,8 +58,7 @@ RUN mkdir -p rucio-core/src rucio-daemon/src rucio-cli/src rucio/src && \
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/target \
-    cargo build --release --locked \
-        --target x86_64-unknown-linux-musl 2>/dev/null || true
+    cargo build --release --locked 2>/dev/null || true
 
 # Now copy the real source and do the final build.
 COPY rucio-core/src   rucio-core/src
@@ -73,10 +68,9 @@ COPY rucio/src        rucio/src
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/target \
-    cargo build --release --locked \
-        --target x86_64-unknown-linux-musl && \
-    cp target/x86_64-unknown-linux-musl/release/ruciod /usr/local/bin/ruciod && \
-    cp target/x86_64-unknown-linux-musl/release/rucio  /usr/local/bin/rucio  && \
+    cargo build --release --locked && \
+    cp target/release/ruciod /usr/local/bin/ruciod && \
+    cp target/release/rucio  /usr/local/bin/rucio  && \
     strip /usr/local/bin/ruciod /usr/local/bin/rucio
 
 # ── Stage 2: runtime – daemon only (tag: master / vX.Y.Z / latest) ──────────
