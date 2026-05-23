@@ -39,6 +39,9 @@ pub enum Commands {
     Get {
         /// Magnet link (rucio:<hash>...)
         magnet: String,
+        /// PeerId of the provider (from search results)
+        #[arg(long)]
+        provider: Option<String>,
     },
     /// List active and completed downloads
     Downloads,
@@ -78,7 +81,9 @@ pub async fn run() -> Result<()> {
         Commands::Add { path } => cmd::shares::add(&client, &path).await,
         Commands::Remove { target } => cmd::shares::remove(&client, &target).await,
         Commands::Downloads => cmd::downloads::list(&client).await,
-        Commands::Get { magnet } => cmd::downloads::start(&client, &magnet).await,
+        Commands::Get { magnet, provider } => {
+            cmd::downloads::start(&client, &magnet, provider.as_deref()).await
+        }
         Commands::Cancel { hash } => cmd::downloads::cancel(&client, &hash).await,
         Commands::Search { keywords } => cmd::search::search(&client, keywords).await,
         Commands::Config { action } => match action {

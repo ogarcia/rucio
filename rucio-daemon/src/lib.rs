@@ -254,6 +254,7 @@ async fn accumulate_result(result: SearchResult, store: &api::SearchStore) {
                 chunk_count: result.chunk_count,
                 mime_type: result.mime_type,
                 magnet: result.magnet,
+                provider: result.provider,
             });
         }
     } else {

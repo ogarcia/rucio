@@ -54,30 +54,39 @@ fn print_results(results: &[rucio_core::api::search::SearchResultResponse]) {
 
     #[derive(Tabled)]
     struct Row {
+        #[tabled(rename = "#")]
+        idx: usize,
         #[tabled(rename = "Name")]
         name: String,
         #[tabled(rename = "Size")]
         size: String,
-        #[tabled(rename = "Chunks")]
-        chunks: usize,
-        #[tabled(rename = "MIME")]
-        mime: String,
-        #[tabled(rename = "Magnet")]
-        magnet: String,
+        #[tabled(rename = "Provider")]
+        provider: String,
     }
 
     let rows: Vec<Row> = results
         .iter()
-        .map(|r| Row {
+        .enumerate()
+        .map(|(i, r)| Row {
+            idx: i + 1,
             name: r.name.clone(),
             size: human_size(r.size),
-            chunks: r.chunk_count,
-            mime: r.mime_type.clone().unwrap_or_else(|| "-".to_string()),
-            magnet: truncate(&r.magnet, 40),
+            provider: truncate(&r.provider, 24),
         })
         .collect();
 
     println!("{}", Table::new(rows));
+    println!();
+
+    // Print magnet + full provider for easy copy-paste
+    for (i, r) in results.iter().enumerate() {
+        println!(
+            "[{}] rucio get '{}' --provider '{}'",
+            i + 1,
+            r.magnet,
+            r.provider
+        );
+    }
 }
 
 fn human_size(bytes: u64) -> String {

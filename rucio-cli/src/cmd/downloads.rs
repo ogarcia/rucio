@@ -51,8 +51,11 @@ pub async fn list(client: &ApiClient) -> Result<()> {
     Ok(())
 }
 
-pub async fn start(client: &ApiClient, magnet: &str) -> Result<()> {
-    client.start_download(magnet).await?;
+pub async fn start(client: &ApiClient, magnet: &str, provider: Option<&str>) -> Result<()> {
+    if provider.is_none() {
+        eprintln!("Warning: no --provider specified. Use search results to get a provider PeerId.");
+    }
+    client.start_download(magnet, provider).await?;
     println!("Download queued.");
     Ok(())
 }

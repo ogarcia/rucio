@@ -198,6 +198,7 @@ async fn accumulated_results_are_returned() {
                     chunk_count: 1,
                     mime_type: Some("audio/mpeg".to_string()),
                     magnet: "rucio:aabbcc?name=test.mp3&size=1024".to_string(),
+                    provider: "12D3KooWTest".to_string(),
                 }],
                 pending: true,
                 started_at: Instant::now(),

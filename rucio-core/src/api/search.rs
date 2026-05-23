@@ -19,6 +19,8 @@ pub struct SearchResultResponse {
     pub chunk_count: usize,
     pub mime_type: Option<String>,
     pub magnet: String,
+    /// PeerId of the peer that has this file.
+    pub provider: String,
 }
 
 /// GET /api/v1/search/:query_id
