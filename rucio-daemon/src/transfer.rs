@@ -849,6 +849,118 @@ async fn read_file_range(path: &str, offset: u64, len: usize) -> Result<Vec<u8>>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rucio_core::protocol::manifest::ChunkInfo;
+    use std::time::Duration;
+    use tokio::sync::mpsc;
+
+    // -----------------------------------------------------------------------
+    // Helpers
+    // -----------------------------------------------------------------------
+
+    /// Open a temporary SQLite DB and run migrations.
+    async fn make_db() -> (Db, tempfile::TempDir) {
+        use sqlx::AssertSqlSafe;
+        use sqlx::sqlite::SqlitePoolOptions;
+        // Use a temp-file DB rather than :memory: to avoid SQLite in-memory
+        // connection pool deadlocks when multiple queries run concurrently.
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let url = format!("sqlite://{}?mode=rwc", db_path.display());
+        let pool = SqlitePoolOptions::new()
+            .max_connections(4)
+            .connect(&url)
+            .await
+            .unwrap();
+        let schema = include_str!("db/schema.sql");
+        for stmt in schema.split(';').map(str::trim).filter(|s| !s.is_empty()) {
+            sqlx::query(AssertSqlSafe(stmt))
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        (pool, dir)
+    }
+
+    /// Build a DownloadEngine with a fresh file DB and return the
+    /// NodeCmd receiver so tests can inspect what the engine sends.
+    async fn make_engine(
+        tmp: &tempfile::TempDir,
+    ) -> (DownloadEngine, mpsc::Receiver<NodeCmd>, tempfile::TempDir) {
+        let (db, db_dir) = make_db().await;
+        let (cmd_tx, cmd_rx) = mpsc::channel(64);
+        let engine = DownloadEngine::new(db, cmd_tx, tmp.path().to_path_buf());
+        (engine, cmd_rx, db_dir)
+    }
+
+    /// Construct a fake PeerId deterministically from a byte seed.
+    fn peer(seed: u8) -> PeerId {
+        use libp2p::identity::Keypair;
+        // Build a 32-byte Ed25519 seed
+        let secret = libp2p::identity::ed25519::SecretKey::try_from_bytes(&mut [seed; 32]).unwrap();
+        let kp = Keypair::from(libp2p::identity::ed25519::Keypair::from(secret));
+        kp.public().to_peer_id()
+    }
+
+    /// Build a fake OutboundRequestId from a u64 using transmute.
+    /// Safe because OutboundRequestId is a repr(transparent) newtype over u64.
+    fn fake_request_id(n: u64) -> OutboundRequestId {
+        // SAFETY: OutboundRequestId is `pub struct OutboundRequestId(u64)` — a
+        // transparent newtype. We only use this in tests to simulate responses.
+        unsafe { std::mem::transmute::<u64, OutboundRequestId>(n) }
+    }
+
+    fn fake_magnet(hash: &[u8; 32], name: &str, size: u64) -> String {
+        format!("rucio:{}?name={}&size={}", hex::encode(hash), name, size)
+    }
+
+    /// Spawn a background task that drains NodeCmd messages from `rx` and
+    /// automatically acks every `id_tx` oneshot with a fake OutboundRequestId.
+    /// This prevents `dispatch_requests` from deadlocking while the engine
+    /// awaits `id_rx` inside a single-threaded test runtime.
+    ///
+    /// Returns a handle + the `Arc<Mutex<Vec<NodeCmd>>>` accumulator so tests
+    /// can inspect dispatched commands after `stop_acker` is called.
+    fn spawn_acker(
+        mut rx: mpsc::Receiver<NodeCmd>,
+    ) -> (
+        tokio::task::JoinHandle<Vec<NodeCmd>>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let (stop_tx, mut stop_rx) = tokio::sync::oneshot::channel::<()>();
+        let handle = tokio::spawn(async move {
+            let mut cmds = Vec::new();
+            loop {
+                tokio::select! {
+                    _ = &mut stop_rx => break,
+                    cmd = rx.recv() => {
+                        match cmd {
+                            None => break,
+                            Some(NodeCmd::RequestChunk { peer, request, id_tx }) => {
+                                let fake_id = fake_request_id(42 + cmds.len() as u64);
+                                let _ = id_tx.send(fake_id);
+                                // Record just peer/request info via a dummy sentinel
+                                let (tx2, _) = tokio::sync::oneshot::channel();
+                                cmds.push(NodeCmd::RequestChunk { peer, request, id_tx: tx2 });
+                            }
+                            Some(NodeCmd::RequestManifest { peer, request, id_tx }) => {
+                                let fake_id = fake_request_id(100 + cmds.len() as u64);
+                                let _ = id_tx.send(fake_id);
+                                let (tx2, _) = tokio::sync::oneshot::channel();
+                                cmds.push(NodeCmd::RequestManifest { peer, request, id_tx: tx2 });
+                            }
+                            Some(other) => cmds.push(other),
+                        }
+                    }
+                }
+            }
+            cmds
+        });
+        (handle, stop_tx)
+    }
+
+    // -----------------------------------------------------------------------
+    // Existing magnet parser tests
+    // -----------------------------------------------------------------------
 
     #[test]
     fn parse_magnet_valid() {
@@ -880,5 +992,413 @@ mod tests {
     #[test]
     fn parse_magnet_wrong_hash_length() {
         assert!(parse_magnet("rucio:deadbeef?name=foo&size=1").is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // start() — stores PendingManifest and sends RequestManifest + FindProviders
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn start_sends_request_manifest_and_find_providers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut engine, mut rx, _db_dir) = make_engine(&tmp).await;
+        let hash = [0xaau8; 32];
+        let magnet = fake_magnet(&hash, "file.bin", 1024);
+        let p = peer(1);
+
+        engine.start(&magnet, vec![p], 0).await.unwrap();
+
+        // Should have sent RequestManifest and FindProviders
+        let cmd1 = rx.try_recv().unwrap();
+        let cmd2 = rx.try_recv().unwrap();
+        let cmds = [cmd1, cmd2];
+        assert!(
+            cmds.iter()
+                .any(|c| matches!(c, NodeCmd::RequestManifest { peer, .. } if *peer == p))
+        );
+        assert!(
+            cmds.iter()
+                .any(|c| matches!(c, NodeCmd::FindProviders(k) if k == hash.as_slice()))
+        );
+    }
+
+    #[tokio::test]
+    async fn start_duplicate_returns_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut engine, _rx, _db_dir) = make_engine(&tmp).await;
+        let hash = [0xbbu8; 32];
+        let magnet = fake_magnet(&hash, "dup.bin", 512);
+        let p = peer(2);
+
+        engine.start(&magnet, vec![p], 0).await.unwrap();
+        let err = engine.start(&magnet, vec![p], 0).await.unwrap_err();
+        assert!(err.to_string().contains("already active"));
+    }
+
+    #[tokio::test]
+    async fn start_no_providers_returns_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut engine, _rx, _db_dir) = make_engine(&tmp).await;
+        let hash = [0xccu8; 32];
+        let magnet = fake_magnet(&hash, "nop.bin", 256);
+
+        let err = engine.start(&magnet, vec![], 0).await.unwrap_err();
+        assert!(err.to_string().contains("at least one provider"));
+    }
+
+    // -----------------------------------------------------------------------
+    // add_providers() — updates pending or active state
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn add_providers_to_pending_manifest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut engine, _rx, _db_dir) = make_engine(&tmp).await;
+        let hash = [0x01u8; 32];
+        let magnet = fake_magnet(&hash, "f.bin", 100);
+        let p1 = peer(1);
+        let p2 = peer(2);
+
+        engine.start(&magnet, vec![p1], 0).await.unwrap();
+        engine.add_providers(hash, vec![p2]).await;
+
+        let pm = engine.pending_manifests.get(&hash).unwrap();
+        assert!(pm.providers.contains(&p2));
+    }
+
+    #[tokio::test]
+    async fn add_providers_deduplicates() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut engine, _rx, _db_dir) = make_engine(&tmp).await;
+        let hash = [0x02u8; 32];
+        let magnet = fake_magnet(&hash, "g.bin", 100);
+        let p1 = peer(1);
+
+        engine.start(&magnet, vec![p1], 0).await.unwrap();
+        engine.add_providers(hash, vec![p1]).await; // same peer
+        engine.add_providers(hash, vec![p1]).await;
+
+        let pm = engine.pending_manifests.get(&hash).unwrap();
+        assert_eq!(pm.providers.iter().filter(|&&p| p == p1).count(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // cancel() — clears pending manifest and active download by hash
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn cancel_pending_manifest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut engine, _rx, _db_dir) = make_engine(&tmp).await;
+        let hash = [0x03u8; 32];
+        let magnet = fake_magnet(&hash, "c.bin", 200);
+
+        engine.start(&magnet, vec![peer(1)], 0).await.unwrap();
+        assert!(engine.pending_manifests.contains_key(&hash));
+
+        engine.cancel(99, hash.to_vec()).await;
+        assert!(!engine.pending_manifests.contains_key(&hash));
+    }
+
+    #[tokio::test]
+    async fn cancel_nonexistent_is_noop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut engine, _rx, _db_dir) = make_engine(&tmp).await;
+        // Should not panic
+        engine.cancel(999, vec![0u8; 32]).await;
+    }
+
+    // -----------------------------------------------------------------------
+    // tick_manifest_timeouts() — retries and exhaustion
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn tick_retries_manifest_after_timeout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut engine, mut rx, _db_dir) = make_engine(&tmp).await;
+        let hash = [0x10u8; 32];
+        let magnet = fake_magnet(&hash, "t.bin", 100);
+        let p1 = peer(1);
+        let p2 = peer(2);
+
+        engine.start(&magnet, vec![p1, p2], 0).await.unwrap();
+        // Drain start() commands
+        while rx.try_recv().is_ok() {}
+
+        // Force timeout by backdating requested_at
+        {
+            let pm = engine.pending_manifests.get_mut(&hash).unwrap();
+            pm.requested_at = Instant::now() - Duration::from_secs(15);
+        }
+
+        engine.tick_manifest_timeouts().await;
+
+        // Should have sent a RequestManifest to p2 (attempt 1)
+        let cmd = rx.try_recv().unwrap();
+        assert!(matches!(cmd, NodeCmd::RequestManifest { peer, .. } if peer == p2));
+        // Entry should still be in pending_manifests (not yet exhausted)
+        assert!(engine.pending_manifests.contains_key(&hash));
+    }
+
+    #[tokio::test]
+    async fn tick_fails_download_when_all_providers_exhausted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut engine, mut rx, _db_dir) = make_engine(&tmp).await;
+        let hash = [0x11u8; 32];
+        let magnet = fake_magnet(&hash, "u.bin", 100);
+
+        engine.start(&magnet, vec![peer(1)], 0).await.unwrap();
+        while rx.try_recv().is_ok() {}
+
+        // Force timeout with only one provider (already attempted)
+        {
+            let pm = engine.pending_manifests.get_mut(&hash).unwrap();
+            pm.requested_at = Instant::now() - Duration::from_secs(15);
+        }
+
+        engine.tick_manifest_timeouts().await;
+
+        // Entry should be removed — all providers exhausted
+        assert!(!engine.pending_manifests.contains_key(&hash));
+    }
+
+    // -----------------------------------------------------------------------
+    // on_manifest_received() — happy path and orphan
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn on_manifest_received_orphan_is_ignored() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut engine, _rx, _db_dir) = make_engine(&tmp).await;
+
+        // No pending manifest for this hash — should be silently ignored.
+        let response = ManifestResponse::Ok {
+            root_hash: [0x20u8; 32],
+            name: "ghost.bin".to_string(),
+            total_size: 100,
+            chunk_size: 100,
+            chunks: vec![ChunkInfo {
+                idx: 0,
+                hash: [0u8; 32],
+                size: 100,
+            }],
+        };
+        engine
+            .on_manifest_received(fake_request_id(1), peer(1), response, 0)
+            .await;
+        // Should not panic and active should be empty
+        assert!(engine.active.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn on_manifest_received_happy_path_starts_active_download() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut engine, rx, _db_dir) = make_engine(&tmp).await;
+        let hash = [0x21u8; 32];
+        let magnet = fake_magnet(&hash, "happy.bin", 100);
+        let p = peer(1);
+        let chunk_hash = *blake3::hash(b"hello").as_bytes();
+
+        // Use spawn_acker so dispatch_requests doesn't deadlock waiting for id_rx
+        let (acker_handle, stop_tx) = spawn_acker(rx);
+
+        engine.start(&magnet, vec![p], 0).await.unwrap();
+
+        let response = ManifestResponse::Ok {
+            root_hash: hash,
+            name: "happy.bin".to_string(),
+            total_size: 5,
+            chunk_size: 5,
+            chunks: vec![ChunkInfo {
+                idx: 0,
+                hash: chunk_hash,
+                size: 5,
+            }],
+        };
+        engine
+            .on_manifest_received(fake_request_id(2), p, response, 0)
+            .await;
+
+        // Stop the acker and collect commands
+        let _ = stop_tx.send(());
+        let cmds = acker_handle.await.unwrap();
+
+        // Should have moved from pending to active
+        assert!(!engine.pending_manifests.contains_key(&hash));
+        assert!(engine.active.contains_key(&hash));
+        // Should have dispatched at least one RequestChunk
+        let has_chunk_req = cmds
+            .iter()
+            .any(|c| matches!(c, NodeCmd::RequestChunk { peer, .. } if *peer == p));
+        assert!(has_chunk_req, "expected a RequestChunk for peer {p}");
+    }
+
+    // -----------------------------------------------------------------------
+    // on_chunk_received() — hash ok, hash mismatch, completion
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn on_chunk_received_unknown_request_id_is_ignored() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut engine, _rx, _db_dir) = make_engine(&tmp).await;
+
+        // No active download — should not panic.
+        engine
+            .on_chunk_received(
+                fake_request_id(99),
+                peer(1),
+                ChunkResponse::Ok {
+                    data: vec![1, 2, 3],
+                },
+            )
+            .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn on_chunk_received_hash_mismatch_requeues() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut engine, rx, _db_dir) = make_engine(&tmp).await;
+        let hash = [0x30u8; 32];
+        let correct_chunk_hash = *blake3::hash(b"correct data").as_bytes();
+        let magnet = fake_magnet(&hash, "mis.bin", 12);
+        let p = peer(1);
+
+        // Keep acker alive for the whole test — dispatch_requests inside both
+        // on_manifest_received and on_chunk_received (after requeue) need it.
+        let (acker_handle, stop_tx) = spawn_acker(rx);
+
+        engine.start(&magnet, vec![p], 0).await.unwrap();
+        engine
+            .on_manifest_received(
+                fake_request_id(1),
+                p,
+                ManifestResponse::Ok {
+                    root_hash: hash,
+                    name: "mis.bin".to_string(),
+                    total_size: 12,
+                    chunk_size: 12,
+                    chunks: vec![ChunkInfo {
+                        idx: 0,
+                        hash: correct_chunk_hash,
+                        size: 12,
+                    }],
+                },
+                0,
+            )
+            .await;
+
+        // After on_manifest_received, chunk 0 is in inflight_map with the
+        // acker's fake id (42+n). Inject a known id so we can call on_chunk_received.
+        let req_id = fake_request_id(10);
+        {
+            let dl = engine.active.get_mut(&hash).unwrap();
+            dl.inflight_map.clear();
+            dl.in_flight.clear();
+            for ps in dl.peer_state.values_mut() {
+                ps.in_flight.clear();
+            }
+            dl.queued.clear(); // will be re-populated by requeue inside on_chunk_received
+            dl.inflight_map.insert(req_id, (p, 0));
+            dl.in_flight.insert(0);
+            dl.peer_state.entry(p).or_default().in_flight.insert(0);
+        }
+
+        // Send wrong data — on_chunk_received will re-queue chunk 0 and call
+        // dispatch_requests again (which the acker will service).
+        engine
+            .on_chunk_received(
+                req_id,
+                p,
+                ChunkResponse::Ok {
+                    data: b"wrong data!!".to_vec(),
+                },
+            )
+            .await;
+
+        // Stop acker after on_chunk_received returns
+        let _ = stop_tx.send(());
+        let _ = acker_handle.await.unwrap();
+
+        // Chunk should be back in in_flight (dispatch_requests was called again)
+        // OR back in queued if no slots were free — either way it must not be in done.
+        let dl = engine.active.get(&hash).unwrap();
+        assert!(
+            dl.queued.contains(&0) || dl.in_flight.contains(&0),
+            "chunk 0 should be re-queued or re-dispatched after hash mismatch"
+        );
+        assert!(
+            !dl.done.contains(&0),
+            "chunk 0 must not be done after mismatch"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn on_chunk_received_valid_marks_done_and_completes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut engine, rx, _db_dir) = make_engine(&tmp).await;
+        let data = b"hello";
+        let hash = [0x31u8; 32];
+        let chunk_hash = *blake3::hash(data).as_bytes();
+        let magnet = fake_magnet(&hash, "ok.bin", data.len() as u64);
+        let p = peer(1);
+
+        let (acker_handle, stop_tx) = spawn_acker(rx);
+
+        engine.start(&magnet, vec![p], 0).await.unwrap();
+        engine
+            .on_manifest_received(
+                fake_request_id(1),
+                p,
+                ManifestResponse::Ok {
+                    root_hash: hash,
+                    name: "ok.bin".to_string(),
+                    total_size: data.len() as u64,
+                    chunk_size: data.len() as u32,
+                    chunks: vec![ChunkInfo {
+                        idx: 0,
+                        hash: chunk_hash,
+                        size: data.len() as u32,
+                    }],
+                },
+                0,
+            )
+            .await;
+
+        let _ = stop_tx.send(());
+        let _ = acker_handle.await.unwrap();
+
+        // Inject a known request_id for chunk 0
+        let req_id = fake_request_id(20);
+        {
+            let dl = engine.active.get_mut(&hash).unwrap();
+            dl.inflight_map.clear();
+            dl.in_flight.clear();
+            for ps in dl.peer_state.values_mut() {
+                ps.in_flight.clear();
+            }
+            dl.inflight_map.insert(req_id, (p, 0));
+            dl.in_flight.insert(0);
+            dl.peer_state.entry(p).or_default().in_flight.insert(0);
+            // Also clear queued so on_chunk_received sees total == done
+            dl.queued.clear();
+        }
+
+        engine
+            .on_chunk_received(
+                req_id,
+                p,
+                ChunkResponse::Ok {
+                    data: data.to_vec(),
+                },
+            )
+            .await;
+
+        // Download should be complete and removed from active
+        assert!(
+            !engine.active.contains_key(&hash),
+            "completed download should be removed from active"
+        );
+        // File should exist on disk
+        assert!(tmp.path().join("ok.bin").exists());
     }
 }
