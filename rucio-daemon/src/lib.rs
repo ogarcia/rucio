@@ -20,6 +20,9 @@ pub async fn run() -> Result<()> {
     let config = config::Config::load()?;
     info!("Starting Rucio daemon v{}", env!("CARGO_PKG_VERSION"));
 
+    // --- Database -----------------------------------------------------------
+    let _db = db::open(&config.storage.database_path).await?;
+
     // --- Node ---------------------------------------------------------------
     let mut handle = node::task::spawn(&config.node).await?;
 
