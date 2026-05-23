@@ -89,12 +89,23 @@ pub async fn add_share(
 
     // Spawn background task so the HTTP response returns immediately
     let db = state.db.clone();
+    let cmd_tx = state.node_cmd.clone();
     tokio::spawn(async move {
         let mut errors: Vec<String> = vec![];
         for path in paths {
-            if let Err(e) = index_file(&db, &path).await {
-                tracing::warn!("Failed to index {}: {e}", path.display());
-                errors.push(path.display().to_string());
+            match index_file(&db, &path).await {
+                Ok(root_hash) => {
+                    // Announce to Kademlia that we provide this hash.
+                    let _ = cmd_tx
+                        .send(crate::node::messages::NodeCmd::StartProviding(
+                            root_hash.to_vec(),
+                        ))
+                        .await;
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to index {}: {e}", path.display());
+                    errors.push(path.display().to_string());
+                }
             }
         }
         if !errors.is_empty() {
@@ -211,7 +222,8 @@ fn collect_recursive(path: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()>
 }
 
 /// Hash a single file, split into chunks, and insert into the DB.
-async fn index_file(db: &crate::db::Db, path: &Path) -> anyhow::Result<()> {
+/// Returns the root hash on success.
+async fn index_file(db: &crate::db::Db, path: &Path) -> anyhow::Result<[u8; 32]> {
     let path_owned = path.to_path_buf();
 
     // Run blocking I/O on a dedicated thread
@@ -244,7 +256,7 @@ async fn index_file(db: &crate::db::Db, path: &Path) -> anyhow::Result<()> {
     .await?;
 
     tracing::info!(path = %path.display(), size = file_size, "Indexed file");
-    Ok(())
+    Ok(root_hash)
 }
 
 /// (root_hash, file_size_bytes, chunks: Vec<(chunk_idx, chunk_hash, chunk_size)>)

@@ -75,8 +75,7 @@ pub async fn start_download(
 
     let dl_req = DownloadRequest {
         magnet: req.magnet.clone(),
-        provider,
-        chunks: vec![], // engine will derive from manifest (TODO)
+        providers: vec![provider],
     };
 
     match state.download_tx.send(dl_req).await {

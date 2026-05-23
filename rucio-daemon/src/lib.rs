@@ -109,14 +109,17 @@ pub async fn run() -> Result<()> {
             }
             dl_req = download_rx.recv() => {
                 if let Some(req) = dl_req {
-                    match req.provider.parse::<libp2p::PeerId>() {
-                        Ok(peer) => {
-                            match engine.start(&req.magnet, peer, now_secs()).await {
-                                Ok(()) => info!("Download started"),
-                                Err(e) => warn!("Failed to start download: {e}"),
-                            }
+                    let providers: Vec<libp2p::PeerId> = req.providers
+                        .iter()
+                        .filter_map(|s| s.parse().ok())
+                        .collect();
+                    if providers.is_empty() {
+                        warn!("Download request has no valid provider PeerIds");
+                    } else {
+                        match engine.start(&req.magnet, providers, now_secs()).await {
+                            Ok(()) => info!("Download started"),
+                            Err(e) => warn!("Failed to start download: {e}"),
                         }
-                        Err(e) => warn!("Invalid provider PeerId: {e}"),
                     }
                 }
             }
@@ -158,6 +161,13 @@ pub async fn run() -> Result<()> {
                     }
                     Some(node::messages::NodeEvent::SearchResult(result)) => {
                         accumulate_result(result, &search_store).await;
+                    }
+                    Some(node::messages::NodeEvent::ProvidersFound { key, providers }) => {
+                        if key.len() == 32 {
+                            let mut root_hash = [0u8; 32];
+                            root_hash.copy_from_slice(&key);
+                            engine.add_providers(root_hash, providers).await;
+                        }
                     }
                     Some(node::messages::NodeEvent::ChunkReceived { request_id, peer, response }) => {
                         engine.on_chunk_received(request_id, peer, response).await;

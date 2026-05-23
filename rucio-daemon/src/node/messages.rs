@@ -8,6 +8,7 @@ use rucio_core::protocol::{
     search::{SearchQuery, SearchResult},
     transfer::{ChunkRequest, ChunkResponse},
 };
+use tokio::sync::oneshot;
 
 // ---------------------------------------------------------------------------
 // Commands (caller → node)
@@ -28,16 +29,24 @@ pub enum NodeCmd {
     /// Publish a search result on the gossip network.
     PublishSearchResult(SearchResult),
     /// Request a single chunk from a remote peer.
-    RequestChunk { peer: PeerId, request: ChunkRequest },
+    /// The node task sends the assigned `OutboundRequestId` back through `id_tx`
+    /// so the engine can correlate the eventual response.
+    RequestChunk {
+        peer: PeerId,
+        request: ChunkRequest,
+        id_tx: oneshot::Sender<OutboundRequestId>,
+    },
     /// Send a chunk response back to a peer that requested it.
     RespondChunk {
         channel_id: u64,
         response: ChunkResponse,
     },
     /// Request the manifest for a file from a remote peer.
+    /// The node task sends the assigned `OutboundRequestId` back through `id_tx`.
     RequestManifest {
         peer: PeerId,
         request: ManifestRequest,
+        id_tx: oneshot::Sender<OutboundRequestId>,
     },
     /// Send a manifest response back to a peer that requested it.
     RespondManifest {

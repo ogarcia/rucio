@@ -45,11 +45,9 @@ pub const SEARCH_WINDOW_SECS: u64 = 30;
 /// A request to start a download, sent from an API handler to the main loop.
 pub struct DownloadRequest {
     pub magnet: String,
-    /// PeerId of the provider (from the search result).
-    pub provider: String,
-    /// Chunk list: (idx, hash_hex, size) — empty means engine will derive
-    /// from total_size/chunk_size (not yet implemented).
-    pub chunks: Vec<(u32, [u8; 32], u32)>,
+    /// Known providers (PeerId strings). At least one is required; more will
+    /// be discovered via Kademlia and added dynamically.
+    pub providers: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------

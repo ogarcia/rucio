@@ -187,8 +187,9 @@ async fn run_loop(
                     Some(NodeCmd::PublishSearchResult(result)) => {
                         publish_json(&mut swarm, &topic_result, &result, "search result");
                     }
-                    Some(NodeCmd::RequestChunk { peer, request }) => {
-                        swarm.behaviour_mut().transfer.send_request(&peer, request);
+                    Some(NodeCmd::RequestChunk { peer, request, id_tx }) => {
+                        let request_id = swarm.behaviour_mut().transfer.send_request(&peer, request);
+                        let _ = id_tx.send(request_id);
                     }
                     Some(NodeCmd::RespondChunk { channel_id, response }) => {
                         if let Some(ch) = state.pending_chunk_channels.remove(&channel_id) {
@@ -199,8 +200,9 @@ async fn run_loop(
                             warn!(%channel_id, "RespondChunk: unknown channel id");
                         }
                     }
-                    Some(NodeCmd::RequestManifest { peer, request }) => {
-                        swarm.behaviour_mut().manifest.send_request(&peer, request);
+                    Some(NodeCmd::RequestManifest { peer, request, id_tx }) => {
+                        let request_id = swarm.behaviour_mut().manifest.send_request(&peer, request);
+                        let _ = id_tx.send(request_id);
                     }
                     Some(NodeCmd::RespondManifest { channel_id, response }) => {
                         if let Some(ch) = state.pending_manifest_channels.remove(&channel_id) {
