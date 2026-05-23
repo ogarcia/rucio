@@ -76,12 +76,15 @@ impl Default for StorageConfig {
 // --- Loading -----------------------------------------------------------------
 
 impl Config {
-    /// Load configuration from the default path, falling back to defaults
-    /// if the file does not exist.
-    pub fn load() -> Result<Self> {
-        let path = default_config_dir().join("config.toml");
-        if path.exists() {
-            let contents = std::fs::read_to_string(&path)?;
+    /// Load configuration from `path`, or from the default location if `None`,
+    /// falling back to built-in defaults if no file exists.
+    pub fn load(path: Option<&std::path::Path>) -> Result<Self> {
+        let resolved = path
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| default_config_dir().join("config.toml"));
+
+        if resolved.exists() {
+            let contents = std::fs::read_to_string(&resolved)?;
             let config: Config = toml::from_str(&contents)?;
             Ok(config)
         } else {

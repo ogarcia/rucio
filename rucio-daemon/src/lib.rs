@@ -15,7 +15,7 @@ use rucio_core::api::search::SearchResultResponse;
 use rucio_core::protocol::search::{SearchQuery, SearchResult};
 
 /// Entry point for the daemon logic.
-pub async fn run() -> Result<()> {
+pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
@@ -24,7 +24,7 @@ pub async fn run() -> Result<()> {
         )
         .init();
 
-    let config = Arc::new(config::Config::load()?);
+    let config = Arc::new(config::Config::load(config_path)?);
     info!("Starting Rucio daemon v{}", env!("CARGO_PKG_VERSION"));
 
     // --- Database -----------------------------------------------------------

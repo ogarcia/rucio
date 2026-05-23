@@ -3345,6 +3345,7 @@ dependencies = [
  "async-trait",
  "axum",
  "blake3",
+ "clap",
  "dirs",
  "hex",
  "http-body-util",

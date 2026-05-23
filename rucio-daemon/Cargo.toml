@@ -32,6 +32,7 @@ postcard    = { workspace = true }
 async-trait = { workspace = true }
 urlencoding = { workspace = true }
 dirs                = { workspace = true }
+clap                = { workspace = true }
 
 [dev-dependencies]
 tower               = { version = "0.5", features = ["util"] }
