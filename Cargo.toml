@@ -53,7 +53,7 @@ sqlx        = { version = "0.9", features = ["runtime-tokio", "sqlite", "migrate
 toml        = "1.1"
 
 # cli
-clap        = { version = "4", features = ["derive"] }
+clap        = { version = "4", features = ["derive", "env"] }
 
 # http client (para rucio-cli)
 reqwest     = { version = "0.13", features = ["json"] }

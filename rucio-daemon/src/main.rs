@@ -6,7 +6,7 @@ async fn main() -> anyhow::Result<()> {
     #[command(name = "rucio-daemon", about = "Rucio P2P daemon", version)]
     struct Cli {
         /// Path to the TOML configuration file
-        #[arg(long, short)]
+        #[arg(long, short, env = "RUCIOD_CONFIG")]
         config: Option<std::path::PathBuf>,
     }
 
