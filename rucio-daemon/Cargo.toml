@@ -24,7 +24,7 @@ thiserror           = { workspace = true }
 anyhow              = { workspace = true }
 tracing             = { workspace = true }
 tracing-subscriber  = { workspace = true }
-utoipa      = { workspace = true }
-hex         = { workspace = true }
-uuid        = { workspace = true }
+utoipa              = { workspace = true }
+hex                 = { workspace = true }
+uuid                = { workspace = true }
 dirs                = { workspace = true }

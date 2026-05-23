@@ -1,5 +1,10 @@
+pub mod client;
+pub mod cmd;
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+
+use client::ApiClient;
 
 #[derive(Parser, Debug)]
 #[command(name = "rucio", about = "Rucio P2P file sharing client", version)]
@@ -25,7 +30,7 @@ pub enum Commands {
     },
     /// Stop sharing a file
     Remove {
-        /// Root hash of the file
+        /// Root hash of the file (hex)
         hash: String,
     },
     /// List shared files
@@ -39,7 +44,7 @@ pub enum Commands {
     Downloads,
     /// Cancel a download
     Cancel {
-        /// Root hash of the download
+        /// Root hash of the download (hex)
         hash: String,
     },
     /// Search for files on the network
@@ -64,8 +69,20 @@ pub enum ConfigAction {
 /// Called both from the CLI's own `main.rs` and from the fat binary.
 pub async fn run() -> Result<()> {
     let cli = Cli::parse();
-    // TODO: implement command dispatch
-    println!("API endpoint: {}", cli.api);
-    println!("Command: {:?}", cli.command);
-    Ok(())
+    let client = ApiClient::new(&cli.api);
+
+    match cli.command {
+        Commands::Status => cmd::status::status(&client).await,
+        Commands::Peers => cmd::status::peers(&client).await,
+        Commands::Shares => cmd::shares::list(&client).await,
+        Commands::Add { path } => cmd::shares::add(&client, &path).await,
+        Commands::Remove { hash } => cmd::shares::remove(&client, &hash).await,
+        Commands::Downloads => cmd::downloads::list(&client).await,
+        Commands::Get { magnet } => cmd::downloads::start(&client, &magnet).await,
+        Commands::Cancel { hash } => cmd::downloads::cancel(&client, &hash).await,
+        Commands::Search { keywords } => cmd::search::search(&client, keywords).await,
+        Commands::Config { action } => match action {
+            ConfigAction::Show => cmd::config::show(&client).await,
+        },
+    }
 }
