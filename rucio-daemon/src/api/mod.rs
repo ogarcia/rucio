@@ -8,6 +8,8 @@ pub mod downloads;
 pub mod search;
 pub mod shares;
 pub mod status;
+#[cfg(test)]
+mod tests;
 
 use std::collections::HashMap;
 use std::sync::Arc;

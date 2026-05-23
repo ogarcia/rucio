@@ -40,16 +40,27 @@ pub async fn open(path: &Path) -> Result<Db> {
 }
 
 /// Execute the embedded schema SQL against `pool`.
-async fn apply_schema(pool: &Db) -> Result<()> {
+pub(crate) async fn apply_schema(pool: &Db) -> Result<()> {
     let schema = include_str!("schema.sql");
-    // sqlx doesn't support multi-statement execute on SQLite directly;
-    // split on statement boundaries and run each one.
-    for stmt in schema.split(';') {
-        let stmt = stmt.trim();
-        if stmt.is_empty() || stmt.starts_with("--") {
-            continue;
-        }
-        sqlx::query(stmt)
+    // Strip line comments, then split on ';' and execute each non-empty statement.
+    let statements: Vec<String> = schema
+        .lines()
+        .map(|line| {
+            if let Some(pos) = line.find("--") {
+                line[..pos].to_owned()
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        .split(';')
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    for stmt in statements {
+        sqlx::query(sqlx::AssertSqlSafe(stmt.clone()))
             .execute(pool)
             .await
             .with_context(|| format!("applying schema statement: {stmt}"))?;

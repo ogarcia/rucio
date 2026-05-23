@@ -123,3 +123,203 @@ pub async fn delete_by_path_prefix(db: &Db, prefix: &str) -> Result<u64> {
 
     Ok(affected)
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Open an in-memory SQLite DB with the full schema applied.
+    async fn test_db() -> Db {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+        use std::str::FromStr;
+
+        let opts = SqliteConnectOptions::from_str("sqlite::memory:")
+            .unwrap()
+            .foreign_keys(true);
+        // max_connections(1) is critical: each connection to ":memory:" gets
+        // its own independent database, so we must pin the pool to one conn.
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts)
+            .await
+            .unwrap();
+        super::super::apply_schema(&pool).await.unwrap();
+        pool
+    }
+
+    fn dummy_hash(seed: u8) -> [u8; 32] {
+        [seed; 32]
+    }
+
+    fn dummy_chunks(n: u32) -> Vec<(u32, [u8; 32], u32)> {
+        (0..n)
+            .map(|i| (i, dummy_hash(i as u8 + 10), 4096))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn insert_and_list() {
+        let db = test_db().await;
+        let hash = dummy_hash(1);
+        let chunks = dummy_chunks(3);
+
+        let id = insert(
+            &db,
+            NewSharedFile {
+                root_hash: &hash,
+                name: "hello.txt",
+                size: 12288,
+                mime_type: Some("text/plain"),
+                path: "/tmp/hello.txt",
+                chunk_size: 4096,
+                added_at: 1_000_000,
+                chunks: &chunks,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(id > 0);
+
+        let rows = list(&db).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name, "hello.txt");
+        assert_eq!(rows[0].size, 12288);
+        assert_eq!(rows[0].root_hash, hash);
+    }
+
+    #[tokio::test]
+    async fn delete_by_hash_existing() {
+        let db = test_db().await;
+        let hash = dummy_hash(2);
+        insert(
+            &db,
+            NewSharedFile {
+                root_hash: &hash,
+                name: "file.bin",
+                size: 100,
+                mime_type: None,
+                path: "/tmp/file.bin",
+                chunk_size: 4096,
+                added_at: 1_000_000,
+                chunks: &[],
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(list(&db).await.unwrap().len(), 1);
+        let deleted = delete_by_hash(&db, &hash).await.unwrap();
+        assert!(deleted);
+        assert_eq!(list(&db).await.unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn delete_by_hash_missing() {
+        let db = test_db().await;
+        let deleted = delete_by_hash(&db, &dummy_hash(99)).await.unwrap();
+        assert!(!deleted);
+    }
+
+    #[tokio::test]
+    async fn delete_by_path_prefix_directory() {
+        let db = test_db().await;
+
+        // Insert three files: two inside /music, one outside.
+        for (seed, path) in [
+            (1u8, "/music/a.mp3"),
+            (2u8, "/music/sub/b.mp3"),
+            (3u8, "/videos/c.mp4"),
+        ] {
+            insert(
+                &db,
+                NewSharedFile {
+                    root_hash: &dummy_hash(seed),
+                    name: "f",
+                    size: 10,
+                    mime_type: None,
+                    path,
+                    chunk_size: 4096,
+                    added_at: 1_000_000,
+                    chunks: &[],
+                },
+            )
+            .await
+            .unwrap();
+        }
+
+        let removed = delete_by_path_prefix(&db, "/music").await.unwrap();
+        assert_eq!(removed, 2);
+
+        let remaining = list(&db).await.unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].path, "/videos/c.mp4");
+    }
+
+    #[tokio::test]
+    async fn delete_by_path_prefix_no_partial_match() {
+        let db = test_db().await;
+
+        // "/music-extra" must NOT be removed when prefix is "/music".
+        for (seed, path) in [(1u8, "/music/a.mp3"), (2u8, "/music-extra/b.mp3")] {
+            insert(
+                &db,
+                NewSharedFile {
+                    root_hash: &dummy_hash(seed),
+                    name: "f",
+                    size: 10,
+                    mime_type: None,
+                    path,
+                    chunk_size: 4096,
+                    added_at: 1_000_000,
+                    chunks: &[],
+                },
+            )
+            .await
+            .unwrap();
+        }
+
+        let removed = delete_by_path_prefix(&db, "/music").await.unwrap();
+        assert_eq!(removed, 1);
+
+        let remaining = list(&db).await.unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].path, "/music-extra/b.mp3");
+    }
+
+    #[tokio::test]
+    async fn chunks_cascade_on_file_delete() {
+        let db = test_db().await;
+        let hash = dummy_hash(5);
+        let chunks = dummy_chunks(4);
+
+        insert(
+            &db,
+            NewSharedFile {
+                root_hash: &hash,
+                name: "big.bin",
+                size: 16384,
+                mime_type: None,
+                path: "/tmp/big.bin",
+                chunk_size: 4096,
+                added_at: 1_000_000,
+                chunks: &chunks,
+            },
+        )
+        .await
+        .unwrap();
+
+        delete_by_hash(&db, &hash).await.unwrap();
+
+        // Chunks should have been deleted by CASCADE.
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chunks")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+}

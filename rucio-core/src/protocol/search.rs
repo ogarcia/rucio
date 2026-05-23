@@ -108,3 +108,72 @@ impl SearchResult {
         Self::magnet_from_parts(&hash.to_hex(), name, size)
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn query(keywords: &[&str]) -> SearchQuery {
+        SearchQuery::new(
+            keywords.iter().map(|s| s.to_string()).collect(),
+            "peer123".to_string(),
+        )
+    }
+
+    #[test]
+    fn matches_exact() {
+        let q = query(&["hello"]);
+        assert!(q.matches("hello.txt"));
+    }
+
+    #[test]
+    fn matches_substring() {
+        let q = query(&["rust"]);
+        assert!(q.matches("learn-rust-2024.pdf"));
+    }
+
+    #[test]
+    fn matches_case_insensitive() {
+        let q = query(&["Rust"]);
+        assert!(q.matches("learn-rust-2024.pdf"));
+
+        let q2 = query(&["rust"]);
+        assert!(q2.matches("Rust_Programming.epub"));
+    }
+
+    #[test]
+    fn matches_any_keyword() {
+        let q = query(&["foo", "bar"]);
+        assert!(q.matches("foofile.zip")); // first keyword
+        assert!(q.matches("barfile.zip")); // second keyword
+    }
+
+    #[test]
+    fn no_match() {
+        let q = query(&["xyz"]);
+        assert!(!q.matches("hello_world.mp4"));
+    }
+
+    #[test]
+    fn empty_keywords_never_match() {
+        let q = query(&[]);
+        assert!(!q.matches("anything.txt"));
+    }
+
+    #[test]
+    fn default_ttl() {
+        let q = query(&["test"]);
+        assert_eq!(q.ttl, SearchQuery::DEFAULT_TTL);
+    }
+
+    #[test]
+    fn query_id_is_unique() {
+        let q1 = query(&["a"]);
+        let q2 = query(&["a"]);
+        assert_ne!(q1.id.0, q2.id.0);
+    }
+}

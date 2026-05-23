@@ -138,3 +138,169 @@ fn now_secs() -> u64 {
         .unwrap_or_default()
         .as_secs()
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn test_db() -> Db {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+        use std::str::FromStr;
+
+        let opts = SqliteConnectOptions::from_str("sqlite::memory:")
+            .unwrap()
+            .foreign_keys(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts)
+            .await
+            .unwrap();
+        super::super::apply_schema(&pool).await.unwrap();
+        pool
+    }
+
+    fn hash(seed: u8) -> [u8; 32] {
+        [seed; 32]
+    }
+
+    fn chunks(n: u32) -> Vec<(u32, [u8; 32], u32)> {
+        (0..n).map(|i| (i, hash(i as u8 + 20), 4096)).collect()
+    }
+
+    #[tokio::test]
+    async fn enqueue_and_list() {
+        let db = test_db().await;
+        let id = enqueue(
+            &db,
+            &hash(1),
+            "movie.mkv",
+            8192,
+            "/tmp/movie.mkv",
+            1_000,
+            &chunks(2),
+        )
+        .await
+        .unwrap();
+        assert!(id > 0);
+
+        let rows = list(&db).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name, "movie.mkv");
+        assert_eq!(rows[0].total_size, 8192);
+        assert_eq!(rows[0].status, "queued");
+        assert_eq!(rows[0].bytes_done, 0);
+    }
+
+    #[tokio::test]
+    async fn chunk_done_updates_bytes() {
+        let db = test_db().await;
+        let id = enqueue(
+            &db,
+            &hash(2),
+            "file.bin",
+            8192,
+            "/tmp/file.bin",
+            1_000,
+            &chunks(2),
+        )
+        .await
+        .unwrap();
+
+        chunk_done(&db, id, 0, 4096).await.unwrap();
+
+        let rows = list(&db).await.unwrap();
+        assert_eq!(rows[0].bytes_done, 4096);
+    }
+
+    #[tokio::test]
+    async fn chunk_done_twice_accumulates() {
+        let db = test_db().await;
+        let id = enqueue(
+            &db,
+            &hash(3),
+            "file.bin",
+            8192,
+            "/tmp/file.bin",
+            1_000,
+            &chunks(2),
+        )
+        .await
+        .unwrap();
+
+        chunk_done(&db, id, 0, 4096).await.unwrap();
+        chunk_done(&db, id, 1, 4096).await.unwrap();
+
+        let rows = list(&db).await.unwrap();
+        assert_eq!(rows[0].bytes_done, 8192);
+    }
+
+    #[tokio::test]
+    async fn set_status_completed() {
+        let db = test_db().await;
+        let id = enqueue(
+            &db,
+            &hash(4),
+            "track.flac",
+            1024,
+            "/tmp/track.flac",
+            1_000,
+            &[],
+        )
+        .await
+        .unwrap();
+
+        set_status(&db, id, "completed", None).await.unwrap();
+
+        let rows = list(&db).await.unwrap();
+        assert_eq!(rows[0].status, "completed");
+        assert!(rows[0].error_msg.is_none());
+    }
+
+    #[tokio::test]
+    async fn set_status_error_stores_message() {
+        let db = test_db().await;
+        let id = enqueue(&db, &hash(5), "doc.pdf", 512, "/tmp/doc.pdf", 1_000, &[])
+            .await
+            .unwrap();
+
+        set_status(&db, id, "error", Some("peer disconnected"))
+            .await
+            .unwrap();
+
+        let rows = list(&db).await.unwrap();
+        assert_eq!(rows[0].status, "error");
+        assert_eq!(rows[0].error_msg.as_deref(), Some("peer disconnected"));
+    }
+
+    #[tokio::test]
+    async fn download_chunks_cascade_on_delete() {
+        let db = test_db().await;
+        let id = enqueue(
+            &db,
+            &hash(6),
+            "big.iso",
+            16384,
+            "/tmp/big.iso",
+            1_000,
+            &chunks(4),
+        )
+        .await
+        .unwrap();
+
+        sqlx::query("DELETE FROM downloads WHERE id = ?1")
+            .bind(id)
+            .execute(&db)
+            .await
+            .unwrap();
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM download_chunks")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+}
