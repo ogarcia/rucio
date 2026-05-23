@@ -21,8 +21,6 @@
 # Environment variables (runtime):
 #   RUCIOD_CONFIG   Path to the daemon config file — optional, defaults to
 #                   $HOME/.config/rucio/config.toml (/var/lib/rucio/.config/…)
-#   RUCIO_API       Daemon API URL used by the rucio CLI (full image only)
-#                   (default: http://127.0.0.1:7070)
 
 # ── Stage 1a: compile from source (default local path) ──────────────────────
 
@@ -67,7 +65,6 @@ USER rucio
 WORKDIR /var/lib/rucio
 
 EXPOSE 4321/tcp
-EXPOSE 7070/tcp
 
 ENTRYPOINT ["/usr/bin/ruciod"]
 
@@ -86,8 +83,6 @@ COPY --from=bins /usr/bin/rucio  /usr/bin/rucio
 
 USER rucio
 WORKDIR /var/lib/rucio
-
-ENV RUCIO_API=http://127.0.0.1:7070
 
 EXPOSE 4321/tcp
 EXPOSE 7070/tcp
