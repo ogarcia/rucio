@@ -120,7 +120,13 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
 
     // --- Main loop ----------------------------------------------------------
     let mut manifest_tick = tokio::time::interval(tokio::time::Duration::from_secs(2));
-    let mut provider_refresh_tick = tokio::time::interval(tokio::time::Duration::from_secs(30));
+    let mut provider_refresh_tick = tokio::time::interval(tokio::time::Duration::from_secs(60));
+    // Re-announce shared files to Kademlia every 22 minutes so provider
+    // records stay fresh before the 24h TTL expires.  The first tick fires
+    // immediately (at t=0) but we already did a full re-announce at startup,
+    // so skip it.
+    let mut reprovide_tick = tokio::time::interval(tokio::time::Duration::from_secs(22 * 60));
+    reprovide_tick.tick().await; // consume the immediate first tick
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
@@ -133,6 +139,24 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
             }
             _ = provider_refresh_tick.tick() => {
                 engine.tick_provider_refresh().await;
+            }
+            _ = reprovide_tick.tick() => {
+                match db::shares::list(&db).await {
+                    Ok(shares) => {
+                        for share in &shares {
+                            let _ = handle
+                                .cmd_tx
+                                .send(node::messages::NodeCmd::StartProviding(
+                                    share.root_hash.clone(),
+                                ))
+                                .await;
+                        }
+                        if !shares.is_empty() {
+                            debug!("Re-announced {} share(s) to Kademlia", shares.len());
+                        }
+                    }
+                    Err(e) => warn!("Reprovide: could not load shares: {e}"),
+                }
             }
             dl_req = download_rx.recv() => {
                 if let Some(req) = dl_req {

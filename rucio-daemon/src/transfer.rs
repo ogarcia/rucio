@@ -330,24 +330,40 @@ impl DownloadEngine {
     }
 
     // -----------------------------------------------------------------------
-    // Periodic provider refresh
+    // Periodic provider refresh — only when a download is stalled
     // -----------------------------------------------------------------------
 
-    /// Re-issue `FindProviders` for every in-progress download so that peers
-    /// that joined the network after the download started are discovered and
-    /// added as additional chunk sources.
+    /// Re-issue `FindProviders` for downloads that are stalled: chunks are
+    /// queued but nothing is in-flight, meaning we have no reachable peers.
+    /// Also re-queries for pending manifests that have no providers yet
+    /// (pure DHT-only start still waiting for the first peer).
     ///
-    /// Called every `PROVIDER_REFRESH_SECS` from the main loop.
+    /// This is intentionally conservative — we do *not* re-query on a fixed
+    /// timer for healthy downloads.  The seeder side handles reproviding so
+    /// that new peers become discoverable; we only pay the DHT query cost
+    /// when we actually need new peers.
     pub async fn tick_provider_refresh(&mut self) {
-        let hashes: Vec<[u8; 32]> = self
-            .active
-            .keys()
-            .chain(self.pending_manifests.keys())
-            .copied()
+        // Pending manifests with no providers — still waiting for first DHT result.
+        let stalled_pending: Vec<[u8; 32]> = self
+            .pending_manifests
+            .iter()
+            .filter(|(_, pm)| pm.providers.is_empty())
+            .map(|(h, _)| *h)
             .collect();
 
-        for hash in hashes {
-            debug!(root_hash = hex::encode(hash), "Refreshing provider lookup");
+        // Active downloads where chunks are queued but nothing is in-flight.
+        let stalled_active: Vec<[u8; 32]> = self
+            .active
+            .iter()
+            .filter(|(_, dl)| !dl.queued.is_empty() && dl.in_flight.is_empty())
+            .map(|(h, _)| *h)
+            .collect();
+
+        for hash in stalled_pending.into_iter().chain(stalled_active) {
+            debug!(
+                root_hash = hex::encode(hash),
+                "Download stalled — re-querying DHT for providers"
+            );
             let _ = self
                 .cmd_tx
                 .send(NodeCmd::FindProviders(hash.to_vec()))
@@ -1150,30 +1166,44 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // tick_provider_refresh() — re-issues FindProviders for active downloads
+    // tick_provider_refresh() — only fires for stalled downloads
     // -----------------------------------------------------------------------
 
     #[tokio::test]
-    async fn tick_provider_refresh_emits_find_providers_for_active_and_pending() {
+    async fn tick_provider_refresh_skips_healthy_download() {
+        // A pending manifest that already has a provider is not stalled —
+        // it is waiting for the manifest reply. No FindProviders should fire.
         let tmp = tempfile::tempdir().unwrap();
         let (mut engine, mut rx, _db_dir) = make_engine(&tmp).await;
-
-        let hash_a = [0xaau8; 32];
-        let hash_b = [0xbbu8; 32];
+        let hash = [0xaau8; 32];
         let p = peer(1);
 
-        // One pending manifest, one active download (simulate by inserting directly).
         engine
-            .start(&fake_magnet(&hash_a, "a.bin", 100), vec![p], 0)
+            .start(&fake_magnet(&hash, "a.bin", 100), vec![p], 0)
             .await
             .unwrap();
-        // Drain the initial FindProviders + RequestManifest from start()
+        // Drain start() commands (FindProviders + RequestManifest)
         while rx.try_recv().is_ok() {}
 
-        // Insert a second hash directly into pending_manifests (no provider).
+        engine.tick_provider_refresh().await;
+
+        // Nothing emitted — download has a provider and is not stalled.
+        assert!(
+            rx.try_recv().is_err(),
+            "no FindProviders for healthy download"
+        );
+    }
+
+    #[tokio::test]
+    async fn tick_provider_refresh_emits_for_pending_without_providers() {
+        // A pending manifest with no providers is the pure DHT-only start case.
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut engine, mut rx, _db_dir) = make_engine(&tmp).await;
+        let hash = [0xbbu8; 32];
+
         engine.pending_manifests.insert(
-            hash_b,
-            crate::transfer::PendingManifest {
+            hash,
+            PendingManifest {
                 providers: vec![],
                 attempt: 0,
                 requested_at: std::time::Instant::now(),
@@ -1182,17 +1212,8 @@ mod tests {
 
         engine.tick_provider_refresh().await;
 
-        // Should have emitted FindProviders for both hashes.
-        let mut found = std::collections::HashSet::new();
-        while let Ok(cmd) = rx.try_recv() {
-            if let NodeCmd::FindProviders(k) = cmd {
-                let mut arr = [0u8; 32];
-                arr.copy_from_slice(&k);
-                found.insert(arr);
-            }
-        }
-        assert!(found.contains(&hash_a), "expected FindProviders for hash_a");
-        assert!(found.contains(&hash_b), "expected FindProviders for hash_b");
+        let cmd = rx.try_recv().unwrap();
+        assert!(matches!(cmd, NodeCmd::FindProviders(k) if k == hash.as_slice()));
     }
 
     // -----------------------------------------------------------------------
