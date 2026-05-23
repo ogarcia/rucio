@@ -10,7 +10,7 @@ use libp2p::{
     kad::{self, QueryId},
     swarm::SwarmEvent,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
@@ -18,6 +18,7 @@ use crate::config::NodeConfig;
 
 use super::{
     behaviour::{RucioBehaviour, RucioBehaviourEvent},
+    classify::ClassificationState,
     identity,
     messages::{NodeCmd, NodeEvent},
 };
@@ -41,9 +42,6 @@ pub struct NodeHandle {
 // ---------------------------------------------------------------------------
 
 /// Spawn the node task and return a [`NodeHandle`].
-///
-/// The task runs until it receives [`NodeCmd::Shutdown`] or encounters a
-/// fatal error, at which point it emits [`NodeEvent::FatalError`] and exits.
 pub async fn spawn(cfg: &NodeConfig) -> Result<NodeHandle> {
     let keypair = identity::load_or_create(&cfg.identity_path)?;
     let peer_id = keypair.public().to_peer_id();
@@ -51,7 +49,6 @@ pub async fn spawn(cfg: &NodeConfig) -> Result<NodeHandle> {
     let (cmd_tx, cmd_rx) = mpsc::channel::<NodeCmd>(CMD_BUFFER);
     let (event_tx, event_rx) = mpsc::channel::<NodeEvent>(EVENT_BUFFER);
 
-    // Parse listen addresses from config
     let listen_addrs: Vec<Multiaddr> = cfg
         .listen_addrs
         .iter()
@@ -62,7 +59,6 @@ pub async fn spawn(cfg: &NodeConfig) -> Result<NodeHandle> {
         })
         .collect();
 
-    // Build the swarm
     let behaviour = RucioBehaviour::new(&keypair, peer_id)?;
     let mut swarm = SwarmBuilder::with_existing_identity(keypair)
         .with_tokio()
@@ -77,7 +73,6 @@ pub async fn spawn(cfg: &NodeConfig) -> Result<NodeHandle> {
         .context("attaching behaviour")?
         .build();
 
-    // Start listening
     for addr in &listen_addrs {
         if let Err(e) = swarm.listen_on(addr.clone()) {
             warn!("Failed to listen on {addr}: {e}");
@@ -90,6 +85,28 @@ pub async fn spawn(cfg: &NodeConfig) -> Result<NodeHandle> {
 }
 
 // ---------------------------------------------------------------------------
+// Event loop state
+// ---------------------------------------------------------------------------
+
+struct LoopState {
+    confirmed_addrs: HashSet<Multiaddr>,
+    ready_sent: bool,
+    provider_queries: HashMap<QueryId, Vec<u8>>,
+    classifier: ClassificationState,
+}
+
+impl LoopState {
+    fn new() -> Self {
+        Self {
+            confirmed_addrs: HashSet::new(),
+            ready_sent: false,
+            provider_queries: HashMap::new(),
+            classifier: ClassificationState::default(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Event loop
 // ---------------------------------------------------------------------------
 
@@ -99,15 +116,10 @@ async fn run_loop(
     mut cmd_rx: mpsc::Receiver<NodeCmd>,
     event_tx: mpsc::Sender<NodeEvent>,
 ) {
-    let mut confirmed_addrs: HashSet<Multiaddr> = HashSet::new();
-    let mut ready_sent = false;
-    // Track in-flight FindProviders query ids so we can correlate results
-    let mut provider_queries: std::collections::HashMap<QueryId, Vec<u8>> =
-        std::collections::HashMap::new();
+    let mut state = LoopState::new();
 
     loop {
         tokio::select! {
-            // ---- incoming commands ----------------------------------------
             cmd = cmd_rx.recv() => {
                 match cmd {
                     None | Some(NodeCmd::Shutdown) => {
@@ -122,11 +134,7 @@ async fn run_loop(
                     }
                     Some(NodeCmd::StartProviding(key)) => {
                         let record_key = kad::RecordKey::new(&key);
-                        if let Err(e) = swarm
-                            .behaviour_mut()
-                            .kademlia
-                            .start_providing(record_key)
-                        {
+                        if let Err(e) = swarm.behaviour_mut().kademlia.start_providing(record_key) {
                             warn!("start_providing error: {e}");
                         }
                     }
@@ -136,27 +144,15 @@ async fn run_loop(
                     }
                     Some(NodeCmd::FindProviders(key)) => {
                         let record_key = kad::RecordKey::new(&key);
-                        let qid = swarm
-                            .behaviour_mut()
-                            .kademlia
-                            .get_providers(record_key);
-                        provider_queries.insert(qid, key);
+                        let qid = swarm.behaviour_mut().kademlia.get_providers(record_key);
+                        state.provider_queries.insert(qid, key);
                     }
                 }
             }
 
-            // ---- swarm events --------------------------------------------
             event = swarm.next() => {
                 let Some(event) = event else { break };
-                handle_swarm_event(
-                    event,
-                    &event_tx,
-                    &mut confirmed_addrs,
-                    &mut ready_sent,
-                    &mut provider_queries,
-                    peer_id,
-                )
-                .await;
+                handle_swarm_event(event, &event_tx, &mut state, peer_id).await;
             }
         }
     }
@@ -165,22 +161,20 @@ async fn run_loop(
 async fn handle_swarm_event(
     event: SwarmEvent<RucioBehaviourEvent>,
     event_tx: &mpsc::Sender<NodeEvent>,
-    confirmed_addrs: &mut HashSet<Multiaddr>,
-    ready_sent: &mut bool,
-    provider_queries: &mut std::collections::HashMap<QueryId, Vec<u8>>,
+    state: &mut LoopState,
     peer_id: libp2p::PeerId,
 ) {
     match event {
         // ---- listener events -------------------------------------------
         SwarmEvent::NewListenAddr { address, .. } => {
             info!(%address, "Listening");
-            confirmed_addrs.insert(address);
-            if !*ready_sent {
-                *ready_sent = true;
+            state.confirmed_addrs.insert(address);
+            if !state.ready_sent {
+                state.ready_sent = true;
                 let _ = event_tx
                     .send(NodeEvent::Ready {
                         peer_id,
-                        listen_addrs: confirmed_addrs.iter().cloned().collect(),
+                        listen_addrs: state.confirmed_addrs.iter().cloned().collect(),
                     })
                     .await;
             }
@@ -189,8 +183,8 @@ async fn handle_swarm_event(
             addresses, reason, ..
         } => {
             warn!(?addresses, ?reason, "Listener closed");
-            for a in addresses {
-                confirmed_addrs.remove(&a);
+            for a in &addresses {
+                state.confirmed_addrs.remove(a);
             }
         }
 
@@ -215,8 +209,7 @@ async fn handle_swarm_event(
                 use libp2p::mdns::Event;
                 match mdns_event {
                     Event::Discovered(peers) => {
-                        let mut by_peer: std::collections::HashMap<libp2p::PeerId, Vec<Multiaddr>> =
-                            std::collections::HashMap::new();
+                        let mut by_peer: HashMap<libp2p::PeerId, Vec<Multiaddr>> = HashMap::new();
                         for (pid, addr) in peers {
                             by_peer.entry(pid).or_default().push(addr);
                         }
@@ -231,7 +224,7 @@ async fn handle_swarm_event(
                         }
                     }
                     Event::Expired(peers) => {
-                        let mut seen = std::collections::HashSet::new();
+                        let mut seen = HashSet::new();
                         for (pid, _) in peers {
                             if seen.insert(pid) {
                                 let _ =
@@ -241,6 +234,7 @@ async fn handle_swarm_event(
                     }
                 }
             }
+
             RucioBehaviourEvent::Kademlia(kad_event) => {
                 use kad::Event;
                 match kad_event {
@@ -250,7 +244,7 @@ async fn handle_swarm_event(
                             providers,
                             ..
                         })) = result
-                            && let Some(key) = provider_queries.get(&id)
+                            && let Some(key) = state.provider_queries.get(&id)
                         {
                             let _ = event_tx
                                 .send(NodeEvent::ProvidersFound {
@@ -266,13 +260,39 @@ async fn handle_swarm_event(
                     _ => {}
                 }
             }
+
             RucioBehaviourEvent::Identify(id_event) => {
                 use libp2p::identify::Event;
-                if let Event::Received {
-                    peer_id: pid, info, ..
-                } = id_event
-                {
-                    debug!(%pid, agent = %info.agent_version, "Identify received");
+                match id_event {
+                    Event::Received {
+                        peer_id: pid, info, ..
+                    } => {
+                        debug!(%pid, agent = %info.agent_version, "Identify received");
+
+                        let observed = info.observed_addr.clone();
+                        let listen_vec: Vec<Multiaddr> =
+                            state.confirmed_addrs.iter().cloned().collect();
+
+                        // Emit the raw observation so consumers can log/display it
+                        let _ = event_tx
+                            .send(NodeEvent::ObservedAddr {
+                                addr: observed.clone(),
+                                reported_by: pid,
+                            })
+                            .await;
+
+                        // Run the classifier; emit ClassChanged only if it changes
+                        if let Some(new_class) =
+                            state
+                                .classifier
+                                .record_observation(observed, pid, &listen_vec)
+                        {
+                            info!(?new_class, "Node class determined");
+                            let _ = event_tx.send(NodeEvent::ClassChanged(new_class)).await;
+                        }
+                    }
+                    Event::Sent { .. } => {}
+                    _ => {}
                 }
             }
         },

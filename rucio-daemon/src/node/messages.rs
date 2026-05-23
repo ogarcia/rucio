@@ -12,6 +12,7 @@
 //! module imports libp2p types directly.
 
 use libp2p::{Multiaddr, PeerId};
+use rucio_core::protocol::node::NodeClass;
 
 // ---------------------------------------------------------------------------
 // Commands (caller → node)
@@ -51,6 +52,16 @@ pub enum NodeEvent {
     },
     /// A peer is no longer reachable.
     PeerExpired { peer_id: PeerId },
+    /// A remote peer reported our observed (external) address via Identify.
+    /// Accumulating several of these is the basis for HighID/LowID detection.
+    ObservedAddr {
+        /// The address as seen by the remote peer.
+        addr: Multiaddr,
+        /// The peer that reported it.
+        reported_by: PeerId,
+    },
+    /// Node connectivity class has been (re)determined.
+    ClassChanged(NodeClass),
     /// DHT returned providers for a hash requested via `FindProviders`.
     ProvidersFound {
         key: Vec<u8>,

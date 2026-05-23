@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use anyhow::Result;
 use tokio::sync::RwLock;
-use tracing::info;
+use tracing::{debug, info};
 
 /// Entry point for the daemon logic.
 /// Called both from the daemon's own `main.rs` and from the fat binary.
@@ -114,6 +114,13 @@ pub async fn run() -> Result<()> {
                     Some(node::messages::NodeEvent::PeerExpired { .. }) => {
                         let mut ns = node_status.write().await;
                         ns.connected_peers = ns.connected_peers.saturating_sub(1);
+                    }
+                    Some(node::messages::NodeEvent::ObservedAddr { addr, reported_by }) => {
+                        debug!(%addr, %reported_by, "Observed address");
+                    }
+                    Some(node::messages::NodeEvent::ClassChanged(class)) => {
+                        info!(?class, "Node class updated");
+                        node_status.write().await.node_class = class;
                     }
                     Some(node::messages::NodeEvent::FatalError(e)) => {
                         tracing::error!("Node fatal error: {e}");
