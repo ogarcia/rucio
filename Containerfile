@@ -41,9 +41,9 @@ WORKDIR /app
 COPY . .
 
 RUN cargo build --release --locked && \
-    cp target/release/ruciod /usr/local/bin/ruciod && \
-    cp target/release/rucio  /usr/local/bin/rucio  && \
-    strip /usr/local/bin/ruciod /usr/local/bin/rucio
+    cp target/release/ruciod /usr/bin/ruciod && \
+    cp target/release/rucio  /usr/bin/rucio  && \
+    strip /usr/bin/ruciod /usr/bin/rucio
 
 # ── Stage 2: runtime – daemon only (tag: master / vX.Y.Z / latest) ──────────
 
@@ -55,7 +55,7 @@ RUN apk add --no-cache ca-certificates && \
     mkdir -p /etc/rucio /var/lib/rucio && \
     chown -R rucio:rucio /var/lib/rucio /etc/rucio
 
-COPY --from=builder /usr/local/bin/ruciod /usr/local/bin/ruciod
+COPY --from=builder /usr/bin/ruciod /usr/bin/ruciod
 
 USER rucio
 WORKDIR /var/lib/rucio
@@ -67,7 +67,7 @@ ENV RUCIOD_CONFIG=/etc/rucio/config.toml
 EXPOSE 4321/tcp
 EXPOSE 7070/tcp
 
-ENTRYPOINT ["/usr/local/bin/ruciod"]
+ENTRYPOINT ["/usr/bin/ruciod"]
 
 # ── Stage 3: runtime – full (tag: master-full / vX.Y.Z-full / latest-full) ──
 
@@ -79,8 +79,8 @@ RUN apk add --no-cache ca-certificates && \
     mkdir -p /etc/rucio /var/lib/rucio && \
     chown -R rucio:rucio /var/lib/rucio /etc/rucio
 
-COPY --from=builder /usr/local/bin/ruciod /usr/local/bin/ruciod
-COPY --from=builder /usr/local/bin/rucio  /usr/local/bin/rucio
+COPY --from=builder /usr/bin/ruciod /usr/bin/ruciod
+COPY --from=builder /usr/bin/rucio  /usr/bin/rucio
 
 USER rucio
 WORKDIR /var/lib/rucio
@@ -91,4 +91,4 @@ ENV RUCIOD_CONFIG=/etc/rucio/config.toml \
 EXPOSE 4321/tcp
 EXPOSE 7070/tcp
 
-ENTRYPOINT ["/usr/local/bin/ruciod"]
+ENTRYPOINT ["/usr/bin/ruciod"]
