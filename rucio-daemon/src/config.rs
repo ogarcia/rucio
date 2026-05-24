@@ -192,17 +192,68 @@ const BUILTIN_BOOTSTRAP_PEERS: &[&str] = &[
 impl Config {
     /// Load configuration from `path`, or from the default location if `None`,
     /// falling back to built-in defaults if no file exists.
+    ///
+    /// After loading the file (or defaults), environment variable overrides are
+    /// applied on top.  See [`Config::apply_env_overrides`].
     pub fn load(path: Option<&std::path::Path>) -> Result<Self> {
         let resolved = path
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| default_config_dir().join("config.toml"));
 
-        if resolved.exists() {
+        let mut config = if resolved.exists() {
             let contents = std::fs::read_to_string(&resolved)?;
-            let config: Config = toml::from_str(&contents)?;
-            Ok(config)
+            toml::from_str(&contents)?
         } else {
-            Ok(Config::default())
+            Config::default()
+        };
+
+        config.apply_env_overrides();
+        Ok(config)
+    }
+
+    /// Override config fields from environment variables.
+    ///
+    /// All variables are optional — unset means "keep whatever the file or
+    /// defaults provided".
+    ///
+    /// | Variable                | Field                        | Format             |
+    /// |-------------------------|------------------------------|--------------------|
+    /// | `RUCIOD_API_LISTEN`     | `api.listen`                 | `host:port`        |
+    /// | `RUCIOD_P2P_LISTEN`     | `node.listen_addrs`          | comma-separated multiaddrs |
+    /// | `RUCIOD_DOWNLOAD_DIR`   | `storage.download_dir`       | path               |
+    /// | `RUCIOD_TEMP_DIR`       | `storage.temp_dir`           | path               |
+    /// | `RUCIOD_DB_PATH`        | `storage.database_path`      | path               |
+    /// | `RUCIOD_BOOTSTRAP_PEERS`| `network.bootstrap_peers`    | comma-separated multiaddrs |
+    pub fn apply_env_overrides(&mut self) {
+        if let Ok(v) = std::env::var("RUCIOD_API_LISTEN")
+            && !v.is_empty()
+        {
+            self.api.listen = v;
+        }
+        if let Ok(v) = std::env::var("RUCIOD_P2P_LISTEN")
+            && !v.is_empty()
+        {
+            self.node.listen_addrs = v.split(',').map(|s| s.trim().to_string()).collect();
+        }
+        if let Ok(v) = std::env::var("RUCIOD_DOWNLOAD_DIR")
+            && !v.is_empty()
+        {
+            self.storage.download_dir = PathBuf::from(v);
+        }
+        if let Ok(v) = std::env::var("RUCIOD_TEMP_DIR")
+            && !v.is_empty()
+        {
+            self.storage.temp_dir = PathBuf::from(v);
+        }
+        if let Ok(v) = std::env::var("RUCIOD_DB_PATH")
+            && !v.is_empty()
+        {
+            self.storage.database_path = PathBuf::from(v);
+        }
+        if let Ok(v) = std::env::var("RUCIOD_BOOTSTRAP_PEERS")
+            && !v.is_empty()
+        {
+            self.network.bootstrap_peers = v.split(',').map(|s| s.trim().to_string()).collect();
         }
     }
 
@@ -276,14 +327,90 @@ mod tests {
         f();
     }
 
+    // -- env override tests --------------------------------------------------
+
+    #[test]
+    #[serial]
+    fn env_override_api_listen() {
+        unsafe { std::env::set_var("RUCIOD_API_LISTEN", "0.0.0.0:8080") };
+        let mut cfg = Config::default();
+        cfg.apply_env_overrides();
+        unsafe { std::env::remove_var("RUCIOD_API_LISTEN") };
+        assert_eq!(cfg.api.listen, "0.0.0.0:8080");
+    }
+
+    #[test]
+    #[serial]
+    fn env_override_p2p_listen() {
+        unsafe {
+            std::env::set_var(
+                "RUCIOD_P2P_LISTEN",
+                "/ip4/0.0.0.0/tcp/9000, /ip6/::/tcp/9000",
+            )
+        };
+        let mut cfg = Config::default();
+        cfg.apply_env_overrides();
+        unsafe { std::env::remove_var("RUCIOD_P2P_LISTEN") };
+        assert_eq!(
+            cfg.node.listen_addrs,
+            vec!["/ip4/0.0.0.0/tcp/9000", "/ip6/::/tcp/9000"]
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn env_override_storage_paths() {
+        unsafe {
+            std::env::set_var("RUCIOD_DOWNLOAD_DIR", "/data/downloads");
+            std::env::set_var("RUCIOD_TEMP_DIR", "/data/tmp");
+            std::env::set_var("RUCIOD_DB_PATH", "/data/rucio.db");
+        }
+        let mut cfg = Config::default();
+        cfg.apply_env_overrides();
+        unsafe {
+            std::env::remove_var("RUCIOD_DOWNLOAD_DIR");
+            std::env::remove_var("RUCIOD_TEMP_DIR");
+            std::env::remove_var("RUCIOD_DB_PATH");
+        }
+        assert_eq!(cfg.storage.download_dir, PathBuf::from("/data/downloads"));
+        assert_eq!(cfg.storage.temp_dir, PathBuf::from("/data/tmp"));
+        assert_eq!(cfg.storage.database_path, PathBuf::from("/data/rucio.db"));
+    }
+
+    #[test]
+    #[serial]
+    fn env_override_bootstrap_peers() {
+        unsafe {
+            std::env::set_var(
+                "RUCIOD_BOOTSTRAP_PEERS",
+                "/ip4/1.2.3.4/tcp/4321/p2p/12D3KooWAAA,/ip4/5.6.7.8/tcp/4321/p2p/12D3KooWBBB",
+            )
+        };
+        let mut cfg = Config::default();
+        cfg.apply_env_overrides();
+        unsafe { std::env::remove_var("RUCIOD_BOOTSTRAP_PEERS") };
+        assert_eq!(cfg.network.bootstrap_peers.len(), 2);
+        assert!(cfg.network.bootstrap_peers[0].contains("12D3KooWAAA"));
+    }
+
+    #[test]
+    #[serial]
+    fn env_override_empty_value_is_ignored() {
+        let default_listen = Config::default().api.listen.clone();
+        unsafe { std::env::set_var("RUCIOD_API_LISTEN", "") };
+        let mut cfg = Config::default();
+        cfg.apply_env_overrides();
+        unsafe { std::env::remove_var("RUCIOD_API_LISTEN") };
+        assert_eq!(cfg.api.listen, default_listen);
+    }
+
+    // -- default value tests -------------------------------------------------
+
     #[test]
     #[serial]
     fn home_dir_uses_home_env_when_absolute() {
         with_home("/custom/home", || {
             let cfg = Config::default();
-            // download_dir should be rooted under /custom/home (or XDG override,
-            // but in a clean env it will fall through to $HOME/Downloads/rucio or
-            // $HOME/rucio).
             assert!(
                 cfg.storage.download_dir.starts_with("/custom/home")
                     || cfg.storage.download_dir.starts_with("/"),
@@ -296,14 +423,7 @@ mod tests {
     #[test]
     #[serial]
     fn home_dir_ignores_relative_home_env() {
-        // A relative $HOME must be ignored by our home_dir() implementation;
-        // the fallback (dirs::home_dir or /tmp) must still produce an absolute path.
-        // Note: dirs::home_dir() may also read $HOME on some platforms, so we
-        // can't guarantee the exact path — only that it is absolute.
         with_home("relative/path", || {
-            // home_dir() filters out non-absolute $HOME values.
-            // The resulting download_dir might still come from dirs::home_dir()
-            // or /tmp, but must never literally start with "relative/".
             let cfg = Config::default();
             assert!(
                 !cfg.storage.download_dir.starts_with("relative/"),
@@ -365,7 +485,6 @@ mod tests {
     fn default_listen_addrs_are_non_empty() {
         let cfg = Config::default();
         assert!(!cfg.node.listen_addrs.is_empty());
-        // Both IPv4 and IPv6 wildcard listeners expected.
         assert!(cfg.node.listen_addrs.iter().any(|a| a.contains("/ip4/")));
         assert!(cfg.node.listen_addrs.iter().any(|a| a.contains("/ip6/")));
     }
