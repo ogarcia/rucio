@@ -71,16 +71,86 @@ impl Default for ApiConfig {
 impl Default for StorageConfig {
     fn default() -> Self {
         Self {
-            download_dir: dirs::download_dir()
-                .unwrap_or_else(|| PathBuf::from("~/Downloads"))
-                .join("rucio"),
+            download_dir: default_download_dir(),
             temp_dir: dirs::cache_dir()
-                .unwrap_or_else(|| PathBuf::from("~/.cache"))
+                .unwrap_or_else(|| home_dir().join(".cache"))
                 .join("rucio")
                 .join("tmp"),
             database_path: default_data_dir().join("rucio.db"),
         }
     }
+}
+
+/// Resolve the default download directory with a three-step fallback:
+///
+/// 1. `$XDG_DOWNLOAD_DIR` from `~/.config/user-dirs.dirs` (if set and non-empty)
+/// 2. `$HOME/Downloads` (if the directory already exists)
+/// 3. `$HOME` (always exists)
+///
+/// A `rucio/` subdirectory is appended in every case.
+fn default_download_dir() -> PathBuf {
+    let home = home_dir();
+
+    // 1. Parse ~/.config/user-dirs.dirs for XDG_DOWNLOAD_DIR.
+    if let Some(xdg_dl) = xdg_download_dir(&home) {
+        return xdg_dl.join("rucio");
+    }
+
+    // 2. $HOME/Downloads — only if it already exists (common on desktop systems).
+    let home_downloads = home.join("Downloads");
+    if home_downloads.is_dir() {
+        return home_downloads.join("rucio");
+    }
+
+    // 3. Fall back to $HOME/rucio — always resolvable.
+    home.join("rucio")
+}
+
+/// Return the user's home directory from `$HOME`, falling back to whatever
+/// `dirs::home_dir()` reports.  Never returns a literal `~`.
+fn home_dir() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+}
+
+/// Parse `~/.config/user-dirs.dirs` and return the value of `XDG_DOWNLOAD_DIR`
+/// if present and not empty.  The file uses shell-style `$HOME` expansion.
+fn xdg_download_dir(home: &std::path::Path) -> Option<PathBuf> {
+    let config_home = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".config"));
+
+    let user_dirs = config_home.join("user-dirs.dirs");
+    let content = std::fs::read_to_string(&user_dirs).ok()?;
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with('#') {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("XDG_DOWNLOAD_DIR=") {
+            // Strip surrounding quotes if present.
+            let val = rest.trim_matches('"');
+            if val.is_empty() {
+                return None;
+            }
+            // Expand $HOME prefix.
+            let expanded = if let Some(rel) = val.strip_prefix("$HOME/") {
+                home.join(rel)
+            } else if val == "$HOME" {
+                home.to_path_buf()
+            } else if val.starts_with('/') {
+                PathBuf::from(val)
+            } else {
+                return None;
+            };
+            return Some(expanded);
+        }
+    }
+    None
 }
 
 // --- Well-known bootstrap nodes ----------------------------------------------
