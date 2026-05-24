@@ -49,48 +49,6 @@ pub async fn create_pending(
     Ok(id)
 }
 
-/// Queue a new download. Returns the new `downloads.id`.
-pub async fn enqueue(
-    db: &Db,
-    root_hash: &[u8; 32],
-    name: &str,
-    total_size: u64,
-    dest_path: &str,
-    now: u64,
-    chunks: &[(u32, [u8; 32], u32)], // (idx, hash, size)
-) -> Result<i64> {
-    let mut tx = db.begin().await?;
-
-    let dl_id: i64 = sqlx::query(
-        "INSERT INTO downloads (root_hash, name, total_size, dest_path, added_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-    )
-    .bind(root_hash.as_slice())
-    .bind(name)
-    .bind(total_size as i64)
-    .bind(dest_path)
-    .bind(now as i64)
-    .bind(now as i64)
-    .execute(&mut *tx)
-    .await?
-    .last_insert_rowid();
-
-    for (idx, hash, size) in chunks {
-        sqlx::query(
-            "INSERT INTO download_chunks (download_id, idx, hash, size) VALUES (?1, ?2, ?3, ?4)",
-        )
-        .bind(dl_id)
-        .bind(*idx as i64)
-        .bind(hash.as_slice())
-        .bind(*size as i64)
-        .execute(&mut *tx)
-        .await?;
-    }
-
-    tx.commit().await?;
-    Ok(dl_id)
-}
-
 /// Update the placeholder row created by `create_pending()` with the real
 /// manifest data (name, size, dest_path) and insert the chunk rows.
 /// Sets status to 'downloading'.
@@ -367,9 +325,12 @@ mod tests {
     #[tokio::test]
     async fn enqueue_and_list() {
         let (db, _dir) = test_db().await;
-        let id = enqueue(
+        let id = create_pending(&db, &hash(1), Some("movie.mkv"), 1_000, true)
+            .await
+            .unwrap();
+        finalize_pending(
             &db,
-            &hash(1),
+            id,
             "movie.mkv",
             8192,
             "/tmp/movie.mkv",
@@ -384,16 +345,19 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].name, "movie.mkv");
         assert_eq!(rows[0].total_size, 8192);
-        assert_eq!(rows[0].status, "queued");
+        assert_eq!(rows[0].status, "downloading");
         assert_eq!(rows[0].bytes_done, 0);
     }
 
     #[tokio::test]
     async fn chunk_done_updates_bytes() {
         let (db, _dir) = test_db().await;
-        let id = enqueue(
+        let id = create_pending(&db, &hash(2), Some("file.bin"), 1_000, true)
+            .await
+            .unwrap();
+        finalize_pending(
             &db,
-            &hash(2),
+            id,
             "file.bin",
             8192,
             "/tmp/file.bin",
@@ -412,9 +376,12 @@ mod tests {
     #[tokio::test]
     async fn chunk_done_twice_accumulates() {
         let (db, _dir) = test_db().await;
-        let id = enqueue(
+        let id = create_pending(&db, &hash(3), Some("file.bin"), 1_000, true)
+            .await
+            .unwrap();
+        finalize_pending(
             &db,
-            &hash(3),
+            id,
             "file.bin",
             8192,
             "/tmp/file.bin",
@@ -434,17 +401,9 @@ mod tests {
     #[tokio::test]
     async fn set_status_completed() {
         let (db, _dir) = test_db().await;
-        let id = enqueue(
-            &db,
-            &hash(4),
-            "track.flac",
-            1024,
-            "/tmp/track.flac",
-            1_000,
-            &[],
-        )
-        .await
-        .unwrap();
+        let id = create_pending(&db, &hash(4), Some("track.flac"), 1_000, true)
+            .await
+            .unwrap();
 
         set_status(&db, id, "completed", None).await.unwrap();
 
@@ -456,7 +415,7 @@ mod tests {
     #[tokio::test]
     async fn set_status_error_stores_message() {
         let (db, _dir) = test_db().await;
-        let id = enqueue(&db, &hash(5), "doc.pdf", 512, "/tmp/doc.pdf", 1_000, &[])
+        let id = create_pending(&db, &hash(5), Some("doc.pdf"), 1_000, true)
             .await
             .unwrap();
 
@@ -472,17 +431,12 @@ mod tests {
     #[tokio::test]
     async fn download_chunks_cascade_on_delete() {
         let (db, _dir) = test_db().await;
-        let id = enqueue(
-            &db,
-            &hash(6),
-            "big.iso",
-            16384,
-            "/tmp/big.iso",
-            1_000,
-            &chunks(4),
-        )
-        .await
-        .unwrap();
+        let id = create_pending(&db, &hash(6), Some("big.iso"), 1_000, true)
+            .await
+            .unwrap();
+        finalize_pending(&db, id, "big.iso", 16384, "/tmp/big.iso", 1_000, &chunks(4))
+            .await
+            .unwrap();
 
         sqlx::query("DELETE FROM downloads WHERE id = ?1")
             .bind(id)
