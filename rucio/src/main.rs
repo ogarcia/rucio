@@ -11,15 +11,18 @@ async fn main() -> anyhow::Result<()> {
     let argv0 = std::env::args().next().unwrap_or_default();
 
     if argv0.contains("ruciod") {
-        // Parse --config for the daemon sub-path.
-        // We do minimal parsing here to avoid pulling clap into the fat binary
-        // just for this; rucio-daemon/main.rs has the full clap setup.
-        let args: Vec<String> = std::env::args().collect();
-        let config = args
-            .windows(2)
-            .find(|w| w[0] == "--config" || w[0] == "-c")
-            .map(|w| std::path::PathBuf::from(&w[1]));
-        rucio_daemon::run(config.as_deref()).await
+        use clap::Parser;
+
+        #[derive(Parser)]
+        #[command(name = "ruciod", about = "Rucio P2P daemon", version)]
+        struct Cli {
+            /// Path to the TOML configuration file
+            #[arg(long, short, env = "RUCIOD_CONFIG")]
+            config: Option<std::path::PathBuf>,
+        }
+
+        let cli = Cli::parse();
+        rucio_daemon::run(cli.config.as_deref()).await
     } else {
         rucio_cli::run().await
     }

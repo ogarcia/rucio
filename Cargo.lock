@@ -3431,6 +3431,7 @@ name = "rucio"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "clap",
  "rucio-cli",
  "rucio-daemon",
  "tokio",
