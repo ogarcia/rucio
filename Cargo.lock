@@ -3429,6 +3429,7 @@ dependencies = [
  "anyhow",
  "blake3",
  "hex",
+ "infer",
  "libp2p",
  "postcard",
  "serde",

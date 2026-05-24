@@ -39,10 +39,14 @@ pub enum Commands {
         /// Optional filter — only show files whose name contains this string (case-insensitive)
         filter: Option<String>,
     },
-    /// Get the magnet link for a locally shared file
+    /// Get the magnet link for a file — shared or not
     Magnet {
-        /// Row number from `rucio shares`, file name (unique), or hash (full or prefix)
-        target: String,
+        /// Row number from `rucio shares`, file name (unique), or hash (full or prefix).
+        /// Omit when using --file.
+        target: Option<String>,
+        /// Compute the magnet link for a local file without sharing it or contacting the daemon
+        #[arg(long, value_name = "PATH")]
+        file: Option<String>,
     },
     /// Download a file (by search result index or magnet link)
     Get {
@@ -91,7 +95,9 @@ pub async fn run() -> Result<()> {
         Commands::Status => cmd::status::status(&client).await,
         Commands::Peers => cmd::status::peers(&client).await,
         Commands::Shares { filter } => cmd::shares::list(&client, filter.as_deref()).await,
-        Commands::Magnet { target } => cmd::shares::magnet(&client, &target).await,
+        Commands::Magnet { target, file } => {
+            cmd::shares::magnet(&client, target.as_deref(), file.as_deref()).await
+        }
         Commands::Add { path } => cmd::shares::add(&client, &path).await,
         Commands::Remove { target } => cmd::shares::remove(&client, &target).await,
         Commands::Downloads { watch } => cmd::downloads::list(&client, watch).await,

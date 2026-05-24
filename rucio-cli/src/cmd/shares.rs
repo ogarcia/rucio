@@ -101,15 +101,47 @@ pub async fn remove(client: &ApiClient, target: &str) -> Result<()> {
     Ok(())
 }
 
-/// Print the magnet link for a locally shared file.
+/// Print the magnet link for a file.
 ///
-/// `target` is resolved in order:
+/// With `--file <path>`: hashes the file locally, no daemon required.
+///
+/// Otherwise `target` is resolved against local shares in order:
 ///   1. Row number from `rucio shares` (e.g. `3`)
 ///   2. Exact file name — if unique among all shares
 ///   3. Hash prefix / full hash
 ///
 /// If a name matches multiple shares, the user is told to use the hash instead.
-pub async fn magnet(client: &ApiClient, target: &str) -> Result<()> {
+pub async fn magnet(client: &ApiClient, target: Option<&str>, file: Option<&str>) -> Result<()> {
+    // --file mode: hash locally, no daemon needed.
+    if let Some(path_str) = file {
+        use rucio_core::protocol::chunk::Hash;
+        use rucio_core::protocol::hashing::hash_file;
+        use rucio_core::protocol::magnet::MagnetLink;
+        use std::path::Path;
+
+        let path = Path::new(path_str);
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path_str.to_string());
+
+        let fh = hash_file(path)
+            .map_err(|e| anyhow::anyhow!("Failed to hash '{}': {e}", path.display()))?;
+
+        let link = MagnetLink {
+            root_hash: Hash(fh.root_hash),
+            name: Some(name),
+            size: Some(fh.size),
+            providers: vec![],
+        };
+        println!("{link}");
+        return Ok(());
+    }
+
+    let target = target.ok_or_else(|| {
+        anyhow::anyhow!("Provide a target (row number, name, or hash) or use --file <path>")
+    })?;
+
     let shares = client.list_shares().await?.shares;
 
     // 1. Numeric row index.
