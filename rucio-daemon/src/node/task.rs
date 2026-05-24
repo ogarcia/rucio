@@ -320,7 +320,7 @@ async fn on_swarm_event(
     match event {
         SwarmEvent::NewListenAddr { address, .. } => {
             info!(%address, "Listening");
-            state.confirmed_addrs.insert(address);
+            state.confirmed_addrs.insert(address.clone());
             if !state.ready_sent {
                 state.ready_sent = true;
                 let _ = event_tx
@@ -329,6 +329,8 @@ async fn on_swarm_event(
                         listen_addrs: state.confirmed_addrs.iter().cloned().collect(),
                     })
                     .await;
+            } else {
+                let _ = event_tx.send(NodeEvent::ListenAddrAdded(address)).await;
             }
         }
         SwarmEvent::ListenerClosed {
@@ -337,6 +339,7 @@ async fn on_swarm_event(
             warn!(?addresses, ?reason, "Listener closed");
             for a in &addresses {
                 state.confirmed_addrs.remove(a);
+                let _ = event_tx.send(NodeEvent::ListenAddrRemoved(a.clone())).await;
             }
         }
         SwarmEvent::ConnectionEstablished { peer_id: pid, .. } => {

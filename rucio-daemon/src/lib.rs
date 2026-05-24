@@ -217,6 +217,19 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
             }
             event = handle.event_rx.recv() => {
                 match event {
+                    Some(node::messages::NodeEvent::ListenAddrAdded(addr)) => {
+                        let addr_str = addr.to_string();
+                        let mut ns = node_status.write().await;
+                        if !ns.listen_addrs.contains(&addr_str) {
+                            info!(%addr, "Listening");
+                            ns.listen_addrs.push(addr_str);
+                        }
+                    }
+                    Some(node::messages::NodeEvent::ListenAddrRemoved(addr)) => {
+                        let addr_str = addr.to_string();
+                        let mut ns = node_status.write().await;
+                        ns.listen_addrs.retain(|a| a != &addr_str);
+                    }
                     Some(node::messages::NodeEvent::PeerDiscovered { peer_id, addrs }) => {
                         node_status.write().await.connected_peers += 1;
                         let addrs_json = serde_json::to_string(

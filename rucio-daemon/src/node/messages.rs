@@ -77,6 +77,10 @@ pub enum NodeEvent {
         peer_id: PeerId,
         listen_addrs: Vec<Multiaddr>,
     },
+    /// A new listen address was confirmed after the node was already ready.
+    ListenAddrAdded(Multiaddr),
+    /// A listen address was removed (listener closed).
+    ListenAddrRemoved(Multiaddr),
     /// A new peer was discovered (mDNS or Kademlia).
     PeerDiscovered {
         peer_id: PeerId,
