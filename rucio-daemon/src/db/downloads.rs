@@ -152,6 +152,19 @@ pub async fn get_root_hash(db: &Db, download_id: i64) -> Result<Option<Vec<u8>>>
     Ok(row.map(|r| r.get("root_hash")))
 }
 
+/// Permanently delete a download record and its chunks from the DB.
+///
+/// Only intended for finished downloads (completed / cancelled / error).
+/// Returns `true` if a row was deleted.
+pub async fn delete(db: &Db, download_id: i64) -> Result<bool> {
+    let affected = sqlx::query("DELETE FROM downloads WHERE id = ?1")
+        .bind(download_id)
+        .execute(db)
+        .await?
+        .rows_affected();
+    Ok(affected > 0)
+}
+
 /// Mark any pending/active download for `root_hash` as failed.
 /// Used when the manifest cannot be retrieved from any provider.
 pub async fn fail_by_hash(db: &Db, root_hash: &[u8; 32]) -> Result<()> {

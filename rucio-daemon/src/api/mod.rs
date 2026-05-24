@@ -118,6 +118,10 @@ fn v1_router() -> Router<AppState> {
             "/downloads/{id}",
             routing::delete(downloads::cancel_download),
         )
+        .route(
+            "/downloads/{id}/history",
+            routing::delete(downloads::delete_download),
+        )
         // search
         .route("/search", routing::post(search::start_search))
         .route("/search/{query_id}", routing::get(search::get_results))

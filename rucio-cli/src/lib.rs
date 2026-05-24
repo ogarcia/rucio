@@ -61,11 +61,22 @@ pub enum Commands {
         /// Refresh the table every second until all downloads finish
         #[arg(short, long)]
         watch: bool,
+        /// Show only in-progress downloads
+        #[arg(long, conflicts_with = "done")]
+        active: bool,
+        /// Show only completed, failed, and cancelled downloads
+        #[arg(long, conflicts_with = "active")]
+        done: bool,
     },
-    /// Cancel a download
+    /// Cancel an in-progress download
     Cancel {
         /// Root hash of the download (hex)
         hash: String,
+    },
+    /// Remove completed/failed/cancelled downloads from the history
+    Clean {
+        /// Root hash prefix to remove a specific entry (omit to remove all finished downloads)
+        hash: Option<String>,
     },
     /// Search for files on the network
     Search {
@@ -100,11 +111,16 @@ pub async fn run() -> Result<()> {
         }
         Commands::Add { path } => cmd::shares::add(&client, &path).await,
         Commands::Remove { target } => cmd::shares::remove(&client, &target).await,
-        Commands::Downloads { watch } => cmd::downloads::list(&client, watch).await,
+        Commands::Downloads {
+            watch,
+            active,
+            done,
+        } => cmd::downloads::list(&client, watch, active, done).await,
         Commands::Get { target, provider } => {
             cmd::downloads::start(&client, &target, provider.as_deref()).await
         }
         Commands::Cancel { hash } => cmd::downloads::cancel(&client, &hash).await,
+        Commands::Clean { hash } => cmd::downloads::clean(&client, hash.as_deref()).await,
         Commands::Search { keywords } => cmd::search::search(&client, keywords).await,
         Commands::Config { action } => match action {
             ConfigAction::Show => cmd::config::show(&client).await,

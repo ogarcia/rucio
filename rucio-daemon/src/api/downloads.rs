@@ -138,6 +138,45 @@ pub async fn cancel_download(State(state): State<AppState>, Path(id): Path<i64>)
     }
 }
 
+/// DELETE /api/v1/downloads/:id/history
+///
+/// Permanently removes a finished (completed / cancelled / error) download
+/// from the history.  Returns 409 if the download is still active.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/downloads/{id}/history",
+    params(("id" = i64, Path, description = "Download ID")),
+    responses(
+        (status = 204, description = "Download removed from history"),
+        (status = 404, description = "Download not found"),
+        (status = 409, description = "Download is still active — cancel it first")
+    )
+)]
+pub async fn delete_download(State(state): State<AppState>, Path(id): Path<i64>) -> StatusCode {
+    // Check current status before deleting.
+    let rows = crate::db::downloads::list(&state.db)
+        .await
+        .unwrap_or_default();
+    let row = rows.iter().find(|r| r.id == id);
+
+    match row {
+        None => return StatusCode::NOT_FOUND,
+        Some(r) if matches!(r.status.as_str(), "queued" | "downloading") => {
+            return StatusCode::CONFLICT;
+        }
+        _ => {}
+    }
+
+    match crate::db::downloads::delete(&state.db, id).await {
+        Ok(true) => StatusCode::NO_CONTENT,
+        Ok(false) => StatusCode::NOT_FOUND,
+        Err(e) => {
+            tracing::error!("DB error deleting download {id}: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    }
+}
+
 fn db_status_to_state(s: &str) -> DownloadState {
     match s {
         "downloading" => DownloadState::Downloading,

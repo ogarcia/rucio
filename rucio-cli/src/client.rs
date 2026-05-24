@@ -203,6 +203,12 @@ impl ApiClient {
         self.delete(&format!("/api/v1/downloads/{id}")).await
     }
 
+    /// Permanently remove a finished download from the history.
+    pub async fn delete_download(&self, id: i64) -> Result<()> {
+        self.delete(&format!("/api/v1/downloads/{id}/history"))
+            .await
+    }
+
     // -----------------------------------------------------------------------
     // Search
     // -----------------------------------------------------------------------
