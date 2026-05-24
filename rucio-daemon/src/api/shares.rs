@@ -22,8 +22,10 @@ use crate::watcher::WatcherCmd;
 // ---------------------------------------------------------------------------
 
 /// Build a magnet link string for a shared file.
-fn build_magnet(root_hash: &[u8], name: &str, size: u64) -> String {
-    // root_hash from DB is a Vec<u8>; convert to [u8;32] best-effort.
+///
+/// `self_peer_id` is included as a `provider=` hint so recipients can
+/// connect directly without waiting for DHT discovery.
+fn build_magnet(root_hash: &[u8], name: &str, size: u64, self_peer_id: &str) -> String {
     let hash = root_hash
         .try_into()
         .map(Hash)
@@ -32,7 +34,7 @@ fn build_magnet(root_hash: &[u8], name: &str, size: u64) -> String {
         root_hash: hash,
         name: Some(name.to_string()),
         size: Some(size),
-        providers: vec![],
+        providers: vec![self_peer_id.to_string()],
     }
     .to_string()
 }
@@ -51,11 +53,12 @@ fn build_magnet(root_hash: &[u8], name: &str, size: u64) -> String {
 )]
 pub async fn list_shares(State(state): State<AppState>) -> Json<SharesResponse> {
     let rows = db::shares::list(&state.db).await.unwrap_or_default();
+    let peer_id = state.node_status.read().await.peer_id.clone();
 
     let shares = rows
         .into_iter()
         .map(|r| ShareResponse {
-            magnet: build_magnet(&r.root_hash, &r.name, r.size as u64),
+            magnet: build_magnet(&r.root_hash, &r.name, r.size as u64, &peer_id),
             root_hash: hex::encode(&r.root_hash),
             name: r.name,
             size: r.size as u64,
@@ -199,6 +202,8 @@ pub async fn get_magnet(
     State(state): State<AppState>,
     AxumPath(hash): AxumPath<String>,
 ) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
+    let peer_id = state.node_status.read().await.peer_id.clone();
+
     // Exact 64-char hex → fast path with direct DB lookup.
     if hash.len() == 64 {
         let Ok(bytes) = hex::decode(&hash) else {
@@ -209,7 +214,7 @@ pub async fn get_magnet(
         };
         let arr: [u8; 32] = bytes.try_into().unwrap();
         return match db::shares::get_by_hash(&state.db, &arr).await {
-            Ok(Some(r)) => Ok(build_magnet(&r.root_hash, &r.name, r.size as u64)),
+            Ok(Some(r)) => Ok(build_magnet(&r.root_hash, &r.name, r.size as u64, &peer_id)),
             Ok(None) => Err((
                 StatusCode::NOT_FOUND,
                 Json(serde_json::json!({ "error": "share not found" })),
@@ -238,7 +243,7 @@ pub async fn get_magnet(
         )),
         1 => {
             let r = matches[0];
-            Ok(build_magnet(&r.root_hash, &r.name, r.size as u64))
+            Ok(build_magnet(&r.root_hash, &r.name, r.size as u64, &peer_id))
         }
         _ => Err((
             StatusCode::BAD_REQUEST,
