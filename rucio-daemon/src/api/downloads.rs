@@ -12,12 +12,29 @@ use rucio_core::api::downloads::{
 use crate::api::{AppState, DownloadRequest};
 use crate::transfer::parse_magnet;
 
-/// GET /api/v1/downloads
+/// List downloads
+///
+/// Returns all downloads — active, completed, failed, and cancelled — stored in the local
+/// database.
+///
+/// Each entry includes the download ID, BLAKE3 root hash, file name, total size, bytes
+/// transferred so far, and current state.
+///
+/// **States**
+/// - `finding_providers` — searching the Kademlia DHT for peers that have the file.
+/// - `queued` — providers found, waiting for a transfer slot.
+/// - `downloading` — actively transferring chunks.
+/// - `completed` — all chunks received and the file has been moved to the download directory.
+/// - `failed` — the transfer encountered an unrecoverable error.
+/// - `cancelled` — cancelled by the user via `DELETE /api/v1/downloads/:id`.
+///
+/// Completed, failed, and cancelled entries remain in the list until explicitly removed with
+/// `DELETE /api/v1/downloads/:id/history`.
 #[utoipa::path(
     get,
     path = "/api/v1/downloads",
     responses(
-        (status = 200, description = "List of downloads", body = DownloadsResponse)
+        (status = 200, description = "All downloads in the local database.", body = DownloadsResponse)
     )
 )]
 pub async fn list_downloads(State(state): State<AppState>) -> Json<DownloadsResponse> {
@@ -41,21 +58,27 @@ pub async fn list_downloads(State(state): State<AppState>) -> Json<DownloadsResp
     Json(DownloadsResponse { downloads })
 }
 
-/// POST /api/v1/downloads
+/// Start a download
 ///
-/// Body: `{ "magnet": "rucio:<hash>?name=<name>&size=<size>", "providers": ["<peer_id>", ...] }`
+/// Queues a file for download identified by a magnet link.
 ///
-/// `providers` is optional.  When omitted (or empty) the daemon discovers
-/// peers via Kademlia DHT automatically.  Supplying providers from a gossip
-/// search result allows the download to start immediately while DHT runs in
-/// parallel for additional sources.
+/// The magnet link uses the `rucio:` scheme and encodes the BLAKE3 root hash plus optional
+/// metadata (`name`, `size`) and provider hints (`provider=<PeerId>`).
+///
+/// The `providers` field is optional. When empty the daemon discovers peers automatically via
+/// the Kademlia DHT. Supplying provider peer IDs obtained from a search result allows the
+/// transfer to start immediately while DHT lookup runs in parallel for additional sources.
+///
+/// The endpoint returns `202 Accepted` immediately — use `GET /api/v1/downloads` to track
+/// progress. Trying to start a download for a hash that is already active returns `202` again
+/// (the duplicate is silently ignored by the transfer engine).
 #[utoipa::path(
     post,
     path = "/api/v1/downloads",
     request_body = StartDownloadRequest,
     responses(
-        (status = 202, description = "Download queued"),
-        (status = 400, description = "Invalid magnet link")
+        (status = 202, description = "Download queued successfully."),
+        (status = 400, description = "The magnet link is malformed or uses an unsupported scheme.")
     )
 )]
 pub async fn start_download(
@@ -98,14 +121,23 @@ pub async fn start_download(
     }
 }
 
-/// DELETE /api/v1/downloads/:id
+/// Cancel a download
+///
+/// Signals the transfer engine to stop an in-progress download and marks it as `cancelled`
+/// in the database.
+///
+/// Any chunks already downloaded are discarded and the `.part` file is removed from the
+/// temp directory. The cancelled entry remains visible in `GET /api/v1/downloads` until
+/// removed with `DELETE /api/v1/downloads/:id/history`.
 #[utoipa::path(
     delete,
     path = "/api/v1/downloads/{id}",
-    params(("id" = i64, Path, description = "Download ID")),
+    params(
+        ("id" = i64, Path, description = "Numeric download ID from `GET /api/v1/downloads`.")
+    ),
     responses(
-        (status = 204, description = "Download cancelled"),
-        (status = 404, description = "Download not found")
+        (status = 204, description = "Download cancelled."),
+        (status = 404, description = "No download with that ID.")
     )
 )]
 pub async fn cancel_download(State(state): State<AppState>, Path(id): Path<i64>) -> StatusCode {
@@ -138,18 +170,23 @@ pub async fn cancel_download(State(state): State<AppState>, Path(id): Path<i64>)
     }
 }
 
-/// DELETE /api/v1/downloads/:id/history
+/// Remove a download from history
 ///
-/// Permanently removes a finished (completed / cancelled / error) download
-/// from the history.  Returns 409 if the download is still active.
+/// Permanently deletes a finished download record (completed, failed, or cancelled) from the
+/// database.
+///
+/// Returns `409 Conflict` if the download is still active — cancel it first with
+/// `DELETE /api/v1/downloads/:id`.
 #[utoipa::path(
     delete,
     path = "/api/v1/downloads/{id}/history",
-    params(("id" = i64, Path, description = "Download ID")),
+    params(
+        ("id" = i64, Path, description = "Numeric download ID from `GET /api/v1/downloads`.")
+    ),
     responses(
-        (status = 204, description = "Download removed from history"),
-        (status = 404, description = "Download not found"),
-        (status = 409, description = "Download is still active — cancel it first")
+        (status = 204, description = "Download record deleted."),
+        (status = 404, description = "No download with that ID."),
+        (status = 409, description = "Download is still active — cancel it first with `DELETE /api/v1/downloads/:id`.")
     )
 )]
 pub async fn delete_download(State(state): State<AppState>, Path(id): Path<i64>) -> StatusCode {

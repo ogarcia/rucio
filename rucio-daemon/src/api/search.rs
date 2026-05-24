@@ -13,14 +13,28 @@ use rucio_core::protocol::search::SearchQuery;
 use crate::api::{AppState, SearchEntry};
 use crate::node::messages::NodeCmd;
 
-/// POST /api/v1/search
+/// Start a search
+///
+/// Publishes a keyword search query over the Gossipsub network and returns a `query_id` to
+/// poll for results.
+///
+/// The search is fully asynchronous and non-blocking. Results arrive as remote peers respond
+/// to the Gossipsub message — poll `GET /api/v1/search/:query_id` repeatedly (e.g. every
+/// second) until `pending` is `false` or until you have enough results.
+///
+/// The query window stays open for 30 seconds, after which `pending` becomes `false`
+/// automatically. Results accumulated during the window remain available to poll even after
+/// the window closes.
+///
+/// Matching is case-insensitive substring on the file name. Multiple keywords are ANDed
+/// together on the responding peer's side.
 #[utoipa::path(
     post,
     path = "/api/v1/search",
     request_body = SearchRequest,
     responses(
-        (status = 202, description = "Search started", body = SearchStartedResponse),
-        (status = 400, description = "No keywords provided")
+        (status = 202, description = "Search started. Use the returned `query_id` to poll for results.", body = SearchStartedResponse),
+        (status = 400, description = "No keywords provided.")
     )
 )]
 pub async fn start_search(
@@ -62,14 +76,29 @@ pub async fn start_search(
     ))
 }
 
-/// GET /api/v1/search/:query_id
+/// Poll search results
+///
+/// Returns the results accumulated so far for a search query started with
+/// `POST /api/v1/search`.
+///
+/// Each result represents one file offered by one peer. The same file (same root hash) may
+/// appear multiple times if several peers have it — the CLI deduplicates by hash and shows a
+/// source count.
+///
+/// `pending: true` means the query window is still open and more results may arrive.
+/// `pending: false` means the 30-second window has closed; no further results will be added.
+///
+/// The query ID expires after the window closes — subsequent polls still return the
+/// accumulated results but the entry may be evicted from memory eventually.
 #[utoipa::path(
     get,
     path = "/api/v1/search/{query_id}",
-    params(("query_id" = String, Path, description = "Query ID from POST /search")),
+    params(
+        ("query_id" = String, Path, description = "Query ID returned by `POST /api/v1/search`.")
+    ),
     responses(
-        (status = 200, description = "Search results so far", body = SearchResultsResponse),
-        (status = 404, description = "Unknown query ID")
+        (status = 200, description = "Results accumulated so far, and whether the query is still open.", body = SearchResultsResponse),
+        (status = 404, description = "Unknown or expired query ID.")
     )
 )]
 pub async fn get_results(

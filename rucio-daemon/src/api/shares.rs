@@ -46,12 +46,21 @@ fn build_magnet(root_hash: &[u8], name: &str, size: u64, self_peer_id: &str) -> 
 // GET /api/v1/shares
 // ---------------------------------------------------------------------------
 
-/// GET /api/v1/shares
+/// List shared files
+///
+/// Returns every file that has been indexed and is currently being shared by this node.
+///
+/// Each entry includes the BLAKE3 root hash, file name, size, chunk count, MIME type,
+/// filesystem path, and a ready-to-use magnet link that already contains this node's
+/// peer ID as a provider hint.
+///
+/// Files are indexed automatically when a directory is added with `POST /api/v1/shares`
+/// and whenever the filesystem watcher detects a new file under a watched directory.
 #[utoipa::path(
     get,
     path = "/api/v1/shares",
     responses(
-        (status = 200, description = "List of shared files", body = SharesResponse)
+        (status = 200, description = "All currently shared files.", body = SharesResponse)
     )
 )]
 pub async fn list_shares(State(state): State<AppState>) -> Json<SharesResponse> {
@@ -78,14 +87,29 @@ pub async fn list_shares(State(state): State<AppState>) -> Json<SharesResponse> 
 // POST /api/v1/shares
 // ---------------------------------------------------------------------------
 
-/// POST /api/v1/shares
+/// Share a directory
+///
+/// Registers a directory for sharing and queues all files it contains for background indexing.
+///
+/// **Only directories are accepted** — individual files cannot be shared directly.
+/// The daemon recurses into subdirectories and indexes every regular file found.
+///
+/// Indexing runs in the background; the response returns immediately with the number of files
+/// queued. Use `GET /api/v1/shares/indexing` to poll progress.
+///
+/// The directory is also registered with the filesystem watcher: new files added later are
+/// indexed automatically, and removed files are removed from the share list.
+///
+/// This endpoint is idempotent — calling it again for the same directory re-indexes any files
+/// that may have changed.
 #[utoipa::path(
     post,
     path = "/api/v1/shares",
     request_body = AddShareRequest,
     responses(
-        (status = 202, description = "Directory registered and files queued for indexing", body = AddShareResponse),
-        (status = 400, description = "Path does not exist, is not a directory, or is not accessible")
+        (status = 202, description = "Directory registered. `queued` is the number of files sent to the indexing queue.", body = AddShareResponse),
+        (status = 400, description = "The path does not exist, is not a directory, or could not be read."),
+        (status = 500, description = "Internal error registering the directory.")
     )
 )]
 pub async fn add_share(
@@ -190,18 +214,26 @@ pub async fn add_share(
 // GET /api/v1/shares/:hash/magnet
 // ---------------------------------------------------------------------------
 
-/// GET /api/v1/shares/:hash/magnet
+/// Get magnet link for a shared file
 ///
-/// Returns the magnet link string for a locally shared file.
-/// The hash can be a full 64-char hex string or a prefix (shortest unique match).
+/// Returns the magnet link for a file shared by this node, identified by its BLAKE3 root hash.
+///
+/// The `hash` parameter accepts either a full 64-character hex string or a shorter unique prefix.
+/// If the prefix matches more than one file a `400` is returned — provide more characters to
+/// disambiguate.
+///
+/// The returned magnet link includes this node's peer ID as a `provider=` hint so the recipient
+/// can start downloading immediately without waiting for DHT discovery.
 #[utoipa::path(
     get,
     path = "/api/v1/shares/{hash}/magnet",
-    params(("hash" = String, Path, description = "BLAKE3 root hash (hex, full or prefix)")),
+    params(
+        ("hash" = String, Path, description = "BLAKE3 root hash — full 64-char hex or a unique prefix.")
+    ),
     responses(
-        (status = 200, description = "Magnet link string", body = String),
-        (status = 404, description = "No share found for that hash"),
-        (status = 400, description = "Ambiguous hash prefix — provide more characters")
+        (status = 200, description = "Magnet link string (`rucio:` scheme, plain text).", body = String),
+        (status = 400, description = "Hash is invalid hex, or the prefix matches more than one file."),
+        (status = 404, description = "No locally shared file with that hash.")
     )
 )]
 pub async fn get_magnet(
@@ -264,15 +296,25 @@ pub async fn get_magnet(
 // DELETE /api/v1/shares/:hash
 // ---------------------------------------------------------------------------
 
-/// DELETE /api/v1/shares/:hash
+/// Remove a shared file
+///
+/// Stops sharing a single file identified by its full BLAKE3 root hash and removes it from
+/// the local index.
+///
+/// The file is also withdrawn from the Kademlia DHT so other peers stop receiving this node
+/// as a provider for that hash. The file itself is **not deleted** from disk.
+///
+/// To remove all files under a directory at once use `DELETE /api/v1/shares?path=<directory>`.
 #[utoipa::path(
     delete,
     path = "/api/v1/shares/{hash}",
-    params(("hash" = String, Path, description = "BLAKE3 root hash (hex)")),
+    params(
+        ("hash" = String, Path, description = "Full 64-character BLAKE3 root hash (hex).")
+    ),
     responses(
-        (status = 204, description = "Share removed"),
-        (status = 404, description = "Share not found"),
-        (status = 400, description = "Invalid hash")
+        (status = 204, description = "File removed from the share list."),
+        (status = 400, description = "Hash is not valid hex or is not 32 bytes."),
+        (status = 404, description = "No shared file with that hash.")
     )
 )]
 pub async fn remove_share(
@@ -311,19 +353,26 @@ pub struct RemoveByPathQuery {
     pub path: String,
 }
 
-/// DELETE /api/v1/shares?path=<prefix>
+/// Remove all shares under a directory
 ///
-/// Removes all indexed files under the given directory path and unregisters
-/// the directory from the watch list.  Returns 403 if the directory is
-/// protected (e.g. the download directory).
+/// Removes all indexed files whose path is under the given directory prefix and unregisters
+/// the directory from the filesystem watcher.
+///
+/// Each removed file is also withdrawn from the Kademlia DHT. The files themselves are
+/// **not deleted** from disk.
+///
+/// The download directory is protected and cannot be removed with this endpoint — it returns
+/// `403` if the path matches it.
 #[utoipa::path(
     delete,
     path = "/api/v1/shares",
-    params(("path" = String, Query, description = "Path or directory prefix to remove")),
+    params(
+        ("path" = String, Query, description = "Filesystem path prefix. All indexed files whose path starts with this string are removed.")
+    ),
     responses(
-        (status = 200, description = "Number of shares removed"),
-        (status = 400, description = "Missing path parameter"),
-        (status = 403, description = "Directory is protected and cannot be removed")
+        (status = 200, description = "Returns `{ \"removed\": N }` with the number of files unshared."),
+        (status = 400, description = "Missing `path` query parameter."),
+        (status = 403, description = "The directory is protected (e.g. the download directory) and cannot be removed.")
     )
 )]
 pub async fn remove_shares_by_path(
@@ -389,15 +438,20 @@ pub async fn remove_shares_by_path(
 
 pub(crate) use rucio_core::protocol::hashing::collect_files;
 
-/// GET /api/v1/shares/indexing
+/// Indexing progress
 ///
 /// Returns the number of files currently being indexed in background tasks.
-/// Returns `{ "pending": N }` where N is the count.
+///
+/// Indexing is triggered by `POST /api/v1/shares` and by the filesystem watcher when new files
+/// are detected. Poll this endpoint after adding a directory to know when all files are ready
+/// to be discovered by other peers.
+///
+/// Returns `{ "pending": 0 }` when there is nothing being indexed.
 #[utoipa::path(
     get,
     path = "/api/v1/shares/indexing",
     responses(
-        (status = 200, description = "Number of files pending indexing", body = serde_json::Value,
+        (status = 200, description = "Number of files pending indexing.", body = serde_json::Value,
          example = json!({ "pending": 0 })),
     )
 )]

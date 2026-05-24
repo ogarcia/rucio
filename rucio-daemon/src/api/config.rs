@@ -10,12 +10,18 @@ use rucio_core::api::config::{
 
 use crate::api::AppState;
 
-/// GET /api/v1/config
+/// Get configuration
+///
+/// Returns the daemon's current effective configuration — the values actually in use,
+/// after applying environment variable overrides on top of the config file.
+///
+/// Read-only fields (`identity_path`, `api.listen`) are included for information but
+/// cannot be changed via `PUT /api/v1/config`.
 #[utoipa::path(
     get,
     path = "/api/v1/config",
     responses(
-        (status = 200, description = "Current daemon configuration", body = ConfigResponse)
+        (status = 200, description = "Current effective configuration.", body = ConfigResponse)
     )
 )]
 pub async fn get_config(State(state): State<AppState>) -> Json<ConfigResponse> {
@@ -39,14 +45,28 @@ pub async fn get_config(State(state): State<AppState>) -> Json<ConfigResponse> {
     })
 }
 
-/// PUT /api/v1/config
+/// Update configuration
+///
+/// Persists a new configuration to the config file on disk. The daemon must be restarted
+/// for most changes to take effect.
+///
+/// The request body should be the full object returned by `GET /api/v1/config` with the
+/// desired fields modified. Fields that are read-only at runtime (`node.identity_path`,
+/// `api.listen`) are accepted in the body but silently ignored — they are preserved from
+/// the running configuration.
+///
+/// **Writable fields**
+/// - `node.listen_addrs` — P2P listen multiaddrs.
+/// - `network.bootstrap_peers` — DHT bootstrap peers.
+/// - `storage.download_dir` — completed downloads destination.
+/// - `storage.temp_dir` — in-progress `.part` files location.
 #[utoipa::path(
     put,
     path = "/api/v1/config",
     request_body = ConfigResponse,
     responses(
-        (status = 204, description = "Configuration saved (restart required for some changes)"),
-        (status = 500, description = "Failed to persist configuration")
+        (status = 204, description = "Configuration saved to disk. Restart the daemon for changes to take effect."),
+        (status = 500, description = "Failed to write the configuration file.")
     )
 )]
 pub async fn put_config(

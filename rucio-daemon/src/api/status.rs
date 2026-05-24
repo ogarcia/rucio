@@ -8,12 +8,25 @@ use rucio_core::protocol::node::NodeClass;
 
 use crate::api::AppState;
 
-/// GET /api/v1/status
+/// Daemon status
+///
+/// Returns the current state of the running daemon: peer identity,
+/// connectivity class (HighID / LowID / Unknown), number of connected peers,
+/// listen and observed addresses, uptime, and software version.
+///
+/// **Connectivity class**
+/// - `HighId` — the node is publicly reachable and can serve files to any peer.
+/// - `LowId` — the node is behind NAT; it can download but inbound connections are not possible.
+/// - `Unknown` — the class has not yet been determined (normal during the first few seconds after startup).
+///
+/// **Observed addresses** are the external multiaddrs reported back by remote peers via the
+/// libp2p Identify protocol. They are the addresses other nodes on the internet can use to
+/// reach this node and are the ones to put in another node's `bootstrap_peers` config.
 #[utoipa::path(
     get,
     path = "/api/v1/status",
     responses(
-        (status = 200, description = "Daemon status", body = StatusResponse)
+        (status = 200, description = "Daemon is running and returned its status.", body = StatusResponse)
     )
 )]
 pub async fn get_status(State(state): State<AppState>) -> Json<StatusResponse> {
@@ -31,12 +44,19 @@ pub async fn get_status(State(state): State<AppState>) -> Json<StatusResponse> {
     })
 }
 
-/// GET /api/v1/peers
+/// Known peers
+///
+/// Returns the list of peers this node has seen recently (up to 200),
+/// as recorded in the local database by the libp2p Identify and Kademlia protocols.
+///
+/// Each entry includes the peer's ID, its known multiaddrs, and its connectivity class.
+/// The list is a snapshot — peers that have disconnected may still appear here until
+/// the database entry expires.
 #[utoipa::path(
     get,
     path = "/api/v1/peers",
     responses(
-        (status = 200, description = "Known peers", body = PeersResponse)
+        (status = 200, description = "List of recently seen peers.", body = PeersResponse)
     )
 )]
 pub async fn get_peers(State(state): State<AppState>) -> Json<PeersResponse> {
