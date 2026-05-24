@@ -96,6 +96,30 @@ pub enum Commands {
 pub enum ConfigAction {
     /// Show current configuration
     Show,
+    /// Set a configuration value (restarts may be required for some changes)
+    ///
+    /// Settable keys:
+    ///   storage.download_dir   <path>
+    ///   storage.temp_dir       <path>
+    ///   network.bootstrap_peers <multiaddr>   (appends to the list)
+    ///   node.listen_addrs       <multiaddr>   (appends to the list)
+    Set {
+        /// Configuration key (e.g. storage.download_dir)
+        key: String,
+        /// New value
+        value: String,
+    },
+    /// Remove a value from a list configuration key
+    ///
+    /// Applicable list keys:
+    ///   network.bootstrap_peers <multiaddr>
+    ///   node.listen_addrs       <multiaddr>
+    Unset {
+        /// Configuration key
+        key: String,
+        /// Value to remove from the list
+        value: String,
+    },
 }
 
 /// Entry point for the CLI logic.
@@ -127,6 +151,8 @@ pub async fn run() -> Result<()> {
         Commands::Indexing => cmd::shares::indexing(&client).await,
         Commands::Config { action } => match action {
             ConfigAction::Show => cmd::config::show(&client).await,
+            ConfigAction::Set { key, value } => cmd::config::set(&client, &key, &value).await,
+            ConfigAction::Unset { key, value } => cmd::config::unset(&client, &key, &value).await,
         },
     }
 }

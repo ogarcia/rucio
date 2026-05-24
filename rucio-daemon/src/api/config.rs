@@ -60,6 +60,7 @@ pub async fn put_config(
     new_cfg.node.listen_addrs = req.node.listen_addrs;
     new_cfg.network.bootstrap_peers = req.network.bootstrap_peers;
     new_cfg.storage.download_dir = req.storage.download_dir.into();
+    new_cfg.storage.temp_dir = req.storage.temp_dir.into();
     // identity_path and api.listen intentionally not writable at runtime
 
     match new_cfg.save() {
