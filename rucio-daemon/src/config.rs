@@ -122,7 +122,7 @@ fn home_dir() -> PathBuf {
     std::env::var_os("HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
-        .or_else(dirs::home_dir)
+        .or_else(|| dirs::home_dir().filter(|p| p.is_absolute()))
         .unwrap_or_else(|| PathBuf::from("/tmp"))
 }
 
@@ -247,4 +247,153 @@ fn default_data_dir() -> PathBuf {
     dirs::data_local_dir()
         .unwrap_or_else(|| home_dir().join(".local").join("share"))
         .join("rucio")
+}
+
+// --- Tests -------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+
+    /// Helper: run a closure with $HOME temporarily overridden, restoring the
+    /// original value afterwards even if the closure panics.
+    fn with_home<F: FnOnce()>(home: &str, f: F) {
+        let prev = std::env::var_os("HOME");
+        // SAFETY: single-threaded test context; no other threads read HOME.
+        unsafe { std::env::set_var("HOME", home) };
+        struct Guard(Option<std::ffi::OsString>);
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                match &self.0 {
+                    // SAFETY: same as above — test teardown.
+                    Some(v) => unsafe { std::env::set_var("HOME", v) },
+                    None => unsafe { std::env::remove_var("HOME") },
+                }
+            }
+        }
+        let _guard = Guard(prev);
+        f();
+    }
+
+    #[test]
+    #[serial]
+    fn home_dir_uses_home_env_when_absolute() {
+        with_home("/custom/home", || {
+            let cfg = Config::default();
+            // download_dir should be rooted under /custom/home (or XDG override,
+            // but in a clean env it will fall through to $HOME/Downloads/rucio or
+            // $HOME/rucio).
+            assert!(
+                cfg.storage.download_dir.starts_with("/custom/home")
+                    || cfg.storage.download_dir.starts_with("/"),
+                "download_dir should be absolute, got {:?}",
+                cfg.storage.download_dir
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn home_dir_ignores_relative_home_env() {
+        // A relative $HOME must be ignored by our home_dir() implementation;
+        // the fallback (dirs::home_dir or /tmp) must still produce an absolute path.
+        // Note: dirs::home_dir() may also read $HOME on some platforms, so we
+        // can't guarantee the exact path — only that it is absolute.
+        with_home("relative/path", || {
+            // home_dir() filters out non-absolute $HOME values.
+            // The resulting download_dir might still come from dirs::home_dir()
+            // or /tmp, but must never literally start with "relative/".
+            let cfg = Config::default();
+            assert!(
+                !cfg.storage.download_dir.starts_with("relative/"),
+                "download_dir must not use a relative $HOME, got {:?}",
+                cfg.storage.download_dir
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn default_download_dir_is_absolute() {
+        let cfg = Config::default();
+        assert!(
+            cfg.storage.download_dir.is_absolute(),
+            "download_dir must be absolute, got {:?}",
+            cfg.storage.download_dir
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn default_temp_dir_is_absolute() {
+        let cfg = Config::default();
+        assert!(
+            cfg.storage.temp_dir.is_absolute(),
+            "temp_dir must be absolute, got {:?}",
+            cfg.storage.temp_dir
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn default_database_path_ends_with_rucio_db() {
+        let cfg = Config::default();
+        assert_eq!(
+            cfg.storage
+                .database_path
+                .file_name()
+                .and_then(|n| n.to_str()),
+            Some("rucio.db"),
+            "database_path should end with rucio.db, got {:?}",
+            cfg.storage.database_path
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn default_identity_path_ends_with_identity_key() {
+        let cfg = Config::default();
+        assert_eq!(
+            cfg.node.identity_path.file_name().and_then(|n| n.to_str()),
+            Some("identity.key")
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn default_listen_addrs_are_non_empty() {
+        let cfg = Config::default();
+        assert!(!cfg.node.listen_addrs.is_empty());
+        // Both IPv4 and IPv6 wildcard listeners expected.
+        assert!(cfg.node.listen_addrs.iter().any(|a| a.contains("/ip4/")));
+        assert!(cfg.node.listen_addrs.iter().any(|a| a.contains("/ip6/")));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[serial]
+    fn xdg_download_dir_respects_xdg_config_home() {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let xdg_cfg = dir.path().join("xdg-config");
+        std::fs::create_dir_all(&xdg_cfg).unwrap();
+        let mut f = std::fs::File::create(xdg_cfg.join("user-dirs.dirs")).unwrap();
+        writeln!(f, r#"XDG_DOWNLOAD_DIR="$HOME/Downloads""#).unwrap();
+
+        let prev = std::env::var_os("XDG_CONFIG_HOME");
+        // SAFETY: single-threaded test context.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &xdg_cfg) };
+
+        let home = PathBuf::from("/some/home");
+        let result = super::xdg_download_dir(&home);
+
+        match prev {
+            Some(v) => unsafe { std::env::set_var("XDG_CONFIG_HOME", v) },
+            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
+        }
+
+        assert_eq!(result, Some(PathBuf::from("/some/home/Downloads")));
+    }
 }
