@@ -5,6 +5,10 @@ on:
     branches: [master]
     # Bare semver tags: 0.1.0, 1.2.3-rc1 (no "v" prefix)
     tags: ["[0-9]*"]
+    paths-ignore:
+      - "docs/**"
+      - "README.md"
+      - "LICENSE"
   pull_request:
     paths:
       - "Containerfile"
