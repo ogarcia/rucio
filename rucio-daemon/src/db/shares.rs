@@ -96,6 +96,34 @@ pub async fn list(db: &Db) -> Result<Vec<SharedFileRow>> {
         .collect())
 }
 
+/// Fetch a single shared file by its root hash. Returns `None` if not found.
+pub async fn get_by_hash(db: &Db, root_hash: &[u8; 32]) -> Result<Option<SharedFileRow>> {
+    let row = sqlx::query(
+        "SELECT sf.id, sf.root_hash, sf.name, sf.size, sf.mime_type, sf.path,
+                sf.chunk_size, sf.added_at,
+                COUNT(c.id) AS chunk_count
+         FROM shared_files sf
+         LEFT JOIN chunks c ON c.shared_file_id = sf.id
+         WHERE sf.root_hash = ?1
+         GROUP BY sf.id",
+    )
+    .bind(root_hash.as_slice())
+    .fetch_optional(db)
+    .await?;
+
+    Ok(row.map(|r| SharedFileRow {
+        id: r.get("id"),
+        root_hash: r.get("root_hash"),
+        name: r.get("name"),
+        size: r.get("size"),
+        mime_type: r.get("mime_type"),
+        path: r.get("path"),
+        chunk_size: r.get("chunk_size"),
+        added_at: r.get("added_at"),
+        chunk_count: r.get("chunk_count"),
+    }))
+}
+
 /// Delete a shared file (and its chunks via CASCADE) by root hash.
 /// Returns `true` if a row was deleted.
 pub async fn delete_by_hash(db: &Db, root_hash: &[u8; 32]) -> Result<bool> {

@@ -36,6 +36,11 @@ pub enum Commands {
     },
     /// List shared files
     Shares,
+    /// Get the magnet link for a locally shared file
+    Magnet {
+        /// Root hash of the file (full 64-char hex or unambiguous prefix)
+        hash: String,
+    },
     /// Download a file (by search result index or magnet link)
     Get {
         /// Search result index (e.g. 1) or a full magnet link (rucio:<hash>...)
@@ -83,6 +88,7 @@ pub async fn run() -> Result<()> {
         Commands::Status => cmd::status::status(&client).await,
         Commands::Peers => cmd::status::peers(&client).await,
         Commands::Shares => cmd::shares::list(&client).await,
+        Commands::Magnet { hash } => cmd::shares::magnet(&client, &hash).await,
         Commands::Add { path } => cmd::shares::add(&client, &path).await,
         Commands::Remove { target } => cmd::shares::remove(&client, &target).await,
         Commands::Downloads { watch } => cmd::downloads::list(&client, watch).await,

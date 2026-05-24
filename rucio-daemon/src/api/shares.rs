@@ -8,6 +8,7 @@ use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::StatusCode;
 use rucio_core::api::shares::{AddShareRequest, AddShareResponse, ShareResponse, SharesResponse};
 use rucio_core::protocol::chunk::CHUNK_SIZE;
+use rucio_core::protocol::magnet::MagnetLink;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -15,6 +16,28 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::api::AppState;
 use crate::db;
 use crate::watcher::WatcherCmd;
+
+use rucio_core::protocol::chunk::Hash;
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Build a magnet link string for a shared file.
+fn build_magnet(root_hash: &[u8], name: &str, size: u64) -> String {
+    // root_hash from DB is a Vec<u8>; convert to [u8;32] best-effort.
+    let hash = root_hash
+        .try_into()
+        .map(Hash)
+        .unwrap_or_else(|_| Hash([0u8; 32]));
+    MagnetLink {
+        root_hash: hash,
+        name: Some(name.to_string()),
+        size: Some(size),
+        providers: vec![],
+    }
+    .to_string()
+}
 
 // ---------------------------------------------------------------------------
 // GET /api/v1/shares
@@ -34,6 +57,7 @@ pub async fn list_shares(State(state): State<AppState>) -> Json<SharesResponse> 
     let shares = rows
         .into_iter()
         .map(|r| ShareResponse {
+            magnet: build_magnet(&r.root_hash, &r.name, r.size as u64),
             root_hash: hex::encode(&r.root_hash),
             name: r.name,
             size: r.size as u64,
@@ -153,6 +177,78 @@ pub async fn add_share(
             errors: vec![],
         }),
     ))
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/shares/:hash/magnet
+// ---------------------------------------------------------------------------
+
+/// GET /api/v1/shares/:hash/magnet
+///
+/// Returns the magnet link string for a locally shared file.
+/// The hash can be a full 64-char hex string or a prefix (shortest unique match).
+#[utoipa::path(
+    get,
+    path = "/api/v1/shares/{hash}/magnet",
+    params(("hash" = String, Path, description = "BLAKE3 root hash (hex, full or prefix)")),
+    responses(
+        (status = 200, description = "Magnet link string", body = String),
+        (status = 404, description = "No share found for that hash"),
+        (status = 400, description = "Ambiguous hash prefix — provide more characters")
+    )
+)]
+pub async fn get_magnet(
+    State(state): State<AppState>,
+    AxumPath(hash): AxumPath<String>,
+) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
+    // Exact 64-char hex → fast path with direct DB lookup.
+    if hash.len() == 64 {
+        let Ok(bytes) = hex::decode(&hash) else {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "invalid hex" })),
+            ));
+        };
+        let arr: [u8; 32] = bytes.try_into().unwrap();
+        return match db::shares::get_by_hash(&state.db, &arr).await {
+            Ok(Some(r)) => Ok(build_magnet(&r.root_hash, &r.name, r.size as u64)),
+            Ok(None) => Err((
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "share not found" })),
+            )),
+            Err(e) => {
+                tracing::error!("DB error fetching share: {e}");
+                Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": e.to_string() })),
+                ))
+            }
+        };
+    }
+
+    // Prefix search — scan all shares and filter by hex prefix.
+    let all = db::shares::list(&state.db).await.unwrap_or_default();
+    let matches: Vec<_> = all
+        .iter()
+        .filter(|r| hex::encode(&r.root_hash).starts_with(&hash))
+        .collect();
+
+    match matches.len() {
+        0 => Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "share not found" })),
+        )),
+        1 => {
+            let r = matches[0];
+            Ok(build_magnet(&r.root_hash, &r.name, r.size as u64))
+        }
+        _ => Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "ambiguous hash prefix — provide more characters"
+            })),
+        )),
+    }
 }
 
 // ---------------------------------------------------------------------------

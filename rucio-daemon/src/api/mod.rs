@@ -110,6 +110,7 @@ fn v1_router() -> Router<AppState> {
         .route("/shares", routing::post(shares::add_share))
         .route("/shares", routing::delete(shares::remove_shares_by_path))
         .route("/shares/{hash}", routing::delete(shares::remove_share))
+        .route("/shares/{hash}/magnet", routing::get(shares::get_magnet))
         // downloads
         .route("/downloads", routing::get(downloads::list_downloads))
         .route("/downloads", routing::post(downloads::start_download))

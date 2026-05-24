@@ -141,6 +141,11 @@ impl ApiClient {
         self.delete(&format!("/api/v1/shares/{hash}")).await
     }
 
+    /// Retrieve the magnet link for a locally shared file by hash (full or prefix).
+    pub async fn get_share_magnet(&self, hash: &str) -> Result<String> {
+        self.get(&format!("/api/v1/shares/{hash}/magnet")).await
+    }
+
     pub async fn remove_shares_by_path(&self, path: &str) -> Result<u64> {
         let url = format!(
             "{}/api/v1/shares?path={}",

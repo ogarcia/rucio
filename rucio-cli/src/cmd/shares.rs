@@ -81,6 +81,15 @@ pub async fn remove(client: &ApiClient, target: &str) -> Result<()> {
     Ok(())
 }
 
+/// Print the magnet link for a locally shared file.
+///
+/// `hash` can be a full 64-char hex or an unambiguous prefix.
+pub async fn magnet(client: &ApiClient, hash: &str) -> Result<()> {
+    let link = client.get_share_magnet(hash).await?;
+    println!("{link}");
+    Ok(())
+}
+
 fn human_size(bytes: u64) -> String {
     const UNITS: &[&str] = &["B", "KiB", "MiB", "GiB", "TiB"];
     let mut val = bytes as f64;
