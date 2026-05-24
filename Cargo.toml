@@ -43,8 +43,9 @@ libp2p      = { version = "0.56", features = [
 ] }
 
 # http
-axum        = { version = "0.8", features = ["macros"] }
-utoipa      = { version = "5.5", features = ["axum_extras"] }
+axum           = { version = "0.8", features = ["macros"] }
+utoipa         = { version = "5.5", features = ["axum_extras"] }
+utoipa-scalar  = { version = "0.3", features = ["axum"] }
 
 # db
 sqlx        = { version = "0.9", features = ["runtime-tokio", "sqlite", "migrate", "macros"] }

@@ -393,6 +393,14 @@ pub(crate) use rucio_core::protocol::hashing::collect_files;
 ///
 /// Returns the number of files currently being indexed in background tasks.
 /// Returns `{ "pending": N }` where N is the count.
+#[utoipa::path(
+    get,
+    path = "/api/v1/shares/indexing",
+    responses(
+        (status = 200, description = "Number of files pending indexing", body = serde_json::Value,
+         example = json!({ "pending": 0 })),
+    )
+)]
 pub async fn indexing_status(State(state): State<super::AppState>) -> Json<serde_json::Value> {
     let pending = state.indexing_count.load(Ordering::Relaxed);
     Json(serde_json::json!({ "pending": pending }))

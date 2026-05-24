@@ -19,12 +19,93 @@ use std::time::Instant;
 use axum::{Router, routing};
 use tokio::sync::RwLock;
 use tokio::sync::mpsc;
+use utoipa::OpenApi;
+use utoipa_scalar::{Scalar, Servable as _};
 
 use crate::config::Config;
 use crate::db::Db;
 use crate::node::messages::NodeCmd;
 use crate::watcher::WatcherCmd;
 use rucio_core::api::search::SearchResultResponse;
+
+// ---------------------------------------------------------------------------
+// OpenAPI spec + Scalar docs
+// ---------------------------------------------------------------------------
+
+/// Custom HTML template for Scalar.
+///
+/// - Sets the page title to "Rucio API".
+/// - Enables `operationTitleSource: "path"` so operation titles in the
+///   sidebar show the URL path instead of the auto-generated summary.
+/// - The `$spec` placeholder is replaced by utoipa-scalar at runtime.
+const SCALAR_HTML: &str = r#"<!doctype html>
+<html>
+  <head>
+    <title>Rucio API</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+  </head>
+  <body>
+    <script
+      id="api-reference"
+      type="application/json"
+      data-configuration='{"operationTitleSource":"path"}'
+    >$spec</script>
+    <script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference"></script>
+  </body>
+</html>
+"#;
+
+#[derive(OpenApi)]
+#[openapi(
+    info(
+        title = "Rucio API",
+        version = "1",
+        description = "REST API exposed by the Rucio P2P daemon."
+    ),
+    paths(
+        status::get_status,
+        status::get_peers,
+        shares::list_shares,
+        shares::add_share,
+        shares::indexing_status,
+        shares::get_magnet,
+        shares::remove_share,
+        shares::remove_shares_by_path,
+        downloads::list_downloads,
+        downloads::start_download,
+        downloads::cancel_download,
+        downloads::delete_download,
+        search::start_search,
+        search::get_results,
+        config::get_config,
+        config::put_config,
+    ),
+    components(schemas(
+        rucio_core::api::status::StatusResponse,
+        rucio_core::api::status::PeersResponse,
+        rucio_core::api::status::PeerResponse,
+        rucio_core::api::shares::AddShareRequest,
+        rucio_core::api::shares::AddShareResponse,
+        rucio_core::api::shares::ShareResponse,
+        rucio_core::api::shares::SharesResponse,
+        rucio_core::api::downloads::StartDownloadRequest,
+        rucio_core::api::downloads::DownloadState,
+        rucio_core::api::downloads::DownloadResponse,
+        rucio_core::api::downloads::DownloadsResponse,
+        rucio_core::api::search::SearchRequest,
+        rucio_core::api::search::SearchStartedResponse,
+        rucio_core::api::search::SearchResultResponse,
+        rucio_core::api::search::SearchResultsResponse,
+        rucio_core::api::config::ConfigResponse,
+        rucio_core::api::config::NodeConfig,
+        rucio_core::api::config::ApiConfig,
+        rucio_core::api::config::NetworkConfig,
+        rucio_core::api::config::StorageConfig,
+        rucio_core::protocol::node::NodeClass,
+    ))
+)]
+struct ApiDoc;
 
 // ---------------------------------------------------------------------------
 // SearchStore
@@ -101,7 +182,10 @@ pub struct NodeStatus {
 
 /// Build the full API router.
 pub fn router(state: AppState) -> Router {
-    Router::new().nest("/api/v1", v1_router()).with_state(state)
+    Router::new()
+        .merge(Scalar::with_url("/api/docs", ApiDoc::openapi()).custom_html(SCALAR_HTML))
+        .nest("/api/v1", v1_router())
+        .with_state(state)
 }
 
 fn v1_router() -> Router<AppState> {
