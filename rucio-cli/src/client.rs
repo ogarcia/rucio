@@ -8,6 +8,10 @@ use reqwest::Method;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
+/// Convenience alias for the WebSocket stream type returned by [`ApiClient::ws_stream`].
+pub type WsStream =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
 use rucio_core::api::{
     config::ConfigResponse,
     downloads::{DownloadResponse, DownloadsResponse, StartDownloadRequest},
@@ -274,13 +278,7 @@ impl ApiClient {
     ///
     /// The base URL (`http://...` or `https://...`) is automatically converted
     /// to the appropriate WebSocket scheme (`ws://` / `wss://`).
-    pub async fn ws_stream(
-        &self,
-    ) -> Result<
-        tokio_tungstenite::WebSocketStream<
-            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-        >,
-    > {
+    pub async fn ws_stream(&self) -> Result<WsStream> {
         // Convert http(s):// → ws(s)://
         let ws_url = self
             .base

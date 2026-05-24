@@ -1,12 +1,18 @@
 //! `rucio shares`, `rucio add <path>`, `rucio remove <hash|path>`, `rucio magnet <target>`
 
 use anyhow::{Result, bail};
-use tabled::{Table, Tabled};
-
+use futures_util::StreamExt as _;
 use rucio_core::api::shares::ShareResponse;
+use rucio_core::api::ws::WsEvent;
+use tabled::{Table, Tabled};
 
 use crate::client::ApiClient;
 use crate::color;
+
+// ANSI escape sequences for terminal control.
+const CLEAR_LINE: &str = "\x1b[2K\r";
+const HIDE_CURSOR: &str = "\x1b[?25l";
+const SHOW_CURSOR: &str = "\x1b[?25h";
 
 pub async fn list(client: &ApiClient, filter: Option<&str>) -> Result<()> {
     let resp = client.list_shares().await?;
@@ -185,17 +191,123 @@ pub async fn magnet(client: &ApiClient, target: Option<&str>, file: Option<&str>
     Ok(())
 }
 
-pub async fn indexing(client: &ApiClient) -> Result<()> {
+pub async fn indexing(client: &ApiClient, watch: bool) -> Result<()> {
     let pending = client.indexing_pending().await?;
+
+    if !watch {
+        if pending == 0 {
+            println!("No files being indexed.");
+        } else {
+            println!(
+                "{} file(s) being indexed…",
+                color::value(&pending.to_string())
+            );
+        }
+        return Ok(());
+    }
+
+    // --watch mode ----------------------------------------------------------
     if pending == 0 {
         println!("No files being indexed.");
+        return Ok(());
+    }
+
+    print!("{HIDE_CURSOR}");
+    let result = tokio::select! {
+        r = indexing_watch_loop(client, pending) => r,
+        _ = tokio::signal::ctrl_c() => {
+            println!();
+            Ok(())
+        }
+    };
+    print!("{SHOW_CURSOR}");
+    result
+}
+
+/// WS-first watch loop; falls back to HTTP polling if the WebSocket is
+/// unavailable.
+async fn indexing_watch_loop(client: &ApiClient, initial: usize) -> Result<()> {
+    match client.ws_stream().await {
+        Ok(stream) => indexing_watch_ws(stream, initial).await,
+        Err(e) => {
+            tracing::debug!("WebSocket unavailable ({e}), falling back to HTTP polling");
+            indexing_watch_http(client, initial).await
+        }
+    }
+}
+
+async fn indexing_watch_ws(mut stream: crate::client::WsStream, initial: usize) -> Result<()> {
+    let mut pending = initial;
+    print_indexing_line(pending);
+
+    loop {
+        match stream.next().await {
+            Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) => {
+                let event: WsEvent = match serde_json::from_str(&text) {
+                    Ok(e) => e,
+                    Err(_) => continue,
+                };
+                if let WsEvent::IndexingCount { pending: p } = event {
+                    pending = p;
+                    print_indexing_line(pending);
+                    if pending == 0 {
+                        println!("\n{}", color::success("Indexing complete."));
+                        return Ok(());
+                    }
+                }
+            }
+            Some(Ok(_)) => {}
+            Some(Err(e)) => {
+                println!("\nWebSocket error: {e}");
+                return Ok(());
+            }
+            None => {
+                println!("\nDaemon disconnected.");
+                return Ok(());
+            }
+        }
+    }
+}
+
+async fn indexing_watch_http(client: &ApiClient, initial: usize) -> Result<()> {
+    use tokio::time::{Duration, interval};
+
+    let mut pending = initial;
+    let mut ticker = interval(Duration::from_secs(1));
+    print_indexing_line(pending);
+
+    loop {
+        ticker.tick().await;
+
+        pending = match client.indexing_pending().await {
+            Ok(n) => n,
+            Err(e) => {
+                println!("\nError contacting daemon: {e}");
+                return Ok(());
+            }
+        };
+        print_indexing_line(pending);
+        if pending == 0 {
+            println!("\n{}", color::success("Indexing complete."));
+            return Ok(());
+        }
+    }
+}
+
+/// Overwrite the current terminal line with the latest count.
+fn print_indexing_line(pending: usize) {
+    if pending == 0 {
+        // Caller prints the final message; just clear the spinner line.
+        print!("{CLEAR_LINE}");
     } else {
-        println!(
-            "{} file(s) being indexed…",
+        print!(
+            "{CLEAR_LINE}Indexing: {} file(s) pending…",
             color::value(&pending.to_string())
         );
     }
-    Ok(())
+    // Flush stdout so the partial line is visible immediately.
+    use std::io::Write as _;
+    let _ = std::io::stdout().flush();
 }
 
 fn human_size(bytes: u64) -> String {
