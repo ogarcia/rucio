@@ -57,9 +57,13 @@ pub async fn status(client: &ApiClient) -> Result<()> {
     };
 
     if !bootstrap_base.is_empty() {
+        // Sort: public addresses first (no hint), local-only last.
+        let mut sorted = bootstrap_base.clone();
+        sorted.sort_by_key(|a| !addr_scope_hint(a).is_empty());
+
         println!();
         println!("Bootstrap multiaddrs (paste into another node's config.toml):");
-        for addr in &bootstrap_base {
+        for addr in &sorted {
             let multiaddr = format!("{addr}/p2p/{}", s.peer_id);
             let hint = addr_scope_hint(addr);
             if hint.is_empty() {
