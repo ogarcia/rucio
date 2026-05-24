@@ -146,6 +146,19 @@ impl ApiClient {
         self.get(&format!("/api/v1/shares/{hash}/magnet")).await
     }
 
+    /// Return the number of files currently being indexed by the daemon.
+    pub async fn indexing_pending(&self) -> Result<usize> {
+        let url = format!("{}/api/v1/shares/indexing", self.base);
+        let resp = self
+            .inner
+            .get(&url)
+            .send()
+            .await
+            .with_context(|| format!("GET {url}"))?;
+        let body: serde_json::Value = resp.json().await.unwrap_or_default();
+        Ok(body["pending"].as_u64().unwrap_or(0) as usize)
+    }
+
     pub async fn remove_shares_by_path(&self, path: &str) -> Result<u64> {
         let url = format!(
             "{}/api/v1/shares?path={}",

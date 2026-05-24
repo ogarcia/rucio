@@ -182,6 +182,16 @@ pub async fn magnet(client: &ApiClient, target: Option<&str>, file: Option<&str>
     Ok(())
 }
 
+pub async fn indexing(client: &ApiClient) -> Result<()> {
+    let pending = client.indexing_pending().await?;
+    if pending == 0 {
+        println!("No files being indexed.");
+    } else {
+        println!("{pending} file(s) being indexed…");
+    }
+    Ok(())
+}
+
 fn human_size(bytes: u64) -> String {
     const UNITS: &[&str] = &["B", "KiB", "MiB", "GiB", "TiB"];
     let mut val = bytes as f64;

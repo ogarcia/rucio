@@ -83,6 +83,8 @@ pub enum Commands {
         /// Keywords to search for
         keywords: Vec<String>,
     },
+    /// Show how many files are currently being indexed
+    Indexing,
     /// Show or update configuration
     Config {
         #[command(subcommand)]
@@ -122,6 +124,7 @@ pub async fn run() -> Result<()> {
         Commands::Cancel { hash } => cmd::downloads::cancel(&client, &hash).await,
         Commands::Clean { hash } => cmd::downloads::clean(&client, hash.as_deref()).await,
         Commands::Search { keywords } => cmd::search::search(&client, keywords).await,
+        Commands::Indexing => cmd::shares::indexing(&client).await,
         Commands::Config { action } => match action {
             ConfigAction::Show => cmd::config::show(&client).await,
         },

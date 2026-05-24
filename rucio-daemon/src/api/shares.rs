@@ -1,7 +1,10 @@
 //! GET    /api/v1/shares
+//! GET    /api/v1/shares/indexing
 //! POST   /api/v1/shares
 //! DELETE /api/v1/shares/:hash
 //! DELETE /api/v1/shares          (query param: path=<prefix>)
+
+use std::sync::atomic::Ordering;
 
 use axum::Json;
 use axum::extract::{Path as AxumPath, Query, State};
@@ -148,6 +151,8 @@ pub async fn add_share(
     // Spawn background task so the HTTP response returns immediately
     let db = state.db.clone();
     let cmd_tx = state.node_cmd.clone();
+    let indexing_count = state.indexing_count.clone();
+    indexing_count.fetch_add(total, Ordering::Relaxed);
     tokio::spawn(async move {
         let mut errors: Vec<String> = vec![];
         for path in paths {
@@ -165,6 +170,7 @@ pub async fn add_share(
                     errors.push(path.display().to_string());
                 }
             }
+            indexing_count.fetch_sub(1, Ordering::Relaxed);
         }
         if !errors.is_empty() {
             tracing::warn!("{} file(s) failed to index", errors.len());
@@ -382,6 +388,15 @@ pub async fn remove_shares_by_path(
 // ---------------------------------------------------------------------------
 
 pub(crate) use rucio_core::protocol::hashing::collect_files;
+
+/// GET /api/v1/shares/indexing
+///
+/// Returns the number of files currently being indexed in background tasks.
+/// Returns `{ "pending": N }` where N is the count.
+pub async fn indexing_status(State(state): State<super::AppState>) -> Json<serde_json::Value> {
+    let pending = state.indexing_count.load(Ordering::Relaxed);
+    Json(serde_json::json!({ "pending": pending }))
+}
 
 /// Hash a single file, split into chunks, and insert into the DB.
 /// Returns the root hash on success.

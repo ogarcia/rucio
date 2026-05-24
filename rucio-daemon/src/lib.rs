@@ -8,6 +8,7 @@ pub mod watcher;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 use std::time::Instant;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
@@ -150,6 +151,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
         node_status: Arc::clone(&node_status),
         search_store: Arc::clone(&search_store),
         download_tx,
+        indexing_count: Arc::new(AtomicUsize::new(0)),
     };
 
     let listen_addr = config.api.listen.clone();

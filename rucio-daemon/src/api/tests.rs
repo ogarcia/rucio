@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 use std::time::Instant;
 
 use axum::body::Body;
@@ -60,6 +61,7 @@ async fn test_state() -> (
         node_status,
         search_store,
         download_tx,
+        indexing_count: Arc::new(AtomicUsize::new(0)),
     };
     (state, cmd_rx, download_rx, dir)
 }

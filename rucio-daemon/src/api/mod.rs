@@ -13,6 +13,7 @@ mod tests;
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 use std::time::Instant;
 
 use axum::{Router, routing};
@@ -77,6 +78,9 @@ pub struct AppState {
     pub search_store: SearchStore,
     /// Channel to request new downloads from the engine in the main loop.
     pub download_tx: mpsc::Sender<DownloadRequest>,
+    /// Number of files currently being indexed in the background.
+    /// Incremented when a background index task starts, decremented when done.
+    pub indexing_count: Arc<AtomicUsize>,
 }
 
 /// Live node status kept in memory and updated by the event loop.
@@ -108,6 +112,7 @@ fn v1_router() -> Router<AppState> {
         // shares
         .route("/shares", routing::get(shares::list_shares))
         .route("/shares", routing::post(shares::add_share))
+        .route("/shares/indexing", routing::get(shares::indexing_status))
         .route("/shares", routing::delete(shares::remove_shares_by_path))
         .route("/shares/{hash}", routing::delete(shares::remove_share))
         .route("/shares/{hash}/magnet", routing::get(shares::get_magnet))

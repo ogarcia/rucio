@@ -57,6 +57,8 @@ fn filter_downloads(
 
 async fn watch_loop(client: &ApiClient, active: bool, done: bool) -> Result<()> {
     let mut ticker = interval(Duration::from_secs(1));
+    // Track whether we've seen at least one active download since watch started.
+    let mut ever_active = false;
 
     loop {
         ticker.tick().await;
@@ -73,18 +75,25 @@ async fn watch_loop(client: &ApiClient, active: bool, done: bool) -> Result<()> 
 
         print!("{CLEAR_SCREEN}");
 
-        // Exit when there are no more in-progress downloads.
         let any_active = resp.downloads.iter().any(|d| !is_finished(&d.state));
+        if any_active {
+            ever_active = true;
+        }
 
         let filtered = filter_downloads(resp.downloads, active, done);
         print_table(filtered, active, done);
 
-        if !any_active {
+        // Exit only after we've seen active downloads and they're all done.
+        if ever_active && !any_active {
             println!("\nAll downloads finished.");
             return Ok(());
         }
 
-        println!("\nPress Ctrl-C to exit.");
+        if !ever_active {
+            println!("\nWaiting for downloads… Press Ctrl-C to exit.");
+        } else {
+            println!("\nPress Ctrl-C to exit.");
+        }
     }
 }
 
