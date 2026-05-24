@@ -334,8 +334,12 @@ async fn respond_to_query(
 
         let root_hash_hex = hex::encode(&share.root_hash);
         let chunk_count = (share.size as usize).div_ceil(share.chunk_size as usize);
-        let magnet =
-            SearchResult::magnet_from_parts(&root_hash_hex, &share.name, share.size as u64);
+        let magnet = SearchResult::magnet_from_parts(
+            &root_hash_hex,
+            &share.name,
+            share.size as u64,
+            Some(&peer_id),
+        );
 
         let result = SearchResult {
             query_id: query.id.clone(),

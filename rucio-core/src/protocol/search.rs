@@ -5,6 +5,7 @@
 //! we can switch to a binary codec later without changing the protocol version.
 
 use crate::protocol::chunk::Hash;
+use urlencoding;
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
@@ -98,14 +99,26 @@ pub struct SearchResult {
 }
 
 impl SearchResult {
-    /// Build a magnet link from hash hex string, name and size.
-    pub fn magnet_from_parts(hash_hex: &str, name: &str, size: u64) -> String {
-        format!("rucio:{hash_hex}?name={name}&size={size}")
+    /// Build a magnet link from hash hex string, name, size, and an optional
+    /// provider PeerId string.  The name is URL-encoded so that spaces and
+    /// special characters survive the round-trip through `parse_magnet`.
+    pub fn magnet_from_parts(
+        hash_hex: &str,
+        name: &str,
+        size: u64,
+        provider: Option<&str>,
+    ) -> String {
+        let encoded_name = urlencoding::encode(name);
+        let provider_param = provider
+            .filter(|p| !p.is_empty())
+            .map(|p| format!("&provider={p}"))
+            .unwrap_or_default();
+        format!("rucio:{hash_hex}?name={encoded_name}&size={size}{provider_param}")
     }
 
     /// Build a magnet link from a [`Hash`] value.
-    pub fn magnet_from(hash: &Hash, name: &str, size: u64) -> String {
-        Self::magnet_from_parts(&hash.to_hex(), name, size)
+    pub fn magnet_from(hash: &Hash, name: &str, size: u64, provider: Option<&str>) -> String {
+        Self::magnet_from_parts(&hash.to_hex(), name, size, provider)
     }
 }
 
