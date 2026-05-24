@@ -1,6 +1,7 @@
 pub mod api;
 pub mod config;
 pub mod db;
+pub mod metrics;
 pub mod node;
 pub mod transfer;
 pub mod watcher;
@@ -111,8 +112,16 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     // --- Download engine ----------------------------------------------------
     let dest_dir = config.storage.download_dir.clone();
     let temp_dir = config.storage.temp_dir.clone();
-    let mut engine =
-        transfer::DownloadEngine::new(db.clone(), handle.cmd_tx.clone(), dest_dir, temp_dir);
+    let session_metrics = Arc::new(metrics::Metrics::new(metrics::instant_to_unix(
+        &Instant::now(),
+    )));
+    let mut engine = transfer::DownloadEngine::new(
+        db.clone(),
+        handle.cmd_tx.clone(),
+        dest_dir,
+        temp_dir,
+        Arc::clone(&session_metrics),
+    );
 
     // Resume any downloads that were interrupted by a previous crash or restart.
     engine.resume_interrupted().await;
@@ -145,6 +154,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
         download_tx,
         indexing_count: Arc::new(AtomicUsize::new(0)),
         ws_tx: ws_tx.clone(),
+        metrics: Arc::clone(&session_metrics),
     };
 
     let listen_addr = config.api.listen.clone();
@@ -167,12 +177,30 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     // Push download progress and indexing count to WebSocket subscribers
     // every second (only when there are active subscribers).
     let mut ws_tick = tokio::time::interval(tokio::time::Duration::from_secs(1));
+    // Advance speed windows every second.
+    let mut metrics_tick = tokio::time::interval(tokio::time::Duration::from_secs(1));
+    // Persist metric deltas to DB every 30 seconds.
+    let mut metrics_flush_tick = tokio::time::interval(tokio::time::Duration::from_secs(30));
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
                 info!("Received Ctrl-C, shutting down");
                 let _ = handle.cmd_tx.send(node::messages::NodeCmd::Shutdown).await;
+                // Flush remaining metric deltas to DB before exiting.
+                let delta = session_metrics.take_delta();
+                if let Err(e) = db::metrics::add(&db, &delta).await {
+                    warn!("Final metrics flush failed: {e}");
+                }
                 break;
+            }
+            _ = metrics_tick.tick() => {
+                session_metrics.tick();
+            }
+            _ = metrics_flush_tick.tick() => {
+                let delta = session_metrics.take_delta();
+                if let Err(e) = db::metrics::add(&db, &delta).await {
+                    warn!("Could not flush metrics to DB: {e}");
+                }
             }
             _ = manifest_tick.tick() => {
                 engine.tick_manifest_timeouts().await;

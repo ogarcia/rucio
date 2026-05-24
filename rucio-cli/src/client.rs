@@ -15,6 +15,7 @@ pub type WsStream =
 use rucio_core::api::{
     config::ConfigResponse,
     downloads::{DownloadResponse, DownloadsResponse, StartDownloadRequest},
+    metrics::{HealthResponse, MetricsResponse},
     search::{SearchRequest, SearchResultsResponse, SearchStartedResponse},
     shares::{AddShareRequest, AddShareResponse, SharesResponse},
     status::{PeersResponse, StatusResponse},
@@ -249,6 +250,18 @@ impl ApiClient {
 
     pub async fn put_config(&self, cfg: &ConfigResponse) -> Result<()> {
         self.put("/api/v1/config", cfg).await
+    }
+
+    // -----------------------------------------------------------------------
+    // Metrics & health
+    // -----------------------------------------------------------------------
+
+    pub async fn metrics(&self) -> Result<MetricsResponse> {
+        self.get("/api/v1/metrics").await
+    }
+
+    pub async fn health(&self) -> Result<HealthResponse> {
+        self.get("/health").await
     }
 
     // -----------------------------------------------------------------------

@@ -66,6 +66,7 @@ async fn test_state() -> (
         download_tx,
         indexing_count: Arc::new(AtomicUsize::new(0)),
         ws_tx,
+        metrics: Arc::new(crate::metrics::Metrics::default()),
     };
     (state, cmd_rx, download_rx, dir)
 }

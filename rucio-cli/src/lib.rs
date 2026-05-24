@@ -95,6 +95,8 @@ pub enum Commands {
         #[command(subcommand)]
         action: ConfigAction,
     },
+    /// Show transfer metrics (session and lifetime totals)
+    Metrics,
 }
 
 #[derive(Subcommand, Debug)]
@@ -159,5 +161,6 @@ pub async fn run() -> Result<()> {
             ConfigAction::Set { key, value } => cmd::config::set(&client, &key, &value).await,
             ConfigAction::Unset { key, value } => cmd::config::unset(&client, &key, &value).await,
         },
+        Commands::Metrics => cmd::status::metrics_cmd(&client).await,
     }
 }

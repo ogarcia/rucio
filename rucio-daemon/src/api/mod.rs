@@ -5,6 +5,8 @@
 
 pub mod config;
 pub mod downloads;
+pub mod health;
+pub mod metrics;
 pub mod search;
 pub mod shares;
 pub mod status;
@@ -25,6 +27,7 @@ use utoipa_scalar::{Scalar, Servable as _};
 
 use crate::config::Config;
 use crate::db::Db;
+use crate::metrics::Metrics;
 use crate::node::messages::NodeCmd;
 use crate::watcher::WatcherCmd;
 use rucio_core::api::search::SearchResultResponse;
@@ -82,6 +85,8 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         search::get_results,
         config::get_config,
         config::put_config,
+        metrics::get_metrics,
+        health::get_health,
     ),
     components(schemas(
         rucio_core::api::status::StatusResponse,
@@ -105,6 +110,10 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         rucio_core::api::config::NetworkConfig,
         rucio_core::api::config::StorageConfig,
         rucio_core::protocol::node::NodeClass,
+        rucio_core::api::metrics::MetricsResponse,
+        rucio_core::api::metrics::SessionMetrics,
+        rucio_core::api::metrics::TotalMetrics,
+        rucio_core::api::metrics::HealthResponse,
     ))
 )]
 struct ApiDoc;
@@ -167,6 +176,8 @@ pub struct AppState {
     /// Broadcast channel for WebSocket push events.
     /// Handlers subscribe with `ws_tx.subscribe()`.
     pub ws_tx: broadcast::Sender<WsEvent>,
+    /// In-memory session metrics (upload/download bytes, speeds, chunk counts).
+    pub metrics: Arc<Metrics>,
 }
 
 /// Live node status kept in memory and updated by the event loop.
@@ -189,6 +200,7 @@ pub struct NodeStatus {
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/ws", routing::get(ws::ws_handler))
+        .route("/health", routing::get(health::get_health))
         .merge(Scalar::with_url("/api/docs", ApiDoc::openapi()).custom_html(SCALAR_HTML))
         .nest("/api/v1", v1_router())
         .with_state(state)
@@ -223,6 +235,8 @@ fn v1_router() -> Router<AppState> {
         // config
         .route("/config", routing::get(config::get_config))
         .route("/config", routing::put(config::put_config))
+        // metrics
+        .route("/metrics", routing::get(metrics::get_metrics))
 }
 
 // ---------------------------------------------------------------------------

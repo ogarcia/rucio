@@ -5,6 +5,7 @@
 //! No migrations, no versioning until the project reaches a stable release.
 
 pub mod downloads;
+pub mod metrics;
 pub mod peers;
 pub mod shared_dirs;
 pub mod shares;

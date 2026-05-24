@@ -101,6 +101,26 @@ pub async fn status(client: &ApiClient) -> Result<()> {
         }
     }
 
+    // Session metrics summary (best-effort — daemon may not support it yet)
+    if let Ok(m) = client.metrics().await {
+        let sess = &m.session;
+        println!();
+        println!("Session transfer:");
+        println!(
+            "  ↑ {}/s  total {}  ({} chunks served)",
+            format_bytes(sess.upload_speed),
+            format_bytes(sess.uploaded_bytes),
+            sess.chunks_served,
+        );
+        println!(
+            "  ↓ {}/s  total {}  ({} chunks, {} rejected)",
+            format_bytes(sess.download_speed),
+            format_bytes(sess.downloaded_bytes),
+            sess.chunks_received,
+            sess.chunks_rejected,
+        );
+    }
+
     Ok(())
 }
 
@@ -190,6 +210,70 @@ fn format_uptime(secs: u64) -> String {
     } else {
         format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
     }
+}
+
+/// Format a byte count as a human-readable string (B, KiB, MiB, GiB).
+fn format_bytes(bytes: u64) -> String {
+    const KIB: u64 = 1024;
+    const MIB: u64 = 1024 * KIB;
+    const GIB: u64 = 1024 * MIB;
+    if bytes >= GIB {
+        format!("{:.2} GiB", bytes as f64 / GIB as f64)
+    } else if bytes >= MIB {
+        format!("{:.1} MiB", bytes as f64 / MIB as f64)
+    } else if bytes >= KIB {
+        format!("{:.1} KiB", bytes as f64 / KIB as f64)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+// ---------------------------------------------------------------------------
+// `rucio metrics`
+// ---------------------------------------------------------------------------
+
+/// Print full metrics (session + lifetime totals).
+pub async fn metrics_cmd(client: &ApiClient) -> Result<()> {
+    let m = client.metrics().await?;
+    let sess = &m.session;
+    let total = &m.total;
+
+    println!("Session (since last start)");
+    println!(
+        "  Upload   : {} ({} chunks served)",
+        color::value(&format_bytes(sess.uploaded_bytes)),
+        sess.chunks_served
+    );
+    println!(
+        "  Download : {} ({} chunks, {} rejected)",
+        color::value(&format_bytes(sess.downloaded_bytes)),
+        sess.chunks_received,
+        sess.chunks_rejected
+    );
+    println!(
+        "  Speed ↑  : {}/s",
+        color::value(&format_bytes(sess.upload_speed))
+    );
+    println!(
+        "  Speed ↓  : {}/s",
+        color::value(&format_bytes(sess.download_speed))
+    );
+
+    println!();
+    println!("Lifetime totals");
+    println!(
+        "  Upload   : {} ({} chunks served)",
+        color::value(&format_bytes(total.uploaded_bytes)),
+        total.chunks_served
+    );
+    println!(
+        "  Download : {} ({} chunks, {} rejected)",
+        color::value(&format_bytes(total.downloaded_bytes)),
+        total.chunks_received,
+        total.chunks_rejected
+    );
+
+    Ok(())
 }
 
 /// Return a short scope label for a multiaddr string, or empty string if the

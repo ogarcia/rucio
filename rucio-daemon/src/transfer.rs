@@ -24,6 +24,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Result, anyhow, bail};
@@ -39,6 +40,7 @@ use rucio_core::protocol::{
 };
 
 use crate::db::{self, Db};
+use crate::metrics::Metrics;
 use crate::node::messages::NodeCmd;
 
 // ---------------------------------------------------------------------------
@@ -183,6 +185,8 @@ pub struct DownloadEngine {
     /// Updated by add_providers() regardless of whether a download is active.
     /// Used by serve_chunk() to populate PEX data in chunk responses.
     known_providers: HashMap<[u8; 32], Vec<PeerId>>,
+    /// Shared session metrics — updated on every chunk event.
+    metrics: Arc<Metrics>,
 }
 
 impl DownloadEngine {
@@ -191,6 +195,7 @@ impl DownloadEngine {
         cmd_tx: mpsc::Sender<NodeCmd>,
         dest_dir: PathBuf,
         temp_dir: PathBuf,
+        metrics: Arc<Metrics>,
     ) -> Self {
         Self {
             db,
@@ -200,6 +205,7 @@ impl DownloadEngine {
             pending_manifests: HashMap::new(),
             active: HashMap::new(),
             known_providers: HashMap::new(),
+            metrics,
         }
     }
 
@@ -921,6 +927,7 @@ impl DownloadEngine {
                 // Verify hash.
                 if blake3::hash(&data).as_bytes() != &expected_hash {
                     warn!(chunk_idx, %peer, "Chunk hash mismatch — re-queuing");
+                    self.metrics.record_rejected();
                     // Re-queue for another peer.
                     dl.queued.push_back(chunk_idx);
                     self.dispatch_requests(root_hash).await;
@@ -935,6 +942,9 @@ impl DownloadEngine {
                     dl.queued.push_back(chunk_idx);
                     return;
                 }
+
+                let chunk_bytes = data.len() as u64;
+                self.metrics.record_download(chunk_bytes);
 
                 dl.done.insert(chunk_idx);
                 let dl_id = dl.download_id;
@@ -1067,9 +1077,14 @@ impl DownloadEngine {
 
         let db = self.db.clone();
         let cmd_tx = self.cmd_tx.clone();
+        let metrics = Arc::clone(&self.metrics);
 
         tokio::spawn(async move {
             let response = read_chunk_from_db(&db, &request, pex_peers).await;
+            // Record upload bytes before sending the response.
+            if let ChunkResponse::Ok { ref data, .. } = response {
+                metrics.record_upload(data.len() as u64);
+            }
             let _ = cmd_tx
                 .send(NodeCmd::RespondChunk {
                     channel_id,
@@ -1273,11 +1288,13 @@ mod tests {
     ) -> (DownloadEngine, mpsc::Receiver<NodeCmd>, tempfile::TempDir) {
         let (db, db_dir) = make_db().await;
         let (cmd_tx, cmd_rx) = mpsc::channel(64);
+        let metrics = Arc::new(crate::metrics::Metrics::default());
         let engine = DownloadEngine::new(
             db,
             cmd_tx,
             tmp.path().to_path_buf(),
             tmp.path().to_path_buf(),
+            metrics,
         );
         (engine, cmd_rx, db_dir)
     }

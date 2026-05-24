@@ -82,6 +82,23 @@ CREATE TABLE IF NOT EXISTS download_chunks (
 CREATE INDEX IF NOT EXISTS idx_dl_chunks_status ON download_chunks(download_id, status);
 
 -- ---------------------------------------------------------------------------
+-- metrics
+-- Single-row table holding cumulative lifetime counters.
+-- Updated periodically from the in-memory session counters.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS metrics (
+    id                  INTEGER PRIMARY KEY CHECK (id = 1),  -- singleton
+    uploaded_bytes      INTEGER NOT NULL DEFAULT 0,
+    downloaded_bytes    INTEGER NOT NULL DEFAULT 0,
+    chunks_served       INTEGER NOT NULL DEFAULT 0,
+    chunks_received     INTEGER NOT NULL DEFAULT 0,
+    chunks_rejected     INTEGER NOT NULL DEFAULT 0
+);
+
+-- Ensure the singleton row exists from the start.
+INSERT OR IGNORE INTO metrics (id) VALUES (1);
+
+-- ---------------------------------------------------------------------------
 -- known_peers
 -- Peers seen on the network, kept as a hint cache (not authoritative).
 -- ---------------------------------------------------------------------------
