@@ -47,6 +47,8 @@ use crate::node::messages::NodeCmd;
 
 /// Maximum simultaneous chunk requests **per provider peer**.
 const SLOTS_PER_PEER: usize = 4;
+/// Fallback chunk size used when recovering a download with no chunks in the DB.
+const DEFAULT_CHUNK_SIZE: u32 = 256 * 1024; // 256 KiB
 
 /// How long to wait for a manifest response before trying another peer.
 const MANIFEST_TIMEOUT_SECS: u64 = 10;
@@ -196,6 +198,145 @@ impl DownloadEngine {
             pending_manifests: HashMap::new(),
             active: HashMap::new(),
             known_providers: HashMap::new(),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Resume: rehidrate downloads interrupted by a previous crash/restart
+    // -----------------------------------------------------------------------
+
+    /// Called once at startup.  Finds all downloads in `queued` or
+    /// `downloading` state in the DB, reconstructs their `ActiveDownload`
+    /// in-memory state from the saved chunk rows, and kicks off DHT provider
+    /// discovery so transfers resume automatically.
+    pub async fn resume_interrupted(&mut self) {
+        let rows = match db::downloads::list_resumable(&self.db).await {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("Could not load resumable downloads: {e}");
+                return;
+            }
+        };
+
+        if rows.is_empty() {
+            return;
+        }
+
+        info!(count = rows.len(), "Resuming interrupted downloads");
+
+        for row in rows {
+            if row.root_hash.len() != 32 {
+                warn!(id = row.id, "Skipping download with malformed root_hash");
+                continue;
+            }
+            let mut root_hash = [0u8; 32];
+            root_hash.copy_from_slice(&row.root_hash);
+
+            // Skip if already active (shouldn't happen at startup but be safe).
+            if self.active.contains_key(&root_hash)
+                || self.pending_manifests.contains_key(&root_hash)
+            {
+                continue;
+            }
+
+            let chunk_rows = match db::downloads::chunks_for(&self.db, row.id).await {
+                Ok(c) => c,
+                Err(e) => {
+                    warn!(id = row.id, "Could not load chunks for download: {e}");
+                    continue;
+                }
+            };
+
+            if chunk_rows.is_empty() {
+                // No chunks saved yet — treat as if just queued: request manifest.
+                info!(
+                    id = row.id,
+                    name = %row.name,
+                    "No chunks saved; re-requesting manifest"
+                );
+                let _ = self
+                    .cmd_tx
+                    .send(NodeCmd::FindProviders(root_hash.to_vec()))
+                    .await;
+                self.pending_manifests.insert(
+                    root_hash,
+                    PendingManifest {
+                        providers: vec![],
+                        attempt: 0,
+                        requested_at: Instant::now(),
+                    },
+                );
+                continue;
+            }
+
+            // Derive chunk_size from the first non-last chunk (largest size).
+            let chunk_size = chunk_rows
+                .iter()
+                .map(|c| c.size)
+                .max()
+                .unwrap_or(DEFAULT_CHUNK_SIZE);
+
+            let dest_path = PathBuf::from(&row.dest_path);
+
+            let mut chunk_meta: HashMap<u32, ([u8; 32], u32)> = HashMap::new();
+            let mut queued: VecDeque<u32> = VecDeque::new();
+            let mut done: HashSet<u32> = HashSet::new();
+
+            for c in &chunk_rows {
+                let mut hash = [0u8; 32];
+                if c.hash.len() == 32 {
+                    hash.copy_from_slice(&c.hash);
+                }
+                chunk_meta.insert(c.idx, (hash, c.size));
+                if c.status == "done" {
+                    done.insert(c.idx);
+                } else {
+                    queued.push_back(c.idx);
+                }
+            }
+
+            let total_chunks = chunk_meta.len();
+
+            // Reset any 'downloading' chunks back to 'pending' in the DB so
+            // their state is consistent (they were interrupted mid-flight).
+            if let Err(e) = db::downloads::reset_in_flight_chunks(&self.db, row.id).await {
+                warn!(id = row.id, "Could not reset in-flight chunks: {e}");
+            }
+
+            let done_count = done.len();
+            let dl = ActiveDownload {
+                download_id: row.id,
+                dest_path,
+                chunk_size,
+                queued,
+                in_flight: HashSet::new(),
+                done,
+                total_chunks,
+                chunk_meta,
+                providers: vec![],
+                peer_state: HashMap::new(),
+                inflight_map: HashMap::new(),
+            };
+
+            self.active.insert(root_hash, dl);
+
+            // Update status to 'downloading' and kick off DHT discovery.
+            if let Err(e) = db::downloads::set_status(&self.db, row.id, "downloading", None).await {
+                warn!(id = row.id, "set_status error: {e}");
+            }
+
+            let _ = self
+                .cmd_tx
+                .send(NodeCmd::FindProviders(root_hash.to_vec()))
+                .await;
+
+            info!(
+                id = row.id,
+                name = %row.name,
+                done = done_count,
+                total = total_chunks,
+                "Download resumed"
+            );
         }
     }
 

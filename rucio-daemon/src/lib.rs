@@ -123,6 +123,9 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     let mut engine =
         transfer::DownloadEngine::new(db.clone(), handle.cmd_tx.clone(), dest_dir, temp_dir);
 
+    // Resume any downloads that were interrupted by a previous crash or restart.
+    engine.resume_interrupted().await;
+
     let (download_tx, mut download_rx) = tokio::sync::mpsc::channel::<api::DownloadRequest>(32);
 
     // --- Watcher service ----------------------------------------------------

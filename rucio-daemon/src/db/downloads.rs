@@ -180,6 +180,81 @@ pub async fn fail_by_hash(db: &Db, root_hash: &[u8; 32]) -> Result<()> {
     Ok(())
 }
 
+/// A single chunk row returned from the DB.
+#[derive(Debug, Clone)]
+pub struct ChunkRow {
+    pub idx: u32,
+    pub hash: Vec<u8>,
+    pub size: u32,
+    pub status: String, // 'pending' | 'downloading' | 'done'
+}
+
+/// Return all downloads that were interrupted and should be resumed on startup.
+/// These are rows whose status is 'queued' or 'downloading'.
+pub async fn list_resumable(db: &Db) -> Result<Vec<DownloadRow>> {
+    let rows = sqlx::query(
+        "SELECT id, root_hash, name, total_size, dest_path, status,
+                bytes_done, error_msg, added_at, updated_at
+         FROM downloads
+         WHERE status IN ('queued', 'downloading')
+         ORDER BY added_at ASC",
+    )
+    .fetch_all(db)
+    .await?;
+
+    Ok(rows
+        .iter()
+        .map(|r| DownloadRow {
+            id: r.get("id"),
+            root_hash: r.get("root_hash"),
+            name: r.get("name"),
+            total_size: r.get("total_size"),
+            dest_path: r.get("dest_path"),
+            status: r.get("status"),
+            bytes_done: r.get("bytes_done"),
+            error_msg: r.get("error_msg"),
+            added_at: r.get("added_at"),
+            updated_at: r.get("updated_at"),
+        })
+        .collect())
+}
+
+/// Return all chunk rows for the given download, ordered by idx.
+pub async fn chunks_for(db: &Db, download_id: i64) -> Result<Vec<ChunkRow>> {
+    let rows = sqlx::query(
+        "SELECT idx, hash, size, status
+         FROM download_chunks
+         WHERE download_id = ?1
+         ORDER BY idx ASC",
+    )
+    .bind(download_id)
+    .fetch_all(db)
+    .await?;
+
+    Ok(rows
+        .iter()
+        .map(|r| ChunkRow {
+            idx: r.get::<i64, _>("idx") as u32,
+            hash: r.get("hash"),
+            size: r.get::<i64, _>("size") as u32,
+            status: r.get("status"),
+        })
+        .collect())
+}
+
+/// Reset any chunks that were left in 'downloading' state back to 'pending'.
+/// Called at startup when resuming an interrupted download.
+pub async fn reset_in_flight_chunks(db: &Db, download_id: i64) -> Result<()> {
+    sqlx::query(
+        "UPDATE download_chunks SET status = 'pending'
+         WHERE download_id = ?1 AND status = 'downloading'",
+    )
+    .bind(download_id)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
