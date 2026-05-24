@@ -265,4 +265,33 @@ impl ApiClient {
             n => anyhow::bail!("Ambiguous hash prefix '{hash}' matches {n} downloads"),
         }
     }
+
+    // -----------------------------------------------------------------------
+    // WebSocket event stream
+    // -----------------------------------------------------------------------
+
+    /// Connect to the daemon WebSocket bus and return the stream.
+    ///
+    /// The base URL (`http://...` or `https://...`) is automatically converted
+    /// to the appropriate WebSocket scheme (`ws://` / `wss://`).
+    pub async fn ws_stream(
+        &self,
+    ) -> Result<
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+    > {
+        // Convert http(s):// → ws(s)://
+        let ws_url = self
+            .base
+            .replacen("https://", "wss://", 1)
+            .replacen("http://", "ws://", 1);
+        let url = format!("{ws_url}/api/ws");
+
+        let (stream, _response) = tokio_tungstenite::connect_async(&url)
+            .await
+            .with_context(|| format!("WebSocket connect to {url}"))?;
+
+        Ok(stream)
+    }
 }

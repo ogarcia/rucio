@@ -47,6 +47,9 @@ axum           = { version = "0.8", features = ["macros", "ws"] }
 utoipa         = { version = "5.5", features = ["axum_extras"] }
 utoipa-scalar  = { version = "0.3", features = ["axum"] }
 
+tokio-tungstenite = { version = "0.29", features = ["native-tls"] }
+futures-util      = "0.3"
+
 # db
 sqlx        = { version = "0.9", features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
 

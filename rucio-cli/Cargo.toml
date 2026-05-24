@@ -12,13 +12,15 @@ name = "rucio-cli"
 path = "src/main.rs"
 
 [dependencies]
-rucio-core  = { path = "../rucio-core" }
-tokio       = { workspace = true }
-clap        = { workspace = true }
-reqwest     = { workspace = true }
-serde       = { workspace = true }
-serde_json  = { workspace = true }
-anyhow      = { workspace = true }
-tracing     = { workspace = true }
-tabled      = { workspace = true }
-urlencoding = { workspace = true }
+rucio-core          = { path = "../rucio-core" }
+tokio               = { workspace = true }
+clap                = { workspace = true }
+reqwest             = { workspace = true }
+serde               = { workspace = true }
+serde_json          = { workspace = true }
+anyhow              = { workspace = true }
+tracing             = { workspace = true }
+tabled              = { workspace = true }
+urlencoding         = { workspace = true }
+tokio-tungstenite   = { workspace = true }
+futures-util        = { workspace = true }

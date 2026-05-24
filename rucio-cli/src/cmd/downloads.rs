@@ -1,9 +1,10 @@
 //! `rucio downloads`, `rucio get <target>`, `rucio cancel <hash>`, `rucio clean`
 
 use anyhow::{Result, bail};
-use rucio_core::api::downloads::DownloadState;
+use futures_util::StreamExt as _;
+use rucio_core::api::downloads::{DownloadResponse, DownloadState};
+use rucio_core::api::ws::WsEvent;
 use tabled::{Table, Tabled};
-use tokio::time::{Duration, interval};
 
 use crate::client::ApiClient;
 use crate::state::LastSearch;
@@ -56,8 +57,78 @@ fn filter_downloads(
 }
 
 async fn watch_loop(client: &ApiClient, active: bool, done: bool) -> Result<()> {
+    let mut stream = match client.ws_stream().await {
+        Ok(s) => s,
+        Err(e) => {
+            // Daemon may not support WebSocket yet or connection refused —
+            // fall back to HTTP polling so the command still works.
+            tracing::debug!("WebSocket unavailable ({e}), falling back to HTTP polling");
+            return watch_loop_http(client, active, done).await;
+        }
+    };
+
+    // Snapshot the current state immediately so the screen is not blank
+    // while waiting for the first WS event.
+    let initial = client
+        .list_downloads()
+        .await
+        .unwrap_or_else(|_| rucio_core::api::downloads::DownloadsResponse { downloads: vec![] });
+    let mut last_downloads: Vec<DownloadResponse> = initial.downloads;
+    let mut ever_active = last_downloads.iter().any(|d| !is_finished(&d.state));
+
+    render(&last_downloads, active, done, ever_active);
+
+    loop {
+        match stream.next().await {
+            Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) => {
+                let event: WsEvent = match serde_json::from_str(&text) {
+                    Ok(e) => e,
+                    Err(_) => continue,
+                };
+                if let WsEvent::DownloadProgress(downloads) = event {
+                    // Merge: keep finished entries from last snapshot, replace
+                    // active ones with fresh data from the event.
+                    for fresh in &downloads {
+                        if let Some(pos) = last_downloads
+                            .iter()
+                            .position(|d| d.root_hash == fresh.root_hash)
+                        {
+                            last_downloads[pos] = fresh.clone();
+                        } else {
+                            last_downloads.push(fresh.clone());
+                        }
+                    }
+                    let any_active = last_downloads.iter().any(|d| !is_finished(&d.state));
+                    if any_active {
+                        ever_active = true;
+                    }
+                    render(&last_downloads, active, done, ever_active);
+                    if ever_active && !any_active {
+                        println!("\nAll downloads finished.");
+                        return Ok(());
+                    }
+                }
+            }
+            Some(Ok(_)) => {} // ping/pong/binary — ignore
+            Some(Err(e)) => {
+                print!("{CLEAR_SCREEN}");
+                println!("WebSocket error: {e}");
+                println!("\nPress Ctrl-C to exit.");
+            }
+            None => {
+                // Daemon closed the connection.
+                println!("\nDaemon disconnected.");
+                return Ok(());
+            }
+        }
+    }
+}
+
+/// Fallback HTTP polling watch loop (identical logic to the old implementation).
+async fn watch_loop_http(client: &ApiClient, active: bool, done: bool) -> Result<()> {
+    use tokio::time::{Duration, interval};
+
     let mut ticker = interval(Duration::from_secs(1));
-    // Track whether we've seen at least one active download since watch started.
     let mut ever_active = false;
 
     loop {
@@ -73,27 +144,28 @@ async fn watch_loop(client: &ApiClient, active: bool, done: bool) -> Result<()> 
             }
         };
 
-        print!("{CLEAR_SCREEN}");
-
         let any_active = resp.downloads.iter().any(|d| !is_finished(&d.state));
         if any_active {
             ever_active = true;
         }
 
-        let filtered = filter_downloads(resp.downloads, active, done);
-        print_table(filtered, active, done);
+        render(&resp.downloads, active, done, ever_active);
 
-        // Exit only after we've seen active downloads and they're all done.
         if ever_active && !any_active {
             println!("\nAll downloads finished.");
             return Ok(());
         }
+    }
+}
 
-        if !ever_active {
-            println!("\nWaiting for downloads… Press Ctrl-C to exit.");
-        } else {
-            println!("\nPress Ctrl-C to exit.");
-        }
+fn render(downloads: &[DownloadResponse], active: bool, done: bool, ever_active: bool) {
+    print!("{CLEAR_SCREEN}");
+    let filtered = filter_downloads(downloads.to_vec(), active, done);
+    print_table(filtered, active, done);
+    if !ever_active {
+        println!("\nWaiting for downloads… Press Ctrl-C to exit.");
+    } else {
+        println!("\nPress Ctrl-C to exit.");
     }
 }
 
