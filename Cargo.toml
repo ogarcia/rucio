@@ -78,6 +78,7 @@ tracing-subscriber  = { version = "0.3", features = ["env-filter"] }
 
 # filesystem watching
 notify = { version = "8", features = ["macos_fsevent"] }
+libc = "0.2"
 
 # mime detection
 infer = "0.19"

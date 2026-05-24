@@ -761,7 +761,7 @@ impl DownloadEngine {
                             .join(part_path.file_name().unwrap_or_default())
                     };
 
-                    match tokio::fs::rename(&part_path, &final_path).await {
+                    match move_file(&part_path, &final_path).await {
                         Ok(()) => {
                             info!(
                                 from = %part_path.display(),
@@ -993,6 +993,30 @@ async fn read_file_range(path: &str, offset: u64, len: usize) -> Result<Vec<u8>>
     let mut buf = vec![0u8; len];
     file.read_exact(&mut buf).await?;
     Ok(buf)
+}
+
+// ---------------------------------------------------------------------------
+// Filesystem helpers
+// ---------------------------------------------------------------------------
+
+/// Move `src` to `dst`, falling back to copy+delete if they are on different
+/// filesystems (the OS returns `EXDEV` / "Invalid cross-device link" for an
+/// atomic rename across mount points).
+///
+/// The copy is done with `tokio::fs::copy` which uses `sendfile(2)` on Linux,
+/// keeping kernel-space data movement.  The source is removed only after the
+/// copy succeeds, so we never lose data on a partial write.
+async fn move_file(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    match tokio::fs::rename(src, dst).await {
+        Ok(()) => Ok(()),
+        Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {
+            // Cross-device: copy then remove source
+            tokio::fs::copy(src, dst).await?;
+            tokio::fs::remove_file(src).await?;
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
 }
 
 // ---------------------------------------------------------------------------
