@@ -26,8 +26,8 @@ jobs:
             use_cross: true
 
           - target: aarch64-unknown-linux-musl
-            os: ubuntu-latest
-            use_cross: true
+            os: ubuntu-24.04-arm
+            use_cross: false
 
           - target: x86_64-apple-darwin
             os: macos-latest
