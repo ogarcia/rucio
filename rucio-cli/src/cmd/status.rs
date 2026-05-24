@@ -1,6 +1,7 @@
 //! `rucio status` and `rucio peers`
 
 use anyhow::Result;
+use rucio_core::protocol::node::NodeClass;
 use tabled::{Table, Tabled};
 
 use crate::client::ApiClient;
@@ -9,7 +10,7 @@ pub async fn status(client: &ApiClient) -> Result<()> {
     let s = client.status().await?;
 
     println!("Peer ID  : {}", s.peer_id);
-    println!("Class    : {:?}", s.class);
+    println!("Class    : {}", format_class(&s.class));
     println!("Peers    : {}", s.connected_peers);
     println!("Uptime   : {}", format_uptime(s.uptime_secs));
     println!("Version  : {}", s.version);
@@ -29,6 +30,13 @@ pub async fn status(client: &ApiClient) -> Result<()> {
             println!("  {addr}");
         }
     }
+
+    // Connectivity summary line
+    println!();
+    println!(
+        "Connectivity: {}",
+        connectivity_summary(&s.class, s.connected_peers, &s.observed_addrs)
+    );
 
     // Bootstrap multiaddrs: prefer observed (public) addresses; fall back to
     // listen addresses filtering out loopback/unspecified.
@@ -56,6 +64,37 @@ pub async fn status(client: &ApiClient) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Human-readable connectivity class label.
+fn format_class(class: &NodeClass) -> &'static str {
+    match class {
+        NodeClass::HighId => "HighID (publicly reachable, can serve files)",
+        NodeClass::LowId => "LowID  (behind NAT, download-only mode)",
+        NodeClass::Unknown => "Unknown (still determining…)",
+    }
+}
+
+/// One-line connectivity summary combining class, peers and observed addrs.
+fn connectivity_summary(class: &NodeClass, peers: usize, observed: &[String]) -> String {
+    match class {
+        NodeClass::Unknown if peers == 0 => "offline — no peers connected yet".to_string(),
+        NodeClass::Unknown => {
+            format!("limited — {peers} peer(s) connected, waiting for Identify handshake")
+        }
+        NodeClass::LowId if peers == 0 => "offline — behind NAT, no peers connected".to_string(),
+        NodeClass::LowId => {
+            format!("online (LowID) — {peers} peer(s), inbound connections not reachable")
+        }
+        NodeClass::HighId => {
+            let addr_hint = if observed.is_empty() {
+                String::new()
+            } else {
+                format!(", external: {}", observed[0])
+            };
+            format!("online (HighID) — {peers} peer(s){addr_hint}")
+        }
+    }
 }
 
 pub async fn peers(client: &ApiClient) -> Result<()> {
