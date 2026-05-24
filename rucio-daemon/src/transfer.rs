@@ -1009,7 +1009,7 @@ async fn read_file_range(path: &str, offset: u64, len: usize) -> Result<Vec<u8>>
 async fn move_file(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
     match tokio::fs::rename(src, dst).await {
         Ok(()) => Ok(()),
-        Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {
+        Err(e) if e.kind() == std::io::ErrorKind::CrossesDevices => {
             // Cross-device: copy then remove source
             tokio::fs::copy(src, dst).await?;
             tokio::fs::remove_file(src).await?;

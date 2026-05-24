@@ -3453,7 +3453,6 @@ dependencies = [
  "hex",
  "http-body-util",
  "infer",
- "libc",
  "libp2p",
  "notify",
  "postcard",
