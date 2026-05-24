@@ -16,6 +16,7 @@ use tokio::sync::{RwLock, mpsc};
 use tower::ServiceExt;
 
 use rucio_core::api::search::{SearchResultsResponse, SearchStartedResponse};
+use rucio_core::api::shares::SharesResponse;
 
 use crate::api::{AppState, NodeStatus, SearchStore, router};
 use crate::config::Config;
@@ -528,4 +529,131 @@ async fn get_config_returns_200() {
         .unwrap();
 
     assert_eq!(resp.status(), StatusCode::OK);
+}
+
+// ---------------------------------------------------------------------------
+// Shares
+// ---------------------------------------------------------------------------
+
+/// Insert a fake share row directly into the DB.
+async fn insert_share(
+    db: &crate::db::Db,
+    root_hash: &[u8; 32],
+    name: &str,
+    size: u64,
+    chunk_size: u32,
+    path: &str,
+) {
+    sqlx::query(
+        "INSERT INTO shared_files (root_hash, name, size, mime_type, path, chunk_size, added_at)
+         VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6)",
+    )
+    .bind(root_hash.as_slice())
+    .bind(name)
+    .bind(size as i64)
+    .bind(path)
+    .bind(chunk_size as i64)
+    .bind(0i64)
+    .execute(db)
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn get_shares_empty() {
+    let (state, _rx, _dl_rx, _dir) = test_state().await;
+    let app = router(state);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/shares")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: SharesResponse = body_json(resp.into_body()).await;
+    assert!(body.shares.is_empty());
+}
+
+#[tokio::test]
+async fn get_share_magnet_returns_magnet_link() {
+    let (state, _rx, _dl_rx, _dir) = test_state().await;
+    let root_hash = [1u8; 32];
+    insert_share(
+        &state.db,
+        &root_hash,
+        "movie.mkv",
+        1024 * 1024,
+        256 * 1024,
+        "/shared/movie.mkv",
+    )
+    .await;
+    let hash_hex = hex::encode(root_hash);
+    let prefix = &hash_hex[..8];
+
+    let app = router(state);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/v1/shares/{prefix}/magnet"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let magnet = std::str::from_utf8(&bytes).unwrap().trim_matches('"');
+    assert!(
+        magnet.starts_with("rucio:"),
+        "expected rucio: link, got {magnet}"
+    );
+    assert!(magnet.contains(&hash_hex));
+}
+
+#[tokio::test]
+async fn get_share_magnet_unknown_hash_returns_404() {
+    let (state, _rx, _dl_rx, _dir) = test_state().await;
+    let app = router(state);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/shares/deadbeef/magnet")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn get_indexing_returns_zero_initially() {
+    let (state, _rx, _dl_rx, _dir) = test_state().await;
+    let app = router(state);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/shares/indexing")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value = body_json(resp.into_body()).await;
+    assert_eq!(body["pending"].as_u64(), Some(0));
 }

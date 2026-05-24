@@ -22,3 +22,6 @@ uuid        = { workspace = true }
 tokio       = { workspace = true }
 tracing     = { workspace = true }
 utoipa      = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

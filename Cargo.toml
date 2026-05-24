@@ -81,3 +81,6 @@ notify = { version = "8", features = ["macos_fsevent"] }
 
 # mime detection
 infer = "0.19"
+
+# test utilities
+tempfile = "3"

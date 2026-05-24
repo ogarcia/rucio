@@ -33,7 +33,7 @@ impl std::fmt::Display for MagnetLink {
         write!(f, "rucio:{}", self.root_hash.to_hex())?;
         let mut params: Vec<String> = Vec::new();
         if let Some(ref name) = self.name {
-            params.push(format!("name={}", name));
+            params.push(format!("name={}", urlencoding::encode(name)));
         }
         if let Some(size) = self.size {
             params.push(format!("size={}", size));
@@ -91,5 +91,88 @@ impl MagnetLink {
             size,
             providers,
         })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn zero_hash() -> Hash {
+        Hash([0u8; 32])
+    }
+
+    fn make_link(name: Option<&str>, size: Option<u64>, providers: Vec<&str>) -> MagnetLink {
+        MagnetLink {
+            root_hash: zero_hash(),
+            name: name.map(|s| s.to_string()),
+            size,
+            providers: providers.into_iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn minimal_roundtrip() {
+        let link = make_link(None, None, vec![]);
+        let s = link.to_string();
+        assert!(s.starts_with("rucio:"));
+        assert!(!s.contains('?'));
+        let parsed = MagnetLink::parse(&s).unwrap();
+        assert_eq!(parsed.root_hash.0, [0u8; 32]);
+        assert!(parsed.name.is_none());
+        assert!(parsed.size.is_none());
+        assert!(parsed.providers.is_empty());
+    }
+
+    #[test]
+    fn full_roundtrip() {
+        let link = make_link(Some("my file.mkv"), Some(12345), vec!["PeerXyz"]);
+        let s = link.to_string();
+        assert!(s.contains("name=my%20file.mkv") || s.contains("name=my+file.mkv"));
+        let parsed = MagnetLink::parse(&s).unwrap();
+        assert_eq!(parsed.name.as_deref(), Some("my file.mkv"));
+        assert_eq!(parsed.size, Some(12345));
+        assert_eq!(parsed.providers, vec!["PeerXyz"]);
+    }
+
+    #[test]
+    fn special_chars_in_name() {
+        let link = make_link(Some("héllo & wörld"), None, vec![]);
+        let s = link.to_string();
+        let parsed = MagnetLink::parse(&s).unwrap();
+        assert_eq!(parsed.name.as_deref(), Some("héllo & wörld"));
+    }
+
+    #[test]
+    fn multiple_providers() {
+        let link = make_link(None, None, vec!["Peer1", "Peer2", "Peer3"]);
+        let s = link.to_string();
+        let parsed = MagnetLink::parse(&s).unwrap();
+        assert_eq!(parsed.providers, vec!["Peer1", "Peer2", "Peer3"]);
+    }
+
+    #[test]
+    fn invalid_scheme() {
+        assert!(matches!(
+            MagnetLink::parse("magnet:?xt=foo"),
+            Err(MagnetError::InvalidScheme)
+        ));
+    }
+
+    #[test]
+    fn invalid_hash() {
+        assert!(matches!(
+            MagnetLink::parse("rucio:notahex"),
+            Err(MagnetError::InvalidHash)
+        ));
+        // Wrong length (not 32 bytes)
+        assert!(matches!(
+            MagnetLink::parse("rucio:deadbeef"),
+            Err(MagnetError::InvalidHash)
+        ));
     }
 }

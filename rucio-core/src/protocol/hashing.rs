@@ -144,3 +144,88 @@ pub fn detect_mime(path: &Path, header: Option<&[u8]>) -> Option<String> {
     };
     Some(mime.to_string())
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::TempDir;
+
+    fn write_file(dir: &TempDir, name: &str, content: &[u8]) -> std::path::PathBuf {
+        let path = dir.path().join(name);
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(content).unwrap();
+        path
+    }
+
+    #[test]
+    fn hash_small_file_consistent() {
+        let dir = TempDir::new().unwrap();
+        let path = write_file(&dir, "hello.txt", b"hello world");
+        let fh1 = hash_file(&path).unwrap();
+        let fh2 = hash_file(&path).unwrap();
+        assert_eq!(fh1.root_hash, fh2.root_hash);
+        assert_eq!(fh1.size, 11);
+        assert_eq!(fh1.chunks.len(), 1);
+    }
+
+    #[test]
+    fn different_content_different_hash() {
+        let dir = TempDir::new().unwrap();
+        let a = write_file(&dir, "a.bin", b"content A");
+        let b = write_file(&dir, "b.bin", b"content B");
+        let ha = hash_file(&a).unwrap();
+        let hb = hash_file(&b).unwrap();
+        assert_ne!(ha.root_hash, hb.root_hash);
+    }
+
+    #[test]
+    fn empty_file() {
+        let dir = TempDir::new().unwrap();
+        let path = write_file(&dir, "empty.bin", b"");
+        let fh = hash_file(&path).unwrap();
+        assert_eq!(fh.size, 0);
+        assert_eq!(fh.chunks.len(), 0);
+    }
+
+    #[test]
+    fn collect_files_finds_files_recursively() {
+        let dir = TempDir::new().unwrap();
+        write_file(&dir, "root.txt", b"root");
+        let sub = dir.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        let sub_path = sub.join("child.txt");
+        std::fs::write(&sub_path, b"child").unwrap();
+
+        let files = collect_files(dir.path()).unwrap();
+        assert_eq!(files.len(), 2);
+        // All entries should be files
+        assert!(files.iter().all(|p| p.is_file()));
+    }
+
+    #[test]
+    fn detect_mime_by_extension() {
+        let path = std::path::Path::new("video.mkv");
+        assert_eq!(detect_mime(path, None).as_deref(), Some("video/x-matroska"));
+        assert_eq!(
+            detect_mime(std::path::Path::new("doc.pdf"), None).as_deref(),
+            Some("application/pdf")
+        );
+        assert!(detect_mime(std::path::Path::new("unknown.xyz"), None).is_none());
+    }
+
+    #[test]
+    fn detect_mime_by_magic_bytes() {
+        // PNG magic bytes
+        let png_header = &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        let path = std::path::Path::new("image.dat");
+        assert_eq!(
+            detect_mime(path, Some(png_header)).as_deref(),
+            Some("image/png")
+        );
+    }
+}
