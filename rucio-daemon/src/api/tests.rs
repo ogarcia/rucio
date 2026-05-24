@@ -12,11 +12,12 @@ use std::time::Instant;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::{RwLock, broadcast, mpsc};
 use tower::ServiceExt;
 
 use rucio_core::api::search::{SearchResultsResponse, SearchStartedResponse};
 use rucio_core::api::shares::SharesResponse;
+use rucio_core::api::ws::WsEvent;
 
 use crate::api::{AppState, NodeStatus, SearchStore, router};
 use crate::config::Config;
@@ -46,6 +47,7 @@ async fn test_state() -> (
     let (cmd_tx, cmd_rx) = mpsc::channel::<NodeCmd>(16);
     let (watcher_tx, _watcher_rx) = mpsc::channel::<crate::watcher::WatcherCmd>(16);
     let (download_tx, download_rx) = mpsc::channel::<crate::api::DownloadRequest>(16);
+    let (ws_tx, _) = broadcast::channel::<WsEvent>(16);
 
     let node_status = Arc::new(RwLock::new(NodeStatus {
         peer_id: "QmTestPeer".to_string(),
@@ -63,6 +65,7 @@ async fn test_state() -> (
         search_store,
         download_tx,
         indexing_count: Arc::new(AtomicUsize::new(0)),
+        ws_tx,
     };
     (state, cmd_rx, download_rx, dir)
 }
@@ -717,4 +720,103 @@ async fn get_api_docs_html_contains_custom_template_markers() {
         html.contains(r#""operationTitleSource":"path""#),
         "operationTitleSource flag not found in HTML"
     );
+}
+
+// ---------------------------------------------------------------------------
+// WebSocket
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn get_api_ws_upgrade_request_is_accepted() {
+    let (state, _rx, _dl_rx, _dir) = test_state().await;
+    let app = router(state);
+
+    // A WebSocket upgrade request via `oneshot` does not establish a real TCP
+    // connection, so the handshake cannot complete.  Axum returns either
+    // 101 (if it can upgrade) or 426 (Upgrade Required, when the transport
+    // layer does not support the upgrade).  Either way the route exists and
+    // the handler is reached — a missing route would return 404/405.
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/ws")
+                .header("connection", "upgrade")
+                .header("upgrade", "websocket")
+                .header("sec-websocket-version", "13")
+                .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // 101 Switching Protocols or 426 Upgrade Required are both valid here.
+    // 404 / 405 would indicate the route is not registered.
+    assert!(
+        resp.status() == StatusCode::SWITCHING_PROTOCOLS || resp.status().as_u16() == 426,
+        "unexpected status: {}",
+        resp.status()
+    );
+}
+
+#[tokio::test]
+async fn ws_event_is_delivered_to_subscriber() {
+    use rucio_core::api::ws::WsEvent;
+
+    let (state, _rx, _dl_rx, _dir) = test_state().await;
+    // Subscribe before triggering the event so we don't miss it.
+    let mut ws_rx = state.ws_tx.subscribe();
+    let ws_tx = state.ws_tx.clone();
+
+    // Simulate the main loop emitting a peer-connected event.
+    ws_tx
+        .send(WsEvent::PeerConnected {
+            peer_id: "12D3KooWTest".to_string(),
+        })
+        .unwrap();
+
+    let event = ws_rx.try_recv().unwrap();
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(json.contains(r#""type":"peer_connected""#));
+    assert!(json.contains("12D3KooWTest"));
+}
+
+#[tokio::test]
+async fn ws_event_serializes_with_type_and_data_fields() {
+    use rucio_core::api::ws::WsEvent;
+
+    let cases: &[(WsEvent, &str, &str)] = &[
+        (
+            WsEvent::IndexingCount { pending: 7 },
+            r#""type":"indexing_count""#,
+            r#""pending":7"#,
+        ),
+        (
+            WsEvent::PeerDisconnected {
+                peer_id: "QmFoo".to_string(),
+            },
+            r#""type":"peer_disconnected""#,
+            "QmFoo",
+        ),
+        (
+            WsEvent::NodeClassChanged {
+                class: rucio_core::protocol::node::NodeClass::HighId,
+            },
+            r#""type":"node_class_changed""#,
+            "HighId",
+        ),
+    ];
+
+    for (event, expected_type, expected_data) in cases {
+        let json = serde_json::to_string(event).unwrap();
+        assert!(
+            json.contains(expected_type),
+            "missing {expected_type} in: {json}"
+        );
+        assert!(
+            json.contains(expected_data),
+            "missing {expected_data} in: {json}"
+        );
+    }
 }

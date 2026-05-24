@@ -10,6 +10,7 @@ pub mod shares;
 pub mod status;
 #[cfg(test)]
 mod tests;
+pub mod ws;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -18,7 +19,7 @@ use std::time::Instant;
 
 use axum::{Router, routing};
 use tokio::sync::RwLock;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use utoipa::OpenApi;
 use utoipa_scalar::{Scalar, Servable as _};
 
@@ -27,6 +28,7 @@ use crate::db::Db;
 use crate::node::messages::NodeCmd;
 use crate::watcher::WatcherCmd;
 use rucio_core::api::search::SearchResultResponse;
+use rucio_core::api::ws::WsEvent;
 
 // ---------------------------------------------------------------------------
 // OpenAPI spec + Scalar docs
@@ -162,6 +164,9 @@ pub struct AppState {
     /// Number of files currently being indexed in the background.
     /// Incremented when a background index task starts, decremented when done.
     pub indexing_count: Arc<AtomicUsize>,
+    /// Broadcast channel for WebSocket push events.
+    /// Handlers subscribe with `ws_tx.subscribe()`.
+    pub ws_tx: broadcast::Sender<WsEvent>,
 }
 
 /// Live node status kept in memory and updated by the event loop.
@@ -183,6 +188,7 @@ pub struct NodeStatus {
 /// Build the full API router.
 pub fn router(state: AppState) -> Router {
     Router::new()
+        .route("/api/ws", routing::get(ws::ws_handler))
         .merge(Scalar::with_url("/api/docs", ApiDoc::openapi()).custom_html(SCALAR_HTML))
         .nest("/api/v1", v1_router())
         .with_state(state)

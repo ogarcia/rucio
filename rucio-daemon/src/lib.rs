@@ -14,6 +14,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 use rucio_core::api::search::SearchResultResponse;
+use rucio_core::api::ws::WsEvent;
 use rucio_core::protocol::search::{SearchQuery, SearchResult};
 
 /// Entry point for the daemon logic.
@@ -131,6 +132,8 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     }
 
     // --- API server ---------------------------------------------------------
+    let (ws_tx, _) = tokio::sync::broadcast::channel::<WsEvent>(256);
+
     let app_state = api::AppState {
         db: db.clone(),
         config: Arc::clone(&config),
@@ -141,11 +144,13 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
         search_store: Arc::clone(&search_store),
         download_tx,
         indexing_count: Arc::new(AtomicUsize::new(0)),
+        ws_tx: ws_tx.clone(),
     };
 
     let listen_addr = config.api.listen.clone();
+    let app_state_for_serve = app_state.clone();
     tokio::spawn(async move {
-        if let Err(e) = api::serve(app_state, &listen_addr).await {
+        if let Err(e) = api::serve(app_state_for_serve, &listen_addr).await {
             tracing::error!("API server error: {e}");
         }
     });
@@ -159,6 +164,9 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     // so skip it.
     let mut reprovide_tick = tokio::time::interval(tokio::time::Duration::from_secs(22 * 60));
     reprovide_tick.tick().await; // consume the immediate first tick
+    // Push download progress and indexing count to WebSocket subscribers
+    // every second (only when there are active subscribers).
+    let mut ws_tick = tokio::time::interval(tokio::time::Duration::from_secs(1));
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
@@ -176,6 +184,42 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                 let announced = reannounce_shares(&db, &handle.cmd_tx).await;
                 if announced > 0 {
                     debug!("Re-announced {announced} share(s) to Kademlia");
+                }
+            }
+            _ = ws_tick.tick() => {
+                // Skip the broadcast entirely when no clients are connected.
+                if ws_tx.receiver_count() == 0 {
+                    continue;
+                }
+                // IndexingCount
+                let pending = app_state.indexing_count.load(std::sync::atomic::Ordering::Relaxed);
+                let _ = ws_tx.send(WsEvent::IndexingCount { pending });
+                // DownloadProgress — only when there are active downloads
+                if let Ok(rows) = db::downloads::list(&db).await {
+                    let active: Vec<_> = rows
+                        .into_iter()
+                        .filter_map(|r| {
+                            let state = api::downloads::db_status_to_state(&r.status);
+                            matches!(
+                                state,
+                                rucio_core::api::downloads::DownloadState::FindingProviders
+                                    | rucio_core::api::downloads::DownloadState::Queued
+                                    | rucio_core::api::downloads::DownloadState::Downloading
+                            )
+                            .then_some(rucio_core::api::downloads::DownloadResponse {
+                                id: r.id,
+                                root_hash: hex::encode(&r.root_hash),
+                                name: Some(r.name),
+                                size: Some(r.total_size as u64),
+                                bytes_done: r.bytes_done as u64,
+                                state,
+                                error: r.error_msg,
+                            })
+                        })
+                        .collect();
+                    if !active.is_empty() {
+                        let _ = ws_tx.send(WsEvent::DownloadProgress(active));
+                    }
                 }
             }
             dl_req = download_rx.recv() => {
@@ -212,12 +256,18 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                         let mut ns = node_status.write().await;
                         ns.listen_addrs.retain(|a| a != &addr_str);
                     }
-                    Some(node::messages::NodeEvent::PeerConnected { .. }) => {
+                    Some(node::messages::NodeEvent::PeerConnected { peer_id }) => {
                         node_status.write().await.connected_peers += 1;
+                        let _ = ws_tx.send(WsEvent::PeerConnected {
+                            peer_id: peer_id.to_string(),
+                        });
                     }
-                    Some(node::messages::NodeEvent::PeerDisconnected { .. }) => {
+                    Some(node::messages::NodeEvent::PeerDisconnected { peer_id }) => {
                         let mut ns = node_status.write().await;
                         ns.connected_peers = ns.connected_peers.saturating_sub(1);
+                        let _ = ws_tx.send(WsEvent::PeerDisconnected {
+                            peer_id: peer_id.to_string(),
+                        });
                     }
                     Some(node::messages::NodeEvent::PeerDiscovered { peer_id, addrs }) => {
                         let addrs_json = serde_json::to_string(
@@ -245,7 +295,8 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                     }
                     Some(node::messages::NodeEvent::ClassChanged(class)) => {
                         info!(?class, "Node class updated");
-                        node_status.write().await.node_class = class;
+                        node_status.write().await.node_class = class.clone();
+                        let _ = ws_tx.send(WsEvent::NodeClassChanged { class });
                     }
                     Some(node::messages::NodeEvent::SearchQueryReceived(query)) => {
                         let peer_id = node_status.read().await.peer_id.clone();
@@ -256,6 +307,18 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                         });
                     }
                     Some(node::messages::NodeEvent::SearchResult(result)) => {
+                        // Push to WebSocket subscribers before accumulating so
+                        // the WsEvent carries the SearchResultResponse shape.
+                        let ws_result = rucio_core::api::search::SearchResultResponse {
+                            root_hash: result.root_hash.clone(),
+                            name: result.name.clone(),
+                            size: result.size,
+                            chunk_count: result.chunk_count,
+                            mime_type: result.mime_type.clone(),
+                            magnet: result.magnet.clone(),
+                            provider: result.provider.clone(),
+                        };
+                        let _ = ws_tx.send(WsEvent::SearchResult(ws_result));
                         accumulate_result(result, &search_store).await;
                     }
                     Some(node::messages::NodeEvent::ProvidersFound { key, providers }) => {

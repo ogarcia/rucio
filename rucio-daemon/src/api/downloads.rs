@@ -182,7 +182,7 @@ pub async fn delete_download(State(state): State<AppState>, Path(id): Path<i64>)
     }
 }
 
-fn db_status_to_state(s: &str) -> DownloadState {
+pub(crate) fn db_status_to_state(s: &str) -> DownloadState {
     match s {
         "finding_providers" => DownloadState::FindingProviders,
         "queued" => DownloadState::Queued,
