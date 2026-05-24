@@ -26,5 +26,6 @@ pub struct NetworkConfig {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct StorageConfig {
     pub download_dir: String,
+    pub temp_dir: String,
     pub database_path: String,
 }

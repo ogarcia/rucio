@@ -33,6 +33,7 @@ pub async fn get_config(State(state): State<AppState>) -> Json<ConfigResponse> {
         },
         storage: StorageConfig {
             download_dir: cfg.storage.download_dir.to_string_lossy().into_owned(),
+            temp_dir: cfg.storage.temp_dir.to_string_lossy().into_owned(),
             database_path: cfg.storage.database_path.to_string_lossy().into_owned(),
         },
     })

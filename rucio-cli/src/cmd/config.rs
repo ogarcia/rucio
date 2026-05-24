@@ -27,6 +27,7 @@ pub async fn show(client: &ApiClient) -> Result<()> {
 
     println!("\n[storage]");
     println!("  download_dir  = {}", cfg.storage.download_dir);
+    println!("  temp_dir      = {}", cfg.storage.temp_dir);
     println!("  database_path = {}", cfg.storage.database_path);
 
     Ok(())
