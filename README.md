@@ -3,7 +3,7 @@
 A decentralized peer-to-peer file sharing application built in Rust, inspired by
 eMule and MLDonkey and adapted to modern infrastructure.
 
-No trackers. No central servers. No relay nodes for data transfer.  
+No trackers. No central servers. No relay nodes for data transfer.
 Files are discovered via a distributed hash table (Kademlia DHT) and keyword
 search (Gossipsub), and transferred directly between peers.
 
@@ -95,7 +95,7 @@ rucio magnet --file /path/to/file.mkv   # offline, no daemon needed
 
 ## Documentation
 
-| | |
+| Guide | Description |
 |---|---|
 | [User guide](docs/user/README.md) | Installation, configuration and everyday usage |
 | [Design docs](docs/design/README.md) | Architecture, protocols and implementation decisions |
