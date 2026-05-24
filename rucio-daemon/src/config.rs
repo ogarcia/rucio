@@ -83,31 +83,41 @@ impl Default for StorageConfig {
 
 /// Resolve the default download directory with a three-step fallback:
 ///
-/// 1. `$XDG_DOWNLOAD_DIR` from `~/.config/user-dirs.dirs` (if set and non-empty)
-/// 2. `$HOME/Downloads` (if the directory already exists)
-/// 3. `$HOME` (always exists)
+/// 1. `$XDG_DOWNLOAD_DIR` from `~/.config/user-dirs.dirs` — **Linux only**
+///    (macOS does not use this mechanism)
+/// 2. `$HOME/Downloads` if the directory already exists
+///    (always true on macOS; common on desktop Linux)
+/// 3. `$HOME/rucio` — always resolvable
 ///
 /// A `rucio/` subdirectory is appended in every case.
 fn default_download_dir() -> PathBuf {
     let home = home_dir();
 
-    // 1. Parse ~/.config/user-dirs.dirs for XDG_DOWNLOAD_DIR.
+    // 1. XDG user-dirs — Linux desktop only.
+    #[cfg(target_os = "linux")]
     if let Some(xdg_dl) = xdg_download_dir(&home) {
         return xdg_dl.join("rucio");
     }
 
-    // 2. $HOME/Downloads — only if it already exists (common on desktop systems).
+    // 2. $HOME/Downloads — exists by default on macOS (Finder creates it) and
+    //    on most desktop Linux distros.
     let home_downloads = home.join("Downloads");
     if home_downloads.is_dir() {
         return home_downloads.join("rucio");
     }
 
-    // 3. Fall back to $HOME/rucio — always resolvable.
+    // 3. $HOME/rucio — always resolvable (servers, Alpine, Docker, …).
     home.join("rucio")
 }
 
-/// Return the user's home directory from `$HOME`, falling back to whatever
-/// `dirs::home_dir()` reports.  Never returns a literal `~`.
+/// Return the user's home directory.
+///
+/// Resolution order:
+///   1. `$HOME` env var (must be an absolute path)
+///   2. `dirs::home_dir()` (platform-native: reads passwd on Unix, registry on Windows)
+///   3. `/tmp` — last resort so we never panic
+///
+/// Never returns a literal `~`.
 fn home_dir() -> PathBuf {
     std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -117,14 +127,16 @@ fn home_dir() -> PathBuf {
 }
 
 /// Parse `~/.config/user-dirs.dirs` and return the value of `XDG_DOWNLOAD_DIR`
-/// if present and not empty.  The file uses shell-style `$HOME` expansion.
+/// if present and non-empty.  The file uses shell-style `$HOME` expansion.
+///
+/// Only compiled on Linux — this file does not exist on macOS.
+#[cfg(target_os = "linux")]
 fn xdg_download_dir(home: &std::path::Path) -> Option<PathBuf> {
     let config_home = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| home.join(".config"));
 
-    let user_dirs = config_home.join("user-dirs.dirs");
-    let content = std::fs::read_to_string(&user_dirs).ok()?;
+    let content = std::fs::read_to_string(config_home.join("user-dirs.dirs")).ok()?;
 
     for line in content.lines() {
         let line = line.trim();
@@ -132,12 +144,10 @@ fn xdg_download_dir(home: &std::path::Path) -> Option<PathBuf> {
             continue;
         }
         if let Some(rest) = line.strip_prefix("XDG_DOWNLOAD_DIR=") {
-            // Strip surrounding quotes if present.
             let val = rest.trim_matches('"');
             if val.is_empty() {
                 return None;
             }
-            // Expand $HOME prefix.
             let expanded = if let Some(rel) = val.strip_prefix("$HOME/") {
                 home.join(rel)
             } else if val == "$HOME" {
@@ -229,12 +239,12 @@ impl Config {
 
 fn default_config_dir() -> PathBuf {
     dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("~/.config"))
+        .unwrap_or_else(|| home_dir().join(".config"))
         .join("rucio")
 }
 
 fn default_data_dir() -> PathBuf {
     dirs::data_local_dir()
-        .unwrap_or_else(|| PathBuf::from("~/.local/share"))
+        .unwrap_or_else(|| home_dir().join(".local").join("share"))
         .join("rucio")
 }
