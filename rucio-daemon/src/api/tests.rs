@@ -657,3 +657,64 @@ async fn get_indexing_returns_zero_initially() {
     let body: serde_json::Value = body_json(resp.into_body()).await;
     assert_eq!(body["pending"].as_u64(), Some(0));
 }
+
+// ---------------------------------------------------------------------------
+// Scalar docs
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn get_api_docs_returns_200_html() {
+    let (state, _rx, _dl_rx, _dir) = test_state().await;
+    let app = router(state);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/docs")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        content_type.contains("text/html"),
+        "expected text/html, got {content_type}"
+    );
+}
+
+#[tokio::test]
+async fn get_api_docs_html_contains_custom_template_markers() {
+    let (state, _rx, _dl_rx, _dir) = test_state().await;
+    let app = router(state);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/docs")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let html = std::str::from_utf8(&bytes).unwrap();
+
+    assert!(
+        html.contains("<title>Rucio API</title>"),
+        "custom title not found in HTML"
+    );
+    assert!(
+        html.contains(r#""operationTitleSource":"path""#),
+        "operationTitleSource flag not found in HTML"
+    );
+}
