@@ -24,3 +24,4 @@ tabled              = { workspace = true }
 urlencoding         = { workspace = true }
 tokio-tungstenite   = { workspace = true }
 futures-util        = { workspace = true }
+owo-colors          = { workspace = true }

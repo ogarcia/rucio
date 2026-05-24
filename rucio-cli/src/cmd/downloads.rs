@@ -7,6 +7,7 @@ use rucio_core::api::ws::WsEvent;
 use tabled::{Table, Tabled};
 
 use crate::client::ApiClient;
+use crate::color;
 use crate::state::LastSearch;
 
 // ANSI escape sequences for terminal control.
@@ -104,7 +105,7 @@ async fn watch_loop(client: &ApiClient, active: bool, done: bool) -> Result<()> 
                     }
                     render(&last_downloads, active, done, ever_active);
                     if ever_active && !any_active {
-                        println!("\nAll downloads finished.");
+                        println!("\n{}", color::success("All downloads finished."));
                         return Ok(());
                     }
                 }
@@ -152,7 +153,7 @@ async fn watch_loop_http(client: &ApiClient, active: bool, done: bool) -> Result
         render(&resp.downloads, active, done, ever_active);
 
         if ever_active && !any_active {
-            println!("\nAll downloads finished.");
+            println!("\n{}", color::success("All downloads finished."));
             return Ok(());
         }
     }
@@ -203,40 +204,17 @@ fn print_table(
         .into_iter()
         .map(|d| {
             let total = d.size.unwrap_or(0);
-            let bar = if total > 0 {
-                let ratio = d.bytes_done as f64 / total as f64;
-                let filled = (ratio * 20.0).round() as usize;
-                format!(
-                    "[{}{}] {:.0}%",
-                    "#".repeat(filled),
-                    ".".repeat(20 - filled),
-                    ratio * 100.0
-                )
-            } else {
-                "[-                  ] -".to_string()
-            };
             Row {
                 hash: truncate(&d.root_hash, 16),
                 name: truncate(&d.name.unwrap_or_else(|| "-".to_string()), 32),
                 size: d.size.map(human_size).unwrap_or_else(|| "-".to_string()),
-                progress: bar,
-                state: state_label(&d.state),
+                progress: color::progress_bar(d.bytes_done, total),
+                state: color::download_state(&d.state),
             }
         })
         .collect();
 
     println!("{}", Table::new(rows));
-}
-
-fn state_label(state: &DownloadState) -> String {
-    match state {
-        DownloadState::FindingProviders => "finding providers…".to_string(),
-        DownloadState::Queued => "queued".to_string(),
-        DownloadState::Downloading => "downloading".to_string(),
-        DownloadState::Completed => "completed".to_string(),
-        DownloadState::Failed => "failed".to_string(),
-        DownloadState::Cancelled => "cancelled".to_string(),
-    }
 }
 
 /// Start a download.
@@ -264,7 +242,7 @@ pub async fn start(client: &ApiClient, target: &str, provider: Option<&str>) -> 
     }
 
     client.start_download(&magnet, providers).await?;
-    println!("Download queued.");
+    println!("{}", color::success("Download queued."));
     Ok(())
 }
 
@@ -277,7 +255,7 @@ pub async fn cancel(client: &ApiClient, hash: &str) -> Result<()> {
             println!(
                 "Cancelled: {} ({})",
                 d.name.unwrap_or_else(|| "-".to_string()),
-                d.root_hash
+                color::value(&d.root_hash)
             );
             Ok(())
         }
@@ -305,7 +283,7 @@ pub async fn clean(client: &ApiClient, hash: Option<&str>) -> Result<()> {
                 println!(
                     "Removed: {} ({})",
                     d.name.unwrap_or_else(|| "-".to_string()),
-                    &d.root_hash[..16.min(d.root_hash.len())]
+                    color::value(&d.root_hash[..16.min(d.root_hash.len())])
                 );
             }
         }
@@ -329,7 +307,10 @@ pub async fn clean(client: &ApiClient, hash: Option<&str>) -> Result<()> {
                 eprintln!("Warning: could not remove {}: {e}", d.root_hash);
             }
         }
-        println!("Removed {n} finished download(s).");
+        println!(
+            "{}",
+            color::success(&format!("Removed {n} finished download(s)."))
+        );
     }
     Ok(())
 }

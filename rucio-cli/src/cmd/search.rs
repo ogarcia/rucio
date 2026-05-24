@@ -17,6 +17,7 @@ use tabled::{Table, Tabled};
 use tokio::time::{Duration, sleep};
 
 use crate::client::ApiClient;
+use crate::color;
 use crate::state::{CachedResult, LastSearch};
 
 const POLL_INTERVAL_MS: u64 = 1_000;
@@ -29,11 +30,11 @@ pub async fn search(client: &ApiClient, keywords: Vec<String>) -> Result<()> {
         anyhow::bail!("Provide at least one keyword.");
     }
 
-    println!("Searching for: {}", keywords.join(" "));
+    println!("Searching for: {}", color::value(&keywords.join(" ")));
 
     let started = client.start_search(keywords).await?;
     let query_id = started.query_id;
-    println!("Query ID: {query_id}");
+    println!("Query ID: {}", color::value(&query_id));
 
     // Accumulated deduplicated results across all polls.
     let mut grouped: Vec<CachedResult> = Vec::new();
@@ -134,7 +135,7 @@ fn print_results(results: &[CachedResult]) {
         #[tabled(rename = "Size")]
         size: String,
         #[tabled(rename = "Sources")]
-        sources: usize,
+        sources: String,
     }
 
     let rows: Vec<Row> = results
@@ -144,7 +145,7 @@ fn print_results(results: &[CachedResult]) {
             idx: i + 1,
             name: r.name.clone(),
             size: human_size(r.size),
-            sources: r.providers.len(),
+            sources: color::sources(r.providers.len()),
         })
         .collect();
 

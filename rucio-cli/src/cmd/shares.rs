@@ -6,6 +6,7 @@ use tabled::{Table, Tabled};
 use rucio_core::api::shares::ShareResponse;
 
 use crate::client::ApiClient;
+use crate::color;
 
 pub async fn list(client: &ApiClient, filter: Option<&str>) -> Result<()> {
     let resp = client.list_shares().await?;
@@ -51,11 +52,11 @@ pub async fn list(client: &ApiClient, filter: Option<&str>) -> Result<()> {
         .enumerate()
         .map(|(i, s)| Row {
             idx: i + 1,
-            hash: s.root_hash[..8].to_string(),
+            hash: color::value(&s.root_hash[..8]),
             name: s.name.clone(),
             size: human_size(s.size),
             chunks: s.chunk_count,
-            path: s.path.clone(),
+            path: color::value(&s.path),
         })
         .collect();
 
@@ -66,7 +67,10 @@ pub async fn list(client: &ApiClient, filter: Option<&str>) -> Result<()> {
 pub async fn add(client: &ApiClient, path: &str) -> Result<()> {
     match client.add_share(path).await {
         Ok(resp) => {
-            println!("Queued {} file(s) for indexing.", resp.queued);
+            println!(
+                "{}",
+                color::success(&format!("Queued {} file(s) for indexing.", resp.queued))
+            );
             if !resp.errors.is_empty() {
                 println!("{} file(s) could not be read:", resp.errors.len());
                 for e in &resp.errors {
@@ -75,8 +79,7 @@ pub async fn add(client: &ApiClient, path: &str) -> Result<()> {
             }
         }
         Err(e) => {
-            // Surface the daemon's error message (e.g. "only directories can be shared")
-            eprintln!("Error: {e}");
+            eprintln!("{}", color::error(&format!("Error: {e}")));
             std::process::exit(1);
         }
     }
@@ -89,13 +92,13 @@ pub async fn remove(client: &ApiClient, target: &str) -> Result<()> {
     // otherwise treat it as a filesystem path.
     if target.len() == 64 && target.chars().all(|c| c.is_ascii_hexdigit()) {
         client.remove_share(target).await?;
-        println!("Removed share: {target}");
+        println!("Removed share: {}", color::value(target));
     } else {
         let n = client.remove_shares_by_path(target).await?;
         match n {
-            0 => println!("No shares found under: {target}"),
-            1 => println!("Removed 1 share."),
-            n => println!("Removed {n} shares."),
+            0 => println!("No shares found under: {}", color::value(target)),
+            1 => println!("{}", color::success("Removed 1 share.")),
+            n => println!("{}", color::success(&format!("Removed {n} shares."))),
         }
     }
     Ok(())
@@ -134,7 +137,7 @@ pub async fn magnet(client: &ApiClient, target: Option<&str>, file: Option<&str>
             size: Some(fh.size),
             providers: vec![],
         };
-        println!("{link}");
+        println!("{}", color::value(&link.to_string()));
         return Ok(());
     }
 
@@ -148,7 +151,7 @@ pub async fn magnet(client: &ApiClient, target: Option<&str>, file: Option<&str>
     if let Ok(n) = target.trim().parse::<usize>() {
         match shares.get(n.wrapping_sub(1)) {
             Some(s) => {
-                println!("{}", s.magnet);
+                println!("{}", color::value(&s.magnet));
                 return Ok(());
             }
             None => bail!("No share at row {n}. Run `rucio shares` to see the list."),
@@ -163,13 +166,13 @@ pub async fn magnet(client: &ApiClient, target: Option<&str>, file: Option<&str>
 
     match by_name.len() {
         1 => {
-            println!("{}", by_name[0].magnet);
+            println!("{}", color::value(&by_name[0].magnet));
             return Ok(());
         }
         n if n > 1 => {
             eprintln!("Ambiguous: {n} shares named '{target}'. Use a hash prefix instead:");
             for s in &by_name {
-                eprintln!("  {}  {}", &s.root_hash[..8], s.name);
+                eprintln!("  {}  {}", color::value(&s.root_hash[..8]), s.name);
             }
             std::process::exit(1);
         }
@@ -178,7 +181,7 @@ pub async fn magnet(client: &ApiClient, target: Option<&str>, file: Option<&str>
 
     // 3. Hash prefix / full hash — delegate to the daemon endpoint.
     let link = client.get_share_magnet(target).await?;
-    println!("{link}");
+    println!("{}", color::value(&link));
     Ok(())
 }
 
@@ -187,7 +190,10 @@ pub async fn indexing(client: &ApiClient) -> Result<()> {
     if pending == 0 {
         println!("No files being indexed.");
     } else {
-        println!("{pending} file(s) being indexed…");
+        println!(
+            "{} file(s) being indexed…",
+            color::value(&pending.to_string())
+        );
     }
     Ok(())
 }

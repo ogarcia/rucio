@@ -1,5 +1,6 @@
 pub mod client;
 pub mod cmd;
+pub mod color;
 pub mod state;
 
 use anyhow::Result;

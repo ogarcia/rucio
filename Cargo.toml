@@ -86,5 +86,7 @@ notify = { version = "8", features = ["macos_fsevent"] }
 # mime detection
 infer = "0.19"
 
+owo-colors  = { version = "4.3", features = ["supports-colors"] }
+
 # test utilities
 tempfile = "3"

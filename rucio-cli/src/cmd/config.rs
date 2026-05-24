@@ -3,32 +3,42 @@
 use anyhow::{Result, bail};
 
 use crate::client::ApiClient;
+use crate::color;
 
 pub async fn show(client: &ApiClient) -> Result<()> {
     let cfg = client.get_config().await?;
 
-    println!("[node]");
-    println!("  identity_path = {}", cfg.node.identity_path);
+    println!("{}", color::section("[node]"));
+    println!(
+        "  identity_path = {}",
+        color::value(&cfg.node.identity_path)
+    );
     for addr in &cfg.node.listen_addrs {
-        println!("  listen        = {addr}");
+        println!("  listen        = {}", color::value(addr));
     }
 
-    println!("\n[api]");
-    println!("  listen = {}", cfg.api.listen);
+    println!("\n{}", color::section("[api]"));
+    println!("  listen = {}", color::value(&cfg.api.listen));
 
-    println!("\n[network]");
+    println!("\n{}", color::section("[network]"));
     if cfg.network.bootstrap_peers.is_empty() {
         println!("  bootstrap_peers = (none)");
     } else {
         for peer in &cfg.network.bootstrap_peers {
-            println!("  bootstrap_peers = {peer}");
+            println!("  bootstrap_peers = {}", color::value(peer));
         }
     }
 
-    println!("\n[storage]");
-    println!("  download_dir  = {}", cfg.storage.download_dir);
-    println!("  temp_dir      = {}", cfg.storage.temp_dir);
-    println!("  database_path = {}", cfg.storage.database_path);
+    println!("\n{}", color::section("[storage]"));
+    println!(
+        "  download_dir  = {}",
+        color::value(&cfg.storage.download_dir)
+    );
+    println!("  temp_dir      = {}", color::value(&cfg.storage.temp_dir));
+    println!(
+        "  database_path = {}",
+        color::value(&cfg.storage.database_path)
+    );
 
     Ok(())
 }
@@ -63,7 +73,10 @@ pub async fn set(client: &ApiClient, key: &str, value: &str) -> Result<()> {
     }
 
     client.put_config(&cfg).await?;
-    println!("ok — restart the daemon for changes to take effect");
+    println!(
+        "{}",
+        color::success("ok — restart the daemon for changes to take effect")
+    );
     Ok(())
 }
 
@@ -97,6 +110,9 @@ pub async fn unset(client: &ApiClient, key: &str, value: &str) -> Result<()> {
     }
 
     client.put_config(&cfg).await?;
-    println!("ok — restart the daemon for changes to take effect");
+    println!(
+        "{}",
+        color::success("ok — restart the daemon for changes to take effect")
+    );
     Ok(())
 }

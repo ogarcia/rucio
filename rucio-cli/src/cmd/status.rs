@@ -5,12 +5,13 @@ use rucio_core::protocol::node::NodeClass;
 use tabled::{Table, Tabled};
 
 use crate::client::ApiClient;
+use crate::color;
 
 pub async fn status(client: &ApiClient) -> Result<()> {
     let s = client.status().await?;
 
-    println!("Peer ID  : {}", s.peer_id);
-    println!("Class    : {}", format_class(&s.class));
+    println!("Peer ID  : {}", color::value(&s.peer_id));
+    println!("Class    : {}", color::node_class(&s.class));
     println!("Peers    : {}", s.connected_peers);
     println!("Uptime   : {}", format_uptime(s.uptime_secs));
     println!("Version  : {}", s.version);
@@ -20,14 +21,14 @@ pub async fn status(client: &ApiClient) -> Result<()> {
     } else {
         println!("Listening:");
         for addr in &s.listen_addrs {
-            println!("  {addr}");
+            println!("  {}", color::value(addr));
         }
     }
 
     if !s.observed_addrs.is_empty() {
         println!("External (observed by peers):");
         for addr in &s.observed_addrs {
-            println!("  {addr}");
+            println!("  {}", color::value(addr));
         }
     }
 
@@ -74,7 +75,7 @@ pub async fn status(client: &ApiClient) -> Result<()> {
             println!();
             println!("Bootstrap multiaddrs (paste into another node's config.toml):");
             for addr in &public {
-                println!("  {addr}/p2p/{}", s.peer_id);
+                println!("  {}/p2p/{}", color::value(addr), color::value(&s.peer_id));
             }
         }
 
@@ -82,7 +83,12 @@ pub async fn status(client: &ApiClient) -> Result<()> {
             println!();
             println!("Local bootstrap multiaddrs (LAN / same-machine only):");
             for addr in &local {
-                println!("  {addr}/p2p/{}  [{}]", s.peer_id, addr_scope_hint(addr));
+                println!(
+                    "  {}/p2p/{}  [{}]",
+                    color::value(addr),
+                    color::value(&s.peer_id),
+                    addr_scope_hint(addr)
+                );
             }
         }
 
@@ -98,8 +104,9 @@ pub async fn status(client: &ApiClient) -> Result<()> {
     Ok(())
 }
 
-/// Human-readable connectivity class label.
-fn format_class(class: &NodeClass) -> &'static str {
+/// Human-readable connectivity class label (plain, used only if color module
+/// is bypassed — actual coloured output is produced by `color::node_class`).
+fn _format_class(class: &NodeClass) -> &'static str {
     match class {
         NodeClass::HighId => "HighID (publicly reachable, can serve files)",
         NodeClass::LowId => "LowID  (behind NAT, download-only mode)",
@@ -110,21 +117,23 @@ fn format_class(class: &NodeClass) -> &'static str {
 /// One-line connectivity summary combining class, peers and observed addrs.
 fn connectivity_summary(class: &NodeClass, peers: usize, observed: &[String]) -> String {
     match class {
-        NodeClass::Unknown if peers == 0 => "offline — no peers connected yet".to_string(),
-        NodeClass::Unknown => {
-            format!("limited — {peers} peer(s) connected, waiting for Identify handshake")
+        NodeClass::Unknown if peers == 0 => color::offline("offline — no peers connected yet"),
+        NodeClass::Unknown => color::limited(&format!(
+            "limited — {peers} peer(s) connected, waiting for Identify handshake"
+        )),
+        NodeClass::LowId if peers == 0 => {
+            color::offline("offline — behind NAT, no peers connected")
         }
-        NodeClass::LowId if peers == 0 => "offline — behind NAT, no peers connected".to_string(),
-        NodeClass::LowId => {
-            format!("online (LowID) — {peers} peer(s), inbound connections not reachable")
-        }
+        NodeClass::LowId => color::limited(&format!(
+            "online (LowID) — {peers} peer(s), inbound connections not reachable"
+        )),
         NodeClass::HighId => {
             let addr_hint = if observed.is_empty() {
                 String::new()
             } else {
-                format!(", external: {}", observed[0])
+                format!(", external: {}", color::value(&observed[0]))
             };
-            format!("online (HighID) — {peers} peer(s){addr_hint}")
+            color::online(&format!("online (HighID) — {peers} peer(s){addr_hint}"))
         }
     }
 }
