@@ -22,12 +22,30 @@ pub async fn show(client: &ApiClient) -> Result<()> {
 
     println!("\n{}", color::section("[network]"));
     if cfg.network.bootstrap_peers.is_empty() {
-        println!("  bootstrap_peers = (none)");
+        println!("  bootstrap_peers      = (none)");
     } else {
         for peer in &cfg.network.bootstrap_peers {
-            println!("  bootstrap_peers = {}", color::value(peer));
+            println!("  bootstrap_peers      = {}", color::value(peer));
         }
     }
+    let ul = cfg.network.upload_limit_kbps;
+    let dl = cfg.network.download_limit_kbps;
+    println!(
+        "  upload_limit_kbps    = {}",
+        color::value(&if ul == 0 {
+            "unlimited".to_string()
+        } else {
+            format!("{ul}")
+        })
+    );
+    println!(
+        "  download_limit_kbps  = {}",
+        color::value(&if dl == 0 {
+            "unlimited".to_string()
+        } else {
+            format!("{dl}")
+        })
+    );
 
     println!("\n{}", color::section("[storage]"));
     println!(
@@ -62,21 +80,36 @@ pub async fn set(client: &ApiClient, key: &str, value: &str) -> Result<()> {
                 cfg.node.listen_addrs.push(value.to_string());
             }
         }
+        "network.upload_limit_kbps" => {
+            cfg.network.upload_limit_kbps = value
+                .parse::<u64>()
+                .map_err(|_| anyhow::anyhow!("'{value}' is not a valid integer"))?;
+        }
+        "network.download_limit_kbps" => {
+            cfg.network.download_limit_kbps = value
+                .parse::<u64>()
+                .map_err(|_| anyhow::anyhow!("'{value}' is not a valid integer"))?;
+        }
         other => bail!(
             "Unknown or read-only key '{other}'.\n\
              Settable keys:\n\
                storage.download_dir\n\
                storage.temp_dir\n\
-               network.bootstrap_peers  (appends)\n\
-               node.listen_addrs        (appends)"
+               network.bootstrap_peers         (appends)\n\
+               node.listen_addrs               (appends)\n\
+               network.upload_limit_kbps       (KB/s, 0 = unlimited, applied immediately)\n\
+               network.download_limit_kbps     (KB/s, 0 = unlimited, applied immediately)"
         ),
     }
 
     client.put_config(&cfg).await?;
-    println!(
-        "{}",
-        color::success("ok — restart the daemon for changes to take effect")
-    );
+    let msg = match key {
+        "network.upload_limit_kbps" | "network.download_limit_kbps" => {
+            "ok — bandwidth limit applied immediately"
+        }
+        _ => "ok — restart the daemon for changes to take effect",
+    };
+    println!("{}", color::success(msg));
     Ok(())
 }
 

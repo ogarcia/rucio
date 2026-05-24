@@ -29,6 +29,7 @@ use crate::config::Config;
 use crate::db::Db;
 use crate::metrics::Metrics;
 use crate::node::messages::NodeCmd;
+use crate::throttle::TokenBucket;
 use crate::watcher::WatcherCmd;
 use rucio_core::api::search::SearchResultResponse;
 use rucio_core::api::ws::WsEvent;
@@ -178,6 +179,10 @@ pub struct AppState {
     pub ws_tx: broadcast::Sender<WsEvent>,
     /// In-memory session metrics (upload/download bytes, speeds, chunk counts).
     pub metrics: Arc<Metrics>,
+    /// Upload bandwidth throttle (global, across all peers).  0 KB/s = unlimited.
+    pub upload_throttle: Arc<TokenBucket>,
+    /// Download bandwidth throttle (global, across all peers).  0 KB/s = unlimited.
+    pub download_throttle: Arc<TokenBucket>,
 }
 
 /// Live node status kept in memory and updated by the event loop.

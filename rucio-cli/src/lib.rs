@@ -106,10 +106,12 @@ pub enum ConfigAction {
     /// Set a configuration value (restarts may be required for some changes)
     ///
     /// Settable keys:
-    ///   storage.download_dir   <path>
-    ///   storage.temp_dir       <path>
-    ///   network.bootstrap_peers <multiaddr>   (appends to the list)
-    ///   node.listen_addrs       <multiaddr>   (appends to the list)
+    ///   storage.download_dir          <path>
+    ///   storage.temp_dir              <path>
+    ///   network.bootstrap_peers       <multiaddr>  (appends to the list)
+    ///   node.listen_addrs             <multiaddr>  (appends to the list)
+    ///   network.upload_limit_kbps     <integer>    (0 = unlimited, applied immediately)
+    ///   network.download_limit_kbps   <integer>    (0 = unlimited, applied immediately)
     Set {
         /// Configuration key (e.g. storage.download_dir)
         key: String,

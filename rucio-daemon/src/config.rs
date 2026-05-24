@@ -31,6 +31,12 @@ pub struct ApiConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct NetworkConfig {
     pub bootstrap_peers: Vec<String>,
+    /// Upload bandwidth limit in KB/s.  0 = unlimited (default).
+    #[serde(default)]
+    pub upload_limit_kbps: u64,
+    /// Download bandwidth limit in KB/s.  0 = unlimited (default).
+    #[serde(default)]
+    pub download_limit_kbps: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -216,14 +222,16 @@ impl Config {
     /// All variables are optional — unset means "keep whatever the file or
     /// defaults provided".
     ///
-    /// | Variable                | Field                        | Format             |
-    /// |-------------------------|------------------------------|--------------------|
-    /// | `RUCIOD_API_LISTEN`     | `api.listen`                 | `host:port`        |
-    /// | `RUCIOD_P2P_LISTEN`     | `node.listen_addrs`          | comma-separated multiaddrs |
-    /// | `RUCIOD_DOWNLOAD_DIR`   | `storage.download_dir`       | path               |
-    /// | `RUCIOD_TEMP_DIR`       | `storage.temp_dir`           | path               |
-    /// | `RUCIOD_DB_PATH`        | `storage.database_path`      | path               |
-    /// | `RUCIOD_BOOTSTRAP_PEERS`| `network.bootstrap_peers`    | comma-separated multiaddrs |
+    /// | Variable                    | Field                        | Format             |
+    /// |-----------------------------|------------------------------|--------------------|
+    /// | `RUCIOD_API_LISTEN`         | `api.listen`                 | `host:port`        |
+    /// | `RUCIOD_P2P_LISTEN`         | `node.listen_addrs`          | comma-separated multiaddrs |
+    /// | `RUCIOD_DOWNLOAD_DIR`       | `storage.download_dir`       | path               |
+    /// | `RUCIOD_TEMP_DIR`           | `storage.temp_dir`           | path               |
+    /// | `RUCIOD_DB_PATH`            | `storage.database_path`      | path               |
+    /// | `RUCIOD_BOOTSTRAP_PEERS`    | `network.bootstrap_peers`    | comma-separated multiaddrs |
+    /// | `RUCIOD_UPLOAD_LIMIT_KBPS`  | `network.upload_limit_kbps`  | integer KB/s, 0=unlimited |
+    /// | `RUCIOD_DOWNLOAD_LIMIT_KBPS`| `network.download_limit_kbps`| integer KB/s, 0=unlimited |
     pub fn apply_env_overrides(&mut self) {
         if let Ok(v) = std::env::var("RUCIOD_API_LISTEN")
             && !v.is_empty()
@@ -254,6 +262,18 @@ impl Config {
             && !v.is_empty()
         {
             self.network.bootstrap_peers = v.split(',').map(|s| s.trim().to_string()).collect();
+        }
+        if let Ok(v) = std::env::var("RUCIOD_UPLOAD_LIMIT_KBPS")
+            && !v.is_empty()
+            && let Ok(n) = v.parse::<u64>()
+        {
+            self.network.upload_limit_kbps = n;
+        }
+        if let Ok(v) = std::env::var("RUCIOD_DOWNLOAD_LIMIT_KBPS")
+            && !v.is_empty()
+            && let Ok(n) = v.parse::<u64>()
+        {
+            self.network.download_limit_kbps = n;
         }
     }
 

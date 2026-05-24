@@ -3,6 +3,7 @@ pub mod config;
 pub mod db;
 pub mod metrics;
 pub mod node;
+pub mod throttle;
 pub mod transfer;
 pub mod watcher;
 
@@ -115,12 +116,18 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     let session_metrics = Arc::new(metrics::Metrics::new(metrics::instant_to_unix(
         &Instant::now(),
     )));
+    let upload_throttle = Arc::new(throttle::TokenBucket::new(config.network.upload_limit_kbps));
+    let download_throttle = Arc::new(throttle::TokenBucket::new(
+        config.network.download_limit_kbps,
+    ));
     let mut engine = transfer::DownloadEngine::new(
         db.clone(),
         handle.cmd_tx.clone(),
         dest_dir,
         temp_dir,
         Arc::clone(&session_metrics),
+        Arc::clone(&upload_throttle),
+        Arc::clone(&download_throttle),
     );
 
     // Resume any downloads that were interrupted by a previous crash or restart.
@@ -155,6 +162,8 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
         indexing_count: Arc::new(AtomicUsize::new(0)),
         ws_tx: ws_tx.clone(),
         metrics: Arc::clone(&session_metrics),
+        upload_throttle: Arc::clone(&upload_throttle),
+        download_throttle: Arc::clone(&download_throttle),
     };
 
     let listen_addr = config.api.listen.clone();

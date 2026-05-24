@@ -21,6 +21,12 @@ pub struct ApiConfig {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct NetworkConfig {
     pub bootstrap_peers: Vec<String>,
+    /// Upload bandwidth limit in KB/s.  0 = unlimited.
+    #[serde(default)]
+    pub upload_limit_kbps: u64,
+    /// Download bandwidth limit in KB/s.  0 = unlimited.
+    #[serde(default)]
+    pub download_limit_kbps: u64,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]

@@ -42,6 +42,7 @@ use rucio_core::protocol::{
 use crate::db::{self, Db};
 use crate::metrics::Metrics;
 use crate::node::messages::NodeCmd;
+use crate::throttle::TokenBucket;
 
 // ---------------------------------------------------------------------------
 // Tuning
@@ -187,6 +188,10 @@ pub struct DownloadEngine {
     known_providers: HashMap<[u8; 32], Vec<PeerId>>,
     /// Shared session metrics — updated on every chunk event.
     metrics: Arc<Metrics>,
+    /// Global upload bandwidth throttle (chunks served to remote peers).
+    upload_throttle: Arc<TokenBucket>,
+    /// Global download bandwidth throttle (chunks received from remote peers).
+    download_throttle: Arc<TokenBucket>,
 }
 
 impl DownloadEngine {
@@ -196,6 +201,8 @@ impl DownloadEngine {
         dest_dir: PathBuf,
         temp_dir: PathBuf,
         metrics: Arc<Metrics>,
+        upload_throttle: Arc<TokenBucket>,
+        download_throttle: Arc<TokenBucket>,
     ) -> Self {
         Self {
             db,
@@ -206,6 +213,8 @@ impl DownloadEngine {
             active: HashMap::new(),
             known_providers: HashMap::new(),
             metrics,
+            upload_throttle,
+            download_throttle,
         }
     }
 
@@ -934,6 +943,9 @@ impl DownloadEngine {
                     return;
                 }
 
+                // Throttle download bandwidth before writing to disk.
+                self.download_throttle.acquire(data.len() as u64).await;
+
                 // Write to disk.
                 let offset = chunk_idx as u64 * dl.chunk_size as u64;
                 let dest_path = dl.dest_path.clone();
@@ -1078,11 +1090,13 @@ impl DownloadEngine {
         let db = self.db.clone();
         let cmd_tx = self.cmd_tx.clone();
         let metrics = Arc::clone(&self.metrics);
+        let upload_throttle = Arc::clone(&self.upload_throttle);
 
         tokio::spawn(async move {
             let response = read_chunk_from_db(&db, &request, pex_peers).await;
-            // Record upload bytes before sending the response.
+            // Throttle and record upload bytes before sending the response.
             if let ChunkResponse::Ok { ref data, .. } = response {
+                upload_throttle.acquire(data.len() as u64).await;
                 metrics.record_upload(data.len() as u64);
             }
             let _ = cmd_tx
@@ -1295,6 +1309,8 @@ mod tests {
             tmp.path().to_path_buf(),
             tmp.path().to_path_buf(),
             metrics,
+            Arc::new(crate::throttle::TokenBucket::new(0)),
+            Arc::new(crate::throttle::TokenBucket::new(0)),
         );
         (engine, cmd_rx, db_dir)
     }

@@ -36,6 +36,8 @@ pub async fn get_config(State(state): State<AppState>) -> Json<ConfigResponse> {
         },
         network: NetworkConfig {
             bootstrap_peers: cfg.network.bootstrap_peers.clone(),
+            upload_limit_kbps: cfg.network.upload_limit_kbps,
+            download_limit_kbps: cfg.network.download_limit_kbps,
         },
         storage: StorageConfig {
             download_dir: cfg.storage.download_dir.to_string_lossy().into_owned(),
@@ -47,25 +49,22 @@ pub async fn get_config(State(state): State<AppState>) -> Json<ConfigResponse> {
 
 /// Update configuration
 ///
-/// Persists a new configuration to the config file on disk. The daemon must be restarted
-/// for most changes to take effect.
+/// Persists a new configuration to the config file on disk.
 ///
-/// The request body should be the full object returned by `GET /api/v1/config` with the
-/// desired fields modified. Fields that are read-only at runtime (`node.identity_path`,
-/// `api.listen`) are accepted in the body but silently ignored — they are preserved from
-/// the running configuration.
+/// **Changes applied immediately (no restart required)**
+/// - `network.upload_limit_kbps` — upload bandwidth cap (0 = unlimited).
+/// - `network.download_limit_kbps` — download bandwidth cap (0 = unlimited).
 ///
-/// **Writable fields**
-/// - `node.listen_addrs` — P2P listen multiaddrs.
-/// - `network.bootstrap_peers` — DHT bootstrap peers.
-/// - `storage.download_dir` — completed downloads destination.
-/// - `storage.temp_dir` — in-progress `.part` files location.
+/// **Changes that require a daemon restart**
+/// - `node.listen_addrs`, `network.bootstrap_peers`, `storage.*`
+///
+/// Read-only fields (`node.identity_path`, `api.listen`) are silently ignored.
 #[utoipa::path(
     put,
     path = "/api/v1/config",
     request_body = ConfigResponse,
     responses(
-        (status = 204, description = "Configuration saved to disk. Restart the daemon for changes to take effect."),
+        (status = 204, description = "Configuration saved. Bandwidth limits applied immediately; other changes require a restart."),
         (status = 500, description = "Failed to write the configuration file.")
     )
 )]
@@ -73,12 +72,22 @@ pub async fn put_config(
     State(state): State<AppState>,
     Json(req): Json<ConfigResponse>,
 ) -> StatusCode {
+    // Apply bandwidth limits immediately to the running token buckets.
+    state
+        .upload_throttle
+        .set_rate(req.network.upload_limit_kbps);
+    state
+        .download_throttle
+        .set_rate(req.network.download_limit_kbps);
+
     // Build a new Config from the request and persist it.
     // Fields not exposed in the API (e.g. api.token) are preserved from
     // the running config.
     let mut new_cfg = (*state.config).clone();
     new_cfg.node.listen_addrs = req.node.listen_addrs;
     new_cfg.network.bootstrap_peers = req.network.bootstrap_peers;
+    new_cfg.network.upload_limit_kbps = req.network.upload_limit_kbps;
+    new_cfg.network.download_limit_kbps = req.network.download_limit_kbps;
     new_cfg.storage.download_dir = req.storage.download_dir.into();
     new_cfg.storage.temp_dir = req.storage.temp_dir.into();
     // identity_path and api.listen intentionally not writable at runtime
