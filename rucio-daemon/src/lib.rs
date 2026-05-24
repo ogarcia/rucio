@@ -92,22 +92,11 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     }
 
     // Re-announce all previously shared files to Kademlia so the DHT
-    // knows we are a provider even after a restart.
-    match db::shares::list(&db).await {
-        Ok(shares) => {
-            for share in &shares {
-                let _ = handle
-                    .cmd_tx
-                    .send(node::messages::NodeCmd::StartProviding(
-                        share.root_hash.clone(),
-                    ))
-                    .await;
-            }
-            if !shares.is_empty() {
-                info!("Re-announced {} share(s) to Kademlia", shares.len());
-            }
-        }
-        Err(e) => warn!("Could not load shares for re-announcement: {e}"),
+    // knows we are a provider even after a restart.  Files that no longer
+    // exist on disk are pruned from the DB at this point.
+    let announced = reannounce_shares(&db, &handle.cmd_tx).await;
+    if announced > 0 {
+        info!("Re-announced {announced} share(s) to Kademlia");
     }
 
     // --- Shared dirs: ensure download_dir is registered as protected --------
@@ -184,21 +173,9 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                 engine.tick_provider_refresh().await;
             }
             _ = reprovide_tick.tick() => {
-                match db::shares::list(&db).await {
-                    Ok(shares) => {
-                        for share in &shares {
-                            let _ = handle
-                                .cmd_tx
-                                .send(node::messages::NodeCmd::StartProviding(
-                                    share.root_hash.clone(),
-                                ))
-                                .await;
-                        }
-                        if !shares.is_empty() {
-                            debug!("Re-announced {} share(s) to Kademlia", shares.len());
-                        }
-                    }
-                    Err(e) => warn!("Reprovide: could not load shares: {e}"),
+                let announced = reannounce_shares(&db, &handle.cmd_tx).await;
+                if announced > 0 {
+                    debug!("Re-announced {announced} share(s) to Kademlia");
                 }
             }
             dl_req = download_rx.recv() => {
@@ -400,4 +377,44 @@ fn now_secs() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+/// Re-announce all shared files that still exist on disk to Kademlia.
+///
+/// Files whose path no longer exists are silently removed from the DB so
+/// they are not announced as available when the data is gone.
+/// Returns the number of files successfully re-announced.
+async fn reannounce_shares(
+    db: &db::Db,
+    cmd_tx: &tokio::sync::mpsc::Sender<node::messages::NodeCmd>,
+) -> usize {
+    let shares = match db::shares::list(db).await {
+        Ok(s) => s,
+        Err(e) => {
+            warn!("Could not load shares for re-announcement: {e}");
+            return 0;
+        }
+    };
+
+    let mut announced = 0;
+    for share in &shares {
+        if !std::path::Path::new(&share.path).exists() {
+            info!(
+                path = %share.path,
+                hash = hex::encode(&share.root_hash),
+                "Shared file no longer on disk — removing from DB"
+            );
+            if let Err(e) = db::shares::delete_by_path_prefix(db, &share.path).await {
+                warn!("Failed to remove stale share {}: {e}", share.path);
+            }
+            continue;
+        }
+        let _ = cmd_tx
+            .send(node::messages::NodeCmd::StartProviding(
+                share.root_hash.clone(),
+            ))
+            .await;
+        announced += 1;
+    }
+    announced
 }
