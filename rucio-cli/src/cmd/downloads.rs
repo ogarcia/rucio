@@ -158,6 +158,7 @@ fn print_table(
 
 fn state_label(state: &DownloadState) -> String {
     match state {
+        DownloadState::FindingProviders => "finding providers…".to_string(),
         DownloadState::Queued => "queued".to_string(),
         DownloadState::Downloading => "downloading".to_string(),
         DownloadState::Completed => "completed".to_string(),

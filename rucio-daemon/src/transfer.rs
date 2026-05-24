@@ -120,6 +120,8 @@ struct PendingManifest {
     attempt: usize,
     /// When the last manifest request was sent.
     requested_at: Instant,
+    /// Row id in the `downloads` table (placeholder inserted at start()).
+    db_id: i64,
 }
 
 /// Per-peer slot tracking for an active download.
@@ -264,6 +266,7 @@ impl DownloadEngine {
                         providers: vec![],
                         attempt: 0,
                         requested_at: Instant::now(),
+                        db_id: row.id,
                     },
                 );
                 continue;
@@ -348,7 +351,7 @@ impl DownloadEngine {
         &mut self,
         magnet: &str,
         extra_providers: Vec<PeerId>,
-        _now: u64,
+        now: u64,
     ) -> Result<()> {
         let info = parse_magnet(magnet)?;
 
@@ -372,6 +375,21 @@ impl DownloadEngine {
             }
         }
 
+        // Insert a placeholder row so `rucio downloads` can show the state
+        // immediately, before the manifest arrives.
+        let db_id = db::downloads::create_pending(
+            &self.db,
+            &info.root_hash,
+            info.name.as_deref(),
+            now,
+            !providers.is_empty(),
+        )
+        .await
+        .unwrap_or_else(|e| {
+            warn!("create_pending failed: {e}");
+            0
+        });
+
         // Always ask Kademlia for providers — they will be added dynamically
         // via add_providers() as they arrive, even if we already have some.
         let _ = self
@@ -392,6 +410,7 @@ impl DownloadEngine {
                 providers,
                 attempt: 0,
                 requested_at: Instant::now(),
+                db_id,
             },
         );
 
@@ -454,9 +473,14 @@ impl DownloadEngine {
                 }
             }
             // If we had no providers before (pure DHT-only start), kick off the
-            // manifest request now that we have our first peer.
+            // manifest request now that we have our first peer, and update the
+            // DB status from 'finding_providers' to 'queued'.
             if !had_providers && let Some(&first) = pm.providers.first() {
                 pm.requested_at = Instant::now();
+                let db_id = pm.db_id;
+                if db_id > 0 {
+                    let _ = db::downloads::set_status(&self.db, db_id, "queued", None).await;
+                }
                 self.request_manifest(root_hash, first).await;
             }
         }
@@ -664,9 +688,12 @@ impl DownloadEngine {
                 let chunk_tuples: Vec<(u32, [u8; 32], u32)> =
                     chunks.iter().map(|c| (c.idx, c.hash, c.size)).collect();
 
-                let dl_id = match db::downloads::enqueue(
+                // Use the placeholder row created at start(), updating it with
+                // the real manifest data and inserting chunk rows.
+                let dl_id = pending.db_id;
+                if let Err(e) = db::downloads::finalize_pending(
                     &self.db,
-                    &root_hash,
+                    dl_id,
                     &name,
                     total_size,
                     dest_path.to_str().unwrap_or(&name),
@@ -675,12 +702,9 @@ impl DownloadEngine {
                 )
                 .await
                 {
-                    Ok(id) => id,
-                    Err(e) => {
-                        warn!("Failed to enqueue download: {e}");
-                        return;
-                    }
-                };
+                    warn!("Failed to finalize download in DB: {e}");
+                    return;
+                }
 
                 // Pre-allocate destination file.
                 if let Some(parent) = dest_path.parent() {
@@ -1546,6 +1570,7 @@ mod tests {
                 providers: vec![],
                 attempt: 0,
                 requested_at: std::time::Instant::now(),
+                db_id: 0,
             },
         );
 

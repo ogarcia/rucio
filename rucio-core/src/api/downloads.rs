@@ -13,6 +13,9 @@ pub struct StartDownloadRequest {
 /// State of a download.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub enum DownloadState {
+    /// No providers known yet; searching the DHT for peers that have this file.
+    FindingProviders,
+    /// Providers found; waiting to start transferring chunks.
     Queued,
     Downloading,
     Completed,

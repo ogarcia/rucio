@@ -161,7 +161,12 @@ pub async fn delete_download(State(state): State<AppState>, Path(id): Path<i64>)
 
     match row {
         None => return StatusCode::NOT_FOUND,
-        Some(r) if matches!(r.status.as_str(), "queued" | "downloading") => {
+        Some(r)
+            if matches!(
+                r.status.as_str(),
+                "finding_providers" | "queued" | "downloading"
+            ) =>
+        {
             return StatusCode::CONFLICT;
         }
         _ => {}
@@ -179,10 +184,12 @@ pub async fn delete_download(State(state): State<AppState>, Path(id): Path<i64>)
 
 fn db_status_to_state(s: &str) -> DownloadState {
     match s {
+        "finding_providers" => DownloadState::FindingProviders,
+        "queued" => DownloadState::Queued,
         "downloading" => DownloadState::Downloading,
         "completed" => DownloadState::Completed,
         "error" => DownloadState::Failed,
         "cancelled" => DownloadState::Cancelled,
-        _ => DownloadState::Queued,
+        _ => DownloadState::FindingProviders,
     }
 }

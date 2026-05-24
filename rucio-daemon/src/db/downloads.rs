@@ -19,6 +19,36 @@ pub struct DownloadRow {
     pub updated_at: i64,
 }
 
+/// Insert a placeholder row for a download that has not yet received its
+/// manifest (no chunks known yet).  The initial status reflects whether we
+/// already have providers (`"queued"`) or are still searching (`"finding_providers"`).
+/// Returns the new `downloads.id`.
+pub async fn create_pending(
+    db: &Db,
+    root_hash: &[u8; 32],
+    name: Option<&str>,
+    now: u64,
+    has_providers: bool,
+) -> Result<i64> {
+    let status = if has_providers {
+        "queued"
+    } else {
+        "finding_providers"
+    };
+    let id = sqlx::query(
+        "INSERT INTO downloads (root_hash, name, total_size, dest_path, status, added_at, updated_at)
+         VALUES (?1, ?2, 0, '', ?3, ?4, ?4)",
+    )
+    .bind(root_hash.as_slice())
+    .bind(name)
+    .bind(status)
+    .bind(now as i64)
+    .execute(db)
+    .await?
+    .last_insert_rowid();
+    Ok(id)
+}
+
 /// Queue a new download. Returns the new `downloads.id`.
 pub async fn enqueue(
     db: &Db,
@@ -59,6 +89,48 @@ pub async fn enqueue(
 
     tx.commit().await?;
     Ok(dl_id)
+}
+
+/// Update the placeholder row created by `create_pending()` with the real
+/// manifest data (name, size, dest_path) and insert the chunk rows.
+/// Sets status to 'downloading'.
+pub async fn finalize_pending(
+    db: &Db,
+    id: i64,
+    name: &str,
+    total_size: u64,
+    dest_path: &str,
+    now: u64,
+    chunks: &[(u32, [u8; 32], u32)], // (idx, hash, size)
+) -> Result<()> {
+    let mut tx = db.begin().await?;
+
+    sqlx::query(
+        "UPDATE downloads SET name = ?1, total_size = ?2, dest_path = ?3,
+         status = 'downloading', updated_at = ?4 WHERE id = ?5",
+    )
+    .bind(name)
+    .bind(total_size as i64)
+    .bind(dest_path)
+    .bind(now as i64)
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
+
+    for (idx, hash, size) in chunks {
+        sqlx::query(
+            "INSERT INTO download_chunks (download_id, idx, hash, size) VALUES (?1, ?2, ?3, ?4)",
+        )
+        .bind(id)
+        .bind(*idx as i64)
+        .bind(hash.as_slice())
+        .bind(*size as i64)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    tx.commit().await?;
+    Ok(())
 }
 
 /// List all downloads.
@@ -190,13 +262,13 @@ pub struct ChunkRow {
 }
 
 /// Return all downloads that were interrupted and should be resumed on startup.
-/// These are rows whose status is 'queued' or 'downloading'.
+/// These are rows whose status is 'finding_providers', 'queued' or 'downloading'.
 pub async fn list_resumable(db: &Db) -> Result<Vec<DownloadRow>> {
     let rows = sqlx::query(
         "SELECT id, root_hash, name, total_size, dest_path, status,
                 bytes_done, error_msg, added_at, updated_at
          FROM downloads
-         WHERE status IN ('queued', 'downloading')
+         WHERE status IN ('finding_providers', 'queued', 'downloading')
          ORDER BY added_at ASC",
     )
     .fetch_all(db)
