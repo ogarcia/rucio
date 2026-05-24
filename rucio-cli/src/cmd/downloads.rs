@@ -31,8 +31,17 @@ pub async fn list(client: &ApiClient, watch: bool, active: bool, done: bool) -> 
     }
 
     // Watch mode: refresh every second, exit when nothing is in-progress.
+    // We restore the cursor even when the user presses Ctrl-C by racing the
+    // loop against a ctrl_c future.  Either way we reach the show-cursor line.
     print!("{HIDE_CURSOR}");
-    let result = watch_loop(client, active, done).await;
+    let result = tokio::select! {
+        r = watch_loop(client, active, done) => r,
+        _ = tokio::signal::ctrl_c() => {
+            // Ctrl-C: clear the "Press Ctrl-C" line and exit gracefully.
+            println!();
+            Ok(())
+        }
+    };
     print!("{SHOW_CURSOR}");
     result
 }
