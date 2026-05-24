@@ -39,7 +39,8 @@ pub async fn status(client: &ApiClient) -> Result<()> {
     );
 
     // Bootstrap multiaddrs: prefer observed (public) addresses; fall back to
-    // listen addresses filtering out loopback/unspecified.
+    // listen addresses.  Either way, classify each address and annotate
+    // local-only ones so the user knows they won't work across the internet.
     let bootstrap_base: Vec<&str> = if !s.observed_addrs.is_empty() {
         s.observed_addrs.iter().map(String::as_str).collect()
     } else {
@@ -59,7 +60,13 @@ pub async fn status(client: &ApiClient) -> Result<()> {
         println!();
         println!("Bootstrap multiaddrs (paste into another node's config.toml):");
         for addr in &bootstrap_base {
-            println!("  {addr}/p2p/{}", s.peer_id);
+            let multiaddr = format!("{addr}/p2p/{}", s.peer_id);
+            let hint = addr_scope_hint(addr);
+            if hint.is_empty() {
+                println!("  {multiaddr}");
+            } else {
+                println!("  {multiaddr}  [{hint}]");
+            }
         }
     }
 
@@ -148,5 +155,57 @@ fn format_uptime(secs: u64) -> String {
         format!("{}m {}s", secs / 60, secs % 60)
     } else {
         format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
+    }
+}
+
+/// Return a short scope label for a multiaddr string, or empty string if the
+/// address is publicly routable (no annotation needed).
+///
+/// Covers the most common non-routable ranges:
+///   IPv4 private  : 10.x, 172.16-31.x, 192.168.x
+///   IPv4 link-local: 169.254.x
+///   IPv6 link-local: fe80::
+///   IPv6 ULA       : fc00::/7  (fd... and fc...)
+fn addr_scope_hint(multiaddr: &str) -> &'static str {
+    // Extract the IP portion from multiaddr segments like /ip4/1.2.3.4/... or
+    // /ip6/fe80::1/...  We just do prefix matching on the string — no need to
+    // parse the full multiaddr type here.
+    if let Some(ip) = extract_ip(multiaddr) {
+        if ip.starts_with("10.") || ip.starts_with("192.168.") || ip.starts_with("169.254.") {
+            return "local network only";
+        }
+        // 172.16.0.0/12 → 172.16.x through 172.31.x
+        if ip.starts_with("172.")
+            && ip
+                .split('.')
+                .nth(1)
+                .and_then(|s| s.parse::<u8>().ok())
+                .is_some_and(|n| (16..=31).contains(&n))
+        {
+            return "local network only";
+        }
+        // IPv6 link-local
+        if ip.starts_with("fe80:") || ip.starts_with("fe80::") {
+            return "link-local only";
+        }
+        // IPv6 ULA (fc00::/7 covers fc** and fd**)
+        if ip.starts_with("fd") || ip.starts_with("fc") {
+            return "local network only";
+        }
+    }
+    ""
+}
+
+/// Extract the raw IP string from a multiaddr like `/ip4/1.2.3.4/tcp/...`
+/// or `/ip6/fe80::1/tcp/...`.
+fn extract_ip(multiaddr: &str) -> Option<&str> {
+    // multiaddr segments: ["", "ip4" or "ip6", "<ip>", ...]
+    let mut parts = multiaddr.splitn(4, '/');
+    parts.next(); // leading empty string before first '/'
+    let proto = parts.next()?;
+    if proto == "ip4" || proto == "ip6" {
+        parts.next()
+    } else {
+        None
     }
 }
