@@ -1,20 +1,39 @@
-//! `rucio shares`, `rucio add <path>`, `rucio remove <hash|path>`
+//! `rucio shares`, `rucio add <path>`, `rucio remove <hash|path>`, `rucio magnet <target>`
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use tabled::{Table, Tabled};
+
+use rucio_core::api::shares::ShareResponse;
 
 use crate::client::ApiClient;
 
-pub async fn list(client: &ApiClient) -> Result<()> {
+pub async fn list(client: &ApiClient, filter: Option<&str>) -> Result<()> {
     let resp = client.list_shares().await?;
 
-    if resp.shares.is_empty() {
-        println!("No files shared.");
+    let shares: Vec<ShareResponse> = match filter {
+        Some(f) => {
+            let f = f.to_lowercase();
+            resp.shares
+                .into_iter()
+                .filter(|s| s.name.to_lowercase().contains(&f))
+                .collect()
+        }
+        None => resp.shares,
+    };
+
+    if shares.is_empty() {
+        if filter.is_some() {
+            println!("No shares matching that filter.");
+        } else {
+            println!("No files shared.");
+        }
         return Ok(());
     }
 
     #[derive(Tabled)]
     struct Row {
+        #[tabled(rename = "#")]
+        idx: usize,
         #[tabled(rename = "Hash")]
         hash: String,
         #[tabled(rename = "Name")]
@@ -27,15 +46,16 @@ pub async fn list(client: &ApiClient) -> Result<()> {
         path: String,
     }
 
-    let rows: Vec<Row> = resp
-        .shares
-        .into_iter()
-        .map(|s| Row {
-            hash: truncate(&s.root_hash, 16),
-            name: s.name,
+    let rows: Vec<Row> = shares
+        .iter()
+        .enumerate()
+        .map(|(i, s)| Row {
+            idx: i + 1,
+            hash: s.root_hash[..8].to_string(),
+            name: s.name.clone(),
             size: human_size(s.size),
             chunks: s.chunk_count,
-            path: s.path,
+            path: s.path.clone(),
         })
         .collect();
 
@@ -83,9 +103,49 @@ pub async fn remove(client: &ApiClient, target: &str) -> Result<()> {
 
 /// Print the magnet link for a locally shared file.
 ///
-/// `hash` can be a full 64-char hex or an unambiguous prefix.
-pub async fn magnet(client: &ApiClient, hash: &str) -> Result<()> {
-    let link = client.get_share_magnet(hash).await?;
+/// `target` is resolved in order:
+///   1. Row number from `rucio shares` (e.g. `3`)
+///   2. Exact file name — if unique among all shares
+///   3. Hash prefix / full hash
+///
+/// If a name matches multiple shares, the user is told to use the hash instead.
+pub async fn magnet(client: &ApiClient, target: &str) -> Result<()> {
+    let shares = client.list_shares().await?.shares;
+
+    // 1. Numeric row index.
+    if let Ok(n) = target.trim().parse::<usize>() {
+        match shares.get(n.wrapping_sub(1)) {
+            Some(s) => {
+                println!("{}", s.magnet);
+                return Ok(());
+            }
+            None => bail!("No share at row {n}. Run `rucio shares` to see the list."),
+        }
+    }
+
+    // 2. Exact name match.
+    let by_name: Vec<&ShareResponse> = shares
+        .iter()
+        .filter(|s| s.name.eq_ignore_ascii_case(target))
+        .collect();
+
+    match by_name.len() {
+        1 => {
+            println!("{}", by_name[0].magnet);
+            return Ok(());
+        }
+        n if n > 1 => {
+            eprintln!("Ambiguous: {n} shares named '{target}'. Use a hash prefix instead:");
+            for s in &by_name {
+                eprintln!("  {}  {}", &s.root_hash[..8], s.name);
+            }
+            std::process::exit(1);
+        }
+        _ => {}
+    }
+
+    // 3. Hash prefix / full hash — delegate to the daemon endpoint.
+    let link = client.get_share_magnet(target).await?;
     println!("{link}");
     Ok(())
 }
@@ -105,13 +165,5 @@ fn human_size(bytes: u64) -> String {
         format!("{val:.1} {unit}")
     } else {
         format!("{val:.0} {unit}")
-    }
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}…", &s[..max])
     }
 }
