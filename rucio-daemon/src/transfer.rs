@@ -1459,7 +1459,7 @@ mod tests {
 
         // Should have enqueued a FindProviders command.
         let cmd = rx.try_recv().unwrap();
-        assert!(matches!(cmd, NodeCmd::FindProviders(k) if k == hash.as_slice()));
+        assert!(matches!(cmd, NodeCmd::FindProviders(ref k) if k == hash.as_slice()));
 
         // Entry should be in pending_manifests (no manifest request yet).
         let pm = engine.pending_manifests.get(&hash).unwrap();
@@ -1577,7 +1577,7 @@ mod tests {
         engine.tick_provider_refresh().await;
 
         let cmd = rx.try_recv().unwrap();
-        assert!(matches!(cmd, NodeCmd::FindProviders(k) if k == hash.as_slice()));
+        assert!(matches!(cmd, NodeCmd::FindProviders(ref k) if k == hash.as_slice()));
     }
 
     // -----------------------------------------------------------------------
@@ -1914,5 +1914,80 @@ mod tests {
 
         let _ = stop.send(());
         let _ = acker.await;
+    }
+
+    // -----------------------------------------------------------------------
+    // resume_interrupted()
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn resume_interrupted_finding_providers_re_issues_find_providers() {
+        // A download that was in 'finding_providers' state when the daemon
+        // shut down should be re-hydrated into pending_manifests and trigger
+        // a new FindProviders command.
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut engine, mut rx, _db_dir) = make_engine(&tmp).await;
+        let hash = [0xf1u8; 32];
+
+        // Insert a placeholder row with status 'finding_providers' (no chunks).
+        let id = db::downloads::create_pending(&engine.db, &hash, Some("ghost.bin"), 1_000, false)
+            .await
+            .unwrap();
+        assert!(id > 0);
+
+        engine.resume_interrupted().await;
+
+        // Should be tracked as a pending manifest.
+        assert!(
+            engine.pending_manifests.contains_key(&hash),
+            "expected pending_manifests entry after resume"
+        );
+
+        // Should have issued FindProviders.
+        let cmd = rx.try_recv().expect("expected a FindProviders command");
+        assert!(
+            matches!(cmd, NodeCmd::FindProviders(ref k) if k == hash.as_slice()),
+            "expected FindProviders({hash:?}), got {cmd:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_interrupted_queued_with_chunks_re_issues_find_providers() {
+        // A download that had received its manifest (chunks saved) but was
+        // still in 'downloading' state should be re-hydrated into active.
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut engine, mut rx, _db_dir) = make_engine(&tmp).await;
+        let hash = [0xf2u8; 32];
+        let chunk_hash = *blake3::hash(b"data").as_bytes();
+
+        let id = db::downloads::create_pending(&engine.db, &hash, Some("resume.bin"), 1_000, true)
+            .await
+            .unwrap();
+        db::downloads::finalize_pending(
+            &engine.db,
+            id,
+            "resume.bin",
+            4096,
+            tmp.path().join("resume.bin.part").to_str().unwrap(),
+            1_000,
+            &[(0, chunk_hash, 4096)],
+        )
+        .await
+        .unwrap();
+
+        engine.resume_interrupted().await;
+
+        // Should be tracked as an active download (manifest already known).
+        assert!(
+            engine.active.contains_key(&hash),
+            "expected active entry after resume with chunks"
+        );
+
+        // Should have issued FindProviders to re-discover peers.
+        let cmd = rx.try_recv().expect("expected a FindProviders command");
+        assert!(
+            matches!(cmd, NodeCmd::FindProviders(ref k) if k == hash.as_slice()),
+            "expected FindProviders({hash:?}), got {cmd:?}"
+        );
     }
 }
