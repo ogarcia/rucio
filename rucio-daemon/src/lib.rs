@@ -235,8 +235,14 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                         let mut ns = node_status.write().await;
                         ns.listen_addrs.retain(|a| a != &addr_str);
                     }
-                    Some(node::messages::NodeEvent::PeerDiscovered { peer_id, addrs }) => {
+                    Some(node::messages::NodeEvent::PeerConnected { .. }) => {
                         node_status.write().await.connected_peers += 1;
+                    }
+                    Some(node::messages::NodeEvent::PeerDisconnected { .. }) => {
+                        let mut ns = node_status.write().await;
+                        ns.connected_peers = ns.connected_peers.saturating_sub(1);
+                    }
+                    Some(node::messages::NodeEvent::PeerDiscovered { peer_id, addrs }) => {
                         let addrs_json = serde_json::to_string(
                             &addrs.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
                         )
@@ -250,10 +256,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                         )
                         .await;
                     }
-                    Some(node::messages::NodeEvent::PeerExpired { .. }) => {
-                        let mut ns = node_status.write().await;
-                        ns.connected_peers = ns.connected_peers.saturating_sub(1);
-                    }
+                    Some(node::messages::NodeEvent::PeerExpired { .. }) => {}
                     Some(node::messages::NodeEvent::ObservedAddr { addr, reported_by }) => {
                         debug!(%addr, %reported_by, "Observed address");
                         let addr_str = addr.to_string();

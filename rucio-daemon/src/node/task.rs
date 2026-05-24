@@ -359,6 +359,9 @@ async fn on_swarm_event(
                     Err(e) => warn!("Kademlia bootstrap error: {e:?}"),
                 }
             }
+            let _ = event_tx
+                .send(NodeEvent::PeerConnected { peer_id: pid })
+                .await;
         }
         SwarmEvent::ConnectionClosed {
             peer_id: pid,
@@ -367,6 +370,9 @@ async fn on_swarm_event(
         } => {
             debug!(%pid, ?cause, "Connection closed");
             swarm.behaviour_mut().gossipsub.remove_explicit_peer(&pid);
+            let _ = event_tx
+                .send(NodeEvent::PeerDisconnected { peer_id: pid })
+                .await;
         }
         SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
             warn!(%error, "Outgoing connection error");
@@ -487,6 +493,25 @@ async fn on_swarm_event(
                             info!(?new_class, "Node class determined");
                             let _ = event_tx.send(NodeEvent::ClassChanged(new_class)).await;
                         }
+
+                        // Add the peer's listen addresses to the Kademlia
+                        // routing table so DHT queries can reach them.
+                        for addr in &info.listen_addrs {
+                            swarm
+                                .behaviour_mut()
+                                .kademlia
+                                .add_address(&pid, addr.clone());
+                        }
+
+                        // Persist the peer with its addresses so that
+                        // `rucio peers` shows multiaddrs for all connected
+                        // peers, not just those found via mDNS.
+                        let _ = event_tx
+                            .send(NodeEvent::PeerDiscovered {
+                                peer_id: pid,
+                                addrs: info.listen_addrs,
+                            })
+                            .await;
                     }
                     Event::Sent { .. } | Event::Error { .. } => {}
                     _ => {}

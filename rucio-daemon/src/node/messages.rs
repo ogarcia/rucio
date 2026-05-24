@@ -88,6 +88,10 @@ pub enum NodeEvent {
     },
     /// A peer is no longer reachable.
     PeerExpired { peer_id: PeerId },
+    /// A TCP connection to a peer was established (increment peer counter).
+    PeerConnected { peer_id: PeerId },
+    /// A TCP connection to a peer was closed (decrement peer counter).
+    PeerDisconnected { peer_id: PeerId },
     /// A remote peer reported our observed (external) address via Identify.
     ObservedAddr {
         addr: Multiaddr,
