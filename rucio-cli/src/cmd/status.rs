@@ -61,6 +61,9 @@ pub async fn status(client: &ApiClient) -> Result<()> {
         let mut sorted = bootstrap_base.clone();
         sorted.sort_by_key(|a| !addr_scope_hint(a).is_empty());
 
+        let has_local = sorted.iter().any(|a| !addr_scope_hint(a).is_empty());
+        let has_public = sorted.iter().any(|a| addr_scope_hint(a).is_empty());
+
         println!();
         println!("Bootstrap multiaddrs (paste into another node's config.toml):");
         for addr in &sorted {
@@ -71,6 +74,13 @@ pub async fn status(client: &ApiClient) -> Result<()> {
             } else {
                 println!("  {multiaddr}  [{hint}]");
             }
+        }
+        if has_local && !has_public {
+            println!("  (no public address detected — peers on the same LAN will discover");
+            println!("   this node automatically via mDNS without any configuration)");
+        } else if has_local {
+            println!("  (local-only addresses are shown for reference; LAN peers discover");
+            println!("   each other automatically via mDNS)");
         }
     }
 
