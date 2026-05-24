@@ -585,7 +585,16 @@ impl DownloadEngine {
                 );
             }
             // Also remove from active downloads (manifest already arrived).
-            if self.active.remove(&h).is_some() {
+            if let Some(dl) = self.active.remove(&h) {
+                // Clean up the in-progress .part file.
+                if let Err(e) = tokio::fs::remove_file(&dl.dest_path).await
+                    && e.kind() != std::io::ErrorKind::NotFound
+                {
+                    warn!(
+                        path = %dl.dest_path.display(),
+                        "Could not remove .part file on cancel: {e}"
+                    );
+                }
                 info!(
                     download_id,
                     root_hash = hex::encode(h),
@@ -599,8 +608,17 @@ impl DownloadEngine {
                 .iter()
                 .find(|(_, dl)| dl.download_id == download_id)
                 .map(|(h, _)| *h);
-            if let Some(h) = found {
-                self.active.remove(&h);
+            if let Some(h) = found
+                && let Some(dl) = self.active.remove(&h)
+            {
+                if let Err(e) = tokio::fs::remove_file(&dl.dest_path).await
+                    && e.kind() != std::io::ErrorKind::NotFound
+                {
+                    warn!(
+                        path = %dl.dest_path.display(),
+                        "Could not remove .part file on cancel: {e}"
+                    );
+                }
                 info!(
                     download_id,
                     root_hash = hex::encode(h),
