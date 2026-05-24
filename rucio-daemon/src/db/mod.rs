@@ -6,6 +6,7 @@
 
 pub mod downloads;
 pub mod peers;
+pub mod shared_dirs;
 pub mod shares;
 
 use anyhow::{Context, Result};

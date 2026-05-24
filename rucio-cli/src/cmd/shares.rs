@@ -44,12 +44,20 @@ pub async fn list(client: &ApiClient) -> Result<()> {
 }
 
 pub async fn add(client: &ApiClient, path: &str) -> Result<()> {
-    let resp = client.add_share(path).await?;
-    println!("Queued {} file(s) for indexing.", resp.queued);
-    if !resp.errors.is_empty() {
-        println!("{} file(s) could not be read:", resp.errors.len());
-        for e in &resp.errors {
-            println!("  {e}");
+    match client.add_share(path).await {
+        Ok(resp) => {
+            println!("Queued {} file(s) for indexing.", resp.queued);
+            if !resp.errors.is_empty() {
+                println!("{} file(s) could not be read:", resp.errors.len());
+                for e in &resp.errors {
+                    println!("  {e}");
+                }
+            }
+        }
+        Err(e) => {
+            // Surface the daemon's error message (e.g. "only directories can be shared")
+            eprintln!("Error: {e}");
+            std::process::exit(1);
         }
     }
     Ok(())

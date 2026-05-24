@@ -42,6 +42,7 @@ async fn test_state() -> (
     crate::db::apply_schema(&db).await.unwrap();
 
     let (cmd_tx, cmd_rx) = mpsc::channel::<NodeCmd>(16);
+    let (watcher_tx, _watcher_rx) = mpsc::channel::<crate::watcher::WatcherCmd>(16);
     let (download_tx, download_rx) = mpsc::channel::<crate::api::DownloadRequest>(16);
 
     let node_status = Arc::new(RwLock::new(NodeStatus {
@@ -54,6 +55,7 @@ async fn test_state() -> (
         db,
         config: Arc::new(Config::default()),
         node_cmd: cmd_tx,
+        watcher_cmd: watcher_tx,
         started_at: Instant::now(),
         node_status,
         search_store,

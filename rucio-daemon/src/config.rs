@@ -35,7 +35,13 @@ pub struct NetworkConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StorageConfig {
+    /// Directory where completed downloads are stored and automatically shared.
+    /// This directory is always shared and cannot be removed from the share list.
     pub download_dir: PathBuf,
+    /// Directory where in-progress downloads are stored (.part files).
+    /// Chunks that are already downloaded are shared from here.
+    /// Files are moved to `download_dir` once fully downloaded.
+    pub temp_dir: PathBuf,
     pub database_path: PathBuf,
 }
 
@@ -68,6 +74,10 @@ impl Default for StorageConfig {
             download_dir: dirs::download_dir()
                 .unwrap_or_else(|| PathBuf::from("~/Downloads"))
                 .join("rucio"),
+            temp_dir: dirs::cache_dir()
+                .unwrap_or_else(|| PathBuf::from("~/.cache"))
+                .join("rucio")
+                .join("tmp"),
             database_path: default_data_dir().join("rucio.db"),
         }
     }

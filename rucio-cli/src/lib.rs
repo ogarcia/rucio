@@ -24,9 +24,9 @@ pub enum Commands {
     Status,
     /// List connected peers
     Peers,
-    /// Share a file
+    /// Share a directory
     Add {
-        /// Path to the file to share
+        /// Path to the directory to share (individual files are not accepted)
         path: String,
     },
     /// Stop sharing a file or directory

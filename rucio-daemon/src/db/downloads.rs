@@ -132,6 +132,17 @@ pub async fn set_status(
     Ok(())
 }
 
+/// Update the final destination path of a completed download.
+pub async fn set_dest_path(db: &Db, download_id: i64, dest_path: &str) -> Result<()> {
+    sqlx::query("UPDATE downloads SET dest_path = ?1, updated_at = ?2 WHERE id = ?3")
+        .bind(dest_path)
+        .bind(now_secs() as i64)
+        .bind(download_id)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
 /// Return the root_hash for a single download row, or `None` if not found.
 pub async fn get_root_hash(db: &Db, download_id: i64) -> Result<Option<Vec<u8>>> {
     let row = sqlx::query("SELECT root_hash FROM downloads WHERE id = ?1")

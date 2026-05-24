@@ -22,6 +22,7 @@ use tokio::sync::mpsc;
 use crate::config::Config;
 use crate::db::Db;
 use crate::node::messages::NodeCmd;
+use crate::watcher::WatcherCmd;
 use rucio_core::api::search::SearchResultResponse;
 
 // ---------------------------------------------------------------------------
@@ -69,6 +70,8 @@ pub struct AppState {
     pub db: Db,
     pub config: Arc<Config>,
     pub node_cmd: mpsc::Sender<NodeCmd>,
+    /// Direct channel to the filesystem watcher service.
+    pub watcher_cmd: mpsc::Sender<WatcherCmd>,
     pub started_at: Instant,
     pub node_status: Arc<RwLock<NodeStatus>>,
     pub search_store: SearchStore,

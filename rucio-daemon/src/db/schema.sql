@@ -4,6 +4,19 @@
 -- Timestamps are Unix seconds (INTEGER).
 
 -- ---------------------------------------------------------------------------
+-- shared_dirs
+-- Directories registered for sharing and watched for changes.
+-- The download_dir is inserted on startup with protected=1 and cannot be
+-- removed by the user.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS shared_dirs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    path        TEXT    NOT NULL UNIQUE,  -- absolute path, no trailing slash
+    protected   INTEGER NOT NULL DEFAULT 0,  -- 1 = cannot be removed by user
+    added_at    INTEGER NOT NULL
+);
+
+-- ---------------------------------------------------------------------------
 -- shared_files
 -- Files that this node is actively sharing.
 -- ---------------------------------------------------------------------------

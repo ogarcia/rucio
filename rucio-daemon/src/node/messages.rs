@@ -8,6 +8,7 @@ use rucio_core::protocol::{
     search::{SearchQuery, SearchResult},
     transfer::{ChunkRequest, ChunkResponse},
 };
+use std::path::PathBuf;
 use tokio::sync::oneshot;
 
 // ---------------------------------------------------------------------------
@@ -57,6 +58,10 @@ pub enum NodeCmd {
     /// The node task will call `Kademlia::bootstrap()` as soon as the first
     /// connection to any of those peers is established.
     KadBootstrapPeersReady,
+    /// Register a directory with the filesystem watcher.
+    WatchDir(PathBuf),
+    /// Unregister a directory from the filesystem watcher.
+    UnwatchDir(PathBuf),
     /// Gracefully stop the node task.
     Shutdown,
 }

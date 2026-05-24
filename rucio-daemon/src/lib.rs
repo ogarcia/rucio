@@ -3,8 +3,9 @@ pub mod config;
 pub mod db;
 pub mod node;
 pub mod transfer;
+pub mod watcher;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
@@ -26,6 +27,14 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
 
     let config = Arc::new(config::Config::load(config_path)?);
     info!("Starting Rucio daemon v{}", env!("CARGO_PKG_VERSION"));
+
+    // --- Storage directories ------------------------------------------------
+    // Ensure download_dir and temp_dir exist.
+    for dir in [&config.storage.download_dir, &config.storage.temp_dir] {
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("creating directory {}", dir.display()))?;
+        info!(path = %dir.display(), "Storage directory ready");
+    }
 
     // --- Database -----------------------------------------------------------
     let db = db::open(&config.storage.database_path).await?;
@@ -100,17 +109,40 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
         Err(e) => warn!("Could not load shares for re-announcement: {e}"),
     }
 
+    // --- Shared dirs: ensure download_dir is registered as protected --------
+    {
+        let dl_path = config.storage.download_dir.to_string_lossy().into_owned();
+        if let Err(e) = db::shared_dirs::insert(&db, &dl_path, true, now_secs()).await {
+            warn!("Could not register download_dir as protected shared dir: {e}");
+        }
+    }
+
     // --- Download engine ----------------------------------------------------
     let dest_dir = config.storage.download_dir.clone();
-    let mut engine = transfer::DownloadEngine::new(db.clone(), handle.cmd_tx.clone(), dest_dir);
+    let temp_dir = config.storage.temp_dir.clone();
+    let mut engine =
+        transfer::DownloadEngine::new(db.clone(), handle.cmd_tx.clone(), dest_dir, temp_dir);
 
     let (download_tx, mut download_rx) = tokio::sync::mpsc::channel::<api::DownloadRequest>(32);
+
+    // --- Watcher service ----------------------------------------------------
+    let watcher = watcher::spawn(db.clone(), handle.cmd_tx.clone());
+
+    // Register all known shared dirs with the watcher (including download_dir
+    // which was just inserted above).
+    {
+        let dirs = db::shared_dirs::list(&db).await.unwrap_or_default();
+        for d in &dirs {
+            watcher.watch(std::path::PathBuf::from(&d.path)).await;
+        }
+    }
 
     // --- API server ---------------------------------------------------------
     let app_state = api::AppState {
         db: db.clone(),
         config: Arc::clone(&config),
         node_cmd: handle.cmd_tx.clone(),
+        watcher_cmd: watcher.cmd_tx.clone(),
         started_at: Instant::now(),
         node_status: Arc::clone(&node_status),
         search_store: Arc::clone(&search_store),

@@ -163,7 +163,10 @@ impl ActiveDownload {
 pub struct DownloadEngine {
     db: Db,
     cmd_tx: mpsc::Sender<NodeCmd>,
+    /// Final destination for completed downloads (always shared).
     dest_dir: PathBuf,
+    /// Temporary directory for in-progress downloads (.part files).
+    temp_dir: PathBuf,
     pending_manifests: HashMap<[u8; 32], PendingManifest>,
     active: HashMap<[u8; 32], ActiveDownload>,
     /// All peers known to have a given file, discovered via DHT or PEX.
@@ -173,11 +176,17 @@ pub struct DownloadEngine {
 }
 
 impl DownloadEngine {
-    pub fn new(db: Db, cmd_tx: mpsc::Sender<NodeCmd>, dest_dir: PathBuf) -> Self {
+    pub fn new(
+        db: Db,
+        cmd_tx: mpsc::Sender<NodeCmd>,
+        dest_dir: PathBuf,
+        temp_dir: PathBuf,
+    ) -> Self {
         Self {
             db,
             cmd_tx,
             dest_dir,
+            temp_dir,
             pending_manifests: HashMap::new(),
             active: HashMap::new(),
             known_providers: HashMap::new(),
@@ -465,7 +474,8 @@ impl DownloadEngine {
                     }
                 };
 
-                let dest_path = self.dest_dir.join(&name);
+                // In-progress downloads go to temp_dir as <name>.part
+                let dest_path = self.temp_dir.join(format!("{name}.part"));
 
                 let chunk_tuples: Vec<(u32, [u8; 32], u32)> =
                     chunks.iter().map(|c| (c.idx, c.hash, c.size)).collect();
@@ -736,6 +746,48 @@ impl DownloadEngine {
                 }
 
                 if self.active[&root_hash].is_complete() {
+                    let part_path = self.active[&root_hash].dest_path.clone();
+
+                    // Move <name>.part  →  dest_dir/<name>
+                    let final_path = if let Some(stem) = part_path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .and_then(|n| n.strip_suffix(".part"))
+                    {
+                        self.dest_dir.join(stem)
+                    } else {
+                        // Fallback: just drop .part extension or keep as-is
+                        self.dest_dir
+                            .join(part_path.file_name().unwrap_or_default())
+                    };
+
+                    match tokio::fs::rename(&part_path, &final_path).await {
+                        Ok(()) => {
+                            info!(
+                                from = %part_path.display(),
+                                to   = %final_path.display(),
+                                "Download moved to download_dir"
+                            );
+                            // Update DB dest_path to the final location
+                            if let Err(e) = db::downloads::set_dest_path(
+                                &self.db,
+                                dl_id,
+                                final_path.to_str().unwrap_or(""),
+                            )
+                            .await
+                            {
+                                warn!("Could not update dest_path in DB: {e}");
+                            }
+                        }
+                        Err(e) => {
+                            warn!(
+                                from = %part_path.display(),
+                                to   = %final_path.display(),
+                                "Could not move completed download: {e}"
+                            );
+                        }
+                    }
+
                     if let Err(e) =
                         db::downloads::set_status(&self.db, dl_id, "completed", None).await
                     {
@@ -989,7 +1041,12 @@ mod tests {
     ) -> (DownloadEngine, mpsc::Receiver<NodeCmd>, tempfile::TempDir) {
         let (db, db_dir) = make_db().await;
         let (cmd_tx, cmd_rx) = mpsc::channel(64);
-        let engine = DownloadEngine::new(db, cmd_tx, tmp.path().to_path_buf());
+        let engine = DownloadEngine::new(
+            db,
+            cmd_tx,
+            tmp.path().to_path_buf(),
+            tmp.path().to_path_buf(),
+        );
         (engine, cmd_rx, db_dir)
     }
 

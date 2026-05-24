@@ -3,8 +3,8 @@ use crate::protocol::file::FileDescriptor;
 /// POST /api/v1/shares
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct AddShareRequest {
-    /// Absolute path to a file or directory.
-    /// If a directory is given the daemon will recurse into it.
+    /// Absolute path to a directory to watch and share.
+    /// Individual files are not accepted; wrap them in a directory first.
     pub path: String,
 }
 

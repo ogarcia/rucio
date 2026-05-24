@@ -262,6 +262,9 @@ async fn run_loop(
                             warn!(%channel_id, "RespondManifest: unknown channel id");
                         }
                     }
+                    // WatchDir / UnwatchDir are handled by the WatcherService,
+                    // not by the node task — ignore them here.
+                    Some(NodeCmd::WatchDir(_)) | Some(NodeCmd::UnwatchDir(_)) => {}
                 }
             }
 

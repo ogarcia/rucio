@@ -14,6 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::api::AppState;
 use crate::db;
+use crate::watcher::WatcherCmd;
 
 // ---------------------------------------------------------------------------
 // GET /api/v1/shares
@@ -55,27 +56,60 @@ pub async fn list_shares(State(state): State<AppState>) -> Json<SharesResponse> 
     path = "/api/v1/shares",
     request_body = AddShareRequest,
     responses(
-        (status = 202, description = "Files queued for indexing", body = AddShareResponse),
-        (status = 400, description = "Path does not exist or is not accessible")
+        (status = 202, description = "Directory registered and files queued for indexing", body = AddShareResponse),
+        (status = 400, description = "Path does not exist, is not a directory, or is not accessible")
     )
 )]
 pub async fn add_share(
     State(state): State<AppState>,
     Json(req): Json<AddShareRequest>,
-) -> Result<(StatusCode, Json<AddShareResponse>), StatusCode> {
+) -> Result<(StatusCode, Json<AddShareResponse>), (StatusCode, Json<serde_json::Value>)> {
     let root = PathBuf::from(&req.path);
 
     if !root.exists() {
-        return Err(StatusCode::BAD_REQUEST);
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "path does not exist" })),
+        ));
+    }
+
+    if !root.is_dir() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "only directories can be shared; individual files are not accepted"
+            })),
+        ));
     }
 
     // Collect all file paths to index
     let paths = collect_files(&root).map_err(|e| {
         tracing::error!("Failed to collect files under {}: {e}", root.display());
-        StatusCode::BAD_REQUEST
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
     })?;
 
     let total = paths.len();
+
+    // Register the directory in shared_dirs (idempotent)
+    let now = now_secs();
+    let path_str = root.to_string_lossy().into_owned();
+    if let Err(e) = db::shared_dirs::insert(&state.db, &path_str, false, now).await {
+        tracing::error!("Failed to register shared dir {}: {e}", root.display());
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": "failed to register directory" })),
+        ));
+    }
+
+    // Notify the watcher about the new directory
+    let _ = state
+        .watcher_cmd
+        .send(WatcherCmd::Watch(root.clone()))
+        .await;
+
     if total == 0 {
         return Ok((
             StatusCode::ACCEPTED,
@@ -173,19 +207,52 @@ pub struct RemoveByPathQuery {
 }
 
 /// DELETE /api/v1/shares?path=<prefix>
+///
+/// Removes all indexed files under the given directory path and unregisters
+/// the directory from the watch list.  Returns 403 if the directory is
+/// protected (e.g. the download directory).
 #[utoipa::path(
     delete,
     path = "/api/v1/shares",
     params(("path" = String, Query, description = "Path or directory prefix to remove")),
     responses(
         (status = 200, description = "Number of shares removed"),
-        (status = 400, description = "Missing path parameter")
+        (status = 400, description = "Missing path parameter"),
+        (status = 403, description = "Directory is protected and cannot be removed")
     )
 )]
 pub async fn remove_shares_by_path(
     State(state): State<AppState>,
     Query(q): Query<RemoveByPathQuery>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    // Check if directory is protected before doing anything
+    match db::shared_dirs::is_protected(&state.db, &q.path).await {
+        Ok(true) => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({
+                    "error": "this directory is protected and cannot be removed"
+                })),
+            );
+        }
+        Err(e) => {
+            tracing::error!("DB error checking protection: {e}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            );
+        }
+        Ok(false) => {}
+    }
+
+    // Remove from shared_dirs
+    let dir_path = PathBuf::from(&q.path);
+    let _ = state.watcher_cmd.send(WatcherCmd::Unwatch(dir_path)).await;
+    if let Err(e) = db::shared_dirs::delete(&state.db, &q.path).await {
+        tracing::warn!("Could not remove shared_dir entry for {}: {e}", q.path);
+    }
+
+    // Remove all indexed files under this path
     match db::shares::delete_by_path_prefix(&state.db, &q.path).await {
         Ok(hashes) => {
             let removed = hashes.len() as u64;
@@ -216,7 +283,7 @@ pub async fn remove_shares_by_path(
 // ---------------------------------------------------------------------------
 
 /// Recursively collect all regular files under `root`.
-fn collect_files(root: &Path) -> std::io::Result<Vec<PathBuf>> {
+pub(crate) fn collect_files(root: &Path) -> std::io::Result<Vec<PathBuf>> {
     let mut out = Vec::new();
     collect_recursive(root, &mut out)?;
     Ok(out)
@@ -241,7 +308,7 @@ fn collect_recursive(path: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()>
 
 /// Hash a single file, split into chunks, and insert into the DB.
 /// Returns the root hash on success.
-async fn index_file(db: &crate::db::Db, path: &Path) -> anyhow::Result<[u8; 32]> {
+pub(crate) async fn index_file(db: &crate::db::Db, path: &Path) -> anyhow::Result<[u8; 32]> {
     let path_owned = path.to_path_buf();
 
     // Run blocking I/O on a dedicated thread
@@ -282,7 +349,7 @@ type HashFileResult = ([u8; 32], u64, Vec<(u32, [u8; 32], u32)>, Option<String>)
 
 /// Read a file, split into CHUNK_SIZE chunks, compute per-chunk BLAKE3 hashes
 /// and the Merkle root hash. Also sniff the MIME type from magic bytes.
-fn hash_file(path: &Path) -> anyhow::Result<HashFileResult> {
+pub(crate) fn hash_file(path: &Path) -> anyhow::Result<HashFileResult> {
     use std::io::Read;
 
     let mut file = std::fs::File::open(path)?;
@@ -380,4 +447,11 @@ fn detect_mime(path: &Path, header: Option<&[u8]>) -> Option<String> {
         _ => return None,
     };
     Some(mime.to_string())
+}
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }

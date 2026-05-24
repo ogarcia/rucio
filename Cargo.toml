@@ -76,5 +76,8 @@ async-trait = "0.1"
 tracing             = "0.1"
 tracing-subscriber  = { version = "0.3", features = ["env-filter"] }
 
+# filesystem watching
+notify = { version = "8", features = ["macos_fsevent"] }
+
 # mime detection
 infer = "0.19"
