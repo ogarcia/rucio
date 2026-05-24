@@ -57,8 +57,9 @@ const MANIFEST_TIMEOUT_SECS: u64 = 10;
 
 pub struct MagnetInfo {
     pub root_hash: [u8; 32],
-    pub name: String,
-    pub size: u64,
+    pub name: Option<String>,
+    pub size: Option<u64>,
+    pub providers: Vec<String>,
 }
 
 pub fn parse_magnet(magnet: &str) -> Result<MagnetInfo> {
@@ -66,38 +67,43 @@ pub fn parse_magnet(magnet: &str) -> Result<MagnetInfo> {
         .strip_prefix("rucio:")
         .ok_or_else(|| anyhow!("not a rucio: magnet link"))?;
 
-    let (hash_hex, params) = rest
-        .split_once('?')
-        .ok_or_else(|| anyhow!("magnet link missing query params"))?;
+    let (hash_hex, params) = match rest.split_once('?') {
+        Some((h, p)) => (h, Some(p)),
+        None => (rest, None),
+    };
 
     let hash_bytes = hex::decode(hash_hex).map_err(|_| anyhow!("invalid hex in magnet link"))?;
     let root_hash: [u8; 32] = hash_bytes
         .try_into()
         .map_err(|_| anyhow!("root hash must be 32 bytes"))?;
 
-    let mut name = String::new();
-    let mut size: u64 = 0;
+    let mut name: Option<String> = None;
+    let mut size: Option<u64> = None;
+    let mut providers: Vec<String> = Vec::new();
 
-    for part in params.split('&') {
-        if let Some(v) = part.strip_prefix("name=") {
-            name = urlencoding::decode(v)
-                .unwrap_or_else(|_| v.into())
-                .into_owned();
-        } else if let Some(v) = part.strip_prefix("size=") {
-            size = v
-                .parse()
-                .map_err(|_| anyhow!("invalid size in magnet link"))?;
+    if let Some(params) = params {
+        for part in params.split('&') {
+            if let Some(v) = part.strip_prefix("name=") {
+                name = Some(
+                    urlencoding::decode(v)
+                        .unwrap_or_else(|_| v.into())
+                        .into_owned(),
+                );
+            } else if let Some(v) = part.strip_prefix("size=") {
+                size = v.parse().ok();
+            } else if let Some(v) = part.strip_prefix("provider=")
+                && !v.is_empty()
+            {
+                providers.push(v.to_string());
+            }
         }
-    }
-
-    if name.is_empty() {
-        bail!("magnet link missing name param");
     }
 
     Ok(MagnetInfo {
         root_hash,
         name,
         size,
+        providers,
     })
 }
 
@@ -197,13 +203,32 @@ impl DownloadEngine {
     // Start: given a magnet + initial providers
     // -----------------------------------------------------------------------
 
-    pub async fn start(&mut self, magnet: &str, providers: Vec<PeerId>, _now: u64) -> Result<()> {
+    pub async fn start(
+        &mut self,
+        magnet: &str,
+        extra_providers: Vec<PeerId>,
+        _now: u64,
+    ) -> Result<()> {
         let info = parse_magnet(magnet)?;
 
         if self.active.contains_key(&info.root_hash)
             || self.pending_manifests.contains_key(&info.root_hash)
         {
             bail!("download already active for this hash");
+        }
+
+        // Merge providers from the magnet link itself with any supplied by the
+        // caller (e.g. from a gossip search result).  Magnet-embedded providers
+        // are tried first since the sender already verified they're live.
+        let mut providers: Vec<PeerId> = info
+            .providers
+            .iter()
+            .filter_map(|s| s.parse::<PeerId>().ok())
+            .collect();
+        for p in extra_providers {
+            if !providers.contains(&p) {
+                providers.push(p);
+            }
         }
 
         // Always ask Kademlia for providers — they will be added dynamically
@@ -213,9 +238,9 @@ impl DownloadEngine {
             .send(NodeCmd::FindProviders(info.root_hash.to_vec()))
             .await;
 
-        // If we already have at least one provider (e.g. from a gossip search
-        // result), request the manifest immediately for a fast start.
-        // Otherwise we wait for DHT to return providers via add_providers().
+        // If we already have at least one provider, request the manifest
+        // immediately for a fast start.  Otherwise we wait for DHT to return
+        // providers via add_providers().
         if let Some(&first) = providers.first() {
             self.request_manifest(info.root_hash, first).await;
         }
@@ -1149,8 +1174,8 @@ mod tests {
         let hash = "a".repeat(64);
         let magnet = format!("rucio:{hash}?name=test.mp3&size=1024");
         let info = parse_magnet(&magnet).unwrap();
-        assert_eq!(info.name, "test.mp3");
-        assert_eq!(info.size, 1024);
+        assert_eq!(info.name, Some("test.mp3".to_string()));
+        assert_eq!(info.size, Some(1024));
         assert_eq!(hex::encode(info.root_hash), hash);
     }
 
@@ -1163,7 +1188,29 @@ mod tests {
     fn parse_magnet_missing_name() {
         let hash = "b".repeat(64);
         let magnet = format!("rucio:{hash}?size=100");
-        assert!(parse_magnet(&magnet).is_err());
+        // name is now optional — this must succeed
+        assert!(parse_magnet(&magnet).is_ok());
+    }
+
+    #[test]
+    fn parse_magnet_hash_only() {
+        let hash = "c".repeat(64);
+        let magnet = format!("rucio:{hash}");
+        let info = parse_magnet(&magnet).unwrap();
+        assert_eq!(info.name, None);
+        assert_eq!(info.size, None);
+        assert!(info.providers.is_empty());
+        assert_eq!(hex::encode(info.root_hash), hash);
+    }
+
+    #[test]
+    fn parse_magnet_with_providers() {
+        let hash = "d".repeat(64);
+        let pid1 = "12D3KooWGFiWpMFMZPmBBDrZkegLeAfi3jXnNmLoEAfFExwEHEU3";
+        let pid2 = "12D3KooWHFmNNBCBCKcBkC6RkCBMKiHbBgxGFiWpMFMZPmBBDrZk";
+        let magnet = format!("rucio:{hash}?name=foo&provider={pid1}&provider={pid2}");
+        let info = parse_magnet(&magnet).unwrap();
+        assert_eq!(info.providers, vec![pid1.to_string(), pid2.to_string()]);
     }
 
     #[test]

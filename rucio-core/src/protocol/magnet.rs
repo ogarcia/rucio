@@ -3,12 +3,21 @@ use thiserror::Error;
 
 /// A magnet link identifying a file on the Rucio network.
 ///
-/// Format: `rucio:<root_hash_hex>?name=<name>&size=<size>`
+/// Primary format (minimal): `rucio:<root_hash_hex>`
+///
+/// Extended format: `rucio:<root_hash_hex>?name=<name>&size=<bytes>&provider=<peer_id>&provider=<peer_id>`
+///
+/// Only `root_hash` is mandatory.  All other fields are optional hints that
+/// allow the download engine to display metadata or connect faster, but the
+/// network can resolve everything from the hash alone via the DHT.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MagnetLink {
     pub root_hash: Hash,
     pub name: Option<String>,
     pub size: Option<u64>,
+    /// Known providers — zero or more PeerIds encoded as strings.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub providers: Vec<String>,
 }
 
 #[derive(Debug, Error)]
@@ -28,6 +37,9 @@ impl std::fmt::Display for MagnetLink {
         }
         if let Some(size) = self.size {
             params.push(format!("size={}", size));
+        }
+        for p in &self.providers {
+            params.push(format!("provider={}", p));
         }
         if !params.is_empty() {
             write!(f, "?{}", params.join("&"))?;
@@ -53,12 +65,22 @@ impl MagnetLink {
         let mut name = None;
         let mut size = None;
 
+        let mut providers: Vec<String> = Vec::new();
+
         if let Some(q) = query {
             for param in q.split('&') {
                 if let Some(v) = param.strip_prefix("name=") {
-                    name = Some(v.to_string());
+                    name = Some(
+                        urlencoding::decode(v)
+                            .unwrap_or_else(|_| v.into())
+                            .into_owned(),
+                    );
                 } else if let Some(v) = param.strip_prefix("size=") {
                     size = v.parse().ok();
+                } else if let Some(v) = param.strip_prefix("provider=")
+                    && !v.is_empty()
+                {
+                    providers.push(v.to_string());
                 }
             }
         }
@@ -67,6 +89,7 @@ impl MagnetLink {
             root_hash: hash_bytes,
             name,
             size,
+            providers,
         })
     }
 }

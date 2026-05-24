@@ -131,9 +131,13 @@ fn state_label(state: &rucio_core::api::downloads::DownloadState) -> String {
 ///
 /// `target` is either:
 ///   - a 1-based integer index into the last search results, or
-///   - a full `rucio:<hash>...` magnet link (requires `--provider`)
+///   - a `rucio:<hash>` magnet link (optionally with name/size/provider params)
+///
+/// `--provider` is accepted for backwards compatibility when passing a bare
+/// magnet link, but is no longer required — the DHT will find providers
+/// automatically if none are known.
 pub async fn start(client: &ApiClient, target: &str, provider: Option<&str>) -> Result<()> {
-    let (magnet, providers) = if let Ok(idx) = target.trim().parse::<usize>() {
+    let (magnet, mut providers) = if let Ok(idx) = target.trim().parse::<usize>() {
         // Numeric index — look up in last search state.
         let state = LastSearch::load();
         let entry = state.get(idx).ok_or_else(|| {
@@ -141,12 +145,17 @@ pub async fn start(client: &ApiClient, target: &str, provider: Option<&str>) -> 
         })?;
         (entry.magnet.clone(), entry.providers.clone())
     } else {
-        // Treat as a raw magnet link.
-        let p = provider.ok_or_else(|| {
-            anyhow::anyhow!("--provider <PeerId> is required when passing a magnet link directly")
-        })?;
-        (target.to_string(), vec![p.to_string()])
+        // Treat as a raw magnet link.  Providers embedded in the link will be
+        // parsed by the daemon; any --provider flag is appended here.
+        (target.to_string(), vec![])
     };
+
+    // Append explicit --provider if given (and not already in the list).
+    if let Some(p) = provider
+        && !providers.contains(&p.to_string())
+    {
+        providers.push(p.to_string());
+    }
 
     client.start_download(&magnet, providers).await?;
     println!("Download queued.");
