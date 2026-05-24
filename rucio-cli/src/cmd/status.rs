@@ -57,30 +57,41 @@ pub async fn status(client: &ApiClient) -> Result<()> {
     };
 
     if !bootstrap_base.is_empty() {
-        // Sort: public addresses first (no hint), local-only last.
-        let mut sorted = bootstrap_base.clone();
-        sorted.sort_by_key(|a| !addr_scope_hint(a).is_empty());
+        let public: Vec<&str> = bootstrap_base
+            .iter()
+            .copied()
+            .filter(|a| addr_scope_hint(a).is_empty())
+            .collect();
+        let mut local: Vec<&str> = bootstrap_base
+            .iter()
+            .copied()
+            .filter(|a| !addr_scope_hint(a).is_empty())
+            .collect();
+        // Stable sort within each group (link-local last).
+        local.sort_by_key(|a| addr_scope_hint(a));
 
-        let has_local = sorted.iter().any(|a| !addr_scope_hint(a).is_empty());
-        let has_public = sorted.iter().any(|a| addr_scope_hint(a).is_empty());
-
-        println!();
-        println!("Bootstrap multiaddrs (paste into another node's config.toml):");
-        for addr in &sorted {
-            let multiaddr = format!("{addr}/p2p/{}", s.peer_id);
-            let hint = addr_scope_hint(addr);
-            if hint.is_empty() {
-                println!("  {multiaddr}");
-            } else {
-                println!("  {multiaddr}  [{hint}]");
+        if !public.is_empty() {
+            println!();
+            println!("Bootstrap multiaddrs (paste into another node's config.toml):");
+            for addr in &public {
+                println!("  {addr}/p2p/{}", s.peer_id);
             }
         }
-        if has_local && !has_public {
-            println!("  (no public address detected — peers on the same LAN will discover");
-            println!("   this node automatically via mDNS without any configuration)");
-        } else if has_local {
-            println!("  (local-only addresses are shown for reference; LAN peers discover");
-            println!("   each other automatically via mDNS)");
+
+        if !local.is_empty() {
+            println!();
+            println!("Local bootstrap multiaddrs (LAN / same-machine only):");
+            for addr in &local {
+                println!("  {addr}/p2p/{}  [{}]", s.peer_id, addr_scope_hint(addr));
+            }
+        }
+
+        if public.is_empty() && !local.is_empty() {
+            println!();
+            println!(
+                "Note: no public address detected. \
+                 LAN peers discover this node automatically via mDNS."
+            );
         }
     }
 
