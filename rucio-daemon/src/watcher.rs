@@ -10,6 +10,15 @@
 //! The watcher runs `notify`'s blocking watcher on a dedicated OS thread and
 //! bridges events into async-land via a channel.
 //!
+//! # Debounce
+//!
+//! Many editors and copy tools emit multiple events (Create + Modify, or
+//! several Modify in quick succession) for a single logical write.  To avoid
+//! re-indexing the same file repeatedly we debounce upsert events: when a
+//! Create/Modify arrives for a path we record the time and only index it after
+//! DEBOUNCE_MS have passed with no further events for that path.  Remove
+//! events are processed immediately since there is nothing to read.
+//!
 //! # Watcher lifecycle
 //!
 //! 1. `WatcherService::spawn()` starts the service task and returns a
@@ -18,18 +27,23 @@
 //!    added or removed.
 //! 3. On shutdown the command channel is dropped; the service task exits.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::Result;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
+use tokio::time::{Instant, interval};
 use tracing::{debug, info, warn};
 
 use crate::api::shares::index_file;
 use crate::db::{self, Db};
 use crate::node::messages::NodeCmd;
+
+/// How long to wait after the last event for a path before indexing it.
+const DEBOUNCE_MS: u64 = 500;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -98,6 +112,13 @@ async fn run(
         Arc::new(Mutex::new(w))
     };
 
+    // Debounce table: path → time of last upsert event.
+    // We flush entries whose timestamp is older than DEBOUNCE_MS.
+    let mut pending_upserts: HashMap<PathBuf, Instant> = HashMap::new();
+    let debounce_dur = Duration::from_millis(DEBOUNCE_MS);
+    let mut debounce_tick = interval(Duration::from_millis(DEBOUNCE_MS / 2));
+    debounce_tick.tick().await; // consume immediate first tick
+
     info!("WatcherService started");
 
     loop {
@@ -124,9 +145,24 @@ async fn run(
                     None => break,
                     Some(Err(e)) => warn!("Watcher error: {e}"),
                     Some(Ok(event)) => {
-                        handle_event(event, &db, &node_tx).await;
+                        handle_event(
+                            event,
+                            &db,
+                            &node_tx,
+                            &mut pending_upserts,
+                        ).await;
                     }
                 }
+            }
+
+            // --- Debounce flush tick -----------------------------------------
+            _ = debounce_tick.tick() => {
+                flush_pending(
+                    &mut pending_upserts,
+                    debounce_dur,
+                    &db,
+                    &node_tx,
+                ).await;
             }
         }
     }
@@ -182,46 +218,81 @@ fn unwatch_dir(
 // Event handler
 // ---------------------------------------------------------------------------
 
-async fn handle_event(event: Event, db: &Db, node_tx: &mpsc::Sender<NodeCmd>) {
+async fn handle_event(
+    event: Event,
+    db: &Db,
+    node_tx: &mpsc::Sender<NodeCmd>,
+    pending_upserts: &mut HashMap<PathBuf, Instant>,
+) {
     match event.kind {
-        // File created — index it
+        // File created — queue for debounced indexing
         EventKind::Create(_) => {
             for path in &event.paths {
                 if !path.is_file() || is_hidden(path) {
                     continue;
                 }
-                on_file_upsert(path, db, node_tx).await;
+                debug!(path = %path.display(), "Watcher: Create — queuing upsert");
+                pending_upserts.insert(path.clone(), Instant::now());
             }
         }
 
-        // Rename (Both): treat as remove old + create new
+        // Rename (Both): process old removal immediately; queue new path
         EventKind::Modify(notify::event::ModifyKind::Name(notify::event::RenameMode::Both))
             if event.paths.len() == 2 =>
         {
             on_file_remove(&event.paths[0], db, node_tx).await;
             if event.paths[1].is_file() && !is_hidden(&event.paths[1]) {
-                on_file_upsert(&event.paths[1], db, node_tx).await;
+                debug!(path = %event.paths[1].display(), "Watcher: Rename — queuing upsert");
+                pending_upserts.insert(event.paths[1].clone(), Instant::now());
             }
         }
 
-        // Other modifications (data changed) — re-index
+        // Other modifications (data written) — queue for debounced indexing
         EventKind::Modify(_) => {
             for path in &event.paths {
                 if !path.is_file() || is_hidden(path) {
                     continue;
                 }
-                on_file_upsert(path, db, node_tx).await;
+                debug!(path = %path.display(), "Watcher: Modify — queuing upsert");
+                // Update timestamp; this resets the debounce window.
+                pending_upserts.insert(path.clone(), Instant::now());
             }
         }
 
-        // File removed — deindex it
+        // File removed — deindex immediately (no file to read, no point waiting)
         EventKind::Remove(_) => {
             for path in &event.paths {
+                // Cancel any pending upsert for this path.
+                pending_upserts.remove(path);
                 on_file_remove(path, db, node_tx).await;
             }
         }
 
         _ => {}
+    }
+}
+
+/// Process all pending upserts whose debounce window has expired.
+async fn flush_pending(
+    pending: &mut HashMap<PathBuf, Instant>,
+    debounce_dur: Duration,
+    db: &Db,
+    node_tx: &mpsc::Sender<NodeCmd>,
+) {
+    let now = Instant::now();
+    let ready: Vec<PathBuf> = pending
+        .iter()
+        .filter(|(_, ts)| now.duration_since(**ts) >= debounce_dur)
+        .map(|(p, _)| p.clone())
+        .collect();
+
+    for path in ready {
+        pending.remove(&path);
+        // Skip if the file no longer exists (deleted after the event).
+        if !path.is_file() {
+            continue;
+        }
+        on_file_upsert(&path, db, node_tx).await;
     }
 }
 
