@@ -277,6 +277,37 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
         }
     }
 
+    // --- eMule: resume interrupted downloads --------------------------------
+    #[cfg(feature = "emule-compat")]
+    {
+        let resumable = db::downloads::list_resumable(&db).await.unwrap_or_default();
+        let emule_rows: Vec<_> = resumable
+            .into_iter()
+            .filter(|r| r.ed2k_link.is_some())
+            .collect();
+        if !emule_rows.is_empty() {
+            info!(
+                count = emule_rows.len(),
+                "Resuming interrupted eMule downloads"
+            );
+            for row in emule_rows {
+                let link = row.ed2k_link.unwrap();
+                let config = config.clone();
+                let db = db.clone();
+                let ws_tx = ws_tx.clone();
+                let kad = kad_handle.clone();
+                tokio::spawn(async move {
+                    if let Err(e) =
+                        crate::emule::run_ed2k_download(&link, row.id, &config, &db, &ws_tx, &kad)
+                            .await
+                    {
+                        warn!(error = %e, "eMule resumed download failed");
+                    }
+                });
+            }
+        }
+    }
+
     // --- Main loop ----------------------------------------------------------
     let mut manifest_tick = tokio::time::interval(tokio::time::Duration::from_secs(2));
     let mut provider_refresh_tick = tokio::time::interval(tokio::time::Duration::from_secs(60));
@@ -425,6 +456,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                                             parsed.hash.as_bytes(),
                                             &parsed.name,
                                             parsed.size,
+                                            &link,
                                             now_secs(),
                                         ).await {
                                             Err(e) => warn!(error = %e, "Failed to create eMule download record"),

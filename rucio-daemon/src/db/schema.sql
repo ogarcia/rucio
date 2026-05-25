@@ -61,7 +61,8 @@ CREATE TABLE IF NOT EXISTS downloads (
     bytes_done      INTEGER NOT NULL DEFAULT 0,
     error_msg       TEXT,
     added_at        INTEGER NOT NULL,
-    updated_at      INTEGER NOT NULL
+    updated_at      INTEGER NOT NULL,
+    ed2k_link       TEXT                   -- non-null for eMule downloads, NULL for libp2p
 );
 
 -- ---------------------------------------------------------------------------

@@ -17,6 +17,8 @@ pub struct DownloadRow {
     pub error_msg: Option<String>,
     pub added_at: i64,
     pub updated_at: i64,
+    /// Non-null for eMule (ed2k) downloads; `None` for libp2p downloads.
+    pub ed2k_link: Option<String>,
 }
 
 /// Insert a download row for an eMule (ed2k) download.
@@ -24,6 +26,8 @@ pub struct DownloadRow {
 /// The `ed2k_hash` is the 16-byte MD4 hash from the ed2k link.  We store it
 /// padded to 32 bytes (MD4 bytes + 16 zero bytes) as a provisional identifier;
 /// the row is updated to the real BLAKE3 hash once the download completes.
+/// The original `ed2k_link` string is persisted so the download can be
+/// resumed after a daemon restart.
 ///
 /// Returns the new `downloads.id`.
 pub async fn create_emule_pending(
@@ -31,6 +35,7 @@ pub async fn create_emule_pending(
     ed2k_hash: &[u8; 16],
     name: &str,
     total_size: u64,
+    ed2k_link: &str,
     now: u64,
 ) -> Result<i64> {
     let mut root_hash = [0u8; 32];
@@ -48,12 +53,13 @@ pub async fn create_emule_pending(
     }
 
     let id = sqlx::query(
-        "INSERT INTO downloads (root_hash, name, total_size, dest_path, status, added_at, updated_at)
-         VALUES (?1, ?2, ?3, '', 'finding_providers', ?4, ?4)",
+        "INSERT INTO downloads (root_hash, name, total_size, dest_path, status, ed2k_link, added_at, updated_at)
+         VALUES (?1, ?2, ?3, '', 'finding_providers', ?4, ?5, ?5)",
     )
     .bind(root_hash.as_slice())
     .bind(name)
     .bind(total_size as i64)
+    .bind(ed2k_link)
     .bind(now as i64)
     .execute(db)
     .await?
@@ -137,7 +143,7 @@ pub async fn finalize_pending(
 pub async fn list(db: &Db) -> Result<Vec<DownloadRow>> {
     let rows = sqlx::query(
         "SELECT id, root_hash, name, total_size, dest_path, status,
-                bytes_done, error_msg, added_at, updated_at
+                bytes_done, error_msg, added_at, updated_at, ed2k_link
          FROM downloads ORDER BY added_at DESC",
     )
     .fetch_all(db)
@@ -156,6 +162,7 @@ pub async fn list(db: &Db) -> Result<Vec<DownloadRow>> {
             error_msg: r.get("error_msg"),
             added_at: r.get("added_at"),
             updated_at: r.get("updated_at"),
+            ed2k_link: r.get("ed2k_link"),
         })
         .collect())
 }
@@ -275,7 +282,7 @@ pub struct ChunkRow {
 pub async fn list_resumable(db: &Db) -> Result<Vec<DownloadRow>> {
     let rows = sqlx::query(
         "SELECT id, root_hash, name, total_size, dest_path, status,
-                bytes_done, error_msg, added_at, updated_at
+                bytes_done, error_msg, added_at, updated_at, ed2k_link
          FROM downloads
          WHERE status IN ('finding_providers', 'queued', 'downloading')
          ORDER BY added_at ASC",
@@ -296,6 +303,7 @@ pub async fn list_resumable(db: &Db) -> Result<Vec<DownloadRow>> {
             error_msg: r.get("error_msg"),
             added_at: r.get("added_at"),
             updated_at: r.get("updated_at"),
+            ed2k_link: r.get("ed2k_link"),
         })
         .collect())
 }
