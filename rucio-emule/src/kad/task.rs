@@ -480,7 +480,7 @@ async fn do_bootstrap(
     let mut sent = 0usize;
     for seed in &seeds {
         let addr = SocketAddr::V4(seed.socket_addr_udp());
-        debug!(%addr, id = %seed.id, ver = seed.version, "Sending BOOTSTRAP_REQ to seed");
+        tracing::trace!(%addr, id = %seed.id, ver = seed.version, "Sending BOOTSTRAP_REQ to seed");
         if socket.send_to(&pkt, addr).await.is_ok() {
             sent += 1;
         }
@@ -530,10 +530,10 @@ async fn do_bootstrap(
                         let _ = socket.send_to(&ack, src).await;
                     }
                     Ok(other) => {
-                        debug!("bootstrap: unexpected packet from {src}: {other:?}");
+                        tracing::trace!("bootstrap: unexpected packet from {src}: {other:?}");
                     }
                     Err(e) => {
-                        debug!(
+                        tracing::trace!(
                             "bootstrap: unrecognised packet from {src}: {e:?} bytes={}",
                             n
                         );
