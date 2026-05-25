@@ -3,7 +3,7 @@
 //! These types are serialized/deserialized by both the daemon and the CLI.
 
 /// Default URL for downloading a fresh `nodes.dat` file.
-pub const DEFAULT_NODES_DAT_URL: &str = "http://upd.emule-security.net/nodes.dat";
+pub const DEFAULT_NODES_DAT_URL: &str = "http://upd.emule-security.org/nodes.dat";
 
 /// User-Agent sent when downloading `nodes.dat`.
 ///
