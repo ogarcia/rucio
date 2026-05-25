@@ -189,7 +189,12 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
         if !save_path.exists() {
             tokio::spawn(async move {
                 info!(path = %save_path.display(), "nodes.dat not found — downloading in background");
-                match crate::emule::bootstrap_nodes_dat(&save_path).await {
+                match crate::emule::bootstrap_nodes_dat(
+                    &save_path,
+                    rucio_core::api::emule::DEFAULT_NODES_DAT_URL,
+                )
+                .await
+                {
                     Ok(n) => info!(contacts = n, path = %save_path.display(), "nodes.dat ready"),
                     Err(e) => warn!("Auto-bootstrap of nodes.dat failed: {e}"),
                 }

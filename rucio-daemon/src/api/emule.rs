@@ -114,54 +114,18 @@ pub async fn post_emule_bootstrap(
                     .join("nodes.dat")
             });
 
-        // Download the file.
         tracing::info!(url = %url, path = %save_path.display(), "Downloading nodes.dat");
-        let resp = reqwest::get(&url)
+
+        let contacts = crate::emule::bootstrap_nodes_dat(&save_path, &url)
             .await
             .map_err(|e| {
                 tracing::warn!(error = %e, "Failed to download nodes.dat");
                 StatusCode::BAD_REQUEST
-            })?
-            .error_for_status()
-            .map_err(|e| {
-                tracing::warn!(error = %e, "nodes.dat URL returned error status");
-                StatusCode::BAD_REQUEST
             })?;
-        let bytes = resp.bytes().await.map_err(|e| {
-            tracing::warn!(error = %e, "Failed to read nodes.dat response body");
-            StatusCode::BAD_REQUEST
-        })?;
 
-        // Validate: parse before saving.
-        let contacts = rucio_emule::kad::routing::parse_nodes_dat(&bytes).map_err(|e| {
-            tracing::warn!(error = %e, "Downloaded file is not a valid nodes.dat");
-            StatusCode::BAD_REQUEST
-        })?;
-
-        if contacts.is_empty() {
-            tracing::warn!("Downloaded nodes.dat contains no Kad2 contacts");
-            return Err(StatusCode::BAD_REQUEST);
-        }
-
-        // Save to disk.
-        if let Some(parent) = save_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                tracing::error!(error = %e, "Failed to create nodes.dat parent directory");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
-        }
-        std::fs::write(&save_path, &bytes).map_err(|e| {
-            tracing::error!(error = %e, path = %save_path.display(), "Failed to write nodes.dat");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-
-        tracing::info!(
-            contacts = contacts.len(),
-            path = %save_path.display(),
-            "nodes.dat saved"
-        );
+        tracing::info!(contacts, path = %save_path.display(), "nodes.dat saved");
         Ok(Json(EmuleBootstrapResponse {
-            contacts: contacts.len(),
+            contacts,
             path: save_path.display().to_string(),
             url,
         }))

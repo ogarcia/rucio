@@ -5,6 +5,13 @@
 /// Default URL for downloading a fresh `nodes.dat` file.
 pub const DEFAULT_NODES_DAT_URL: &str = "http://upd.emule-security.net/nodes.dat";
 
+/// User-Agent sent when downloading `nodes.dat`.
+///
+/// Several nodes.dat mirrors filter requests that do not look like a real
+/// eMule client.  We impersonate the last stable eMule release so the server
+/// returns a valid binary file instead of an HTML error page.
+pub const EMULE_USER_AGENT: &str = "eMule/0.60a";
+
 /// POST /api/v1/emule/bootstrap — request body.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct EmuleBootstrapRequest {
