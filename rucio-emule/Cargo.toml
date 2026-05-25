@@ -24,6 +24,9 @@ md4      = "0.11"   # ed2k chunk hash computation
 hex      = { workspace = true }
 urlencoding = { workspace = true }
 
+# compression (packed Kad2 packets use zlib)
+flate2   = { workspace = true }
+
 # utils
 tracing  = { workspace = true }
 

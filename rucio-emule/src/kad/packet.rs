@@ -300,12 +300,33 @@ pub enum PacketError {
     WrongProto(u8),
     #[error("io error: {0}")]
     Io(#[from] io::Error),
+    #[error("decompression error")]
+    Decompress,
 }
 
 /// Decode a raw UDP datagram into a [`KadPacket`].
+///
+/// Handles both plain Kad2 (`0xe4`) and packed Kad2 (`0xe5`) frames.
+/// Packed frames have a zlib-compressed payload starting at byte 2.
 pub fn decode(data: &[u8]) -> Result<KadPacket, PacketError> {
     if data.len() < 2 {
         return Err(PacketError::TooShort);
+    }
+    // 0xe5 = OP_KADEMLIAPACKEDPROT: zlib-compressed Kad2 packet.
+    // Decompress and re-frame as a plain 0xe4 packet.
+    if data[0] == 0xe5 {
+        use flate2::read::ZlibDecoder;
+        use std::io::Read as _;
+        let mut dec = ZlibDecoder::new(&data[2..]);
+        let mut decompressed = Vec::new();
+        dec.read_to_end(&mut decompressed)
+            .map_err(|_| PacketError::Decompress)?;
+        // Re-frame: prepend KAD2_PROTO so decode_payload can be called recursively.
+        let mut reframed = Vec::with_capacity(2 + decompressed.len());
+        reframed.push(KAD2_PROTO);
+        reframed.push(data[1]); // opcode is outside the compressed region
+        reframed.extend_from_slice(&decompressed);
+        return decode(&reframed);
     }
     if data[0] != KAD2_PROTO {
         return Err(PacketError::WrongProto(data[0]));

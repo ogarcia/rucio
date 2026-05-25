@@ -25,6 +25,9 @@ serde_json  = "1"
 # hashing
 blake3      = "1"
 
+# compression
+flate2      = { version = "1", default-features = false, features = ["zlib-rs"] }
+
 # p2p
 libp2p      = { version = "0.56", features = [
     "tokio",
