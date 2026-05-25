@@ -276,6 +276,11 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     // so skip it.
     let mut reprovide_tick = tokio::time::interval(tokio::time::Duration::from_secs(22 * 60));
     reprovide_tick.tick().await; // consume the immediate first tick
+    // Re-bootstrap libp2p Kademlia every 10 minutes if we have no peers.
+    // This recovers from a failed initial bootstrap (e.g. no internet at startup).
+    let mut libp2p_bootstrap_tick =
+        tokio::time::interval(tokio::time::Duration::from_secs(10 * 60));
+    libp2p_bootstrap_tick.tick().await; // skip immediate first tick — startup already tried
     // Push download progress and indexing count to WebSocket subscribers
     // every second (only when there are active subscribers).
     let mut ws_tick = tokio::time::interval(tokio::time::Duration::from_secs(1));
@@ -316,8 +321,32 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                     debug!("Re-announced {announced} share(s) to Kademlia");
                 }
             }
+            _ = libp2p_bootstrap_tick.tick() => {
+                let peers = node_status.read().await.connected_peers;
+                if peers == 0 {
+                    info!("libp2p: no connected peers — re-bootstrapping");
+                    for addr_str in config.effective_bootstrap_peers() {
+                        match addr_str.parse::<libp2p::Multiaddr>() {
+                            Ok(addr) => {
+                                let _ = handle
+                                    .cmd_tx
+                                    .send(node::messages::NodeCmd::AddBootstrapPeer(addr))
+                                    .await;
+                            }
+                            Err(e) => warn!("Invalid bootstrap peer {addr_str}: {e}"),
+                        }
+                    }
+                    if !config.effective_bootstrap_peers().is_empty() {
+                        let _ = handle
+                            .cmd_tx
+                            .send(node::messages::NodeCmd::KadBootstrapPeersReady)
+                            .await;
+                    }
+                } else {
+                    debug!("libp2p: {peers} peer(s) connected, bootstrap not needed");
+                }
+            }
             _ = ws_tick.tick() => {
-                // Skip the broadcast entirely when no clients are connected.
                 if ws_tx.receiver_count() == 0 {
                     continue;
                 }

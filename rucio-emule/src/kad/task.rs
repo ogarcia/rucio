@@ -186,6 +186,9 @@ async fn run_task(
     let mut recv_buf = [0u8; 4096];
     let mut pending_search: Option<PendingSearch> = None;
     let mut keepalive_tick = Instant::now() + cfg.keepalive_interval;
+    // Seeds from the last bootstrap call — reused for automatic re-bootstrap
+    // when the routing table drops below min_contacts.
+    let mut last_seeds: Vec<Contact> = Vec::new();
 
     info!("Kad2 task started");
 
@@ -226,7 +229,7 @@ async fn run_task(
                         }
                         if Instant::now() >= keepalive_tick {
                             keepalive_tick = Instant::now() + cfg.keepalive_interval;
-                            send_keepalive(&socket, our_id, &cfg, &routing_table).await;
+                            send_keepalive(&socket, our_id, &cfg, &routing_table, &last_seeds).await;
                         }
                     }
                 }
@@ -236,6 +239,7 @@ async fn run_task(
             Some(cmd) = cmd_rx.recv() => {
                 match cmd {
                     KadCommand::Bootstrap { seeds, reply } => {
+                        last_seeds = seeds.clone();
                         let count = do_bootstrap(
                             &socket, our_id, &cfg, &routing_table, seeds
                         ).await;
@@ -606,19 +610,34 @@ async fn send_keepalive(
     our_id: KadId,
     cfg: &KadTaskConfig,
     routing_table: &Arc<RwLock<RoutingTable>>,
+    last_seeds: &[Contact],
 ) {
-    let rt = routing_table.read().await;
-    let count = rt.len();
+    let count = routing_table.read().await.len();
 
-    if count == 0 {
-        debug!("Kad2 keepalive skipped: routing table empty");
+    if count < cfg.min_contacts {
+        // Routing table is too small — re-bootstrap instead of just pinging.
+        if last_seeds.is_empty() {
+            debug!("Kad2 keepalive: routing table low ({count}) but no seeds available, skipping");
+            return;
+        }
+        info!(
+            contacts = count,
+            min = cfg.min_contacts,
+            seeds = last_seeds.len(),
+            "Kad2 routing table low — re-bootstrapping"
+        );
+        do_bootstrap(socket, our_id, cfg, routing_table, last_seeds.to_vec()).await;
         return;
     }
 
-    // Send HELLO_REQ to a few random contacts to keep them updated.
-    let contacts: Vec<_> = rt.all_contacts().take(3).cloned().collect();
-    drop(rt);
-
+    // Normal keepalive: send HELLO_REQ to a few random contacts.
+    let contacts: Vec<_> = routing_table
+        .read()
+        .await
+        .all_contacts()
+        .take(3)
+        .cloned()
+        .collect();
     let hello = encode_hello_req(&our_id, cfg.tcp_port);
     for c in contacts {
         let addr = SocketAddr::V4(c.socket_addr_udp());
