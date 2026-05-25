@@ -73,7 +73,7 @@ anyhow      = "1"
 hex         = "0.4"
 uuid        = { version = "1", features = ["v4"] }
 dirs        = "6"
-tabled      = "0.20"
+tabled      = { version = "0.20", features = ["ansi"] }
 urlencoding = "2.1"
 
 postcard    = { version = "1", features = ["alloc"] }
