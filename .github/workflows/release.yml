@@ -38,7 +38,7 @@ jobs:
             use_cross: false
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -56,11 +56,11 @@ jobs:
 
       - name: Build (cross)
         if: matrix.use_cross
-        run: cross build --release --target ${{ matrix.target }} --bin rucio
+        run: cross build --release --target ${{ matrix.target }} --bin rucio --features emule-compat
 
       - name: Build (cargo)
         if: ${{ !matrix.use_cross }}
-        run: cargo build --release --target ${{ matrix.target }} --bin rucio
+        run: cargo build --release --target ${{ matrix.target }} --bin rucio --features emule-compat
 
       - name: Package
         shell: bash
@@ -71,7 +71,7 @@ jobs:
           echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v8
         with:
           name: rucio-${{ matrix.target }}
           path: ${{ env.ARCHIVE }}
@@ -88,7 +88,7 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
