@@ -252,16 +252,15 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
         }
     });
 
-    // --- eMule: auto-bootstrap nodes.dat + Kad2 network --------------------
+    // --- eMule: ensure nodes.dat is present (download if missing) -----------
+    // The Kad2 routing table was already bootstrapped in start_kad_task() from
+    // kad_cache.dat + nodes.dat.  This block only downloads nodes.dat in the
+    // background when it is absent so future restarts have a seed file.
     #[cfg(feature = "emule-compat")]
     {
         let save_path = crate::emule::effective_nodes_dat_path(&config);
-        let kad = kad_handle.clone();
-        let config_clone = Arc::clone(&config);
-
-        tokio::spawn(async move {
-            // Step 1: ensure nodes.dat is present.
-            if !save_path.exists() {
+        if !save_path.exists() {
+            tokio::spawn(async move {
                 info!(path = %save_path.display(), "nodes.dat not found — downloading in background");
                 match crate::emule::bootstrap_nodes_dat(
                     &save_path,
@@ -269,38 +268,13 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                 )
                 .await
                 {
-                    Ok(n) => info!(contacts = n, path = %save_path.display(), "nodes.dat ready"),
-                    Err(e) => {
-                        warn!("Auto-bootstrap of nodes.dat failed: {e}");
-                        return;
+                    Ok(n) => {
+                        info!(contacts = n, path = %save_path.display(), "nodes.dat downloaded")
                     }
+                    Err(e) => warn!("Failed to download nodes.dat: {e}"),
                 }
-            }
-
-            // Step 2: bootstrap the Kad2 routing table.
-            let bytes = match std::fs::read(&save_path) {
-                Ok(b) => b,
-                Err(e) => {
-                    warn!("Failed to read nodes.dat for bootstrap: {e}");
-                    return;
-                }
-            };
-            let contacts = match rucio_emule::kad::routing::parse_nodes_dat(&bytes) {
-                Ok(c) => c,
-                Err(e) => {
-                    warn!("Failed to parse nodes.dat: {e}");
-                    return;
-                }
-            };
-            if contacts.is_empty() {
-                warn!("nodes.dat is empty — Kad2 bootstrap skipped");
-                return;
-            }
-            let seeds: Vec<_> = contacts.into_iter().take(50).collect();
-            let count = kad.bootstrap(seeds).await;
-            info!(contacts = count, "Kad2 startup bootstrap complete");
-            let _ = config_clone; // keep alive
-        });
+            });
+        }
     }
 
     // --- Main loop ----------------------------------------------------------
