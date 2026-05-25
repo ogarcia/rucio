@@ -40,7 +40,7 @@ RUN apk add --no-cache musl-dev
 WORKDIR /app
 COPY . .
 
-RUN cargo build --release --locked && \
+RUN cargo build --release --locked --features emule-compat && \
     cp target/release/ruciod /usr/bin/ruciod && \
     cp target/release/rucio  /usr/bin/rucio  && \
     strip /usr/bin/ruciod /usr/bin/rucio

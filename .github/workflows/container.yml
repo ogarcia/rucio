@@ -18,6 +18,7 @@ on:
       - "rucio-core/**"
       - "rucio-daemon/**"
       - "rucio-cli/**"
+      - "rucio-emule/**"
       - "rucio/**"
       - ".github/workflows/container.yml"
 
@@ -43,7 +44,7 @@ jobs:
         run: sudo apt-get install -y musl-tools
 
       - name: Build
-        run: cargo build --release --locked --target x86_64-unknown-linux-musl
+        run: cargo build --release --locked --target x86_64-unknown-linux-musl --features emule-compat
 
       - name: Prepare dist/
         run: |
