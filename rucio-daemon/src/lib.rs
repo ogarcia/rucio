@@ -27,7 +27,8 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
                 .add_directive("rucio_daemon=info".parse()?)
-                .add_directive("rucio_core=info".parse()?),
+                .add_directive("rucio_core=info".parse()?)
+                .add_directive("rucio_emule=info".parse()?),
         )
         .init();
 
