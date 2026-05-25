@@ -29,7 +29,6 @@ toml                = { workspace = true }
 thiserror           = { workspace = true }
 anyhow              = { workspace = true }
 tracing             = { workspace = true }
-tracing-subscriber  = { workspace = true }
 utoipa              = { workspace = true }
 utoipa-scalar       = { workspace = true }
 hex         = { workspace = true }

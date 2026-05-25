@@ -140,6 +140,7 @@ pub enum ConfigAction {
 /// Entry point for the CLI logic.
 /// Called both from the CLI's own `main.rs` and from the fat binary.
 pub async fn run() -> Result<()> {
+    rucio_core::logging::init("RUCIO");
     let cli = Cli::parse();
     let client = ApiClient::new(&cli.api);
 
