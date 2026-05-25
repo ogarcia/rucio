@@ -26,10 +26,11 @@
 
 use super::packet::{
     self, Contact, KadId, KadPacket, decode, encode_bootstrap_req, encode_bootstrap_res,
-    encode_hello_req, encode_hello_res, encode_hello_res_ack, encode_pong, encode_req, encode_res,
-    encode_search_key_req, encode_search_source_req,
+    encode_hello_req, encode_hello_res, encode_hello_res_ack, encode_pong, encode_res,
 };
 use super::routing::RoutingTable;
+use super::search::{ActiveSearch, ObfuscMode, OutPacket};
+pub use super::search::{KadSource, KeywordHit};
 use crate::ed2k::Ed2kHash;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -40,23 +41,6 @@ use tokio::time::{Instant, timeout};
 use tracing::{debug, info, trace, warn};
 
 // ── Public API ────────────────────────────────────────────────────────────────
-
-/// A source found by Kad2 search.
-#[derive(Debug, Clone)]
-pub struct KadSource {
-    pub ip: std::net::Ipv4Addr,
-    pub tcp_port: u16,
-    pub udp_port: u16,
-}
-
-/// One file result from a Kad keyword search.
-#[derive(Debug, Clone)]
-pub struct KeywordHit {
-    /// ed2k/MD4 hash of the file (16 bytes, wire byte order).
-    pub hash: [u8; 16],
-    pub name: String,
-    pub size: u64,
-}
 
 /// Commands sent to the Kad2 background task.
 pub enum KadCommand {
@@ -208,33 +192,6 @@ pub fn spawn(socket: Arc<UdpSocket>, our_id: KadId, cfg: KadTaskConfig) -> KadHa
 
 // ── Task main loop ────────────────────────────────────────────────────────────
 
-/// What kind of search is in flight.
-enum SearchMode {
-    /// Searching for sources of a specific file hash.
-    Sources {
-        file_size: u64,
-        reply: oneshot::Sender<Vec<KadSource>>,
-        sources: Vec<KadSource>,
-    },
-    /// Keyword search — collecting file metadata entries.
-    Keyword {
-        reply: oneshot::Sender<Vec<KeywordHit>>,
-        hits: Vec<KeywordHit>,
-    },
-}
-
-/// A pending search waiting for responses.
-struct PendingSearch {
-    target: KadId,
-    deadline: Instant,
-    max_results: usize,
-    /// Contacts we have sent REQ to (but haven't necessarily responded yet).
-    queried: std::collections::HashSet<std::net::SocketAddrV4>,
-    /// Contacts that responded to our REQ and received the SEARCH packet.
-    searched: std::collections::HashSet<std::net::SocketAddrV4>,
-    mode: SearchMode,
-}
-
 async fn run_task(
     socket: Arc<UdpSocket>,
     our_id: KadId,
@@ -244,7 +201,7 @@ async fn run_task(
     mut cmd_rx: mpsc::Receiver<KadCommand>,
 ) {
     let mut recv_buf = [0u8; 4096];
-    let mut pending_search: Option<PendingSearch> = None;
+    let mut active_search: Option<ActiveSearch> = None;
     let mut keepalive_tick = Instant::now() + cfg.keepalive_interval;
     // Seeds from the last bootstrap call — reused for automatic re-bootstrap
     // when the routing table drops below min_contacts.
@@ -259,8 +216,8 @@ async fn run_task(
 
     loop {
         // Determine how long to wait for the next packet.
-        let recv_deadline = if let Some(ref ps) = pending_search {
-            ps.deadline
+        let recv_deadline = if let Some(ref s) = active_search {
+            s.deadline
         } else {
             keepalive_tick
         };
@@ -272,17 +229,17 @@ async fn run_task(
                 match result {
                     Ok(Ok((n, src))) => {
                         // Log raw opcode of every incoming packet during active search.
-                        if pending_search.is_some() && n >= 2 {
-                            trace!(
+                        if active_search.is_some() && n >= 2 {
+                            debug!(
                                 proto = format!("0x{:02x}", recv_buf[0]),
-                                opcode = format!("0x{:02x}", recv_buf[1]),
+                                opcode = if recv_buf[0] == 0xe4 { format!("0x{:02x}", recv_buf[1]) } else { "obfusc?".to_string() },
                                 len = n,
                                 %src,
-                                "Kad2 raw packet during search"
+                                "Kad2 raw pkt during search"
                             );
                             // Dump full hex when we get a SearchRes (0x2b) for debugging.
                             if recv_buf[0] == 0xe4 && recv_buf[1] == 0x2b {
-                                trace!(hex = %hex::encode(&recv_buf[..n]), %src, "Kad2 SearchRes raw hex");
+                                debug!(hex = %hex::encode(&recv_buf[..n]), %src, "Kad2 SearchRes raw hex");
                             }
                         }
                         if let Some(ip) = handle_packet(
@@ -294,7 +251,7 @@ async fn run_task(
                             our_external_ip,
                             &cfg,
                             &routing_table,
-                            &mut pending_search,
+                            &mut active_search,
                         ).await {
                             // A Pong told us our external IP.
                             if our_external_ip.is_unspecified() {
@@ -306,32 +263,16 @@ async fn run_task(
                     Ok(Err(e)) => warn!("Kad2 recv error: {e}"),
                     Err(_) => {
                         // Timeout — either search deadline or keepalive tick.
-                        if let Some(ps) = pending_search.take() {
-                            if Instant::now() >= ps.deadline {
-                                let queried = ps.queried.len();
-                                let target = ps.target;
-                                match ps.mode {
-                                    SearchMode::Sources { sources, reply, .. } => {
-                                        info!(
-                                            sources = sources.len(),
-                                            queried,
-                                            %target,
-                                            "Kad2 search timed out"
-                                        );
-                                        let _ = reply.send(sources);
-                                    }
-                                    SearchMode::Keyword { hits, reply } => {
-                                        info!(
-                                            hits = hits.len(),
-                                            queried,
-                                            %target,
-                                            "Kad2 keyword search timed out"
-                                        );
-                                        let _ = reply.send(hits);
-                                    }
-                                }
+                        if let Some(s) = active_search.take() {
+                            if Instant::now() >= s.deadline {
+                                info!(
+                                    queried = s.queried_count(),
+                                    target = %s.target,
+                                    "Kad2 search timed out"
+                                );
+                                s.finish();
                             } else {
-                                pending_search = Some(ps);
+                                active_search = Some(s);
                             }
                         }
                         if Instant::now() >= keepalive_tick {
@@ -356,62 +297,27 @@ async fn run_task(
                         let _ = reply.send(count);
                     }
                     KadCommand::SearchSources { hash, file_size, reply } => {
-                        if pending_search.is_some() {
-                            // Already searching — queue is depth-1; just return empty for now.
+                        if active_search.is_some() {
                             warn!("Kad2 search already in progress, dropping new request");
                             let _ = reply.send(vec![]);
                             continue;
                         }
                         let target = KadId::from_bytes(*hash.as_bytes());
                         let deadline = Instant::now() + cfg.search_timeout;
-
-                        // Get the initial candidates before moving into the struct.
                         let initial_candidates: Vec<_> = {
                             let rt = routing_table.read().await;
                             rt.closest_to(&target, cfg.alpha)
                         };
-
-                        let mut queried = std::collections::HashSet::new();
-                        let mut sent_obfuscated = 0usize;
-                        let mut sent_plain = 0usize;
-                        for c in &initial_candidates {
-                            let addr = SocketAddr::V4(c.socket_addr_udp());
-                            queried.insert(c.socket_addr_udp());
-                            // REQ receiver field must be the peer's own KadID (not ours).
-                            let lookup_pkt = encode_req(2, &target, &c.id);
-                            trace!(
-                                %addr,
-                                contact_id = %c.id,
-                                contact_ver = c.version,
-                                has_udp_key = c.udp_key.is_some(),
-                                "Sending REQ to initial candidate (SEARCH will follow on response)"
-                            );
-                            send_kad_pkt(&socket, &lookup_pkt, addr, c.udp_key, our_external_ip).await;
-                            if !our_external_ip.is_unspecified() { sent_obfuscated += 1; } else { sent_plain += 1; }
-                        }
-                        debug!(
-                            sent = initial_candidates.len(),
-                            sent_obfuscated,
-                            sent_plain,
-                            target = %target,
-                            "Started Kad2 source search"
+                        let (search, pkts) = ActiveSearch::new_source_search(
+                            target, file_size, deadline, cfg.max_sources,
+                            &initial_candidates, cfg.alpha, reply,
                         );
-
-                        pending_search = Some(PendingSearch {
-                            target,
-                            deadline,
-                            max_results: cfg.max_sources,
-                            queried,
-                            searched: std::collections::HashSet::new(),
-                            mode: SearchMode::Sources {
-                                file_size,
-                                reply,
-                                sources: vec![],
-                            },
-                        });
+                        debug!(sent = pkts.len(), %target, "Started Kad2 source search");
+                        send_out_packets(&socket, pkts, our_external_ip).await;
+                        active_search = Some(search);
                     }
                     KadCommand::SearchKeyword { keyword, reply } => {
-                        if pending_search.is_some() {
+                        if active_search.is_some() {
                             warn!("Kad2 search already in progress, dropping keyword request");
                             let _ = reply.send(vec![]);
                             continue;
@@ -422,23 +328,13 @@ async fn run_task(
                             let rt = routing_table.read().await;
                             rt.closest_to(&target, cfg.alpha)
                         };
-                        let mut queried = std::collections::HashSet::new();
-                        for c in &initial_candidates {
-                            let addr = SocketAddr::V4(c.socket_addr_udp());
-                            queried.insert(c.socket_addr_udp());
-                            // Send only REQ first; SEARCH_KEY_REQ will be sent when the node responds.
-                            let lookup_pkt = encode_req(2, &target, &c.id);
-                            send_kad_pkt(&socket, &lookup_pkt, addr, c.udp_key, our_external_ip).await;
-                        }
-                        info!(keyword, target = %target, sent = initial_candidates.len(), "Started Kad2 keyword search");
-                        pending_search = Some(PendingSearch {
-                            target,
-                            deadline,
-                            max_results: 50,
-                            queried,
-                            searched: std::collections::HashSet::new(),
-                            mode: SearchMode::Keyword { reply, hits: vec![] },
-                        });
+                        let (search, pkts) = ActiveSearch::new_keyword_search(
+                            target, deadline, 50,
+                            &initial_candidates, cfg.alpha, reply,
+                        );
+                        info!(keyword, %target, sent = pkts.len(), "Started Kad2 keyword search");
+                        send_out_packets(&socket, pkts, our_external_ip).await;
+                        active_search = Some(search);
                     }
                     KadCommand::Status { reply } => {
                         let count = routing_table.read().await.len();
@@ -450,28 +346,9 @@ async fn run_task(
             else => break,
         }
 
-        // Check if an active search has finished (enough results collected).
-        let done = pending_search
-            .as_ref()
-            .map(|ps| {
-                let n = match &ps.mode {
-                    SearchMode::Sources { sources, .. } => sources.len(),
-                    SearchMode::Keyword { hits, .. } => hits.len(),
-                };
-                n >= ps.max_results || Instant::now() >= ps.deadline
-            })
-            .unwrap_or(false);
-        if done && let Some(ps) = pending_search.take() {
-            match ps.mode {
-                SearchMode::Sources { sources, reply, .. } => {
-                    debug!(sources = sources.len(), "Kad2 source search complete");
-                    let _ = reply.send(sources);
-                }
-                SearchMode::Keyword { hits, reply } => {
-                    debug!(hits = hits.len(), "Kad2 keyword search complete");
-                    let _ = reply.send(hits);
-                }
-            }
+        // Check if the active search has collected enough results.
+        if active_search.as_ref().is_some_and(|s| s.is_done()) {
+            active_search.take().unwrap().finish();
         }
     }
 
@@ -493,19 +370,32 @@ async fn send_kad_pkt(
     if let Some(key) = recv_key
         && !our_ip.is_unspecified()
     {
-        let seed: [u8; 4] = {
-            use std::collections::hash_map::DefaultHasher;
-            use std::hash::{Hash, Hasher};
-            let mut h = DefaultHasher::new();
-            std::time::SystemTime::now().hash(&mut h);
-            (h.finish() as u32).to_le_bytes()
-        };
-        let obfuscated = super::obfuscation::obfuscate(plain, key, our_ip, seed);
+        let rkp = super::obfuscation::random_key_part();
+        let obfuscated = super::obfuscation::obfuscate_recv_key(plain, key, rkp);
         let _ = socket.send_to(&obfuscated, addr).await;
         return true;
     }
     let _ = socket.send_to(plain, addr).await;
     false
+}
+
+/// Send a Kad2 packet obfuscated with the KadID scheme (eMule v6+).
+/// Used when we have the peer's KadID but not their announced UDPKey.
+async fn send_kad_pkt_kad_id(
+    socket: &UdpSocket,
+    plain: &[u8],
+    addr: SocketAddr,
+    kad_id: &[u8; 16],
+    our_ip: std::net::Ipv4Addr,
+) -> bool {
+    if our_ip.is_unspecified() {
+        let _ = socket.send_to(plain, addr).await;
+        return false;
+    }
+    let rkp = super::obfuscation::random_key_part();
+    let obfuscated = super::obfuscation::obfuscate_kad_id(plain, kad_id, rkp);
+    let _ = socket.send_to(&obfuscated, addr).await;
+    true
 }
 
 /// Handle one incoming UDP packet.
@@ -520,7 +410,7 @@ async fn handle_packet(
     our_external_ip: std::net::Ipv4Addr,
     cfg: &KadTaskConfig,
     routing_table: &Arc<RwLock<RoutingTable>>,
-    pending_search: &mut Option<PendingSearch>,
+    active_search: &mut Option<ActiveSearch>,
 ) -> Option<std::net::Ipv4Addr> {
     // Try plain decode first; if that fails and the packet doesn't start with
     // 0xe4/0xe5, attempt to deobfuscate using our UDPKey.
@@ -535,7 +425,12 @@ async fn handle_packet(
             Err(_) => {
                 // Try deobfuscation if we have sender's IPv4.
                 if let Some(ip) = src_v4_ip {
-                    if let Some(plain) = super::obfuscation::deobfuscate(data, our_udp_key, ip) {
+                    if let Some(plain) = super::obfuscation::deobfuscate(
+                        data,
+                        our_udp_key,
+                        ip,
+                        Some(our_id.as_bytes()),
+                    ) {
                         match decode(&plain) {
                             Ok(p) => {
                                 trace!("Kad2 deobfuscated packet from {src}");
@@ -559,7 +454,7 @@ async fn handle_packet(
     };
 
     // Log every incoming packet when a search is active.
-    if pending_search.is_some() {
+    if active_search.is_some() {
         trace!(
             "Kad2 packet during search from {src}: {:?}",
             std::mem::discriminant(&pkt)
@@ -658,7 +553,7 @@ async fn handle_packet(
             let _ = socket.send_to(&resp, src).await;
         }
 
-        // ── Node lookup response: update routing table + pending search ─────
+        // ── Node lookup response: update routing table + active search ──────
         KadPacket::Res(res) => {
             let mut rt = routing_table.write().await;
             for c in &res.contacts {
@@ -666,107 +561,17 @@ async fn handle_packet(
             }
             drop(rt);
 
-            // If a search is pending, handle this Res.
-            if let Some(ps) = pending_search.as_mut() {
-                let target = ps.target;
-
-                // Determine the sender's SocketAddrV4 so we can check if we queried them.
-                let sender_v4 = match src {
-                    SocketAddr::V4(a) => Some(a),
-                    _ => None,
-                };
-
-                // If this Res is from a node we queried (it responded to our REQ),
-                // send the SEARCH packet to it now — matching aMule's two-phase approach.
-                if let Some(sender) = sender_v4
-                    && ps.queried.contains(&sender)
-                    && !ps.searched.contains(&sender)
-                {
-                    ps.searched.insert(sender);
-                    let search_pkt = match &ps.mode {
-                        SearchMode::Sources { file_size, .. } => {
-                            encode_search_source_req(&target, *file_size)
-                        }
-                        SearchMode::Keyword { .. } => encode_search_key_req(&target),
-                    };
-                    // Send SEARCH plain (no udp_key exchanged yet via HELLO).
-                    // The node already accepted our plain REQ so plain SEARCH should work too.
-                    trace!(%src, "Sending SEARCH to responding node");
-                    send_kad_pkt(socket, &search_pkt, src, None, our_external_ip).await;
-                }
-
-                // For newly discovered nodes from this Res, send only REQ (SEARCH follows on their response).
-                let new_contacts: Vec<_> = res
-                    .contacts
-                    .iter()
-                    .filter(|c| !ps.queried.contains(&c.socket_addr_udp()))
-                    .take(cfg.alpha)
-                    .cloned()
-                    .collect();
-                debug!(
-                    from = %src,
-                    total_in_res = res.contacts.len(),
-                    new_to_query = new_contacts.len(),
-                    "Kad2 Res received during search"
-                );
-                for contact in new_contacts {
-                    let addr = SocketAddr::V4(contact.socket_addr_udp());
-                    let lookup_pkt = encode_req(2, &target, &contact.id);
-                    trace!(%addr, has_key = contact.udp_key.is_some(), "Querying new contact from Res");
-                    ps.queried.insert(contact.socket_addr_udp());
-                    send_kad_pkt(socket, &lookup_pkt, addr, contact.udp_key, our_external_ip).await;
-                }
+            if let (Some(s), SocketAddr::V4(sender)) = (active_search.as_mut(), src) {
+                let pkts = s.on_res(&res, sender, cfg.alpha);
+                send_out_packets(socket, pkts, our_external_ip).await;
             }
         }
 
         // ── Search result: collect sources or keyword hits ─────────────────
         KadPacket::SearchRes { raw } => {
-            if let Some(ps) = pending_search.as_mut() {
-                match &mut ps.mode {
-                    SearchMode::Sources { sources, .. } => {
-                        match packet::parse_search_res_sources(&raw) {
-                            Ok(res) if res.target == ps.target => {
-                                for s in res.sources {
-                                    if sources.len() < ps.max_results
-                                        && s.tcp_port != 0
-                                        && !s.ip.is_unspecified()
-                                    {
-                                        sources.push(KadSource {
-                                            ip: s.ip,
-                                            tcp_port: s.tcp_port,
-                                            udp_port: s.udp_port,
-                                        });
-                                    }
-                                }
-                                debug!(sources = sources.len(), %src, "Accumulated Kad2 sources");
-                            }
-                            Ok(_) => {} // target mismatch — stale response
-                            Err(e) => {
-                                trace!(%src, error = %e, "Failed to parse SearchRes as sources")
-                            }
-                        }
-                    }
-                    SearchMode::Keyword { hits, .. } => {
-                        match packet::parse_search_res_keywords(&raw) {
-                            Ok(res) if res.target == ps.target => {
-                                debug!(count = res.results.len(), %src, "Accumulated Kad2 keyword hits");
-                                for entry in res.results {
-                                    if hits.len() < ps.max_results {
-                                        hits.push(KeywordHit {
-                                            hash: *entry.file_hash.as_bytes(),
-                                            name: entry.name,
-                                            size: entry.size,
-                                        });
-                                    }
-                                }
-                            }
-                            Ok(_) => {} // target mismatch
-                            Err(e) => {
-                                trace!(%src, error = %e, "Failed to parse SearchRes as keywords")
-                            }
-                        }
-                    }
-                }
+            debug!(%src, raw_len = raw.len(), "Got SearchRes packet");
+            if let Some(s) = active_search.as_mut() {
+                s.on_search_res(&raw, src);
             }
         }
 
@@ -869,9 +674,12 @@ async fn do_bootstrap(
                         let r = decode(raw);
                         if r.is_err() {
                             if let SocketAddr::V4(a) = src {
-                                if let Some(plain) =
-                                    super::obfuscation::deobfuscate(raw, our_udp_key, *a.ip())
-                                {
+                                if let Some(plain) = super::obfuscation::deobfuscate(
+                                    raw,
+                                    our_udp_key,
+                                    *a.ip(),
+                                    Some(our_id.as_bytes()),
+                                ) {
                                     trace!(%src, plain_hex = %hex::encode(&plain[..plain.len().min(32)]), "Deobfuscated bootstrap packet");
                                     decode(&plain)
                                 } else {
@@ -1034,23 +842,26 @@ async fn send_keepalive(
     debug!(routing_table = count, "Kad2 keepalive sent");
 }
 
-// ── Search helper for source search phase ─────────────────────────────────────
+// ── Search packet sender ──────────────────────────────────────────────────────
 
-/// Send SEARCH_SOURCE_REQ to the closest known contacts for a target.
-pub async fn send_search_source_reqs(
+/// Dispatch a batch of packets produced by [`ActiveSearch`].
+async fn send_out_packets(
     socket: &UdpSocket,
-    target: KadId,
-    file_size: u64,
-    routing_table: &Arc<RwLock<RoutingTable>>,
+    packets: Vec<OutPacket>,
+    our_external_ip: std::net::Ipv4Addr,
 ) {
-    let rt = routing_table.read().await;
-    let contacts = rt.closest_to(&target, 10);
-    drop(rt);
-
-    let pkt = encode_search_source_req(&target, file_size);
-    for c in contacts {
-        let addr = SocketAddr::V4(c.socket_addr_udp());
-        let _ = socket.send_to(&pkt, addr).await;
+    for p in packets {
+        match p.obfusc {
+            ObfuscMode::Plain => {
+                let _ = socket.send_to(&p.bytes, p.addr).await;
+            }
+            ObfuscMode::RecvKey(key) => {
+                send_kad_pkt(socket, &p.bytes, p.addr, Some(key), our_external_ip).await;
+            }
+            ObfuscMode::KadId(id) => {
+                send_kad_pkt_kad_id(socket, &p.bytes, p.addr, &id, our_external_ip).await;
+            }
+        }
     }
 }
 
