@@ -61,8 +61,27 @@ CREATE TABLE IF NOT EXISTS downloads (
     bytes_done      INTEGER NOT NULL DEFAULT 0,
     error_msg       TEXT,
     added_at        INTEGER NOT NULL,
-    updated_at      INTEGER NOT NULL,
-    ed2k_link       TEXT                   -- non-null for eMule downloads, NULL for libp2p
+    updated_at      INTEGER NOT NULL
+);
+
+-- ---------------------------------------------------------------------------
+-- emule_downloads
+-- eMule (ed2k) downloads.  Completely separate from the libp2p downloads table
+-- so the eMule subsystem can be removed without touching downloads at all.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS emule_downloads (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ed2k_hash   BLOB    NOT NULL UNIQUE,  -- 16 bytes MD4, canonical identifier
+    name        TEXT    NOT NULL,
+    total_size  INTEGER NOT NULL,
+    ed2k_link   TEXT    NOT NULL,         -- original link string for resume
+    status      TEXT    NOT NULL DEFAULT 'finding_providers',
+    -- 'finding_providers' | 'downloading' | 'completed' | 'error' | 'cancelled'
+    bytes_done  INTEGER NOT NULL DEFAULT 0,
+    dest_path   TEXT    NOT NULL DEFAULT '',
+    error_msg   TEXT,
+    added_at    INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL
 );
 
 -- ---------------------------------------------------------------------------

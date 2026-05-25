@@ -59,8 +59,8 @@ pub async fn start_kad_task(config: &Config) -> Result<KadHandle> {
 
 /// Run a full eMule download pipeline using the running Kad2 task.
 ///
-/// The `download_id` is the DB row that was already created by the caller
-/// (via `db::downloads::create_emule_pending`).  This function owns the
+/// The `download_id` is the `emule_downloads.id` row that was already created
+/// by the caller (via `db::emule_downloads::create`).  This function owns the
 /// lifecycle of that row from `finding_providers` through to `completed`.
 ///
 /// This function **never returns an error due to "no sources" or "peers
@@ -98,7 +98,8 @@ pub async fn run_ed2k_download(
         let seeds = load_kad_seeds(config, 200);
         if seeds.is_empty() {
             let msg = "No Kad2 seeds available (download nodes.dat first)";
-            let _ = crate::db::downloads::set_status(db, download_id, "error", Some(msg)).await;
+            let _ =
+                crate::db::emule_downloads::set_status(db, download_id, "error", Some(msg)).await;
             anyhow::bail!("{msg}");
         }
         let after = kad.bootstrap(seeds).await;
@@ -123,7 +124,8 @@ pub async fn run_ed2k_download(
         }
 
         // --- Search for sources ---
-        let _ = crate::db::downloads::set_status(db, download_id, "finding_providers", None).await;
+        let _ = crate::db::emule_downloads::set_status(db, download_id, "finding_providers", None)
+            .await;
         info!("Searching Kad2 for sources");
         let sources = kad.search_sources(link.hash, link.size).await;
 
@@ -140,7 +142,7 @@ pub async fn run_ed2k_download(
         info!(count = sources.len(), "Found eMule sources");
 
         // --- Attempt to download from discovered sources ---
-        let _ = crate::db::downloads::set_status(db, download_id, "downloading", None).await;
+        let _ = crate::db::emule_downloads::set_status(db, download_id, "downloading", None).await;
 
         let emule_temp = &config.storage.emule_temp_dir;
         std::fs::create_dir_all(emule_temp)
@@ -250,13 +252,12 @@ pub async fn run_ed2k_download(
         .context("spawn_blocking for BLAKE3")?
         .with_context(|| format!("BLAKE3 hash of {}", final_path.display()))?;
 
-        let _ = crate::db::downloads::set_dest_path(
+        let _ = crate::db::emule_downloads::set_completed(
             db,
             download_id,
             final_path.to_string_lossy().as_ref(),
         )
         .await;
-        let _ = crate::db::downloads::set_status(db, download_id, "completed", None).await;
 
         info!(
             name = %link.name,
@@ -273,7 +274,7 @@ pub async fn run_ed2k_download(
 /// Used to allow the long-running download loop to respect user cancellations
 /// without polling on a separate channel.
 async fn is_cancelled(db: &Db, download_id: i64) -> bool {
-    match crate::db::downloads::get_status(db, download_id).await {
+    match crate::db::emule_downloads::get_status(db, download_id).await {
         Ok(Some(s)) => s == "cancelled",
         _ => false,
     }

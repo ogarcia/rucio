@@ -396,7 +396,7 @@ impl DownloadEngine {
 
         // Insert a placeholder row so `rucio downloads` can show the state
         // immediately, before the manifest arrives.
-        let db_id = db::downloads::create_pending(
+        let db_id = match db::downloads::create_pending(
             &self.db,
             &info.root_hash,
             info.name.as_deref(),
@@ -404,10 +404,21 @@ impl DownloadEngine {
             !providers.is_empty(),
         )
         .await
-        .unwrap_or_else(|e| {
-            warn!("create_pending failed: {e}");
-            0
-        });
+        {
+            Ok(db::downloads::CreatePendingResult::AlreadyCompleted(id)) => {
+                bail!(
+                    "download already completed (id={id}); remove it from history first if you want to re-download"
+                );
+            }
+            Ok(db::downloads::CreatePendingResult::AlreadyActive(id)) => {
+                bail!("download already active (id={id})");
+            }
+            Ok(r) => r.id(),
+            Err(e) => {
+                warn!("create_pending failed: {e}");
+                0
+            }
+        };
 
         // Always ask Kademlia for providers — they will be added dynamically
         // via add_providers() as they arrive, even if we already have some.
@@ -1992,7 +2003,8 @@ mod tests {
         // Insert a placeholder row with status 'finding_providers' (no chunks).
         let id = db::downloads::create_pending(&engine.db, &hash, Some("ghost.bin"), 1_000, false)
             .await
-            .unwrap();
+            .unwrap()
+            .id();
         assert!(id > 0);
 
         engine.resume_interrupted().await;
@@ -2022,7 +2034,8 @@ mod tests {
 
         let id = db::downloads::create_pending(&engine.db, &hash, Some("resume.bin"), 1_000, true)
             .await
-            .unwrap();
+            .unwrap()
+            .id();
         db::downloads::finalize_pending(
             &engine.db,
             id,

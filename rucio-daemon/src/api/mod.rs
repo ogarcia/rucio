@@ -158,6 +158,8 @@ pub enum DownloadRequest {
     StartEd2k {
         /// Full `ed2k://` link.
         link: String,
+        /// The `emule_downloads.id` row already created by the API handler.
+        download_id: i64,
     },
     /// Cancel an in-flight download by its DB id and root hash.
     Cancel {

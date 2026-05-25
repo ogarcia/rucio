@@ -1,4 +1,4 @@
-//! Queries for the `downloads` and `download_chunks` tables.
+//! Queries for the `downloads` and `download_chunks` tables (libp2p network).
 
 use anyhow::Result;
 use sqlx::Row;
@@ -17,72 +17,91 @@ pub struct DownloadRow {
     pub error_msg: Option<String>,
     pub added_at: i64,
     pub updated_at: i64,
-    /// Non-null for eMule (ed2k) downloads; `None` for libp2p downloads.
-    pub ed2k_link: Option<String>,
 }
 
-/// Insert a download row for an eMule (ed2k) download.
-///
-/// The `ed2k_hash` is the 16-byte MD4 hash from the ed2k link.  We store it
-/// padded to 32 bytes (MD4 bytes + 16 zero bytes) as a provisional identifier;
-/// the row is updated to the real BLAKE3 hash once the download completes.
-/// The original `ed2k_link` string is persisted so the download can be
-/// resumed after a daemon restart.
-///
-/// Returns the new `downloads.id`.
-pub async fn create_emule_pending(
-    db: &Db,
-    ed2k_hash: &[u8; 16],
-    name: &str,
-    total_size: u64,
-    ed2k_link: &str,
-    now: u64,
-) -> Result<i64> {
-    let mut root_hash = [0u8; 32];
-    root_hash[..16].copy_from_slice(ed2k_hash);
+/// Outcome of [`create_pending`] when a row for the same hash already exists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CreatePendingResult {
+    /// A fresh row was inserted.  Contains the new ID.
+    Inserted(i64),
+    /// A row already exists and is active — do not start a duplicate task.
+    AlreadyActive(i64),
+    /// A cancelled or failed row was reset to the given status and is ready
+    /// to be retried.  Contains the existing ID.
+    Reactivated(i64),
+    /// A completed row exists — the file was already downloaded successfully.
+    AlreadyCompleted(i64),
+}
 
-    // If a row with this provisional hash already exists (e.g. duplicate
-    // submission), return its ID without inserting a duplicate.
-    let existing: Option<i64> = sqlx::query_scalar("SELECT id FROM downloads WHERE root_hash = ?1")
-        .bind(root_hash.as_slice())
-        .fetch_optional(db)
-        .await?;
-
-    if let Some(id) = existing {
-        return Ok(id);
+impl CreatePendingResult {
+    pub fn id(&self) -> i64 {
+        match *self {
+            CreatePendingResult::Inserted(id)
+            | CreatePendingResult::AlreadyActive(id)
+            | CreatePendingResult::Reactivated(id)
+            | CreatePendingResult::AlreadyCompleted(id) => id,
+        }
     }
-
-    let id = sqlx::query(
-        "INSERT INTO downloads (root_hash, name, total_size, dest_path, status, ed2k_link, added_at, updated_at)
-         VALUES (?1, ?2, ?3, '', 'finding_providers', ?4, ?5, ?5)",
-    )
-    .bind(root_hash.as_slice())
-    .bind(name)
-    .bind(total_size as i64)
-    .bind(ed2k_link)
-    .bind(now as i64)
-    .execute(db)
-    .await?
-    .last_insert_rowid();
-    Ok(id)
 }
 
 /// Insert a placeholder row for a download that has not yet received its
-/// manifest (no chunks known yet).  The initial status reflects whether we
-/// already have providers (`"queued"`) or are still searching (`"finding_providers"`).
-/// Returns the new `downloads.id`.
+/// manifest (no chunks known yet), handling duplicates gracefully.
+///
+/// - No existing row → insert and return [`CreatePendingResult::Inserted`].
+/// - Existing row is active (`finding_providers`/`queued`/`downloading`) →
+///   [`CreatePendingResult::AlreadyActive`].
+/// - Existing row is terminal (`cancelled`/`error`) → reset to the appropriate
+///   initial status and return [`CreatePendingResult::Reactivated`].
+/// - Existing row is `completed` → [`CreatePendingResult::AlreadyCompleted`].
 pub async fn create_pending(
     db: &Db,
     root_hash: &[u8; 32],
     name: Option<&str>,
     now: u64,
     has_providers: bool,
-) -> Result<i64> {
+) -> Result<CreatePendingResult> {
     let status = if has_providers {
         "queued"
     } else {
         "finding_providers"
     };
+
+    let existing = sqlx::query("SELECT id, status FROM downloads WHERE root_hash = ?1")
+        .bind(root_hash.as_slice())
+        .fetch_optional(db)
+        .await?;
+
+    if let Some(row) = existing {
+        let id: i64 = row.get("id");
+        let existing_status: String = row.get("status");
+        return match existing_status.as_str() {
+            "completed" => Ok(CreatePendingResult::AlreadyCompleted(id)),
+            "finding_providers" | "queued" | "downloading" => {
+                Ok(CreatePendingResult::AlreadyActive(id))
+            }
+            // "cancelled" | "error" | anything else → reactivate
+            _ => {
+                sqlx::query(
+                    "UPDATE downloads \
+                     SET status = ?1, bytes_done = 0, dest_path = '', \
+                         error_msg = NULL, updated_at = ?2 \
+                     WHERE id = ?3",
+                )
+                .bind(status)
+                .bind(now as i64)
+                .bind(id)
+                .execute(db)
+                .await?;
+                // Also clear any stale chunk rows from the previous attempt.
+                sqlx::query("DELETE FROM download_chunks WHERE download_id = ?1")
+                    .bind(id)
+                    .execute(db)
+                    .await?;
+                Ok(CreatePendingResult::Reactivated(id))
+            }
+        };
+    }
+
     let id = sqlx::query(
         "INSERT INTO downloads (root_hash, name, total_size, dest_path, status, added_at, updated_at)
          VALUES (?1, ?2, 0, '', ?3, ?4, ?4)",
@@ -94,7 +113,7 @@ pub async fn create_pending(
     .execute(db)
     .await?
     .last_insert_rowid();
-    Ok(id)
+    Ok(CreatePendingResult::Inserted(id))
 }
 
 /// Update the placeholder row created by `create_pending()` with the real
@@ -143,7 +162,7 @@ pub async fn finalize_pending(
 pub async fn list(db: &Db) -> Result<Vec<DownloadRow>> {
     let rows = sqlx::query(
         "SELECT id, root_hash, name, total_size, dest_path, status,
-                bytes_done, error_msg, added_at, updated_at, ed2k_link
+                bytes_done, error_msg, added_at, updated_at
          FROM downloads ORDER BY added_at DESC",
     )
     .fetch_all(db)
@@ -162,7 +181,6 @@ pub async fn list(db: &Db) -> Result<Vec<DownloadRow>> {
             error_msg: r.get("error_msg"),
             added_at: r.get("added_at"),
             updated_at: r.get("updated_at"),
-            ed2k_link: r.get("ed2k_link"),
         })
         .collect())
 }
@@ -277,12 +295,12 @@ pub struct ChunkRow {
     pub status: String, // 'pending' | 'downloading' | 'done'
 }
 
-/// Return all downloads that were interrupted and should be resumed on startup.
+/// Return libp2p downloads that were interrupted and should be resumed on startup.
 /// These are rows whose status is 'finding_providers', 'queued' or 'downloading'.
 pub async fn list_resumable(db: &Db) -> Result<Vec<DownloadRow>> {
     let rows = sqlx::query(
         "SELECT id, root_hash, name, total_size, dest_path, status,
-                bytes_done, error_msg, added_at, updated_at, ed2k_link
+                bytes_done, error_msg, added_at, updated_at
          FROM downloads
          WHERE status IN ('finding_providers', 'queued', 'downloading')
          ORDER BY added_at ASC",
@@ -303,7 +321,6 @@ pub async fn list_resumable(db: &Db) -> Result<Vec<DownloadRow>> {
             error_msg: r.get("error_msg"),
             added_at: r.get("added_at"),
             updated_at: r.get("updated_at"),
-            ed2k_link: r.get("ed2k_link"),
         })
         .collect())
 }
@@ -386,7 +403,8 @@ mod tests {
         let (db, _dir) = test_db().await;
         let id = create_pending(&db, &hash(1), Some("movie.mkv"), 1_000, true)
             .await
-            .unwrap();
+            .unwrap()
+            .id();
         finalize_pending(
             &db,
             id,
@@ -413,7 +431,8 @@ mod tests {
         let (db, _dir) = test_db().await;
         let id = create_pending(&db, &hash(2), Some("file.bin"), 1_000, true)
             .await
-            .unwrap();
+            .unwrap()
+            .id();
         finalize_pending(
             &db,
             id,
@@ -437,7 +456,8 @@ mod tests {
         let (db, _dir) = test_db().await;
         let id = create_pending(&db, &hash(3), Some("file.bin"), 1_000, true)
             .await
-            .unwrap();
+            .unwrap()
+            .id();
         finalize_pending(
             &db,
             id,
@@ -462,7 +482,8 @@ mod tests {
         let (db, _dir) = test_db().await;
         let id = create_pending(&db, &hash(4), Some("track.flac"), 1_000, true)
             .await
-            .unwrap();
+            .unwrap()
+            .id();
 
         set_status(&db, id, "completed", None).await.unwrap();
 
@@ -476,7 +497,8 @@ mod tests {
         let (db, _dir) = test_db().await;
         let id = create_pending(&db, &hash(5), Some("doc.pdf"), 1_000, true)
             .await
-            .unwrap();
+            .unwrap()
+            .id();
 
         set_status(&db, id, "error", Some("peer disconnected"))
             .await
@@ -492,7 +514,8 @@ mod tests {
         let (db, _dir) = test_db().await;
         let id = create_pending(&db, &hash(6), Some("big.iso"), 1_000, true)
             .await
-            .unwrap();
+            .unwrap()
+            .id();
         finalize_pending(&db, id, "big.iso", 16384, "/tmp/big.iso", 1_000, &chunks(4))
             .await
             .unwrap();
@@ -508,5 +531,51 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn reactivate_cancelled_download() {
+        let (db, _dir) = test_db().await;
+        let id = create_pending(&db, &hash(7), Some("test.bin"), 1_000, false)
+            .await
+            .unwrap()
+            .id();
+        set_status(&db, id, "cancelled", None).await.unwrap();
+
+        let result = create_pending(&db, &hash(7), Some("test.bin"), 1_000, false)
+            .await
+            .unwrap();
+        assert_eq!(result, CreatePendingResult::Reactivated(id));
+        let rows = list(&db).await.unwrap();
+        assert_eq!(rows[0].status, "finding_providers");
+    }
+
+    #[tokio::test]
+    async fn already_completed_returns_variant() {
+        let (db, _dir) = test_db().await;
+        let id = create_pending(&db, &hash(8), Some("done.bin"), 1_000, false)
+            .await
+            .unwrap()
+            .id();
+        set_status(&db, id, "completed", None).await.unwrap();
+
+        let result = create_pending(&db, &hash(8), Some("done.bin"), 1_000, false)
+            .await
+            .unwrap();
+        assert_eq!(result, CreatePendingResult::AlreadyCompleted(id));
+    }
+
+    #[tokio::test]
+    async fn already_active_returns_variant() {
+        let (db, _dir) = test_db().await;
+        let id = create_pending(&db, &hash(9), Some("active.bin"), 1_000, true)
+            .await
+            .unwrap()
+            .id();
+
+        let result = create_pending(&db, &hash(9), Some("active.bin"), 1_000, true)
+            .await
+            .unwrap();
+        assert_eq!(result, CreatePendingResult::AlreadyActive(id));
     }
 }

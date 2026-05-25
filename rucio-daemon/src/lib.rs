@@ -280,26 +280,29 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     // --- eMule: resume interrupted downloads --------------------------------
     #[cfg(feature = "emule-compat")]
     {
-        let resumable = db::downloads::list_resumable(&db).await.unwrap_or_default();
-        let emule_rows: Vec<_> = resumable
-            .into_iter()
-            .filter(|r| r.ed2k_link.is_some())
-            .collect();
+        let emule_rows = db::emule_downloads::list_resumable(&db)
+            .await
+            .unwrap_or_default();
         if !emule_rows.is_empty() {
             info!(
                 count = emule_rows.len(),
                 "Resuming interrupted eMule downloads"
             );
             for row in emule_rows {
-                let link = row.ed2k_link.unwrap();
                 let config = config.clone();
                 let db = db.clone();
                 let ws_tx = ws_tx.clone();
                 let kad = kad_handle.clone();
                 tokio::spawn(async move {
-                    if let Err(e) =
-                        crate::emule::run_ed2k_download(&link, row.id, &config, &db, &ws_tx, &kad)
-                            .await
+                    if let Err(e) = crate::emule::run_ed2k_download(
+                        &row.ed2k_link,
+                        row.id,
+                        &config,
+                        &db,
+                        &ws_tx,
+                        &kad,
+                    )
+                    .await
                     {
                         warn!(error = %e, "eMule resumed download failed");
                     }
@@ -399,18 +402,17 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                 let pending = app_state.indexing_count.load(std::sync::atomic::Ordering::Relaxed);
                 let _ = ws_tx.send(WsEvent::IndexingCount { pending });
                 // DownloadProgress — only when there are active downloads
+                let mut active: Vec<rucio_core::api::downloads::DownloadResponse> = Vec::new();
                 if let Ok(rows) = db::downloads::list(&db).await {
-                    let active: Vec<_> = rows
-                        .into_iter()
-                        .filter_map(|r| {
-                            let state = api::downloads::db_status_to_state(&r.status);
-                            matches!(
-                                state,
-                                rucio_core::api::downloads::DownloadState::FindingProviders
-                                    | rucio_core::api::downloads::DownloadState::Queued
-                                    | rucio_core::api::downloads::DownloadState::Downloading
-                            )
-                            .then_some(rucio_core::api::downloads::DownloadResponse {
+                    for r in rows {
+                        let state = api::downloads::db_status_to_state(&r.status);
+                        if matches!(
+                            state,
+                            rucio_core::api::downloads::DownloadState::FindingProviders
+                                | rucio_core::api::downloads::DownloadState::Queued
+                                | rucio_core::api::downloads::DownloadState::Downloading
+                        ) {
+                            active.push(rucio_core::api::downloads::DownloadResponse {
                                 id: r.id,
                                 root_hash: hex::encode(&r.root_hash),
                                 name: Some(r.name),
@@ -418,12 +420,33 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                                 bytes_done: r.bytes_done as u64,
                                 state,
                                 error: r.error_msg,
-                            })
-                        })
-                        .collect();
-                    if !active.is_empty() {
-                        let _ = ws_tx.send(WsEvent::DownloadProgress(active));
+                            });
+                        }
                     }
+                }
+                #[cfg(feature = "emule-compat")]
+                if let Ok(rows) = db::emule_downloads::list(&db).await {
+                    for r in rows {
+                        let state = api::downloads::db_status_to_state(&r.status);
+                        if matches!(
+                            state,
+                            rucio_core::api::downloads::DownloadState::FindingProviders
+                                | rucio_core::api::downloads::DownloadState::Downloading
+                        ) {
+                            active.push(rucio_core::api::downloads::DownloadResponse {
+                                id: -(r.id), // negative IDs mark eMule rows in WS events
+                                root_hash: hex::encode(&r.ed2k_hash),
+                                name: Some(r.name),
+                                size: Some(r.total_size as u64),
+                                bytes_done: r.bytes_done as u64,
+                                state,
+                                error: r.error_msg,
+                            });
+                        }
+                    }
+                }
+                if !active.is_empty() {
+                    let _ = ws_tx.send(WsEvent::DownloadProgress(active));
                 }
             }
             dl_req = download_rx.recv() => {
@@ -442,46 +465,26 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                         api::DownloadRequest::Cancel { download_id, root_hash } => {
                             engine.cancel(download_id, root_hash).await;
                         }
-                        api::DownloadRequest::StartEd2k { link } => {
+                        api::DownloadRequest::StartEd2k { link, download_id } => {
                             #[cfg(feature = "emule-compat")]
                             {
-                                use rucio_emule::Ed2kLink;
-                                match Ed2kLink::parse(&link) {
-                                    Err(e) => warn!(link = %link, error = %e, "Invalid ed2k link, ignoring"),
-                                    Ok(parsed) => {
-                                        // Insert the DB row synchronously before spawning so
-                                        // `rucio downloads` shows it immediately.
-                                        match crate::db::downloads::create_emule_pending(
-                                            &db,
-                                            parsed.hash.as_bytes(),
-                                            &parsed.name,
-                                            parsed.size,
-                                            &link,
-                                            now_secs(),
-                                        ).await {
-                                            Err(e) => warn!(error = %e, "Failed to create eMule download record"),
-                                            Ok(download_id) => {
-                                                let config = config.clone();
-                                                let db = db.clone();
-                                                let ws_tx = ws_tx.clone();
-                                                let kad = kad_handle.clone();
-                                                tokio::spawn(async move {
-                                                    if let Err(e) = crate::emule::run_ed2k_download(
-                                                        &link, download_id, &config, &db, &ws_tx, &kad,
-                                                    )
-                                                    .await
-                                                    {
-                                                        warn!("eMule download failed: {e}");
-                                                    }
-                                                });
-                                            }
-                                        }
+                                let config = config.clone();
+                                let db = db.clone();
+                                let ws_tx = ws_tx.clone();
+                                let kad = kad_handle.clone();
+                                tokio::spawn(async move {
+                                    if let Err(e) = crate::emule::run_ed2k_download(
+                                        &link, download_id, &config, &db, &ws_tx, &kad,
+                                    )
+                                    .await
+                                    {
+                                        warn!("eMule download failed: {e}");
                                     }
-                                }
+                                });
                             }
                             #[cfg(not(feature = "emule-compat"))]
                             {
-                                let _ = &link;
+                                let _ = (&link, download_id);
                                 warn!("Received StartEd2k request but emule-compat feature is not compiled in");
                             }
                         }

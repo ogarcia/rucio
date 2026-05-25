@@ -15,10 +15,14 @@ use crate::transfer::parse_magnet;
 /// List downloads
 ///
 /// Returns all downloads — active, completed, failed, and cancelled — stored in the local
-/// database.
+/// database.  eMule (ed2k) downloads are included alongside libp2p downloads.
 ///
-/// Each entry includes the download ID, BLAKE3 root hash, file name, total size, bytes
-/// transferred so far, and current state.
+/// eMule rows use **negative IDs** (`-1`, `-2`, …) so they can be distinguished from libp2p
+/// rows (positive IDs) without any extra fields.  All `cancel` and `history` endpoints accept
+/// both positive and negative IDs.
+///
+/// The `root_hash` field contains the BLAKE3 hash (hex) for libp2p rows and the MD4 hash (hex)
+/// for eMule rows.
 ///
 /// **States**
 /// - `finding_providers` — searching the Kademlia DHT for peers that have the file.
@@ -38,23 +42,40 @@ use crate::transfer::parse_magnet;
     )
 )]
 pub async fn list_downloads(State(state): State<AppState>) -> Json<DownloadsResponse> {
-    let rows = crate::db::downloads::list(&state.db)
-        .await
-        .unwrap_or_default();
+    let mut downloads: Vec<DownloadResponse> = Vec::new();
 
-    let downloads = rows
-        .into_iter()
-        .map(|r| DownloadResponse {
-            id: r.id,
-            root_hash: hex::encode(&r.root_hash),
-            name: Some(r.name),
-            size: Some(r.total_size as u64),
-            bytes_done: r.bytes_done as u64,
-            state: db_status_to_state(&r.status),
-            error: r.error_msg,
-        })
-        .collect();
+    // libp2p downloads (positive IDs)
+    if let Ok(rows) = crate::db::downloads::list(&state.db).await {
+        for r in rows {
+            downloads.push(DownloadResponse {
+                id: r.id,
+                root_hash: hex::encode(&r.root_hash),
+                name: Some(r.name),
+                size: Some(r.total_size as u64),
+                bytes_done: r.bytes_done as u64,
+                state: db_status_to_state(&r.status),
+                error: r.error_msg,
+            });
+        }
+    }
 
+    // eMule downloads (negative IDs)
+    #[cfg(feature = "emule-compat")]
+    if let Ok(rows) = crate::db::emule_downloads::list(&state.db).await {
+        for r in rows {
+            downloads.push(DownloadResponse {
+                id: -(r.id),
+                root_hash: hex::encode(&r.ed2k_hash),
+                name: Some(r.name),
+                size: Some(r.total_size as u64),
+                bytes_done: r.bytes_done as u64,
+                state: db_status_to_state(&r.status),
+                error: r.error_msg,
+            });
+        }
+    }
+
+    // Sort newest first (libp2p rows already come newest-first; eMule too; merge keeps order)
     Json(DownloadsResponse { downloads })
 }
 
@@ -129,11 +150,13 @@ pub async fn start_download(
 /// Any chunks already downloaded are discarded and the `.part` file is removed from the
 /// temp directory. The cancelled entry remains visible in `GET /api/v1/downloads` until
 /// removed with `DELETE /api/v1/downloads/:id/history`.
+///
+/// Use **negative IDs** (e.g. `-3`) for eMule downloads as returned by `GET /api/v1/downloads`.
 #[utoipa::path(
     delete,
     path = "/api/v1/downloads/{id}",
     params(
-        ("id" = i64, Path, description = "Numeric download ID from `GET /api/v1/downloads`.")
+        ("id" = i64, Path, description = "Numeric download ID from `GET /api/v1/downloads`. Negative = eMule download.")
     ),
     responses(
         (status = 204, description = "Download cancelled."),
@@ -141,31 +164,58 @@ pub async fn start_download(
     )
 )]
 pub async fn cancel_download(State(state): State<AppState>, Path(id): Path<i64>) -> StatusCode {
-    // Fetch the root_hash before marking cancelled so the engine can clean up
-    // pending manifest state (which is keyed by hash, not by id).
-    let root_hash = match crate::db::downloads::get_root_hash(&state.db, id).await {
-        Ok(Some(h)) => h,
-        Ok(None) => return StatusCode::NOT_FOUND,
-        Err(e) => {
-            tracing::error!("DB error fetching download {id}: {e}");
-            return StatusCode::INTERNAL_SERVER_ERROR;
+    if id < 0 {
+        // eMule download — cancel by setting status to 'cancelled'.
+        // The run_ed2k_download loop polls and exits on next iteration.
+        #[cfg(feature = "emule-compat")]
+        {
+            let emule_id = -id;
+            match crate::db::emule_downloads::get_status(&state.db, emule_id).await {
+                Ok(None) => return StatusCode::NOT_FOUND,
+                Err(e) => {
+                    tracing::error!("DB error fetching emule download {emule_id}: {e}");
+                    return StatusCode::INTERNAL_SERVER_ERROR;
+                }
+                Ok(Some(_)) => {}
+            }
+            match crate::db::emule_downloads::set_status(&state.db, emule_id, "cancelled", None)
+                .await
+            {
+                Ok(()) => StatusCode::NO_CONTENT,
+                Err(e) => {
+                    tracing::error!("DB error cancelling emule download {emule_id}: {e}");
+                    StatusCode::INTERNAL_SERVER_ERROR
+                }
+            }
         }
-    };
+        #[cfg(not(feature = "emule-compat"))]
+        StatusCode::NOT_FOUND
+    } else {
+        // libp2p download
+        let root_hash = match crate::db::downloads::get_root_hash(&state.db, id).await {
+            Ok(Some(h)) => h,
+            Ok(None) => return StatusCode::NOT_FOUND,
+            Err(e) => {
+                tracing::error!("DB error fetching download {id}: {e}");
+                return StatusCode::INTERNAL_SERVER_ERROR;
+            }
+        };
 
-    match crate::db::downloads::set_status(&state.db, id, "cancelled", None).await {
-        Ok(()) => {
-            let _ = state
-                .download_tx
-                .send(DownloadRequest::Cancel {
-                    download_id: id,
-                    root_hash,
-                })
-                .await;
-            StatusCode::NO_CONTENT
-        }
-        Err(e) => {
-            tracing::error!("DB error cancelling download {id}: {e}");
-            StatusCode::INTERNAL_SERVER_ERROR
+        match crate::db::downloads::set_status(&state.db, id, "cancelled", None).await {
+            Ok(()) => {
+                let _ = state
+                    .download_tx
+                    .send(DownloadRequest::Cancel {
+                        download_id: id,
+                        root_hash,
+                    })
+                    .await;
+                StatusCode::NO_CONTENT
+            }
+            Err(e) => {
+                tracing::error!("DB error cancelling download {id}: {e}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
         }
     }
 }
@@ -177,11 +227,13 @@ pub async fn cancel_download(State(state): State<AppState>, Path(id): Path<i64>)
 ///
 /// Returns `409 Conflict` if the download is still active — cancel it first with
 /// `DELETE /api/v1/downloads/:id`.
+///
+/// Use **negative IDs** (e.g. `-3`) for eMule downloads as returned by `GET /api/v1/downloads`.
 #[utoipa::path(
     delete,
     path = "/api/v1/downloads/{id}/history",
     params(
-        ("id" = i64, Path, description = "Numeric download ID from `GET /api/v1/downloads`.")
+        ("id" = i64, Path, description = "Numeric download ID from `GET /api/v1/downloads`. Negative = eMule download.")
     ),
     responses(
         (status = 204, description = "Download record deleted."),
@@ -190,31 +242,58 @@ pub async fn cancel_download(State(state): State<AppState>, Path(id): Path<i64>)
     )
 )]
 pub async fn delete_download(State(state): State<AppState>, Path(id): Path<i64>) -> StatusCode {
-    // Check current status before deleting.
-    let rows = crate::db::downloads::list(&state.db)
-        .await
-        .unwrap_or_default();
-    let row = rows.iter().find(|r| r.id == id);
-
-    match row {
-        None => return StatusCode::NOT_FOUND,
-        Some(r)
-            if matches!(
-                r.status.as_str(),
-                "finding_providers" | "queued" | "downloading"
-            ) =>
+    if id < 0 {
+        #[cfg(feature = "emule-compat")]
         {
-            return StatusCode::CONFLICT;
+            let emule_id = -id;
+            let rows = crate::db::emule_downloads::list(&state.db)
+                .await
+                .unwrap_or_default();
+            match rows.iter().find(|r| r.id == emule_id) {
+                None => return StatusCode::NOT_FOUND,
+                Some(r) if matches!(r.status.as_str(), "finding_providers" | "downloading") => {
+                    return StatusCode::CONFLICT;
+                }
+                _ => {}
+            }
+            match crate::db::emule_downloads::delete(&state.db, emule_id).await {
+                Ok(true) => StatusCode::NO_CONTENT,
+                Ok(false) => StatusCode::NOT_FOUND,
+                Err(e) => {
+                    tracing::error!("DB error deleting emule download {emule_id}: {e}");
+                    StatusCode::INTERNAL_SERVER_ERROR
+                }
+            }
         }
-        _ => {}
-    }
+        #[cfg(not(feature = "emule-compat"))]
+        StatusCode::NOT_FOUND
+    } else {
+        // libp2p download
+        let rows = crate::db::downloads::list(&state.db)
+            .await
+            .unwrap_or_default();
+        let row = rows.iter().find(|r| r.id == id);
 
-    match crate::db::downloads::delete(&state.db, id).await {
-        Ok(true) => StatusCode::NO_CONTENT,
-        Ok(false) => StatusCode::NOT_FOUND,
-        Err(e) => {
-            tracing::error!("DB error deleting download {id}: {e}");
-            StatusCode::INTERNAL_SERVER_ERROR
+        match row {
+            None => return StatusCode::NOT_FOUND,
+            Some(r)
+                if matches!(
+                    r.status.as_str(),
+                    "finding_providers" | "queued" | "downloading"
+                ) =>
+            {
+                return StatusCode::CONFLICT;
+            }
+            _ => {}
+        }
+
+        match crate::db::downloads::delete(&state.db, id).await {
+            Ok(true) => StatusCode::NO_CONTENT,
+            Ok(false) => StatusCode::NOT_FOUND,
+            Err(e) => {
+                tracing::error!("DB error deleting download {id}: {e}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
         }
     }
 }
@@ -266,6 +345,7 @@ pub async fn start_ed2k_download(
 
     #[cfg(feature = "emule-compat")]
     {
+        use crate::db::emule_downloads::CreateResult;
         use rucio_emule::Ed2kLink;
 
         let link = Ed2kLink::parse(&req.link).map_err(|e| {
@@ -277,28 +357,63 @@ pub async fn start_ed2k_download(
             tracing::debug!("nodes_dat_path not configured, will use platform default");
         }
 
-        // Send an eMule download request to the engine.
-        let dl_req = crate::api::DownloadRequest::StartEd2k {
-            link: req.link.clone(),
-        };
-        let id = match state.download_tx.send(dl_req).await {
-            Ok(()) => 0i64, // actual ID assigned by the engine asynchronously
-            Err(_) => {
-                tracing::error!("Download channel closed");
-                return Err(StatusCode::INTERNAL_SERVER_ERROR);
-            }
-        };
+        // Check for an existing row *before* sending to the engine so we can
+        // return the correct HTTP status synchronously.
+        let result = crate::db::emule_downloads::create(
+            &state.db,
+            link.hash.as_bytes(),
+            &link.name,
+            link.size,
+            &req.link,
+            now_secs(),
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "Failed to create eMule download record");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
-        tracing::info!(name = %link.name, size = link.size, hash = %link.hash, "eMule download queued");
-        Ok((
-            StatusCode::ACCEPTED,
-            Json(rucio_core::api::downloads::StartEd2kDownloadResponse {
-                id,
-                name: link.name,
-                size: link.size,
-                ed2k_hash: link.hash.to_hex(),
-            }),
-        ))
+        match result {
+            CreateResult::AlreadyCompleted(id) => {
+                tracing::info!(id, name = %link.name, "eMule download already completed");
+                Err(StatusCode::CONFLICT)
+            }
+            CreateResult::AlreadyActive(id) => {
+                // Already running — return 202 with the existing ID so the
+                // client can track it, but do not spawn a second task.
+                tracing::info!(id, name = %link.name, "eMule download already active");
+                Ok((
+                    StatusCode::ACCEPTED,
+                    Json(rucio_core::api::downloads::StartEd2kDownloadResponse {
+                        id: -(id),
+                        name: link.name,
+                        size: link.size,
+                        ed2k_hash: link.hash.to_hex(),
+                    }),
+                ))
+            }
+            CreateResult::Inserted(id) | CreateResult::Reactivated(id) => {
+                // New or reactivated row — send to the engine to spawn the task.
+                let dl_req = crate::api::DownloadRequest::StartEd2k {
+                    link: req.link.clone(),
+                    download_id: id,
+                };
+                if state.download_tx.send(dl_req).await.is_err() {
+                    tracing::error!("Download channel closed");
+                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                }
+                tracing::info!(id, name = %link.name, size = link.size, hash = %link.hash, "eMule download queued");
+                Ok((
+                    StatusCode::ACCEPTED,
+                    Json(rucio_core::api::downloads::StartEd2kDownloadResponse {
+                        id: -(id),
+                        name: link.name,
+                        size: link.size,
+                        ed2k_hash: link.hash.to_hex(),
+                    }),
+                ))
+            }
+        }
     }
 }
 
@@ -312,4 +427,11 @@ pub(crate) fn db_status_to_state(s: &str) -> DownloadState {
         "cancelled" => DownloadState::Cancelled,
         _ => DownloadState::FindingProviders,
     }
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
