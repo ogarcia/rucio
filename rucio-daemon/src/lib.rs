@@ -400,19 +400,38 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                         api::DownloadRequest::StartEd2k { link } => {
                             #[cfg(feature = "emule-compat")]
                             {
-                                let config = config.clone();
-                                let db = db.clone();
-                                let ws_tx = ws_tx.clone();
-                                let kad = kad_handle.clone();
-                                tokio::spawn(async move {
-                                    if let Err(e) = crate::emule::run_ed2k_download(
-                                        &link, &config, &db, &ws_tx, &kad,
-                                    )
-                                    .await
-                                    {
-                                        warn!("eMule download failed: {e}");
+                                use rucio_emule::Ed2kLink;
+                                match Ed2kLink::parse(&link) {
+                                    Err(e) => warn!(link = %link, error = %e, "Invalid ed2k link, ignoring"),
+                                    Ok(parsed) => {
+                                        // Insert the DB row synchronously before spawning so
+                                        // `rucio downloads` shows it immediately.
+                                        match crate::db::downloads::create_emule_pending(
+                                            &db,
+                                            parsed.hash.as_bytes(),
+                                            &parsed.name,
+                                            parsed.size,
+                                            now_secs(),
+                                        ).await {
+                                            Err(e) => warn!(error = %e, "Failed to create eMule download record"),
+                                            Ok(download_id) => {
+                                                let config = config.clone();
+                                                let db = db.clone();
+                                                let ws_tx = ws_tx.clone();
+                                                let kad = kad_handle.clone();
+                                                tokio::spawn(async move {
+                                                    if let Err(e) = crate::emule::run_ed2k_download(
+                                                        &link, download_id, &config, &db, &ws_tx, &kad,
+                                                    )
+                                                    .await
+                                                    {
+                                                        warn!("eMule download failed: {e}");
+                                                    }
+                                                });
+                                            }
+                                        }
                                     }
-                                });
+                                }
                             }
                             #[cfg(not(feature = "emule-compat"))]
                             {

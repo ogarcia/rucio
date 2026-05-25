@@ -19,6 +19,48 @@ pub struct DownloadRow {
     pub updated_at: i64,
 }
 
+/// Insert a download row for an eMule (ed2k) download.
+///
+/// The `ed2k_hash` is the 16-byte MD4 hash from the ed2k link.  We store it
+/// padded to 32 bytes (MD4 bytes + 16 zero bytes) as a provisional identifier;
+/// the row is updated to the real BLAKE3 hash once the download completes.
+///
+/// Returns the new `downloads.id`.
+pub async fn create_emule_pending(
+    db: &Db,
+    ed2k_hash: &[u8; 16],
+    name: &str,
+    total_size: u64,
+    now: u64,
+) -> Result<i64> {
+    let mut root_hash = [0u8; 32];
+    root_hash[..16].copy_from_slice(ed2k_hash);
+
+    // If a row with this provisional hash already exists (e.g. duplicate
+    // submission), return its ID without inserting a duplicate.
+    let existing: Option<i64> = sqlx::query_scalar("SELECT id FROM downloads WHERE root_hash = ?1")
+        .bind(root_hash.as_slice())
+        .fetch_optional(db)
+        .await?;
+
+    if let Some(id) = existing {
+        return Ok(id);
+    }
+
+    let id = sqlx::query(
+        "INSERT INTO downloads (root_hash, name, total_size, dest_path, status, added_at, updated_at)
+         VALUES (?1, ?2, ?3, '', 'finding_providers', ?4, ?4)",
+    )
+    .bind(root_hash.as_slice())
+    .bind(name)
+    .bind(total_size as i64)
+    .bind(now as i64)
+    .execute(db)
+    .await?
+    .last_insert_rowid();
+    Ok(id)
+}
+
 /// Insert a placeholder row for a download that has not yet received its
 /// manifest (no chunks known yet).  The initial status reflects whether we
 /// already have providers (`"queued"`) or are still searching (`"finding_providers"`).
@@ -171,6 +213,15 @@ pub async fn set_dest_path(db: &Db, download_id: i64, dest_path: &str) -> Result
         .execute(db)
         .await?;
     Ok(())
+}
+
+/// Return the current status string for a download, or `None` if not found.
+pub async fn get_status(db: &Db, download_id: i64) -> Result<Option<String>> {
+    let row = sqlx::query("SELECT status FROM downloads WHERE id = ?1")
+        .bind(download_id)
+        .fetch_optional(db)
+        .await?;
+    Ok(row.map(|r| r.get("status")))
 }
 
 /// Return the root_hash for a single download row, or `None` if not found.

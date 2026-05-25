@@ -125,6 +125,9 @@ struct PendingManifest {
     requested_at: Instant,
     /// Row id in the `downloads` table (placeholder inserted at start()).
     db_id: i64,
+    /// When we last issued a `FindProviders` DHT query for this hash.
+    /// Used to avoid hammering the DHT when no providers are available.
+    last_find_at: Instant,
 }
 
 /// Per-peer slot tracking for an active download.
@@ -281,6 +284,7 @@ impl DownloadEngine {
                         providers: vec![],
                         attempt: 0,
                         requested_at: Instant::now(),
+                        last_find_at: Instant::now(),
                         db_id: row.id,
                     },
                 );
@@ -425,6 +429,7 @@ impl DownloadEngine {
                 providers,
                 attempt: 0,
                 requested_at: Instant::now(),
+                last_find_at: Instant::now(),
                 db_id,
             },
         );
@@ -507,10 +512,15 @@ impl DownloadEngine {
 
     /// Check all pending manifest requests. For any that have exceeded
     /// `MANIFEST_TIMEOUT_SECS`, try the next provider in the list.
-    /// Entries that have exhausted all providers are dropped and the download
-    /// is marked failed in the DB.
+    /// When all known providers are exhausted the download goes back to
+    /// `finding_providers` and re-issues a `FindProviders` DHT query —
+    /// it never fails permanently, matching the behaviour of the eMule client.
     pub async fn tick_manifest_timeouts(&mut self) {
-        let mut failed: Vec<[u8; 32]> = Vec::new();
+        // How long to wait before re-querying the DHT after exhausting all
+        // known providers.  Matches the reprovide interval on the seeder side.
+        const REFIND_SECS: u64 = 22 * 60;
+
+        let mut retry_find: Vec<[u8; 32]> = Vec::new();
 
         for (root_hash, pm) in &mut self.pending_manifests {
             if pm.requested_at.elapsed().as_secs() < MANIFEST_TIMEOUT_SECS {
@@ -539,25 +549,34 @@ impl DownloadEngine {
                         id_tx,
                     })
                     .await;
-            } else {
+            } else if pm.last_find_at.elapsed().as_secs() >= REFIND_SECS {
+                // All known providers exhausted.  Re-query the DHT instead of
+                // giving up — the file may become available later.
                 warn!(
                     root_hash = hex::encode(root_hash),
-                    "Manifest timed out — all providers exhausted, failing download"
+                    "Manifest timed out — all providers exhausted, re-querying DHT"
                 );
-                failed.push(*root_hash);
+                pm.providers.clear();
+                pm.attempt = 0;
+                pm.last_find_at = Instant::now();
+                retry_find.push(*root_hash);
             }
+            // If last_find_at < REFIND_SECS we just wait — the tick will fire
+            // again in MANIFEST_TIMEOUT_SECS and re-evaluate.
         }
 
-        for root_hash in failed {
-            self.pending_manifests.remove(&root_hash);
-            // Best-effort DB update — no db_id available at this stage so we
-            // match by root_hash.
-            if let Err(e) = db::downloads::fail_by_hash(&self.db, &root_hash).await {
-                warn!(
-                    root_hash = hex::encode(root_hash),
-                    "Could not mark download failed: {e}"
-                );
+        for root_hash in retry_find {
+            if let Some(pm) = self.pending_manifests.get(&root_hash) {
+                let db_id = pm.db_id;
+                if db_id > 0 {
+                    let _ =
+                        db::downloads::set_status(&self.db, db_id, "finding_providers", None).await;
+                }
             }
+            let _ = self
+                .cmd_tx
+                .send(NodeCmd::FindProviders(root_hash.to_vec()))
+                .await;
         }
     }
 
@@ -1603,6 +1622,7 @@ mod tests {
                 providers: vec![],
                 attempt: 0,
                 requested_at: std::time::Instant::now(),
+                last_find_at: std::time::Instant::now(),
                 db_id: 0,
             },
         );
@@ -1646,7 +1666,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tick_fails_download_when_all_providers_exhausted() {
+    async fn tick_requeues_find_providers_when_all_providers_exhausted() {
         let tmp = tempfile::tempdir().unwrap();
         let (mut engine, mut rx, _db_dir) = make_engine(&tmp).await;
         let hash = [0x11u8; 32];
@@ -1655,16 +1675,23 @@ mod tests {
         engine.start(&magnet, vec![peer(1)], 0).await.unwrap();
         while rx.try_recv().is_ok() {}
 
-        // Force timeout with only one provider (already attempted)
+        // Force timeout with only one provider (already attempted) and
+        // backdate last_find_at so the REFIND_SECS guard does not block us.
         {
             let pm = engine.pending_manifests.get_mut(&hash).unwrap();
             pm.requested_at = Instant::now() - Duration::from_secs(15);
+            pm.last_find_at = Instant::now() - Duration::from_secs(23 * 60);
         }
 
         engine.tick_manifest_timeouts().await;
 
-        // Entry should be removed — all providers exhausted
-        assert!(!engine.pending_manifests.contains_key(&hash));
+        // Entry should still be in pending_manifests — we never remove it.
+        assert!(engine.pending_manifests.contains_key(&hash));
+        // Providers list should be cleared (reset for fresh DHT results).
+        assert!(engine.pending_manifests[&hash].providers.is_empty());
+        // A FindProviders command should have been issued.
+        let cmd = rx.try_recv().unwrap();
+        assert!(matches!(cmd, NodeCmd::FindProviders(_)));
     }
 
     // -----------------------------------------------------------------------

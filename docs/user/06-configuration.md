@@ -68,6 +68,75 @@ rucio config unset storage.temp_dir
 
 ---
 
+### `network.listen_port`
+
+The TCP port the daemon listens on for incoming libp2p connections. This port
+must be reachable from the internet for other peers to connect to you (HighID
+operation). When running in a container, map this port with `-p 4321:4321`.
+
+UPnP will attempt to open this port automatically when `network.upnp = true`.
+
+```sh
+rucio config set network.listen_port 4321
+```
+
+**Default:** `4321`
+
+---
+
+### `network.upnp`
+
+Enable or disable automatic UPnP/IGD port mapping. When enabled, the daemon
+asks the LAN router to forward:
+
+- TCP `network.listen_port` (libp2p)
+- UDP `emule.kad_port` (Kad2, only with the `emule-compat` feature)
+
+Set to `false` if:
+- You have already configured port forwarding manually on your router.
+- You are running on a VPS / cloud server with a direct public IP (no NAT).
+- You are running inside a container and the host handles forwarding.
+- UPnP is disabled or unavailable on your network.
+
+When `false`, the `external_ip` field in `rucio status` will always be empty.
+
+```sh
+rucio config set network.upnp true
+rucio config set network.upnp false
+```
+
+**Default:** `true`
+
+---
+
+### `network.upload_limit_kbps`
+
+Maximum upload bandwidth used for serving file chunks to other peers,
+in kilobytes per second. Set to `0` for unlimited.
+
+```sh
+rucio config set network.upload_limit_kbps 500    # 500 KB/s cap
+rucio config set network.upload_limit_kbps 0      # unlimited
+```
+
+**Default:** `0` (unlimited)
+
+---
+
+### `network.download_limit_kbps`
+
+Maximum download bandwidth used when fetching file chunks, in kilobytes per
+second. Set to `0` for unlimited.
+
+```sh
+rucio config set network.download_limit_kbps 2000   # 2 MB/s cap
+rucio config set network.download_limit_kbps 0      # unlimited
+```
+
+**Default:** `0` (unlimited)
+
+---
+
 ### `network.bootstrap_peers`
 
 List of multiaddrs used to bootstrap into the DHT when no local peers are
@@ -101,6 +170,23 @@ port 4321).
 
 ---
 
+### `emule.kad_port`
+
+UDP port for the Kad2 socket used to communicate with the eMule network.
+Only meaningful when the daemon is built with the `emule-compat` feature.
+
+This port must be reachable from the internet for Kad2 bootstrap to work.
+When running in a container, map it with `-p 4672:4672` (Podman/Docker map
+both TCP and UDP when no protocol suffix is given).
+
+```sh
+rucio config set emule.kad_port 4672
+```
+
+**Default:** `4672` (eMule standard)
+
+---
+
 ## Configuration file
 
 The configuration is stored as TOML and is loaded at daemon startup.
@@ -131,6 +217,10 @@ listen_addrs = ["/ip4/0.0.0.0/tcp/4321", "/ip6/::/tcp/4321"]
 listen = "127.0.0.1:7070"
 
 [network]
+listen_port           = 4321
+upnp                  = true
+upload_limit_kbps     = 0
+download_limit_kbps   = 0
 bootstrap_peers = [
   "/ip4/203.0.113.1/tcp/4321/p2p/12D3KooWXXX...",
 ]
@@ -138,6 +228,9 @@ bootstrap_peers = [
 [storage]
 download_dir = "/mnt/data/downloads"
 temp_dir     = "/mnt/data/.rucio-tmp"
+
+[emule]
+kad_port = 4672
 ```
 
 ---
@@ -160,6 +253,12 @@ the file value untouched.
 | `RUCIOD_TEMP_DIR` | `storage.temp_dir` | path |
 | `RUCIOD_DB_PATH` | `storage.database_path` | path |
 | `RUCIOD_BOOTSTRAP_PEERS` | `network.bootstrap_peers` | comma-separated multiaddrs |
+| `RUCIOD_UPLOAD_LIMIT_KBPS` | `network.upload_limit_kbps` | integer KB/s, `0` = unlimited |
+| `RUCIOD_DOWNLOAD_LIMIT_KBPS` | `network.download_limit_kbps` | integer KB/s, `0` = unlimited |
+| `RUCIOD_UPNP` | `network.upnp` | `true`/`false` (also `1`/`0`, `yes`/`no`, `on`/`off`) |
+| `RUCIOD_NODES_DAT` | `storage.nodes_dat_path` | path |
+| `RUCIOD_EMULE_TEMP_DIR` | `storage.emule_temp_dir` | path |
+| `RUCIOD_KAD_PORT` | `emule.kad_port` | integer 1–65535 |
 
 ### Docker / container example
 
@@ -172,6 +271,7 @@ ENV RUCIOD_P2P_LISTEN=/ip4/0.0.0.0/tcp/4321,/ip6/::/tcp/4321
 ENV RUCIOD_DOWNLOAD_DIR=/data/downloads
 ENV RUCIOD_TEMP_DIR=/data/tmp
 ENV RUCIOD_DB_PATH=/data/rucio.db
+ENV RUCIOD_UPNP=false
 
 VOLUME ["/data"]
 EXPOSE 7070 4321
@@ -186,10 +286,29 @@ docker run \
   -e RUCIOD_API_LISTEN=0.0.0.0:7070 \
   -e RUCIOD_DOWNLOAD_DIR=/data/downloads \
   -e RUCIOD_DB_PATH=/data/rucio.db \
+  -e RUCIOD_UPNP=false \
   -v rucio-data:/data \
   -p 7070:7070 -p 4321:4321 \
   ghcr.io/yourorg/rucio
 ```
+
+With eMule/Kad2 support:
+
+```sh
+docker run \
+  -e RUCIOD_API_LISTEN=0.0.0.0:7070 \
+  -e RUCIOD_DOWNLOAD_DIR=/data/downloads \
+  -e RUCIOD_DB_PATH=/data/rucio.db \
+  -e RUCIOD_NODES_DAT=/data/nodes.dat \
+  -e RUCIOD_KAD_PORT=40066 \
+  -e RUCIOD_UPNP=false \
+  -v rucio-data:/data \
+  -p 7070:7070 -p 4321:4321 -p 40066:40066 \
+  ghcr.io/yourorg/rucio
+```
+
+> **Note:** `-p 40066:40066` without a `/udp` suffix maps **both TCP and UDP**
+> in Podman and Docker. This is correct for the Kad2 socket.
 
 ### Comma-separated list variables
 

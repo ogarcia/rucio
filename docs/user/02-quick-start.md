@@ -14,7 +14,7 @@ ruciod
 You should see log output similar to:
 
 ```
-INFO rucio_daemon: listening on /ip4/0.0.0.0/tcp/4001
+INFO rucio_daemon: listening on /ip4/0.0.0.0/tcp/4321
 INFO rucio_daemon: peer id: 12D3KooW...
 ```
 

@@ -125,7 +125,7 @@ of known Kad2 nodes.  Download one automatically with:
 rucio emule bootstrap
 ```
 
-This downloads a fresh `nodes.dat` from `http://upd.emule-security.net/nodes.dat`,
+This downloads a fresh `nodes.dat` from `http://upd.emule-security.org/nodes.dat`,
 validates it, and saves it to `~/.local/share/rucio/nodes.dat` (or to
 `storage.nodes_dat_path` if you have set it in the configuration).
 
