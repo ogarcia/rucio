@@ -39,13 +39,9 @@ pub async fn run_ed2k_download(
     info!(name = %link.name, size = link.size, hash = %link.hash, "Starting eMule download");
 
     // 2. Load nodes.dat.
-    let nodes_dat_path = config
-        .storage
-        .nodes_dat_path
-        .as_ref()
-        .context("storage.nodes_dat_path not set — cannot bootstrap eMule Kad2 network")?;
+    let nodes_dat_path = effective_nodes_dat_path(config);
 
-    let nodes_dat_bytes = std::fs::read(nodes_dat_path)
+    let nodes_dat_bytes = std::fs::read(&nodes_dat_path)
         .with_context(|| format!("read nodes.dat: {}", nodes_dat_path.display()))?;
 
     let contacts =
@@ -191,7 +187,21 @@ pub async fn run_ed2k_download(
     Ok(())
 }
 
-// ── Auto-bootstrap helpers ────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Resolve the effective `nodes.dat` path: the configured value when present,
+/// otherwise the platform default (`$XDG_DATA_HOME/rucio/nodes.dat`).
+///
+/// This mirrors the logic used at startup for the auto-bootstrap task and in
+/// the `GET /api/v1/emule/status` handler so all code agrees on one path.
+pub fn effective_nodes_dat_path(config: &crate::config::Config) -> std::path::PathBuf {
+    config.storage.nodes_dat_path.clone().unwrap_or_else(|| {
+        dirs::data_local_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+            .join("rucio")
+            .join("nodes.dat")
+    })
+}
 
 /// Download a fresh `nodes.dat` from `url` and save it to `path`.
 ///

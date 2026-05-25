@@ -24,18 +24,7 @@ use crate::api::AppState;
 pub async fn get_emule_status(State(state): State<AppState>) -> Json<EmuleStatusResponse> {
     #[cfg(feature = "emule-compat")]
     let resp = {
-        // Resolve the effective nodes.dat path (configured or platform default).
-        let effective_path = state
-            .config
-            .storage
-            .nodes_dat_path
-            .clone()
-            .unwrap_or_else(|| {
-                dirs::data_local_dir()
-                    .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-                    .join("rucio")
-                    .join("nodes.dat")
-            });
+        let effective_path = crate::emule::effective_nodes_dat_path(&state.config);
 
         let (present, contacts) = match std::fs::read(&effective_path) {
             Ok(bytes) => {
@@ -117,18 +106,8 @@ pub async fn post_emule_bootstrap(
             .unwrap_or(DEFAULT_NODES_DAT_URL)
             .to_string();
 
-        // Determine save path: use configured path or default data dir.
-        let save_path = state
-            .config
-            .storage
-            .nodes_dat_path
-            .clone()
-            .unwrap_or_else(|| {
-                dirs::data_local_dir()
-                    .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-                    .join("rucio")
-                    .join("nodes.dat")
-            });
+        // Determine save path: use configured path or platform default.
+        let save_path = crate::emule::effective_nodes_dat_path(&state.config);
 
         tracing::info!(url = %url, path = %save_path.display(), "Downloading nodes.dat");
 

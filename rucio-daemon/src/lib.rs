@@ -179,12 +179,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     // --- eMule: auto-bootstrap nodes.dat if missing -------------------------
     #[cfg(feature = "emule-compat")]
     {
-        let save_path = config.storage.nodes_dat_path.clone().unwrap_or_else(|| {
-            dirs::data_local_dir()
-                .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-                .join("rucio")
-                .join("nodes.dat")
-        });
+        let save_path = crate::emule::effective_nodes_dat_path(&config);
 
         if !save_path.exists() {
             tokio::spawn(async move {

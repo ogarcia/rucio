@@ -274,8 +274,7 @@ pub async fn start_ed2k_download(
         })?;
 
         if state.config.storage.nodes_dat_path.is_none() {
-            tracing::warn!("ed2k download requested but nodes_dat_path is not configured");
-            return Err(StatusCode::BAD_REQUEST);
+            tracing::debug!("nodes_dat_path not configured, will use platform default");
         }
 
         // Send an eMule download request to the engine.
