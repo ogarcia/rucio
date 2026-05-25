@@ -1834,6 +1834,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "igd-next"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bac9a3c8278f43b4cd8463380f4a25653ac843e5b177e1d3eaf849cc9ba10d4d"
+dependencies = [
+ "attohttpc",
+ "bytes",
+ "futures",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "log",
+ "rand 0.10.1",
+ "tokio",
+ "url",
+ "xmltree",
+]
+
+[[package]]
 name = "indexmap"
 version = "2.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2458,7 +2478,7 @@ checksum = "4757e65fe69399c1a243bbb90ec1ae5a2114b907467bf09f3575e899815bb8d3"
 dependencies = [
  "futures",
  "futures-timer",
- "igd-next",
+ "igd-next 0.16.2",
  "libp2p-core",
  "libp2p-swarm",
  "tokio",
@@ -3507,6 +3527,7 @@ dependencies = [
  "dirs",
  "hex",
  "http-body-util",
+ "igd-next 0.17.0",
  "infer",
  "libp2p",
  "notify",

@@ -41,6 +41,7 @@ dirs                = { workspace = true }
 clap                = { workspace = true }
 infer               = { workspace = true }
 notify              = { workspace = true }
+igd-next            = { workspace = true }
 
 [dev-dependencies]
 tower               = { version = "0.5", features = ["util"] }

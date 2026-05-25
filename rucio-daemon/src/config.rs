@@ -30,15 +30,39 @@ pub struct ApiConfig {
     pub token: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkConfig {
     pub bootstrap_peers: Vec<String>,
+    /// libp2p TCP listen port.  Default: 4321.
+    ///
+    /// Must be reachable from the internet for peers to connect.
+    /// When running in a container, map this port with `-p 4321:4321`.
+    /// UPnP will attempt to open this port automatically.
+    #[serde(default = "NetworkConfig::default_listen_port")]
+    pub listen_port: u16,
     /// Upload bandwidth limit in KB/s.  0 = unlimited (default).
     #[serde(default)]
     pub upload_limit_kbps: u64,
     /// Download bandwidth limit in KB/s.  0 = unlimited (default).
     #[serde(default)]
     pub download_limit_kbps: u64,
+}
+
+impl NetworkConfig {
+    fn default_listen_port() -> u16 {
+        4321
+    }
+}
+
+impl Default for NetworkConfig {
+    fn default() -> Self {
+        Self {
+            bootstrap_peers: vec![],
+            listen_port: Self::default_listen_port(),
+            upload_limit_kbps: 0,
+            download_limit_kbps: 0,
+        }
+    }
 }
 
 /// eMule / Kad2 compatibility settings.

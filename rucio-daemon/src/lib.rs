@@ -1,12 +1,13 @@
 pub mod api;
 pub mod config;
 pub mod db;
-#[cfg(feature = "emule-compat")]
+
 pub mod emule;
 pub mod metrics;
 pub mod node;
 pub mod throttle;
 pub mod transfer;
+pub mod upnp;
 pub mod watcher;
 
 use anyhow::{Context, Result};
@@ -173,6 +174,16 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
         }
     };
 
+    // --- UPnP port mapping --------------------------------------------------
+    let upnp_cfg = upnp::UpnpConfig {
+        tcp_port: config.network.listen_port,
+        #[cfg(feature = "emule-compat")]
+        udp_port: Some(config.emule.kad_port),
+        #[cfg(not(feature = "emule-compat"))]
+        udp_port: None,
+    };
+    let external_ip = upnp::spawn(upnp_cfg);
+
     let app_state = api::AppState {
         db: db.clone(),
         config: Arc::clone(&config),
@@ -189,6 +200,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
         download_throttle: Arc::clone(&download_throttle),
         #[cfg(feature = "emule-compat")]
         kad_handle: kad_handle.clone(),
+        external_ip,
     };
 
     let listen_addr = config.api.listen.clone();

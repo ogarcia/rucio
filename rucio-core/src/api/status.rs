@@ -13,6 +13,10 @@ pub struct StatusResponse {
     pub observed_addrs: Vec<String>,
     pub uptime_secs: u64,
     pub version: String,
+    /// External IP address as reported by UPnP gateway.
+    /// `null` when no UPnP gateway is available on the LAN.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub external_ip: Option<String>,
 }
 
 /// GET /api/v1/peers

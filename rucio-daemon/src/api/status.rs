@@ -32,6 +32,7 @@ use crate::api::AppState;
 pub async fn get_status(State(state): State<AppState>) -> Json<StatusResponse> {
     let ns = state.node_status.read().await;
     let uptime = state.started_at.elapsed().as_secs();
+    let external_ip = state.external_ip.read().await.clone();
 
     Json(StatusResponse {
         peer_id: ns.peer_id.clone(),
@@ -41,6 +42,7 @@ pub async fn get_status(State(state): State<AppState>) -> Json<StatusResponse> {
         observed_addrs: ns.observed_addrs.clone(),
         uptime_secs: uptime,
         version: env!("CARGO_PKG_VERSION").to_string(),
+        external_ip,
     })
 }
 

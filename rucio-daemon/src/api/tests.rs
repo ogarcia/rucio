@@ -78,6 +78,7 @@ async fn test_state() -> (
                 rucio_emule::kad::task::KadTaskConfig::default(),
             )
         },
+        external_ip: Arc::new(tokio::sync::RwLock::new(None)),
     };
     (state, cmd_rx, download_rx, dir)
 }

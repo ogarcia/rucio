@@ -88,5 +88,8 @@ infer = "0.19"
 
 owo-colors  = { version = "4.3", features = ["supports-colors"] }
 
+# UPnP / IGD port mapping
+igd-next    = { version = "0.17", features = ["aio_tokio"] }
+
 # test utilities
 tempfile = "3"

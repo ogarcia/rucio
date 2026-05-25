@@ -200,6 +200,8 @@ pub struct AppState {
     /// Handle to the Kad2 background task (only present with `emule-compat` feature).
     #[cfg(feature = "emule-compat")]
     pub kad_handle: rucio_emule::kad::task::KadHandle,
+    /// External IP address as reported by UPnP gateway.  `None` when no gateway found.
+    pub external_ip: crate::upnp::ExternalIp,
 }
 
 /// Live node status kept in memory and updated by the event loop.
