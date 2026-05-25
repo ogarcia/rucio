@@ -37,10 +37,15 @@ pub struct EmuleBootstrapResponse {
 pub struct EmuleStatusResponse {
     /// Whether the `emule-compat` feature is compiled into this daemon binary.
     pub feature_enabled: bool,
-    /// Configured path for `nodes.dat` (if any).
+    /// Effective path for `nodes.dat` — either the configured value or the
+    /// platform default.  Always present when `feature_enabled` is true.
     pub nodes_dat_path: Option<String>,
     /// Whether the `nodes.dat` file exists and is readable.
     pub nodes_dat_present: bool,
     /// Number of Kad2 contacts in the current `nodes.dat` (0 if not present).
     pub contacts: usize,
+    /// Number of peers currently connected to the Rucio node.
+    pub connected_peers: usize,
+    /// Whether the node considers itself well-connected (≥ 4 peers).
+    pub is_connected: bool,
 }

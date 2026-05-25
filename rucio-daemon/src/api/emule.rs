@@ -24,24 +24,38 @@ use crate::api::AppState;
 pub async fn get_emule_status(State(state): State<AppState>) -> Json<EmuleStatusResponse> {
     #[cfg(feature = "emule-compat")]
     let resp = {
-        let path = state.config.storage.nodes_dat_path.clone();
-        let (present, contacts) = match &path {
-            None => (false, 0),
-            Some(p) => match std::fs::read(p) {
-                Ok(bytes) => {
-                    let n = rucio_emule::kad::routing::parse_nodes_dat(&bytes)
-                        .map(|v| v.len())
-                        .unwrap_or(0);
-                    (true, n)
-                }
-                Err(_) => (false, 0),
-            },
+        // Resolve the effective nodes.dat path (configured or platform default).
+        let effective_path = state
+            .config
+            .storage
+            .nodes_dat_path
+            .clone()
+            .unwrap_or_else(|| {
+                dirs::data_local_dir()
+                    .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+                    .join("rucio")
+                    .join("nodes.dat")
+            });
+
+        let (present, contacts) = match std::fs::read(&effective_path) {
+            Ok(bytes) => {
+                let n = rucio_emule::kad::routing::parse_nodes_dat(&bytes)
+                    .map(|v| v.len())
+                    .unwrap_or(0);
+                (true, n)
+            }
+            Err(_) => (false, 0),
         };
+
+        let connected_peers = state.node_status.read().await.connected_peers;
+
         EmuleStatusResponse {
             feature_enabled: true,
-            nodes_dat_path: path.map(|p| p.display().to_string()),
+            nodes_dat_path: Some(effective_path.display().to_string()),
             nodes_dat_present: present,
             contacts,
+            connected_peers,
+            is_connected: connected_peers >= 4,
         }
     };
 
@@ -53,6 +67,8 @@ pub async fn get_emule_status(State(state): State<AppState>) -> Json<EmuleStatus
             nodes_dat_path: None,
             nodes_dat_present: false,
             contacts: 0,
+            connected_peers: 0,
+            is_connected: false,
         }
     };
 

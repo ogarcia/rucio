@@ -42,8 +42,17 @@ async fn status(client: &ApiClient) -> Result<()> {
     };
     println!("eMule compatibility: {feature}");
 
+    if !s.feature_enabled {
+        println!(
+            "\n{} Rebuild the daemon with `--features emule-compat` to enable eMule support.",
+            "hint:".yellow()
+        );
+        return Ok(());
+    }
+
+    // nodes.dat
     match &s.nodes_dat_path {
-        None => println!("nodes.dat path:      {}", "(not configured)".yellow()),
+        None => println!("nodes.dat path:      {}", "(unknown)".yellow()),
         Some(p) => {
             println!("nodes.dat path:      {p}");
             if s.nodes_dat_present {
@@ -61,10 +70,28 @@ async fn status(client: &ApiClient) -> Result<()> {
         }
     }
 
-    if !s.feature_enabled {
+    // connectivity
+    let peers_str = if s.connected_peers == 1 {
+        "1 peer".to_string()
+    } else {
+        format!("{} peers", s.connected_peers)
+    };
+    if s.is_connected {
         println!(
-            "\n{} Rebuild the daemon with `--features emule-compat` to enable eMule support.",
-            "hint:".yellow()
+            "Network:             {} ({})",
+            "connected".green(),
+            peers_str
+        );
+    } else if s.connected_peers > 0 {
+        println!(
+            "Network:             {} ({}) — connecting…",
+            "degraded".yellow(),
+            peers_str
+        );
+    } else {
+        println!(
+            "Network:             {} — no peers yet, wait a moment or check your bootstrap peers",
+            "offline".red()
         );
     }
 
