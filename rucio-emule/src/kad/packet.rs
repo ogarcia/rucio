@@ -398,54 +398,44 @@ pub fn decode(data: &[u8]) -> Result<KadPacket, PacketError> {
                 cur.read_exact(&mut b)?;
                 b[0]
             };
-            // Parse tags looking for TAG_UDPKEY (0x08 = u32 value named "UDPK").
+            // Parse tags looking for TAG_UDPKEY and TAG_SENDER_IP.
+            // Wire format: type(1) + name_len(2 LE) + name(n) + value
             let mut udp_key: Option<u32> = None;
             let mut sender_ip: Option<std::net::Ipv4Addr> = None;
             for _ in 0..tag_count {
-                // Kad tag format: type(1) + name_len(1) + name(n) + value
                 let tag_type = {
                     let mut b = [0u8];
-                    cur.read_exact(&mut b).ok();
+                    if cur.read_exact(&mut b).is_err() {
+                        break;
+                    }
                     b[0]
                 };
-                let name_len = {
-                    let mut b = [0u8];
-                    cur.read_exact(&mut b).ok();
-                    b[0]
+                // Read name: uint16 length + bytes (aMule SafeFile.cpp WriteTag)
+                let name_len = match read_u16(&mut cur) {
+                    Ok(v) => v as usize,
+                    Err(_) => break,
                 };
-                let mut name = vec![0u8; name_len as usize];
-                cur.read_exact(&mut name).ok();
+                let mut name = vec![0u8; name_len];
+                if cur.read_exact(&mut name).is_err() {
+                    break;
+                }
                 match (tag_type, name.as_slice()) {
-                    // TAG_UDPKEY: type=0x03 (u32), name="UDPK" or name_len=1 name=[0x08]
-                    (0x03, [0x08]) | (0x03, b"UDPK") => {
+                    // TAG_UDPKEY: TAGTYPE_UINT32 (0x03), name=[0x08]
+                    (0x03, [0x08]) => {
                         udp_key = read_u32(&mut cur).ok();
                     }
-                    // TAG_SENDER_IP: type=0x03 (u32 BE network bytes), name=[0x09]
+                    // TAG_SENDER_IP: TAGTYPE_UINT32 (0x03), name=[0x09]
                     (0x03, [0x09]) => {
                         if let Ok(raw) = read_u32(&mut cur) {
-                            sender_ip = Some(std::net::Ipv4Addr::from(raw));
+                            sender_ip = Some(std::net::Ipv4Addr::from(raw.to_be_bytes()));
                         }
                     }
-                    // Skip unknown tags: need to consume value bytes.
-                    // Type 0x03 = u32 (4 bytes), 0x02 = u16 (2 bytes),
-                    // 0x05 = IPv4 (4 bytes), 0x09 = bool (1 byte), 0x0b = u8 (1 byte)
-                    (0x03, _) => {
-                        let mut b = [0u8; 4];
-                        cur.read_exact(&mut b).ok();
+                    // Skip any other tag value
+                    (t, _) => {
+                        if skip_tag_value(&mut cur, t).is_err() {
+                            break;
+                        }
                     }
-                    (0x02, _) => {
-                        let mut b = [0u8; 2];
-                        cur.read_exact(&mut b).ok();
-                    }
-                    (0x05, _) => {
-                        let mut b = [0u8; 4];
-                        cur.read_exact(&mut b).ok();
-                    }
-                    (0x09, _) | (0x0b, _) => {
-                        let mut b = [0u8; 1];
-                        cur.read_exact(&mut b).ok();
-                    }
-                    _ => break, // unknown type — stop parsing to avoid mis-alignment
                 }
             }
             let p = HelloPayload {
@@ -566,11 +556,99 @@ pub fn decode(data: &[u8]) -> Result<KadPacket, PacketError> {
     Ok(pkt)
 }
 
+// ── Tag constants (aMule TagTypes.h) ──────────────────────────────────────────
+// TAGTYPE_HASH16 = 0x01  (16 bytes)
+// TAGTYPE_STRING = 0x02  (uint16 len + bytes)
+// TAGTYPE_UINT32 = 0x03  (4 bytes LE)
+// TAGTYPE_FLOAT32= 0x04  (4 bytes)
+// TAGTYPE_UINT16 = 0x08  (2 bytes LE)
+// TAGTYPE_UINT8  = 0x09  (1 byte)
+// TAGTYPE_UINT64 = 0x0B  (8 bytes LE)
+// TAGTYPE_STR1..N= 0x11..0x26  (inline string of length N-0x10)
+//
+// Tag name format (aMule SafeFile.cpp WriteTag):
+//   If name is a string:  uint16(len) + bytes
+//   If name is a numeric ID:  uint16(1) + uint8(id)
+// In practice Kad2 uses both; we always read uint16+bytes.
+//
+// Source entry tag names (FileTags.h):
+//   TAG_SOURCEIP    = "\xFE"  (uint32 LE, host-byte-order)
+//   TAG_SOURCEPORT  = "\xFD"  (uint16 LE, TCP port)
+//   TAG_SOURCEUPORT = "\xFC"  (uint16 LE, UDP port)
+//   TAG_FILESIZE    = "\x02"  (varint / uint64)
+
+/// Skip the value of a tag given its type byte; return Err on unknown type.
+fn skip_tag_value<R: Read>(r: &mut R, type_byte: u8) -> io::Result<()> {
+    match type_byte {
+        0x01 => {
+            // TAGTYPE_HASH16
+            let mut b = [0u8; 16];
+            r.read_exact(&mut b)
+        }
+        0x02 => {
+            // TAGTYPE_STRING: uint16 len + bytes
+            let len = read_u16(r)? as usize;
+            let mut b = vec![0u8; len];
+            r.read_exact(&mut b)
+        }
+        0x03 | 0x04 => {
+            // TAGTYPE_UINT32 / TAGTYPE_FLOAT32
+            let mut b = [0u8; 4];
+            r.read_exact(&mut b)
+        }
+        0x05..=0x07 => {
+            // BOOL, BOOLARRAY, BLOB — treat as 1 byte to avoid misalign
+            let mut b = [0u8; 1];
+            r.read_exact(&mut b)
+        }
+        0x08 => {
+            // TAGTYPE_UINT16
+            let mut b = [0u8; 2];
+            r.read_exact(&mut b)
+        }
+        0x09 => {
+            // TAGTYPE_UINT8
+            let mut b = [0u8; 1];
+            r.read_exact(&mut b)
+        }
+        0x0a => {
+            // TAGTYPE_BSOB: 1-byte size + bytes
+            let mut sb = [0u8; 1];
+            r.read_exact(&mut sb)?;
+            let mut b = vec![0u8; sb[0] as usize];
+            r.read_exact(&mut b)
+        }
+        0x0b => {
+            // TAGTYPE_UINT64
+            let mut b = [0u8; 8];
+            r.read_exact(&mut b)
+        }
+        n if (0x11..=0x26).contains(&n) => {
+            // TAGTYPE_STR1..STR22 — inline string of fixed length (type - 0x10)
+            let len = (n - 0x10) as usize;
+            let mut b = vec![0u8; len];
+            r.read_exact(&mut b)
+        }
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("unknown tag type 0x{type_byte:02x}"),
+        )),
+    }
+}
+
 /// Read a Kad tag list and extract source IP / TCP port / UDP port.
 ///
-/// We parse only the tag types we care about; unknown tags are skipped.
-/// Kad2 tags: 1-byte name-len + name + type + value.
-/// Simplified tag format: type(1) + name_len(1) + name + value.
+/// Wire format per aMule (SafeFile.cpp WriteTag):
+///   tag_count(1)  — uint8
+///   per tag:
+///     type(1)
+///     name_len(2 LE) + name_bytes  — always uint16 length prefix
+///     value  — depends on type
+///
+/// Tag names for source entries (FileTags.h):
+///   `[0xFE]` = TAG_SOURCEIP   (TAGTYPE_UINT32, host-order LE)
+///   `[0xFD]` = TAG_SOURCEPORT (TAGTYPE_UINT16, TCP port)
+///   `[0xFC]` = TAG_SOURCEUPORT(TAGTYPE_UINT16, UDP port)
 fn read_source_tags<R: Read>(r: &mut R) -> io::Result<(std::net::Ipv4Addr, u16, u16)> {
     let count = {
         let mut b = [0u8];
@@ -587,68 +665,28 @@ fn read_source_tags<R: Read>(r: &mut R) -> io::Result<(std::net::Ipv4Addr, u16, 
             r.read_exact(&mut b)?;
             b[0]
         };
-        // name: either 1-byte shortname (bit 7 of type set) or length-prefixed string
-        let name_byte = {
-            let mut b = [0u8];
-            r.read_exact(&mut b)?;
-            b[0]
-        };
-        // If name_byte indicates a string name, read more bytes.
-        // Kad tag name encoding: if name_byte <= 0x0f it's the special 1-byte tag id.
-        // Otherwise it's a 2-byte length + string.
-        if name_byte > 0x0f {
-            // It's a 2-byte length (name_byte is low byte of length).
-            let name_high = {
-                let mut b = [0u8];
-                r.read_exact(&mut b)?;
-                b[0]
-            };
-            let name_len = name_byte as usize | ((name_high as usize) << 8);
-            let mut name_buf = vec![0u8; name_len];
-            r.read_exact(&mut name_buf)?;
-        }
-        // Read value based on type.
-        let value_type = type_byte & 0x7f; // strip "special" flag
-        match value_type {
-            0x02 => {
-                // TAGTYPE_UINT32
+        // Read name: uint16 length + bytes
+        let name_len = read_u16(r)? as usize;
+        let mut name = vec![0u8; name_len];
+        r.read_exact(&mut name)?;
+
+        match (type_byte, name.as_slice()) {
+            // TAG_SOURCEIP: uint32 LE (host-byte-order IP)
+            (0x03, [0xfe]) => {
                 let v = read_u32(r)?;
-                if name_byte == 0x01 {
-                    // TAG_SOURCEIP
-                    ip = std::net::Ipv4Addr::from(v.to_be_bytes());
-                }
+                ip = std::net::Ipv4Addr::from(v.to_le_bytes());
             }
-            0x03 => {
-                // TAGTYPE_UINT16
-                let mut b = [0u8; 2];
-                r.read_exact(&mut b)?;
-                let v = u16::from_le_bytes(b);
-                match name_byte {
-                    0x02 => tcp_port = v, // TAG_SOURCEPORT
-                    0x03 => udp_port = v, // TAG_SOURCEUPORT
-                    _ => {}
-                }
+            // TAG_SOURCEPORT: uint16 LE
+            (0x08, [0xfd]) => {
+                tcp_port = read_u16(r)?;
             }
-            0x01 | 0x08 | 0x09 => {
-                // TAGTYPE_HASH / TAGTYPE_UINT64 / TAGTYPE_UINT8
-                let len: usize = match value_type {
-                    0x01 => 16,
-                    0x08 => 8,
-                    0x09 => 1,
-                    _ => 0,
-                };
-                let mut buf = vec![0u8; len];
-                r.read_exact(&mut buf)?;
+            // TAG_SOURCEUPORT: uint16 LE
+            (0x08, [0xfc]) => {
+                udp_port = read_u16(r)?;
             }
-            0x0b => {
-                // TAGTYPE_STR (2-byte len + bytes)
-                let len = read_u16(r)? as usize;
-                let mut buf = vec![0u8; len];
-                r.read_exact(&mut buf)?;
-            }
-            _ => {
-                // Unknown — we can't skip reliably, stop parsing this entry.
-                break;
+            // Any other tag: skip the value
+            (t, _) => {
+                skip_tag_value(r, t)?;
             }
         }
     }
@@ -670,10 +708,10 @@ pub fn encode_hello_req(our_id: &KadId, tcp_port: u16, our_udp_key: u32) -> Vec<
     our_id.write_to(&mut buf).unwrap();
     write_u16(&mut buf, tcp_port).unwrap();
     buf.push(KAD_VERSION);
-    // 1 tag: TAG_UDPKEY (type=0x03 u32, name=[0x08])
+    // 1 tag: TAG_UDPKEY (type=TAGTYPE_UINT32=0x03, name=uint16(1)+[0x08])
     buf.push(1); // tag count
-    buf.push(0x03); // type = u32
-    buf.push(1); // name length = 1
+    buf.push(0x03); // type = TAGTYPE_UINT32
+    write_u16(&mut buf, 1).unwrap(); // name length = 1 (as uint16 per aMule wire format)
     buf.push(0x08); // name = TAG_UDPKEY
     write_u32(&mut buf, our_udp_key).unwrap();
     buf
