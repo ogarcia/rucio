@@ -23,14 +23,29 @@ use rucio_core::protocol::search::{SearchQuery, SearchResult};
 
 /// Entry point for the daemon logic.
 pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("rucio_daemon=info".parse()?)
-                .add_directive("rucio_core=info".parse()?)
-                .add_directive("rucio_emule=info".parse()?),
-        )
-        .init();
+    // Build the log filter.  Resolution order (first wins):
+    //   1. RUST_LOG          — standard tracing env var
+    //   2. RUCIOD_LOG_LEVEL  — convenience alias (e.g. "debug", "rucio_emule=trace")
+    //   3. Built-in defaults — info for all rucio crates
+    let env_filter = {
+        let from_env = std::env::var("RUST_LOG")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .or_else(|| {
+                std::env::var("RUCIOD_LOG_LEVEL")
+                    .ok()
+                    .filter(|v| !v.is_empty())
+            });
+
+        match from_env {
+            Some(val) => tracing_subscriber::EnvFilter::new(val),
+            None => tracing_subscriber::EnvFilter::new(
+                "rucio_daemon=info,rucio_core=info,rucio_emule=info",
+            ),
+        }
+    };
+
+    tracing_subscriber::fmt().with_env_filter(env_filter).init();
 
     let config = Arc::new(config::Config::load(config_path)?);
     info!("Starting Rucio daemon v{}", env!("CARGO_PKG_VERSION"));
