@@ -417,6 +417,14 @@ pub async fn start_ed2k_download(
     }
 }
 
+#[cfg(feature = "emule-compat")]
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
 pub(crate) fn db_status_to_state(s: &str) -> DownloadState {
     match s {
         "finding_providers" => DownloadState::FindingProviders,
@@ -427,11 +435,4 @@ pub(crate) fn db_status_to_state(s: &str) -> DownloadState {
         "cancelled" => DownloadState::Cancelled,
         _ => DownloadState::FindingProviders,
     }
-}
-
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }

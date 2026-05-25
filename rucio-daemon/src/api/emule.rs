@@ -168,8 +168,8 @@ pub async fn get_kad_search(
 ) -> Result<Json<KadSearchResponse>, StatusCode> {
     #[cfg(not(feature = "emule-compat"))]
     {
-        let _ = (state, params);
-        return Err(StatusCode::NOT_IMPLEMENTED);
+        let _ = (state, params.q);
+        Err(StatusCode::NOT_IMPLEMENTED)
     }
 
     #[cfg(feature = "emule-compat")]
