@@ -265,7 +265,7 @@ async fn run_task(
                             let _ = reply.send(vec![]);
                             continue;
                         }
-                        let target = KadId::from_ed2k_hash(hash.as_bytes());
+                        let target = KadId::from_bytes(*hash.as_bytes());
                         let deadline = Instant::now() + cfg.search_timeout;
                         // Start iterative lookup.
                         start_lookup(
@@ -508,56 +508,65 @@ async fn do_bootstrap(
     // for up to `BOOTSTRAP_ROUNDS` additional rounds.
     const BOOTSTRAP_ROUNDS: usize = 5;
     const TARGET_CONTACTS: usize = 200;
+    // Maximum wall-clock time per round (hard cap).
+    const ROUND_DEADLINE_SECS: u64 = 5;
+    // If no packet arrives within this window, consider the round done early.
+    const ROUND_IDLE_SECS: u64 = 1;
     let mut already_queried: std::collections::HashSet<std::net::SocketAddrV4> =
         seeds.iter().map(|c| c.socket_addr_udp()).collect();
 
     for round in 0..BOOTSTRAP_ROUNDS {
-        let deadline = Instant::now() + cfg.request_timeout * 2;
+        let round_deadline = Instant::now() + Duration::from_secs(ROUND_DEADLINE_SECS);
+        let mut idle_deadline = Instant::now() + Duration::from_secs(ROUND_IDLE_SECS);
         loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
+            let remaining = round_deadline
+                .min(idle_deadline)
+                .saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 break;
             }
             match timeout(remaining, socket.recv_from(&mut recv_buf)).await {
-                Ok(Ok((n, src))) => match decode(&recv_buf[..n]) {
-                    Ok(KadPacket::BootstrapRes(res)) => {
-                        let mut rt = routing_table.write().await;
-                        let before = rt.len();
-                        for c in res.contacts {
-                            rt.insert(c);
+                Ok(Ok((n, src))) => {
+                    // Reset the idle timer — we are still receiving responses.
+                    idle_deadline = Instant::now() + Duration::from_secs(ROUND_IDLE_SECS);
+                    match decode(&recv_buf[..n]) {
+                        Ok(KadPacket::BootstrapRes(res)) => {
+                            let mut rt = routing_table.write().await;
+                            for c in res.contacts {
+                                rt.insert(c);
+                            }
+                            debug!(
+                                "BootstrapRes from {src} (round {round}), table={}",
+                                rt.len()
+                            );
                         }
-                        debug!(
-                            "BootstrapRes from {src} (round {round}), table={}",
-                            rt.len()
-                        );
-                        let _ = before;
-                    }
-                    Ok(KadPacket::HelloReq(hello)) | Ok(KadPacket::HelloRes(hello)) => {
-                        if let SocketAddr::V4(addr) = src {
-                            let contact = Contact {
-                                id: hello.id,
-                                ip: *addr.ip(),
-                                udp_port: addr.port(),
-                                tcp_port: hello.tcp_port,
-                                version: hello.version,
-                            };
-                            routing_table.write().await.insert(contact);
+                        Ok(KadPacket::HelloReq(hello)) | Ok(KadPacket::HelloRes(hello)) => {
+                            if let SocketAddr::V4(addr) = src {
+                                let contact = Contact {
+                                    id: hello.id,
+                                    ip: *addr.ip(),
+                                    udp_port: addr.port(),
+                                    tcp_port: hello.tcp_port,
+                                    version: hello.version,
+                                };
+                                routing_table.write().await.insert(contact);
+                            }
+                            let ack = encode_hello_res_ack();
+                            let _ = socket.send_to(&ack, src).await;
                         }
-                        let ack = encode_hello_res_ack();
-                        let _ = socket.send_to(&ack, src).await;
+                        Ok(other) => {
+                            tracing::trace!("bootstrap: unexpected packet from {src}: {other:?}");
+                        }
+                        Err(e) => {
+                            tracing::trace!(
+                                "bootstrap: unrecognised packet from {src}: {e:?} bytes={}",
+                                n
+                            );
+                        }
                     }
-                    Ok(other) => {
-                        tracing::trace!("bootstrap: unexpected packet from {src}: {other:?}");
-                    }
-                    Err(e) => {
-                        tracing::trace!(
-                            "bootstrap: unrecognised packet from {src}: {e:?} bytes={}",
-                            n
-                        );
-                    }
-                },
+                }
                 Ok(Err(e)) => warn!("bootstrap recv error: {e}"),
-                Err(_) => break,
+                Err(_) => break, // timeout (idle or hard deadline)
             }
         }
 

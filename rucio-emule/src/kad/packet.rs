@@ -139,27 +139,6 @@ impl KadId {
         &self.0
     }
 
-    /// Convert an ed2k MD4 hash to the Kad search target.
-    ///
-    /// eMule stores `CUInt128` values with its four u32 chunks in big-endian
-    /// order internally, and uses `SetValueBE` to load an MD4 hash.
-    /// `SetValueBE` maps the first 4 bytes of the MD4 into the *highest*
-    /// u32 chunk (index 3) and so on, then `ToByteArray` (the wire serialiser)
-    /// reverses that back.  The net effect on the wire is that the four 4-byte
-    /// groups of the MD4 hash are written in **reverse order**:
-    /// `[bytes 12..15][bytes 8..11][bytes 4..7][bytes 0..3]`.
-    ///
-    /// Call this instead of `KadId::from_bytes` when building a search target
-    /// from an ed2k (MD4) hash.
-    pub fn from_ed2k_hash(md4: &[u8; 16]) -> Self {
-        let mut out = [0u8; 16];
-        out[0..4].copy_from_slice(&md4[12..16]);
-        out[4..8].copy_from_slice(&md4[8..12]);
-        out[8..12].copy_from_slice(&md4[4..8]);
-        out[12..16].copy_from_slice(&md4[0..4]);
-        Self(out)
-    }
-
     /// True if `self` is closer to `target` than `other` is.
     pub fn is_closer_to(&self, target: &KadId, other: &KadId) -> bool {
         let da = self.distance(target);
@@ -823,23 +802,17 @@ mod tests {
         assert_eq!(res.contacts[0].udp_port, 4672);
     }
 
-    /// Regression: from_ed2k_hash must reverse the four 4-byte chunks of the
-    /// MD4 hash to match eMule's CUInt128::SetValueBE → ToByteArray convention.
+    /// Regression: the Kad search target for a file is the raw MD4 bytes
+    /// unchanged — eMule's SetValueBE+ToByteArray is an identity operation,
+    /// so KadId::from_bytes(*md4) is the correct transformation.
     #[test]
-    fn test_from_ed2k_hash_chunk_reversal() {
-        // MD4 with distinct 4-byte groups so we can verify each chunk position.
+    fn test_file_search_target_is_raw_md4() {
         let md4: [u8; 16] = [
-            0x00, 0x01, 0x02, 0x03, // chunk 0 (bytes 0..3)
-            0x10, 0x11, 0x12, 0x13, // chunk 1
-            0x20, 0x21, 0x22, 0x23, // chunk 2
-            0x30, 0x31, 0x32, 0x33, // chunk 3 (bytes 12..15)
+            0x0c, 0x20, 0xe9, 0xeb, 0x26, 0x6c, 0xfd, 0x2e, 0xb5, 0x70, 0x9c, 0xf1, 0x83, 0x4e,
+            0x09, 0x86,
         ];
-        let kad = KadId::from_ed2k_hash(&md4);
-        let b = kad.as_bytes();
-        // On the wire the order must be: chunk3, chunk2, chunk1, chunk0.
-        assert_eq!(&b[0..4], &[0x30, 0x31, 0x32, 0x33]);
-        assert_eq!(&b[4..8], &[0x20, 0x21, 0x22, 0x23]);
-        assert_eq!(&b[8..12], &[0x10, 0x11, 0x12, 0x13]);
-        assert_eq!(&b[12..16], &[0x00, 0x01, 0x02, 0x03]);
+        let kad = KadId::from_bytes(md4);
+        // The wire bytes must equal the original MD4 — no transformation.
+        assert_eq!(kad.as_bytes(), &md4);
     }
 }
