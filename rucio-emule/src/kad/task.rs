@@ -187,6 +187,8 @@ struct PendingSearch {
     sources: Vec<KadSource>,
     deadline: Instant,
     max_sources: usize,
+    /// Contacts already queried (FIND_NODE + SEARCH_SOURCE_REQ sent).
+    queried: std::collections::HashSet<std::net::SocketAddrV4>,
 }
 
 async fn run_task(
@@ -267,10 +269,28 @@ async fn run_task(
                         }
                         let target = KadId::from_bytes(*hash.as_bytes());
                         let deadline = Instant::now() + cfg.search_timeout;
-                        // Start iterative lookup.
-                        start_lookup(
-                            &socket, our_id, &cfg, &routing_table, target
-                        ).await;
+
+                        // Get the initial candidates before moving into the struct.
+                        let initial_candidates: Vec<_> = {
+                            let rt = routing_table.read().await;
+                            rt.closest_to(&target, cfg.alpha)
+                        };
+
+                        let mut queried = std::collections::HashSet::new();
+                        let lookup_pkt = encode_req(2, &target, &our_id);
+                        let source_pkt = encode_search_source_req(&target, file_size);
+                        for c in &initial_candidates {
+                            let addr = SocketAddr::V4(c.socket_addr_udp());
+                            queried.insert(c.socket_addr_udp());
+                            let _ = socket.send_to(&lookup_pkt, addr).await;
+                            let _ = socket.send_to(&source_pkt, addr).await;
+                        }
+                        debug!(
+                            sent = initial_candidates.len(),
+                            target = %target,
+                            "Started Kad2 source search"
+                        );
+
                         pending_search = Some(PendingSearch {
                             target,
                             file_size,
@@ -278,6 +298,7 @@ async fn run_task(
                             sources: vec![],
                             deadline,
                             max_sources: cfg.max_sources,
+                            queried,
                         });
                     }
                     KadCommand::Status { reply } => {
@@ -418,27 +439,28 @@ async fn handle_packet(
             for c in &res.contacts {
                 rt.insert(c.clone());
             }
-            // If a search is pending, query the newly discovered nodes and
-            // send SEARCH_SOURCE_REQ to them right away.
-            if let Some(ps) = pending_search.as_ref() {
+            drop(rt);
+
+            // If a search is pending, query newly discovered nodes that we
+            // haven't contacted yet.
+            if let Some(ps) = pending_search.as_mut() {
                 let target = ps.target;
                 let file_size = ps.file_size;
-                let candidates: Vec<_> = res
-                    .contacts
-                    .into_iter()
-                    .filter(|c| rt.closest_to(&target, 20).iter().any(|k| k.id == c.id))
-                    .take(cfg.alpha)
-                    .collect();
-                drop(rt);
                 let lookup_pkt = encode_req(2, &target, &our_id);
                 let source_pkt = encode_search_source_req(&target, file_size);
-                for contact in candidates {
+                let new_contacts: Vec<_> = res
+                    .contacts
+                    .iter()
+                    .filter(|c| !ps.queried.contains(&c.socket_addr_udp()))
+                    .take(cfg.alpha)
+                    .cloned()
+                    .collect();
+                for contact in new_contacts {
                     let addr = SocketAddr::V4(contact.socket_addr_udp());
+                    ps.queried.insert(contact.socket_addr_udp());
                     let _ = socket.send_to(&lookup_pkt, addr).await;
                     let _ = socket.send_to(&source_pkt, addr).await;
                 }
-            } else {
-                drop(rt);
             }
         }
 
@@ -603,26 +625,6 @@ async fn do_bootstrap(
     let count = routing_table.read().await.len();
     info!(contacts = count, "Kad2 bootstrap complete");
     count
-}
-
-// ── Iterative lookup helper ───────────────────────────────────────────────────
-
-async fn start_lookup(
-    socket: &UdpSocket,
-    our_id: KadId,
-    cfg: &KadTaskConfig,
-    routing_table: &Arc<RwLock<RoutingTable>>,
-    target: KadId,
-) {
-    let rt = routing_table.read().await;
-    let candidates = rt.closest_to(&target, cfg.alpha);
-    drop(rt);
-
-    let pkt = encode_req(2, &target, &our_id);
-    for c in candidates {
-        let addr = SocketAddr::V4(c.socket_addr_udp());
-        let _ = socket.send_to(&pkt, addr).await;
-    }
 }
 
 // ── Keep-alive ────────────────────────────────────────────────────────────────
