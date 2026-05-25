@@ -54,7 +54,43 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
             Err(e) => warn!("Invalid bootstrap peer address {addr_str}: {e}"),
         }
     }
-    if !config.effective_bootstrap_peers().is_empty() {
+
+    // Seed libp2p bootstrap from previously discovered peers stored in the DB.
+    // We add the most recently seen peers so Kad can reconnect faster on restart.
+    let cached_peers = db::peers::list_recent(&db, 50).await.unwrap_or_default();
+    let mut cached_added = 0usize;
+    for row in &cached_peers {
+        // Each row stores a JSON array of multiaddr strings.  We reconstruct
+        // the full /p2p/<peer_id> address by appending the peer ID component.
+        let addrs: Vec<String> = serde_json::from_str(&row.addrs).unwrap_or_default();
+        for addr_str in &addrs {
+            // Append /p2p/<peer_id> if not already present.
+            let full = if addr_str.contains("/p2p/") {
+                addr_str.clone()
+            } else {
+                format!("{}/p2p/{}", addr_str, row.peer_id)
+            };
+            match full.parse() {
+                Ok(addr) => {
+                    handle
+                        .cmd_tx
+                        .send(node::messages::NodeCmd::AddBootstrapPeer(addr))
+                        .await?;
+                    cached_added += 1;
+                }
+                Err(e) => debug!("Skipping cached peer addr {full}: {e}"),
+            }
+        }
+    }
+    if cached_added > 0 {
+        info!(
+            peers = cached_peers.len(),
+            addrs = cached_added,
+            "Seeded libp2p bootstrap from DB cache"
+        );
+    }
+
+    if !config.effective_bootstrap_peers().is_empty() || cached_added > 0 {
         handle
             .cmd_tx
             .send(node::messages::NodeCmd::KadBootstrapPeersReady)
@@ -298,6 +334,10 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                 if let Err(e) = db::metrics::add(&db, &delta).await {
                     warn!("Final metrics flush failed: {e}");
                 }
+                // Persist the Kad2 routing table so the next startup seeds from
+                // discovered contacts instead of doing a cold bootstrap.
+                #[cfg(feature = "emule-compat")]
+                emule::save_kad_cache(&config, &kad_handle).await;
                 break;
             }
             _ = metrics_tick.tick() => {

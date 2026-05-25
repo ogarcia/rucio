@@ -39,6 +39,21 @@ pub async fn start_kad_task(config: &Config) -> Result<KadHandle> {
     };
 
     let handle = rucio_emule::kad::task::spawn(Arc::new(socket), our_id, task_cfg);
+
+    // Seed the routing table immediately from cached/bootstrap contacts so the
+    // first download does not have to wait for an on-demand bootstrap.
+    let seeds = load_kad_seeds(config, 200);
+    if !seeds.is_empty() {
+        info!(
+            seeds = seeds.len(),
+            "Bootstrapping Kad2 from cached/bootstrap contacts"
+        );
+        let count = handle.bootstrap(seeds).await;
+        info!(contacts = count, "Kad2 initial bootstrap done");
+    } else {
+        info!("No Kad2 seeds available at startup (download nodes.dat first)");
+    }
+
     Ok(handle)
 }
 
@@ -72,28 +87,22 @@ pub async fn run_ed2k_download(
     let link = Ed2kLink::parse(link_str).with_context(|| format!("parse ed2k link: {link_str}"))?;
     info!(name = %link.name, size = link.size, hash = %link.hash, "Starting eMule download");
 
-    // 2. Bootstrap if the routing table is thin.
+    // 2. Bootstrap if the routing table is thin (e.g. startup bootstrap failed
+    //    or we lost all contacts and the keepalive hasn't fired yet).
     let contact_count = kad.contact_count().await;
     if contact_count < 4 {
         info!(
             contact_count,
-            "Routing table thin — bootstrapping from nodes.dat"
+            "Routing table thin — re-bootstrapping from cached/bootstrap contacts"
         );
-        let nodes_dat_path = effective_nodes_dat_path(config);
-        let nodes_dat_bytes = std::fs::read(&nodes_dat_path)
-            .with_context(|| format!("read nodes.dat: {}", nodes_dat_path.display()))?;
-        let contacts = rucio_emule::kad::routing::parse_nodes_dat(&nodes_dat_bytes)
-            .context("parse nodes.dat")?;
-        info!(count = contacts.len(), "Loaded nodes.dat contacts");
-        if contacts.is_empty() {
-            // Hard error — we cannot proceed without bootstrap contacts.
-            let msg = "nodes.dat contains no valid Kad2 contacts";
+        let seeds = load_kad_seeds(config, 200);
+        if seeds.is_empty() {
+            let msg = "No Kad2 seeds available (download nodes.dat first)";
             let _ = crate::db::downloads::set_status(db, download_id, "error", Some(msg)).await;
             anyhow::bail!("{msg}");
         }
-        let seeds: Vec<_> = contacts.into_iter().take(50).collect();
         let after = kad.bootstrap(seeds).await;
-        info!(contacts = after, "Kad2 bootstrap done");
+        info!(contacts = after, "Kad2 re-bootstrap done");
     } else {
         info!(
             contact_count,
@@ -279,6 +288,93 @@ pub fn effective_nodes_dat_path(config: &crate::config::Config) -> std::path::Pa
             .join("rucio")
             .join("nodes.dat")
     })
+}
+
+/// Path of the routing-table cache written by the daemon itself.
+///
+/// Lives next to `nodes.dat` but is named `kad_cache.dat` so it is never
+/// confused with the externally downloaded bootstrap file.
+pub fn kad_cache_path(config: &crate::config::Config) -> std::path::PathBuf {
+    effective_nodes_dat_path(config).with_file_name("kad_cache.dat")
+}
+
+/// Save the current Kad2 routing table to `kad_cache.dat`.
+///
+/// Called at shutdown so the next startup can seed from discovered contacts
+/// instead of doing a cold bootstrap every time.
+pub async fn save_kad_cache(config: &crate::config::Config, kad: &KadHandle) {
+    let bytes = kad.dump_nodes_dat().await;
+    if bytes.is_empty() {
+        return;
+    }
+    let path = kad_cache_path(config);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match std::fs::write(&path, &bytes) {
+        Ok(()) => info!(path = %path.display(), "Saved Kad2 routing table cache"),
+        Err(e) => {
+            warn!(path = %path.display(), error = %e, "Failed to save Kad2 routing table cache")
+        }
+    }
+}
+
+/// Load seeds from `kad_cache.dat` (our own cached routing table from last run)
+/// and from `nodes.dat` (external bootstrap file), deduplicated.
+///
+/// Returns at most `limit` contacts.
+pub fn load_kad_seeds(
+    config: &crate::config::Config,
+    limit: usize,
+) -> Vec<rucio_emule::kad::packet::Contact> {
+    use rucio_emule::kad::routing::parse_nodes_dat;
+    use std::collections::HashSet;
+
+    let mut seen: HashSet<std::net::SocketAddrV4> = HashSet::new();
+    let mut contacts: Vec<rucio_emule::kad::packet::Contact> = Vec::new();
+
+    // Prefer our own cache (discovered peers are higher quality than bootstrap list).
+    let cache_path = kad_cache_path(config);
+    if let Ok(bytes) = std::fs::read(&cache_path) {
+        match parse_nodes_dat(&bytes) {
+            Ok(cs) => {
+                info!(count = cs.len(), path = %cache_path.display(), "Loaded Kad2 routing cache");
+                for c in cs {
+                    if seen.insert(c.socket_addr_udp()) {
+                        contacts.push(c);
+                    }
+                }
+            }
+            Err(e) => {
+                warn!(path = %cache_path.display(), error = %e, "Failed to parse kad_cache.dat")
+            }
+        }
+    }
+
+    // Fill remaining slots from the external nodes.dat.
+    if contacts.len() < limit {
+        let nodes_dat_path = effective_nodes_dat_path(config);
+        if let Ok(bytes) = std::fs::read(&nodes_dat_path) {
+            match parse_nodes_dat(&bytes) {
+                Ok(cs) => {
+                    for c in cs {
+                        if contacts.len() >= limit {
+                            break;
+                        }
+                        if seen.insert(c.socket_addr_udp()) {
+                            contacts.push(c);
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!(path = %nodes_dat_path.display(), error = %e, "Failed to parse nodes.dat")
+                }
+            }
+        }
+    }
+
+    contacts.truncate(limit);
+    contacts
 }
 
 /// Download a fresh `nodes.dat` from `url` and save it to `path`.

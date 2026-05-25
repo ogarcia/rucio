@@ -110,6 +110,19 @@ impl KadHandle {
     pub fn routing_table(&self) -> Arc<RwLock<RoutingTable>> {
         Arc::clone(&self.routing_table)
     }
+
+    /// Serialize the current routing table to `nodes.dat` format (version 3).
+    ///
+    /// Returns the raw bytes ready to be written to disk.  Returns an empty
+    /// `Vec` if the routing table is empty.
+    pub async fn dump_nodes_dat(&self) -> Vec<u8> {
+        let rt = self.routing_table.read().await;
+        let contacts: Vec<_> = rt.all_contacts().cloned().collect();
+        if contacts.is_empty() {
+            return Vec::new();
+        }
+        super::routing::write_nodes_dat(&contacts)
+    }
 }
 
 // ── Task internals ────────────────────────────────────────────────────────────
