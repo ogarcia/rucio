@@ -241,6 +241,14 @@ impl RoutingTable {
         all.into_iter().take(n).cloned().collect()
     }
 
+    /// Find a contact by its UDP address.
+    pub fn find_by_addr(&self, addr: &std::net::SocketAddrV4) -> Option<&Contact> {
+        self.buckets
+            .iter()
+            .flat_map(|b| b.contacts())
+            .find(|c| &c.socket_addr_udp() == addr)
+    }
+
     /// Total number of contacts in the table.
     pub fn len(&self) -> usize {
         self.buckets.iter().map(|b| b.len()).sum()
