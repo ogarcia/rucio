@@ -120,8 +120,10 @@ pub async fn run_ed2k_download(
 
         if sources.is_empty() {
             info!(
+                name = %link.name,
+                hash = %link.hash,
                 retry_in_secs = SEARCH_RETRY_SECS,
-                "No sources found yet — will retry"
+                "No Kad2 sources found — will retry"
             );
             tokio::time::sleep(Duration::from_secs(SEARCH_RETRY_SECS)).await;
             continue;
@@ -211,9 +213,12 @@ pub async fn run_ed2k_download(
         }
 
         if !downloaded {
-            // All known sources failed for now.  Wait and search again —
-            // exactly as eMule does.
-            warn!(name = %link.name, "All eMule sources failed — back to finding_providers");
+            warn!(
+                name = %link.name,
+                hash = %link.hash,
+                retry_in_secs = SEARCH_RETRY_SECS,
+                "All Kad2 sources failed — back to finding_providers"
+            );
             tokio::time::sleep(Duration::from_secs(SEARCH_RETRY_SECS)).await;
             continue;
         }
