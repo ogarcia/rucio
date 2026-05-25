@@ -153,6 +153,23 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     // --- API server ---------------------------------------------------------
     let (ws_tx, _) = tokio::sync::broadcast::channel::<WsEvent>(256);
 
+    // --- Kad2 UDP socket (emule-compat) -------------------------------------
+    #[cfg(feature = "emule-compat")]
+    let kad_socket = {
+        match crate::emule::bind_kad_socket(&config).await {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("Failed to bind Kad2 UDP socket: {e} — eMule downloads will not work");
+                // Create a fallback on an ephemeral port so the daemon still starts.
+                Arc::new(
+                    tokio::net::UdpSocket::bind("0.0.0.0:0")
+                        .await
+                        .expect("bind fallback UDP socket"),
+                )
+            }
+        }
+    };
+
     let app_state = api::AppState {
         db: db.clone(),
         config: Arc::clone(&config),
@@ -300,16 +317,15 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                             engine.cancel(download_id, root_hash).await;
                         }
                         api::DownloadRequest::StartEd2k { link } => {
-                            // eMule download is handled asynchronously via the emule-compat
-                            // feature.  When the feature is disabled, log and ignore.
                             #[cfg(feature = "emule-compat")]
                             {
                                 let config = config.clone();
                                 let db = db.clone();
                                 let ws_tx = ws_tx.clone();
+                                let socket = Arc::clone(&kad_socket);
                                 tokio::spawn(async move {
                                     if let Err(e) = crate::emule::run_ed2k_download(
-                                        &link, &config, &db, &ws_tx,
+                                        &link, &config, &db, &ws_tx, socket,
                                     )
                                     .await
                                     {

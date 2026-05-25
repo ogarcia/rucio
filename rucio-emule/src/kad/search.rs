@@ -21,6 +21,7 @@ use crate::ed2k::Ed2kHash;
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::time::timeout;
@@ -65,22 +66,16 @@ pub struct SearchResult {
 /// Perform a Kad2 source search for the given ed2k hash.
 ///
 /// `routing_table` must already be populated (e.g. from `nodes.dat`).
-/// Binds a random local UDP port; the OS will choose the interface.
+/// `socket` must be a persistent UDP socket bound to a known port so that
+/// remote nodes can send their replies back to us.
 pub async fn search_sources(
     hash: &Ed2kHash,
     routing_table: &RoutingTable,
     config: SearchConfig,
+    socket: Arc<UdpSocket>,
 ) -> Result<SearchResult> {
     let target = KadId::from_bytes(*hash.as_bytes());
     let our_id = routing_table.our_id;
-
-    // Bind a UDP socket.
-    let socket = UdpSocket::bind("0.0.0.0:0")
-        .await
-        .context("bind UDP socket for Kad2 search")?;
-    socket
-        .set_broadcast(false)
-        .context("set UDP broadcast off")?;
 
     timeout(
         config.timeout,
@@ -91,7 +86,7 @@ pub async fn search_sources(
 }
 
 async fn run_search(
-    socket: UdpSocket,
+    socket: Arc<UdpSocket>,
     target: KadId,
     our_id: KadId,
     routing_table: &RoutingTable,
@@ -217,17 +212,18 @@ async fn run_search(
 
 /// Bootstrap a routing table by sending BOOTSTRAP_REQ to all seed contacts
 /// and collecting their responses.
+///
+/// `socket` must be a persistent UDP socket bound to a known port so that
+/// remote nodes can send their replies back to us.
 pub async fn bootstrap(
     routing_table: &mut RoutingTable,
     seeds: &[Contact],
     request_timeout: Duration,
+    socket: Arc<UdpSocket>,
 ) -> Result<()> {
     if seeds.is_empty() {
         return Ok(());
     }
-    let socket = UdpSocket::bind("0.0.0.0:0")
-        .await
-        .context("bind UDP socket for bootstrap")?;
 
     let pkt = packet::encode_bootstrap_req();
     for seed in seeds {

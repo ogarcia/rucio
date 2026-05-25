@@ -23,6 +23,8 @@
 #                   $HOME/.config/rucio/config.toml (/var/lib/rucio/.config/…)
 #   RUCIO_API       Daemon API URL used by the rucio CLI
 #                   (default: http://127.0.0.1:7070)
+#   RUCIOD_KAD_PORT Kad2 UDP port for eMule network (default: 4672).
+#                   Must be mapped on the host: -p 4672:4672/udp
 
 # ── Stage 1a: compile from source (default local path) ──────────────────────
 
@@ -71,6 +73,9 @@ USER rucio
 WORKDIR /var/lib/rucio
 
 EXPOSE 4321/tcp
+# Kad2 UDP port for eMule network (emule-compat builds).
+# Map with: -p 4672:4672/udp
+EXPOSE 4672/udp
 
 ENTRYPOINT ["/usr/bin/ruciod"]
 
@@ -92,5 +97,8 @@ WORKDIR /var/lib/rucio
 
 EXPOSE 4321/tcp
 EXPOSE 7070/tcp
+# Kad2 UDP port for eMule network (emule-compat builds).
+# Map with: -p 4672:4672/udp
+EXPOSE 4672/udp
 
 ENTRYPOINT ["/usr/bin/ruciod"]

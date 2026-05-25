@@ -14,6 +14,8 @@ pub struct Config {
     pub network: NetworkConfig,
     #[serde(default)]
     pub storage: StorageConfig,
+    #[serde(default)]
+    pub emule: EmuleConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -37,6 +39,24 @@ pub struct NetworkConfig {
     /// Download bandwidth limit in KB/s.  0 = unlimited (default).
     #[serde(default)]
     pub download_limit_kbps: u64,
+}
+
+/// eMule / Kad2 compatibility settings.
+/// Only meaningful when the `emule-compat` feature is compiled in.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmuleConfig {
+    /// UDP port for the persistent Kad2 socket.
+    ///
+    /// This port must be reachable from the internet for Kad2 bootstrap and
+    /// source search to work.  The eMule standard port is 4672.
+    /// When running in a container, map this port with `-p 4672:4672/udp`.
+    pub kad_port: u16,
+}
+
+impl Default for EmuleConfig {
+    fn default() -> Self {
+        Self { kad_port: 4672 }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -251,6 +271,7 @@ impl Config {
     /// | `RUCIOD_DOWNLOAD_LIMIT_KBPS`| `network.download_limit_kbps`| integer KB/s, 0=unlimited |
     /// | `RUCIOD_EMULE_TEMP_DIR`     | `storage.emule_temp_dir`     | path               |
     /// | `RUCIOD_NODES_DAT`          | `storage.nodes_dat_path`     | path               |
+    /// | `RUCIOD_KAD_PORT`           | `emule.kad_port`             | integer 1-65535    |
     pub fn apply_env_overrides(&mut self) {
         if let Ok(v) = std::env::var("RUCIOD_API_LISTEN")
             && !v.is_empty()
@@ -303,6 +324,13 @@ impl Config {
             && !v.is_empty()
         {
             self.storage.nodes_dat_path = Some(PathBuf::from(v));
+        }
+        if let Ok(v) = std::env::var("RUCIOD_KAD_PORT")
+            && !v.is_empty()
+            && let Ok(n) = v.parse::<u16>()
+            && n > 0
+        {
+            self.emule.kad_port = n;
         }
     }
 

@@ -176,11 +176,29 @@ other download.
 |---|---|---|
 | `storage.nodes_dat_path` | `<data-dir>/rucio/nodes.dat` | Path to the Kad2 bootstrap file |
 | `storage.emule_temp_dir` | `<cache-dir>/rucio/emule-tmp` | Temporary directory for eMule `.part` files |
+| `emule.kad_port` | `4672` | UDP port for the Kad2 socket |
 
 Environment variable overrides:
 
 ```sh
-RUCIOD_NODES_DAT=/path/to/nodes.dat ruciod --features emule-compat
-RUCIOD_EMULE_TEMP_DIR=/mnt/fast/emule-tmp ruciod --features emule-compat
+RUCIOD_NODES_DAT=/path/to/nodes.dat ruciod
+RUCIOD_EMULE_TEMP_DIR=/mnt/fast/emule-tmp ruciod
+RUCIOD_KAD_PORT=4672 ruciod
 ```
+
+### Network requirements — port mapping
+
+The Kad2 protocol requires that the UDP port `4672` (or the value of
+`emule.kad_port`) is **reachable from the internet**.  Without this,
+bootstrap packets can be sent outbound but responses never arrive.
+
+| Environment | What to do |
+|---|---|
+| Container (Docker/Podman) | `-p 4672:4672/udp` in `docker run` / `podman run` |
+| VPS / bare metal | Open `4672/udp` in the firewall (`ufw allow 4672/udp`) |
+| Home router | Port-forward `4672/udp` → local IP of the server |
+| WSL2 | Port-forward from Windows + allow in Windows Firewall |
+
+The port can be changed via `RUCIOD_KAD_PORT` or `emule.kad_port` in
+`config.toml`.  When changed, update the firewall / port mapping accordingly.
 

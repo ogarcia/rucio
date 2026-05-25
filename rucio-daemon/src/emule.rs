@@ -13,12 +13,28 @@ use rucio_emule::kad::search::{SearchConfig, bootstrap, search_sources};
 use rucio_emule::transfer::{DownloadEvent, DownloadOptions, download_file};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::net::UdpSocket;
 use tokio::sync::broadcast;
 use tracing::{info, warn};
 
 use crate::config::Config;
 use crate::db::Db;
 use rucio_core::api::ws::WsEvent;
+
+/// Bind the persistent Kad2 UDP socket on the configured port.
+///
+/// This socket is created once at daemon startup and shared across all
+/// `bootstrap()` and `search_sources()` calls.  Using a fixed, known port
+/// is required so that remote Kad2 nodes can send replies back to us —
+/// an ephemeral port would be unreachable behind NAT or in a container.
+pub async fn bind_kad_socket(config: &Config) -> Result<Arc<UdpSocket>> {
+    let port = config.emule.kad_port;
+    let socket = UdpSocket::bind(format!("0.0.0.0:{port}"))
+        .await
+        .with_context(|| format!("bind Kad2 UDP socket on port {port}"))?;
+    info!(port, "Kad2 UDP socket bound");
+    Ok(Arc::new(socket))
+}
 
 /// Run a full eMule download pipeline:
 ///
@@ -33,6 +49,7 @@ pub async fn run_ed2k_download(
     config: &Arc<Config>,
     _db: &Db,
     ws_tx: &broadcast::Sender<WsEvent>,
+    kad_socket: Arc<UdpSocket>,
 ) -> Result<()> {
     // 1. Parse the link.
     let link = Ed2kLink::parse(link_str).with_context(|| format!("parse ed2k link: {link_str}"))?;
@@ -57,9 +74,14 @@ pub async fn run_ed2k_download(
     let seeds: Vec<_> = contacts.iter().take(20).cloned().collect();
     routing_table.load_nodes_dat(contacts);
 
-    bootstrap(&mut routing_table, &seeds, Duration::from_secs(5))
-        .await
-        .context("Kad2 bootstrap")?;
+    bootstrap(
+        &mut routing_table,
+        &seeds,
+        Duration::from_secs(5),
+        Arc::clone(&kad_socket),
+    )
+    .await
+    .context("Kad2 bootstrap")?;
     info!(contacts = routing_table.len(), "Kad2 routing table ready");
 
     // 4. Search for sources.
@@ -71,7 +93,7 @@ pub async fn run_ed2k_download(
         ..SearchConfig::default()
     };
 
-    let results = search_sources(&link.hash, &routing_table, search_cfg)
+    let results = search_sources(&link.hash, &routing_table, search_cfg, kad_socket)
         .await
         .context("Kad2 source search")?;
 
