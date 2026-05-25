@@ -40,3 +40,26 @@ pub struct DownloadResponse {
 pub struct DownloadsResponse {
     pub downloads: Vec<DownloadResponse>,
 }
+
+/// POST /api/v1/downloads/ed2k
+///
+/// Queue a download from the eMule network using an `ed2k://` link.
+/// Requires the `emule-compat` feature to be compiled into the daemon.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+pub struct StartEd2kDownloadRequest {
+    /// Full `ed2k://|file|…|…|…|/` link.
+    pub link: String,
+}
+
+/// Response for POST /api/v1/downloads/ed2k.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+pub struct StartEd2kDownloadResponse {
+    /// Assigned download ID.
+    pub id: i64,
+    /// Parsed file name.
+    pub name: String,
+    /// File size in bytes.
+    pub size: u64,
+    /// ed2k hash (hex).
+    pub ed2k_hash: String,
+}

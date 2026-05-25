@@ -107,3 +107,80 @@ rucio config set storage.download_dir /mnt/data/downloads
 ```
 
 See [Configuration](06-configuration.md) for all available settings.
+
+---
+
+## Downloading from the eMule network (ed2k://)
+
+> **Requires** the daemon to be built with the `emule-compat` feature.
+> See [Installation](01-installation.md#build-with-emule--kad2-compatibility).
+
+### First-time setup — nodes.dat
+
+Rucio locates eMule sources through the Kad2 distributed hash table.  To
+bootstrap into the Kad2 network you need a `nodes.dat` file containing a list
+of known Kad2 nodes.  Download one automatically with:
+
+```sh
+rucio emule bootstrap
+```
+
+This downloads a fresh `nodes.dat` from `http://upd.emule-security.net/nodes.dat`,
+validates it, and saves it to `~/.local/share/rucio/nodes.dat` (or to
+`storage.nodes_dat_path` if you have set it in the configuration).
+
+You only need to run this once.  Repeat it if the Kad2 bootstrap stops working
+after a long period of inactivity (node lists go stale over time).
+
+To use a different source:
+
+```sh
+rucio emule bootstrap --url http://kademlia.ru/download/nodes.dat
+```
+
+### Check status
+
+```sh
+rucio emule status
+```
+
+```
+eMule compatibility: enabled
+nodes.dat path:      /home/user/.local/share/rucio/nodes.dat
+nodes.dat status:    present (150 contacts)
+```
+
+### Starting an eMule download
+
+Pass any `ed2k://` link to `rucio get`:
+
+```sh
+rucio get "ed2k://|file|ubuntu-24.04.2-desktop-amd64.iso|6114656256|a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4|/"
+```
+
+The daemon will:
+
+1. Parse the ed2k link and extract the file hash (MD4) and size.
+2. Bootstrap into the Kad2 network using your `nodes.dat`.
+3. Search for peers that have the file.
+4. Download chunks over the eMule TCP protocol, verifying each chunk with MD4.
+5. Compute the BLAKE3 hash of the completed file and register it in the Rucio
+   DHT so other Rucio peers can find it.
+
+The download appears in `rucio downloads` and supports `--watch` like any
+other download.
+
+### Configuration
+
+| Key | Default | Description |
+|---|---|---|
+| `storage.nodes_dat_path` | `<data-dir>/rucio/nodes.dat` | Path to the Kad2 bootstrap file |
+| `storage.emule_temp_dir` | `<cache-dir>/rucio/emule-tmp` | Temporary directory for eMule `.part` files |
+
+Environment variable overrides:
+
+```sh
+RUCIOD_NODES_DAT=/path/to/nodes.dat ruciod --features emule-compat
+RUCIOD_EMULE_TEMP_DIR=/mnt/fast/emule-tmp ruciod --features emule-compat
+```
+

@@ -1,0 +1,169 @@
+//! GET  /api/v1/emule/status
+//! POST /api/v1/emule/bootstrap
+
+use axum::Json;
+use axum::extract::State;
+use axum::http::StatusCode;
+use rucio_core::api::emule::{EmuleBootstrapRequest, EmuleBootstrapResponse, EmuleStatusResponse};
+
+use crate::api::AppState;
+
+// ── GET /api/v1/emule/status ─────────────────────────────────────────────────
+
+/// eMule compatibility status
+///
+/// Returns whether the `emule-compat` feature is compiled in, the configured
+/// `nodes.dat` path, and how many Kad2 contacts it contains.
+#[utoipa::path(
+    get,
+    path = "/api/v1/emule/status",
+    responses(
+        (status = 200, description = "eMule compatibility status.", body = EmuleStatusResponse)
+    )
+)]
+pub async fn get_emule_status(State(state): State<AppState>) -> Json<EmuleStatusResponse> {
+    #[cfg(feature = "emule-compat")]
+    let resp = {
+        let path = state.config.storage.nodes_dat_path.clone();
+        let (present, contacts) = match &path {
+            None => (false, 0),
+            Some(p) => match std::fs::read(p) {
+                Ok(bytes) => {
+                    let n = rucio_emule::kad::routing::parse_nodes_dat(&bytes)
+                        .map(|v| v.len())
+                        .unwrap_or(0);
+                    (true, n)
+                }
+                Err(_) => (false, 0),
+            },
+        };
+        EmuleStatusResponse {
+            feature_enabled: true,
+            nodes_dat_path: path.map(|p| p.display().to_string()),
+            nodes_dat_present: present,
+            contacts,
+        }
+    };
+
+    #[cfg(not(feature = "emule-compat"))]
+    let resp = {
+        let _ = state;
+        EmuleStatusResponse {
+            feature_enabled: false,
+            nodes_dat_path: None,
+            nodes_dat_present: false,
+            contacts: 0,
+        }
+    };
+
+    Json(resp)
+}
+
+// ── POST /api/v1/emule/bootstrap ─────────────────────────────────────────────
+
+/// Download and install nodes.dat
+///
+/// Downloads a fresh `nodes.dat` file from the given URL (or the default
+/// `http://upd.emule-security.net/nodes.dat`) and saves it to
+/// `storage.nodes_dat_path` configured in the daemon.
+///
+/// If `storage.nodes_dat_path` is not set, the file is saved to the default
+/// location (`$XDG_DATA_HOME/rucio/nodes.dat`).
+///
+/// Returns `501 Not Implemented` when the `emule-compat` feature is not compiled in.
+#[utoipa::path(
+    post,
+    path = "/api/v1/emule/bootstrap",
+    request_body = EmuleBootstrapRequest,
+    responses(
+        (status = 200, description = "nodes.dat downloaded and saved.", body = EmuleBootstrapResponse),
+        (status = 400, description = "Download failed or file is invalid."),
+        (status = 501, description = "emule-compat feature not compiled in.")
+    )
+)]
+pub async fn post_emule_bootstrap(
+    State(state): State<AppState>,
+    Json(req): Json<EmuleBootstrapRequest>,
+) -> Result<Json<EmuleBootstrapResponse>, StatusCode> {
+    #[cfg(not(feature = "emule-compat"))]
+    {
+        let _ = (state, req);
+        Err(StatusCode::NOT_IMPLEMENTED)
+    }
+
+    #[cfg(feature = "emule-compat")]
+    {
+        use rucio_core::api::emule::DEFAULT_NODES_DAT_URL;
+
+        let url = req
+            .url
+            .as_deref()
+            .unwrap_or(DEFAULT_NODES_DAT_URL)
+            .to_string();
+
+        // Determine save path: use configured path or default data dir.
+        let save_path = state
+            .config
+            .storage
+            .nodes_dat_path
+            .clone()
+            .unwrap_or_else(|| {
+                dirs::data_local_dir()
+                    .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+                    .join("rucio")
+                    .join("nodes.dat")
+            });
+
+        // Download the file.
+        tracing::info!(url = %url, path = %save_path.display(), "Downloading nodes.dat");
+        let resp = reqwest::get(&url)
+            .await
+            .map_err(|e| {
+                tracing::warn!(error = %e, "Failed to download nodes.dat");
+                StatusCode::BAD_REQUEST
+            })?
+            .error_for_status()
+            .map_err(|e| {
+                tracing::warn!(error = %e, "nodes.dat URL returned error status");
+                StatusCode::BAD_REQUEST
+            })?;
+        let bytes = resp.bytes().await.map_err(|e| {
+            tracing::warn!(error = %e, "Failed to read nodes.dat response body");
+            StatusCode::BAD_REQUEST
+        })?;
+
+        // Validate: parse before saving.
+        let contacts = rucio_emule::kad::routing::parse_nodes_dat(&bytes).map_err(|e| {
+            tracing::warn!(error = %e, "Downloaded file is not a valid nodes.dat");
+            StatusCode::BAD_REQUEST
+        })?;
+
+        if contacts.is_empty() {
+            tracing::warn!("Downloaded nodes.dat contains no Kad2 contacts");
+            return Err(StatusCode::BAD_REQUEST);
+        }
+
+        // Save to disk.
+        if let Some(parent) = save_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                tracing::error!(error = %e, "Failed to create nodes.dat parent directory");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        }
+        std::fs::write(&save_path, &bytes).map_err(|e| {
+            tracing::error!(error = %e, path = %save_path.display(), "Failed to write nodes.dat");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+        tracing::info!(
+            contacts = contacts.len(),
+            path = %save_path.display(),
+            "nodes.dat saved"
+        );
+        Ok(Json(EmuleBootstrapResponse {
+            contacts: contacts.len(),
+            path: save_path.display().to_string(),
+            url,
+        }))
+    }
+}

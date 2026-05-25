@@ -1,6 +1,8 @@
 pub mod api;
 pub mod config;
 pub mod db;
+#[cfg(feature = "emule-compat")]
+pub mod emule;
 pub mod metrics;
 pub mod node;
 pub mod throttle;
@@ -274,6 +276,30 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                         }
                         api::DownloadRequest::Cancel { download_id, root_hash } => {
                             engine.cancel(download_id, root_hash).await;
+                        }
+                        api::DownloadRequest::StartEd2k { link } => {
+                            // eMule download is handled asynchronously via the emule-compat
+                            // feature.  When the feature is disabled, log and ignore.
+                            #[cfg(feature = "emule-compat")]
+                            {
+                                let config = config.clone();
+                                let db = db.clone();
+                                let ws_tx = ws_tx.clone();
+                                tokio::spawn(async move {
+                                    if let Err(e) = crate::emule::run_ed2k_download(
+                                        &link, &config, &db, &ws_tx,
+                                    )
+                                    .await
+                                    {
+                                        warn!("eMule download failed: {e}");
+                                    }
+                                });
+                            }
+                            #[cfg(not(feature = "emule-compat"))]
+                            {
+                                let _ = &link;
+                                warn!("Received StartEd2k request but emule-compat feature is not compiled in");
+                            }
                         }
                     }
                 }

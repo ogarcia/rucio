@@ -49,11 +49,12 @@ pub enum Commands {
         #[arg(long, value_name = "PATH")]
         file: Option<String>,
     },
-    /// Download a file (by search result index or magnet link)
+    /// Download a file (by search result index, magnet link, or ed2k link)
     Get {
-        /// Search result index (e.g. 1) or a full magnet link (rucio:<hash>...)
+        /// Search result index (e.g. 1), a full magnet link (rucio:<hash>…), or an
+        /// ed2k link (ed2k://|file|…|…|…|/) to download from the eMule network.
         target: String,
-        /// PeerId of the provider — only needed when target is a magnet link
+        /// PeerId of the provider — only needed when target is a rucio: magnet link
         #[arg(long)]
         provider: Option<String>,
     },
@@ -97,6 +98,11 @@ pub enum Commands {
     },
     /// Show transfer metrics (session and lifetime totals)
     Metrics,
+    /// eMule Kad compatibility commands
+    Emule {
+        #[command(subcommand)]
+        action: cmd::emule::EmuleCmd,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -164,5 +170,6 @@ pub async fn run() -> Result<()> {
             ConfigAction::Unset { key, value } => cmd::config::unset(&client, &key, &value).await,
         },
         Commands::Metrics => cmd::status::metrics_cmd(&client).await,
+        Commands::Emule { action } => cmd::emule::run(&client, action).await,
     }
 }

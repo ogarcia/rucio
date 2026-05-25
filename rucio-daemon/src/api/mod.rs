@@ -5,6 +5,7 @@
 
 pub mod config;
 pub mod downloads;
+pub mod emule;
 pub mod health;
 pub mod metrics;
 pub mod search;
@@ -80,6 +81,7 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         shares::remove_shares_by_path,
         downloads::list_downloads,
         downloads::start_download,
+        downloads::start_ed2k_download,
         downloads::cancel_download,
         downloads::delete_download,
         search::start_search,
@@ -88,6 +90,8 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         config::put_config,
         metrics::get_metrics,
         health::get_health,
+        emule::get_emule_status,
+        emule::post_emule_bootstrap,
     ),
     components(schemas(
         rucio_core::api::status::StatusResponse,
@@ -98,6 +102,8 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         rucio_core::api::shares::ShareResponse,
         rucio_core::api::shares::SharesResponse,
         rucio_core::api::downloads::StartDownloadRequest,
+        rucio_core::api::downloads::StartEd2kDownloadRequest,
+        rucio_core::api::downloads::StartEd2kDownloadResponse,
         rucio_core::api::downloads::DownloadState,
         rucio_core::api::downloads::DownloadResponse,
         rucio_core::api::downloads::DownloadsResponse,
@@ -115,6 +121,9 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         rucio_core::api::metrics::SessionMetrics,
         rucio_core::api::metrics::TotalMetrics,
         rucio_core::api::metrics::HealthResponse,
+        rucio_core::api::emule::EmuleBootstrapRequest,
+        rucio_core::api::emule::EmuleBootstrapResponse,
+        rucio_core::api::emule::EmuleStatusResponse,
     ))
 )]
 struct ApiDoc;
@@ -139,11 +148,16 @@ pub const SEARCH_WINDOW_SECS: u64 = 30;
 
 /// A message from an API handler to the main-loop download engine.
 pub enum DownloadRequest {
-    /// Start a new download.
+    /// Start a new Rucio download.
     Start {
         magnet: String,
         /// Known providers (PeerId strings). At least one is required.
         providers: Vec<String>,
+    },
+    /// Start a new eMule download (emule-compat feature).
+    StartEd2k {
+        /// Full `ed2k://` link.
+        link: String,
     },
     /// Cancel an in-flight download by its DB id and root hash.
     Cancel {
@@ -227,6 +241,10 @@ fn v1_router() -> Router<AppState> {
         .route("/downloads", routing::get(downloads::list_downloads))
         .route("/downloads", routing::post(downloads::start_download))
         .route(
+            "/downloads/ed2k",
+            routing::post(downloads::start_ed2k_download),
+        )
+        .route(
             "/downloads/{id}",
             routing::delete(downloads::cancel_download),
         )
@@ -242,6 +260,12 @@ fn v1_router() -> Router<AppState> {
         .route("/config", routing::put(config::put_config))
         // metrics
         .route("/metrics", routing::get(metrics::get_metrics))
+        // emule
+        .route("/emule/status", routing::get(emule::get_emule_status))
+        .route(
+            "/emule/bootstrap",
+            routing::post(emule::post_emule_bootstrap),
+        )
 }
 
 // ---------------------------------------------------------------------------

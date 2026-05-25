@@ -1,0 +1,31 @@
+[package]
+name = "rucio-emule"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "eMule/Kad2 compatibility layer for Rucio"
+
+[dependencies]
+# async
+tokio    = { workspace = true }
+
+# serialization
+serde    = { workspace = true }
+
+# error handling
+thiserror = { workspace = true }
+anyhow    = { workspace = true }
+
+# hashing
+blake3   = { workspace = true }
+md4      = "0.11"   # ed2k chunk hash computation
+hex      = { workspace = true }
+urlencoding = { workspace = true }
+
+# utils
+tracing  = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

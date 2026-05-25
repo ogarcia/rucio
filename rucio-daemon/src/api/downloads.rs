@@ -219,6 +219,90 @@ pub async fn delete_download(State(state): State<AppState>, Path(id): Path<i64>)
     }
 }
 
+// ── eMule compatibility ───────────────────────────────────────────────────────
+
+/// Start an eMule download
+///
+/// Queues a file for download from the eMule Kad2 network using an `ed2k://` link.
+///
+/// The daemon will:
+/// 1. Parse the `ed2k://` link to extract the file name, size, and ed2k hash.
+/// 2. Bootstrap the Kad2 routing table from `storage.nodes_dat_path` (see config).
+/// 3. Search the eMule Kad2 network for peers that have the file.
+/// 4. Download the file from discovered eMule peers, verifying each 9.28 MB part
+///    using its MD4 hash.
+/// 5. After completion, compute the BLAKE3 hash and announce it on the Rucio DHT.
+///
+/// Requires the daemon to be compiled with `--features emule-compat` and
+/// `storage.nodes_dat_path` to be set in the configuration.
+///
+/// Returns `501 Not Implemented` when the feature is not compiled in.
+/// Returns `400 Bad Request` for malformed links or missing `nodes.dat`.
+#[utoipa::path(
+    post,
+    path = "/api/v1/downloads/ed2k",
+    request_body = rucio_core::api::downloads::StartEd2kDownloadRequest,
+    responses(
+        (status = 202, description = "eMule download queued.", body = rucio_core::api::downloads::StartEd2kDownloadResponse),
+        (status = 400, description = "Malformed ed2k link or nodes.dat not configured."),
+        (status = 501, description = "emule-compat feature not compiled in.")
+    )
+)]
+pub async fn start_ed2k_download(
+    State(state): State<AppState>,
+    Json(req): Json<rucio_core::api::downloads::StartEd2kDownloadRequest>,
+) -> Result<
+    (
+        StatusCode,
+        Json<rucio_core::api::downloads::StartEd2kDownloadResponse>,
+    ),
+    StatusCode,
+> {
+    #[cfg(not(feature = "emule-compat"))]
+    {
+        let _ = (state, req);
+        Err(StatusCode::NOT_IMPLEMENTED)
+    }
+
+    #[cfg(feature = "emule-compat")]
+    {
+        use rucio_emule::Ed2kLink;
+
+        let link = Ed2kLink::parse(&req.link).map_err(|e| {
+            tracing::warn!(link = %req.link, error = %e, "Failed to parse ed2k link");
+            StatusCode::BAD_REQUEST
+        })?;
+
+        if state.config.storage.nodes_dat_path.is_none() {
+            tracing::warn!("ed2k download requested but nodes_dat_path is not configured");
+            return Err(StatusCode::BAD_REQUEST);
+        }
+
+        // Send an eMule download request to the engine.
+        let dl_req = crate::api::DownloadRequest::StartEd2k {
+            link: req.link.clone(),
+        };
+        let id = match state.download_tx.send(dl_req).await {
+            Ok(()) => 0i64, // actual ID assigned by the engine asynchronously
+            Err(_) => {
+                tracing::error!("Download channel closed");
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        };
+
+        tracing::info!(name = %link.name, size = link.size, hash = %link.hash, "eMule download queued");
+        Ok((
+            StatusCode::ACCEPTED,
+            Json(rucio_core::api::downloads::StartEd2kDownloadResponse {
+                id,
+                name: link.name,
+                size: link.size,
+                ed2k_hash: link.hash.to_hex(),
+            }),
+        ))
+    }
+}
+
 pub(crate) fn db_status_to_state(s: &str) -> DownloadState {
     match s {
         "finding_providers" => DownloadState::FindingProviders,

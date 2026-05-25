@@ -3,7 +3,7 @@ members = [
     "rucio-core",
     "rucio-daemon",
     "rucio-cli",
-    "rucio",
+    "rucio", "rucio-emule",
 ]
 resolver = "2"
 

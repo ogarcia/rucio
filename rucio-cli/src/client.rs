@@ -15,6 +15,7 @@ pub type WsStream =
 use rucio_core::api::{
     config::ConfigResponse,
     downloads::{DownloadResponse, DownloadsResponse, StartDownloadRequest},
+    emule::{EmuleBootstrapRequest, EmuleBootstrapResponse, EmuleStatusResponse},
     metrics::{HealthResponse, MetricsResponse},
     search::{SearchRequest, SearchResultsResponse, SearchStartedResponse},
     shares::{AddShareRequest, AddShareResponse, SharesResponse},
@@ -214,6 +215,64 @@ impl ApiClient {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
             bail!("POST {url} → {status}: {body}");
+        }
+    }
+
+    pub async fn start_ed2k_download(&self, link: &str) -> Result<()> {
+        use rucio_core::api::downloads::StartEd2kDownloadRequest;
+        let url = format!("{}/api/v1/downloads/ed2k", self.base);
+        let resp = self
+            .inner
+            .post(&url)
+            .json(&StartEd2kDownloadRequest {
+                link: link.to_string(),
+            })
+            .send()
+            .await
+            .with_context(|| format!("POST {url}"))?;
+
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            if status.as_u16() == 501 {
+                bail!(
+                    "The daemon does not support eMule downloads (emule-compat feature not compiled in)."
+                );
+            }
+            bail!("POST {url} → {status}: {body}");
+        }
+    }
+
+    pub async fn emule_status(&self) -> Result<EmuleStatusResponse> {
+        self.get("/api/v1/emule/status").await
+    }
+
+    pub async fn emule_bootstrap(&self, url: Option<String>) -> Result<EmuleBootstrapResponse> {
+        let api_url = format!("{}/api/v1/emule/bootstrap", self.base);
+        let resp = self
+            .inner
+            .post(&api_url)
+            .json(&EmuleBootstrapRequest { url })
+            .send()
+            .await
+            .with_context(|| format!("POST {api_url}"))?;
+
+        if resp.status().is_success() {
+            Ok(resp
+                .json()
+                .await
+                .with_context(|| "parsing bootstrap response")?)
+        } else {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            if status.as_u16() == 501 {
+                bail!(
+                    "The daemon does not support eMule commands (emule-compat feature not compiled in)."
+                );
+            }
+            bail!("POST {api_url} → {status}: {body}");
         }
     }
 

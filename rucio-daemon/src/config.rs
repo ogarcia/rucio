@@ -49,6 +49,14 @@ pub struct StorageConfig {
     /// Files are moved to `download_dir` once fully downloaded.
     pub temp_dir: PathBuf,
     pub database_path: PathBuf,
+    /// Directory for in-progress eMule downloads (separate from Rucio .part dir).
+    /// Only used when the `emule-compat` feature is enabled.
+    #[serde(default = "default_emule_temp_dir")]
+    pub emule_temp_dir: PathBuf,
+    /// Path to an eMule `nodes.dat` file used to bootstrap the Kad2 network.
+    /// Optional — eMule Kad search is disabled when this is `None`.
+    #[serde(default)]
+    pub nodes_dat_path: Option<PathBuf>,
 }
 
 // --- Defaults ----------------------------------------------------------------
@@ -83,6 +91,8 @@ impl Default for StorageConfig {
                 .join("rucio")
                 .join("tmp"),
             database_path: default_data_dir().join("rucio.db"),
+            emule_temp_dir: default_emule_temp_dir(),
+            nodes_dat_path: None,
         }
     }
 }
@@ -169,6 +179,13 @@ fn xdg_download_dir(home: &std::path::Path) -> Option<PathBuf> {
     None
 }
 
+fn default_emule_temp_dir() -> PathBuf {
+    dirs::cache_dir()
+        .unwrap_or_else(|| home_dir().join(".cache"))
+        .join("rucio")
+        .join("emule-tmp")
+}
+
 // --- Well-known bootstrap nodes ----------------------------------------------
 //
 // These are the hardcoded fallback bootstrap peers used when the user has not
@@ -232,6 +249,8 @@ impl Config {
     /// | `RUCIOD_BOOTSTRAP_PEERS`    | `network.bootstrap_peers`    | comma-separated multiaddrs |
     /// | `RUCIOD_UPLOAD_LIMIT_KBPS`  | `network.upload_limit_kbps`  | integer KB/s, 0=unlimited |
     /// | `RUCIOD_DOWNLOAD_LIMIT_KBPS`| `network.download_limit_kbps`| integer KB/s, 0=unlimited |
+    /// | `RUCIOD_EMULE_TEMP_DIR`     | `storage.emule_temp_dir`     | path               |
+    /// | `RUCIOD_NODES_DAT`          | `storage.nodes_dat_path`     | path               |
     pub fn apply_env_overrides(&mut self) {
         if let Ok(v) = std::env::var("RUCIOD_API_LISTEN")
             && !v.is_empty()
@@ -274,6 +293,16 @@ impl Config {
             && let Ok(n) = v.parse::<u64>()
         {
             self.network.download_limit_kbps = n;
+        }
+        if let Ok(v) = std::env::var("RUCIOD_EMULE_TEMP_DIR")
+            && !v.is_empty()
+        {
+            self.storage.emule_temp_dir = PathBuf::from(v);
+        }
+        if let Ok(v) = std::env::var("RUCIOD_NODES_DAT")
+            && !v.is_empty()
+        {
+            self.storage.nodes_dat_path = Some(PathBuf::from(v));
         }
     }
 

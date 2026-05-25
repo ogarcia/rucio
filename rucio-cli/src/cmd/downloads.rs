@@ -228,12 +228,20 @@ fn print_table(
 
 /// Start a download.
 ///
-/// `target` is either:
+/// `target` is:
 ///   - a 1-based integer index into the last search results, or
-///   - a `rucio:<hash>` magnet link (optionally with name/size/provider params)
+///   - a `rucio:<hash>` magnet link (optionally with name/size/provider params), or
+///   - an `ed2k://|file|…|…|…|/` link to download from the eMule network.
 ///
 /// `--provider` is optional — the DHT will find providers automatically.
 pub async fn start(client: &ApiClient, target: &str, provider: Option<&str>) -> Result<()> {
+    // Detect ed2k scheme first.
+    if target.trim_start().starts_with("ed2k://") {
+        client.start_ed2k_download(target.trim()).await?;
+        println!("{}", color::success("eMule download queued."));
+        return Ok(());
+    }
+
     let (magnet, mut providers) = if let Ok(idx) = target.trim().parse::<usize>() {
         let state = LastSearch::load();
         let entry = state.get(idx).ok_or_else(|| {
