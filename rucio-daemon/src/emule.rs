@@ -190,3 +190,39 @@ pub async fn run_ed2k_download(
 
     Ok(())
 }
+
+// ── Auto-bootstrap helpers ────────────────────────────────────────────────────
+
+/// Download a fresh `nodes.dat` from the default URL and save it to `path`.
+///
+/// Returns the number of Kad2 contacts parsed from the file, or an error if
+/// the download or parse failed.  Called at daemon startup when no
+/// `nodes.dat` is present.
+pub async fn bootstrap_nodes_dat(path: &std::path::Path) -> Result<usize> {
+    use rucio_core::api::emule::DEFAULT_NODES_DAT_URL;
+
+    let bytes = reqwest::get(DEFAULT_NODES_DAT_URL)
+        .await
+        .context("HTTP GET nodes.dat")?
+        .error_for_status()
+        .context("nodes.dat server returned error status")?
+        .bytes()
+        .await
+        .context("reading nodes.dat response body")?;
+
+    let contacts =
+        rucio_emule::kad::routing::parse_nodes_dat(&bytes).context("parsing nodes.dat")?;
+
+    if contacts.is_empty() {
+        anyhow::bail!("downloaded nodes.dat contains no Kad2 contacts");
+    }
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating directory {}", parent.display()))?;
+    }
+    std::fs::write(path, &bytes)
+        .with_context(|| format!("writing nodes.dat to {}", path.display()))?;
+
+    Ok(contacts.len())
+}

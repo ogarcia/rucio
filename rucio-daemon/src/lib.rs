@@ -176,6 +176,27 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
         }
     });
 
+    // --- eMule: auto-bootstrap nodes.dat if missing -------------------------
+    #[cfg(feature = "emule-compat")]
+    {
+        let save_path = config.storage.nodes_dat_path.clone().unwrap_or_else(|| {
+            dirs::data_local_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+                .join("rucio")
+                .join("nodes.dat")
+        });
+
+        if !save_path.exists() {
+            tokio::spawn(async move {
+                info!(path = %save_path.display(), "nodes.dat not found — downloading in background");
+                match crate::emule::bootstrap_nodes_dat(&save_path).await {
+                    Ok(n) => info!(contacts = n, path = %save_path.display(), "nodes.dat ready"),
+                    Err(e) => warn!("Auto-bootstrap of nodes.dat failed: {e}"),
+                }
+            });
+        }
+    }
+
     // --- Main loop ----------------------------------------------------------
     let mut manifest_tick = tokio::time::interval(tokio::time::Duration::from_secs(2));
     let mut provider_refresh_tick = tokio::time::interval(tokio::time::Duration::from_secs(60));
