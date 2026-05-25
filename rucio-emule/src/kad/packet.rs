@@ -53,6 +53,8 @@ pub enum Opcode {
     SearchSourceReq = 0x19,
     /// Search response.
     SearchRes = 0x2b,
+    /// Keyword search request.
+    SearchKeyReq = 0x33,
     /// Ping.
     Ping = 0x60,
     /// Pong.
@@ -75,6 +77,7 @@ impl Opcode {
             0x29 => Some(Self::Res),
             0x19 => Some(Self::SearchSourceReq),
             0x2b => Some(Self::SearchRes),
+            0x33 => Some(Self::SearchKeyReq),
             0x60 => Some(Self::Ping),
             0x61 => Some(Self::Pong),
             0x35 => Some(Self::PublishSourceReq),
@@ -295,6 +298,23 @@ pub struct SearchResPayload {
     pub sender_id: KadId,
     pub target: KadId,
     pub sources: Vec<SourceEntry>,
+}
+
+/// One result entry from a keyword search (`KADEMLIA2_SEARCH_RES` in response to
+/// `KADEMLIA2_SEARCH_KEY_REQ`).  The `answer` KadID is the file's ed2k hash.
+#[derive(Debug, Clone)]
+pub struct KeywordResultEntry {
+    /// The file's ed2k/MD4 hash (16 bytes, same byte order as on wire).
+    pub file_hash: KadId,
+    pub name: String,
+    pub size: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct KeywordResPayload {
+    pub sender_id: KadId,
+    pub target: KadId,
+    pub results: Vec<KeywordResultEntry>,
 }
 
 // ── Decode ────────────────────────────────────────────────────────────────────
@@ -556,6 +576,33 @@ pub fn decode(data: &[u8]) -> Result<KadPacket, PacketError> {
     Ok(pkt)
 }
 
+/// Parse a `KADEMLIA2_SEARCH_RES` payload as keyword search results.
+///
+/// Same wire format as source-search results but tag list contains file metadata
+/// (name, size) instead of IP/port.  Call this instead of the source variant when
+/// the active search was a keyword search.
+pub fn parse_keyword_res(payload: &[u8]) -> io::Result<KeywordResPayload> {
+    let mut cur = Cursor::new(payload);
+    let sender_id = KadId::read_from(&mut cur)?;
+    let target = KadId::read_from(&mut cur)?;
+    let count = read_u16(&mut cur)?;
+    let mut results = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        let file_hash = KadId::read_from(&mut cur)?;
+        let (name, size) = read_keyword_tags(&mut cur).unwrap_or_default();
+        results.push(KeywordResultEntry {
+            file_hash,
+            name,
+            size,
+        });
+    }
+    Ok(KeywordResPayload {
+        sender_id,
+        target,
+        results,
+    })
+}
+
 // ── Tag constants (aMule TagTypes.h) ──────────────────────────────────────────
 // TAGTYPE_HASH16 = 0x01  (16 bytes)
 // TAGTYPE_STRING = 0x02  (uint16 len + bytes)
@@ -693,11 +740,93 @@ fn read_source_tags<R: Read>(r: &mut R) -> io::Result<(std::net::Ipv4Addr, u16, 
     Ok((ip, tcp_port, udp_port))
 }
 
+/// Read a keyword-result tag list and extract file name and size.
+///
+/// Tag names (opcodes.h):
+///   `[0x01]` = TAG_FILENAME (TAGTYPE_STRING or TAGTYPE_STR1..N)
+///   `[0x02]` = TAG_FILESIZE (TAGTYPE_UINT32 or TAGTYPE_UINT64)
+fn read_keyword_tags<R: Read>(r: &mut R) -> io::Result<(String, u64)> {
+    let count = {
+        let mut b = [0u8];
+        r.read_exact(&mut b)?;
+        b[0]
+    };
+    let mut name = String::new();
+    let mut size: u64 = 0;
+
+    for _ in 0..count {
+        let type_byte = {
+            let mut b = [0u8];
+            r.read_exact(&mut b)?;
+            b[0]
+        };
+        // Read name: uint16 length + bytes
+        let name_len = read_u16(r)? as usize;
+        let mut tag_name = vec![0u8; name_len];
+        r.read_exact(&mut tag_name)?;
+
+        match (type_byte, tag_name.as_slice()) {
+            // TAG_FILENAME: TAGTYPE_STRING (0x02)
+            (0x02, [0x01]) => {
+                let len = read_u16(r)? as usize;
+                let mut buf = vec![0u8; len];
+                r.read_exact(&mut buf)?;
+                name = String::from_utf8_lossy(&buf).into_owned();
+            }
+            // TAG_FILENAME: TAGTYPE_STR1..STR22 (0x11..0x26) — inline length
+            (n, [0x01]) if (0x11..=0x26).contains(&n) => {
+                let len = (n - 0x10) as usize;
+                let mut buf = vec![0u8; len];
+                r.read_exact(&mut buf)?;
+                name = String::from_utf8_lossy(&buf).into_owned();
+            }
+            // TAG_FILESIZE: TAGTYPE_UINT32 (0x03)
+            (0x03, [0x02]) => {
+                size = read_u32(r)? as u64;
+            }
+            // TAG_FILESIZE: TAGTYPE_UINT64 (0x0b)
+            (0x0b, [0x02]) => {
+                let mut b = [0u8; 8];
+                r.read_exact(&mut b)?;
+                size = u64::from_le_bytes(b);
+            }
+            // Any other tag: skip the value
+            (t, _) => {
+                skip_tag_value(r, t)?;
+            }
+        }
+    }
+    Ok((name, size))
+}
+
 // ── Encode ────────────────────────────────────────────────────────────────────
 
 /// Build a `KADEMLIA2_BOOTSTRAP_REQ` packet (2 bytes total).
 pub fn encode_bootstrap_req() -> Vec<u8> {
     vec![KAD2_PROTO, Opcode::BootstrapReq as u8]
+}
+
+/// Build a `KADEMLIA2_SEARCH_KEY_REQ` (opcode 0x33) for a keyword search.
+///
+/// `target` is `MD4(keyword_utf8)` interpreted as a KadId (bytes as-is, BE on wire).
+/// `start_pos = 0` — no pagination.
+pub fn encode_search_key_req(target: &KadId) -> Vec<u8> {
+    let mut buf = vec![KAD2_PROTO, Opcode::SearchKeyReq as u8];
+    target.write_to(&mut buf).unwrap();
+    // start_position = 0x0000 (no search terms filter)
+    write_u16(&mut buf, 0u16).unwrap();
+    buf
+}
+
+/// Compute the Kad target for a keyword search: `MD4(keyword_utf8)`.
+///
+/// Per eMule `KadGetKeywordHash`: bytes stored big-endian in `CUInt128`,
+/// which means they appear on the wire in the same byte order as the MD4 output.
+pub fn keyword_target(keyword: &str) -> KadId {
+    use md4::{Digest, Md4};
+    let mut h = Md4::new();
+    h.update(keyword.as_bytes());
+    KadId::from_bytes(h.finalize().into())
 }
 
 /// Build a `KADEMLIA2_HELLO_REQ` advertising our node details, including our UDPKey.

@@ -273,6 +273,8 @@ fn v1_router() -> Router<AppState> {
             "/emule/bootstrap",
             routing::post(emule::post_emule_bootstrap),
         )
+        // kad keyword search (emule-compat)
+        .route("/kad/search", routing::get(emule::get_kad_search))
 }
 
 // ---------------------------------------------------------------------------
