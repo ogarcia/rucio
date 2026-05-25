@@ -121,6 +121,15 @@ pub async fn post_emule_bootstrap(
             })?;
 
         tracing::info!(contacts, path = %save_path.display(), "nodes.dat saved");
+
+        // Feed the seeds into the live Kad2 task so it starts bootstrapping
+        // immediately without waiting for the next daemon restart.
+        let seeds = crate::emule::load_kad_seeds(&state.config, 200);
+        if !seeds.is_empty() {
+            let seeded = state.kad_handle.bootstrap(seeds).await;
+            tracing::info!(seeded, "Kad2 bootstrap triggered from API");
+        }
+
         Ok(Json(EmuleBootstrapResponse {
             contacts,
             path: save_path.display().to_string(),

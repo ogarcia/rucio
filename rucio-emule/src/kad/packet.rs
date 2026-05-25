@@ -234,10 +234,16 @@ pub enum KadPacket {
     Req(ReqPayload),
     Res(ResPayload),
     SearchSourceReq(SearchSourceReqPayload),
-    SearchRes(SearchResPayload),
+    /// Raw 0x2b packet — parsed lazily in the task depending on search mode.
+    SearchRes {
+        raw: Vec<u8>,
+    },
     Ping,
     Pong(u16), // external UDP port echoed back
-    Unknown { opcode: u8, payload: Vec<u8> },
+    Unknown {
+        opcode: u8,
+        payload: Vec<u8>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -532,29 +538,10 @@ pub fn decode(data: &[u8]) -> Result<KadPacket, PacketError> {
         }
 
         Some(Opcode::SearchRes) => {
-            // KADEMLIA2_SEARCH_RES: sender_id(16) + target(16) + count(2) + entries
-            let sender_id = KadId::read_from(&mut cur)?;
-            let target = KadId::read_from(&mut cur)?;
-            let count = read_u16(&mut cur)?;
-            let mut sources = Vec::with_capacity(count as usize);
-            for _ in 0..count {
-                let id = KadId::read_from(&mut cur)?;
-                // Tags: read tag list (simplified — just grab the source IP/ports from tags)
-                // Full tag parsing is complex; for source search we read the answer id and
-                // attempt to extract TAG_SOURCEIP (0x01) / TAG_SOURCEPORT (0x02) / TAG_SOURCEUPORT (0x03).
-                let (ip, tcp_port, udp_port) = read_source_tags(&mut cur)?;
-                sources.push(SourceEntry {
-                    id,
-                    ip,
-                    tcp_port,
-                    udp_port,
-                });
+            // Store raw payload; let the task parse it based on the active search mode.
+            KadPacket::SearchRes {
+                raw: payload.to_vec(),
             }
-            KadPacket::SearchRes(SearchResPayload {
-                sender_id,
-                target,
-                sources,
-            })
         }
 
         Some(Opcode::Ping) => KadPacket::Ping,
@@ -804,6 +791,60 @@ fn read_keyword_tags<R: Read>(r: &mut R) -> io::Result<(String, u64)> {
 /// Build a `KADEMLIA2_BOOTSTRAP_REQ` packet (2 bytes total).
 pub fn encode_bootstrap_req() -> Vec<u8> {
     vec![KAD2_PROTO, Opcode::BootstrapReq as u8]
+}
+
+/// Parse a `KADEMLIA2_SEARCH_RES` (0x2b) payload as a **source** search result.
+///
+/// Wire format (from aMule `Indexed.cpp SendValidSourceResult`):
+///   sender_id(16) + target(16) + count(2) + [count × (answer_id(16) + tag_list)]
+pub fn parse_search_res_sources(payload: &[u8]) -> io::Result<SearchResPayload> {
+    let mut cur = Cursor::new(payload);
+    let sender_id = KadId::read_from(&mut cur)?;
+    let target = KadId::read_from(&mut cur)?;
+    let count = read_u16(&mut cur)?;
+    let mut sources = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        let id = KadId::read_from(&mut cur)?;
+        let (ip, tcp_port, udp_port) = read_source_tags(&mut cur)?;
+        sources.push(SourceEntry {
+            id,
+            ip,
+            tcp_port,
+            udp_port,
+        });
+    }
+    Ok(SearchResPayload {
+        sender_id,
+        target,
+        sources,
+    })
+}
+
+/// Parse a `KADEMLIA2_SEARCH_RES` (0x2b) payload as a **keyword** search result.
+///
+/// Wire format (from aMule `Indexed.cpp SendValidKeywordResult`):
+///   sender_id(16) + target(16) + count(2) + [count × (answer_id(16) + tag_list)]
+/// The tag list contains file metadata (name, size, etc.) not IP/port.
+pub fn parse_search_res_keywords(payload: &[u8]) -> io::Result<KeywordResPayload> {
+    let mut cur = Cursor::new(payload);
+    let sender_id = KadId::read_from(&mut cur)?;
+    let target = KadId::read_from(&mut cur)?;
+    let count = read_u16(&mut cur)?;
+    let mut results = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        let file_hash = KadId::read_from(&mut cur)?;
+        let (name, size) = read_keyword_tags(&mut cur).unwrap_or_default();
+        results.push(KeywordResultEntry {
+            file_hash,
+            name,
+            size,
+        });
+    }
+    Ok(KeywordResPayload {
+        sender_id,
+        target,
+        results,
+    })
 }
 
 /// Build a `KADEMLIA2_SEARCH_KEY_REQ` (opcode 0x33) for a keyword search.

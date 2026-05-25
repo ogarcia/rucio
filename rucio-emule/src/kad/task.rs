@@ -228,8 +228,10 @@ struct PendingSearch {
     target: KadId,
     deadline: Instant,
     max_results: usize,
-    /// Contacts already queried.
+    /// Contacts we have sent REQ to (but haven't necessarily responded yet).
     queried: std::collections::HashSet<std::net::SocketAddrV4>,
+    /// Contacts that responded to our REQ and received the SEARCH packet.
+    searched: std::collections::HashSet<std::net::SocketAddrV4>,
     mode: SearchMode,
 }
 
@@ -278,6 +280,10 @@ async fn run_task(
                                 %src,
                                 "Kad2 raw packet during search"
                             );
+                            // Dump full hex when we get a SearchRes (0x2b) for debugging.
+                            if recv_buf[0] == 0xe4 && recv_buf[1] == 0x2b {
+                                trace!(hex = %hex::encode(&recv_buf[..n]), %src, "Kad2 SearchRes raw hex");
+                            }
                         }
                         if let Some(ip) = handle_packet(
                             &recv_buf[..n],
@@ -366,7 +372,6 @@ async fn run_task(
                         };
 
                         let mut queried = std::collections::HashSet::new();
-                        let source_pkt = encode_search_source_req(&target, file_size);
                         let mut sent_obfuscated = 0usize;
                         let mut sent_plain = 0usize;
                         for c in &initial_candidates {
@@ -379,10 +384,9 @@ async fn run_task(
                                 contact_id = %c.id,
                                 contact_ver = c.version,
                                 has_udp_key = c.udp_key.is_some(),
-                                "Sending REQ+SEARCH_SOURCE_REQ to initial candidate"
+                                "Sending REQ to initial candidate (SEARCH will follow on response)"
                             );
                             send_kad_pkt(&socket, &lookup_pkt, addr, c.udp_key, our_external_ip).await;
-                            send_kad_pkt(&socket, &source_pkt, addr, c.udp_key, our_external_ip).await;
                             if !our_external_ip.is_unspecified() { sent_obfuscated += 1; } else { sent_plain += 1; }
                         }
                         debug!(
@@ -398,6 +402,7 @@ async fn run_task(
                             deadline,
                             max_results: cfg.max_sources,
                             queried,
+                            searched: std::collections::HashSet::new(),
                             mode: SearchMode::Sources {
                                 file_size,
                                 reply,
@@ -418,13 +423,12 @@ async fn run_task(
                             rt.closest_to(&target, cfg.alpha)
                         };
                         let mut queried = std::collections::HashSet::new();
-                        let key_pkt = encode_search_key_req(&target);
                         for c in &initial_candidates {
                             let addr = SocketAddr::V4(c.socket_addr_udp());
                             queried.insert(c.socket_addr_udp());
+                            // Send only REQ first; SEARCH_KEY_REQ will be sent when the node responds.
                             let lookup_pkt = encode_req(2, &target, &c.id);
                             send_kad_pkt(&socket, &lookup_pkt, addr, c.udp_key, our_external_ip).await;
-                            send_kad_pkt(&socket, &key_pkt, addr, c.udp_key, our_external_ip).await;
                         }
                         info!(keyword, target = %target, sent = initial_candidates.len(), "Started Kad2 keyword search");
                         pending_search = Some(PendingSearch {
@@ -432,6 +436,7 @@ async fn run_task(
                             deadline,
                             max_results: 50,
                             queried,
+                            searched: std::collections::HashSet::new(),
                             mode: SearchMode::Keyword { reply, hits: vec![] },
                         });
                     }
@@ -661,16 +666,36 @@ async fn handle_packet(
             }
             drop(rt);
 
-            // If a search is pending, query newly discovered nodes.
+            // If a search is pending, handle this Res.
             if let Some(ps) = pending_search.as_mut() {
                 let target = ps.target;
-                // Build the search packet appropriate for the search mode.
-                let search_pkt = match &ps.mode {
-                    SearchMode::Sources { file_size, .. } => {
-                        encode_search_source_req(&target, *file_size)
-                    }
-                    SearchMode::Keyword { .. } => encode_search_key_req(&target),
+
+                // Determine the sender's SocketAddrV4 so we can check if we queried them.
+                let sender_v4 = match src {
+                    SocketAddr::V4(a) => Some(a),
+                    _ => None,
                 };
+
+                // If this Res is from a node we queried (it responded to our REQ),
+                // send the SEARCH packet to it now — matching aMule's two-phase approach.
+                if let Some(sender) = sender_v4
+                    && ps.queried.contains(&sender)
+                    && !ps.searched.contains(&sender)
+                {
+                    ps.searched.insert(sender);
+                    let search_pkt = match &ps.mode {
+                        SearchMode::Sources { file_size, .. } => {
+                            encode_search_source_req(&target, *file_size)
+                        }
+                        SearchMode::Keyword { .. } => encode_search_key_req(&target),
+                    };
+                    // Send SEARCH plain (no udp_key exchanged yet via HELLO).
+                    // The node already accepted our plain REQ so plain SEARCH should work too.
+                    trace!(%src, "Sending SEARCH to responding node");
+                    send_kad_pkt(socket, &search_pkt, src, None, our_external_ip).await;
+                }
+
+                // For newly discovered nodes from this Res, send only REQ (SEARCH follows on their response).
                 let new_contacts: Vec<_> = res
                     .contacts
                     .iter()
@@ -690,55 +715,56 @@ async fn handle_packet(
                     trace!(%addr, has_key = contact.udp_key.is_some(), "Querying new contact from Res");
                     ps.queried.insert(contact.socket_addr_udp());
                     send_kad_pkt(socket, &lookup_pkt, addr, contact.udp_key, our_external_ip).await;
-                    send_kad_pkt(socket, &search_pkt, addr, contact.udp_key, our_external_ip).await;
                 }
             }
         }
 
         // ── Search result: collect sources or keyword hits ─────────────────
-        KadPacket::SearchRes(res) => {
-            if let Some(ps) = pending_search.as_mut()
-                && res.target == ps.target
-            {
+        KadPacket::SearchRes { raw } => {
+            if let Some(ps) = pending_search.as_mut() {
                 match &mut ps.mode {
                     SearchMode::Sources { sources, .. } => {
-                        for s in res.sources {
-                            if sources.len() < ps.max_results
-                                && s.tcp_port != 0
-                                && !s.ip.is_unspecified()
-                            {
-                                sources.push(KadSource {
-                                    ip: s.ip,
-                                    tcp_port: s.tcp_port,
-                                    udp_port: s.udp_port,
-                                });
+                        match packet::parse_search_res_sources(&raw) {
+                            Ok(res) if res.target == ps.target => {
+                                for s in res.sources {
+                                    if sources.len() < ps.max_results
+                                        && s.tcp_port != 0
+                                        && !s.ip.is_unspecified()
+                                    {
+                                        sources.push(KadSource {
+                                            ip: s.ip,
+                                            tcp_port: s.tcp_port,
+                                            udp_port: s.udp_port,
+                                        });
+                                    }
+                                }
+                                debug!(sources = sources.len(), %src, "Accumulated Kad2 sources");
+                            }
+                            Ok(_) => {} // target mismatch — stale response
+                            Err(e) => {
+                                trace!(%src, error = %e, "Failed to parse SearchRes as sources")
                             }
                         }
-                        debug!(sources = sources.len(), "Accumulated Kad2 sources");
                     }
                     SearchMode::Keyword { hits, .. } => {
-                        // Re-parse the raw packet as keyword result to get name/size.
-                        // The packet starts after the protocol header (2 bytes already stripped).
-                        // We need the original raw payload — use res fields we already have
-                        // to re-parse via parse_keyword_res on the raw data stored in Unknown.
-                        // Instead, signal the task to re-call parse_keyword_res.
-                        // For now: the SearchRes was already decoded as source entries with
-                        // wrong tag keys; we need to decode differently.
-                        // Workaround: log that we got a keyword hit and report the hash.
-                        for s in &res.sources {
-                            if hits.len() < ps.max_results {
-                                // file_hash is in s.id; name/size not yet parsed correctly here
-                                hits.push(KeywordHit {
-                                    hash: *s.id.as_bytes(),
-                                    name: String::new(),
-                                    size: 0,
-                                });
+                        match packet::parse_search_res_keywords(&raw) {
+                            Ok(res) if res.target == ps.target => {
+                                debug!(count = res.results.len(), %src, "Accumulated Kad2 keyword hits");
+                                for entry in res.results {
+                                    if hits.len() < ps.max_results {
+                                        hits.push(KeywordHit {
+                                            hash: *entry.file_hash.as_bytes(),
+                                            name: entry.name,
+                                            size: entry.size,
+                                        });
+                                    }
+                                }
+                            }
+                            Ok(_) => {} // target mismatch
+                            Err(e) => {
+                                trace!(%src, error = %e, "Failed to parse SearchRes as keywords")
                             }
                         }
-                        debug!(
-                            hits = hits.len(),
-                            "Accumulated Kad2 keyword hits (hashes only)"
-                        );
                     }
                 }
             }

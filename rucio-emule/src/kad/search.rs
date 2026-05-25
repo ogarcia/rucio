@@ -192,10 +192,12 @@ async fn run_search(
         }
         match timeout(remaining, socket.recv_from(&mut recv_buf)).await {
             Ok(Ok((n, _src))) => match decode(&recv_buf[..n]) {
-                Ok(KadPacket::SearchRes(res)) => {
-                    for s in res.sources {
-                        if sources.len() < config.max_sources {
-                            sources.push(s);
+                Ok(KadPacket::SearchRes { raw }) => {
+                    if let Ok(res) = packet::parse_search_res_sources(&raw) {
+                        for s in res.sources {
+                            if sources.len() < config.max_sources {
+                                sources.push(s);
+                            }
                         }
                     }
                 }
