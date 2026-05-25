@@ -1,4 +1,4 @@
-//! `rucio downloads`, `rucio get <target>`, `rucio cancel <hash>`, `rucio clean`
+//! `rucio downloads`, `rucio get <target>`, `rucio cancel <idx|hash>`, `rucio clean`
 
 use anyhow::{Result, bail};
 use futures_util::StreamExt as _;
@@ -197,6 +197,8 @@ fn print_table(
 
     #[derive(Tabled)]
     struct Row {
+        #[tabled(rename = "#")]
+        idx: usize,
         #[tabled(rename = "Hash")]
         hash: String,
         #[tabled(rename = "Name")]
@@ -211,9 +213,11 @@ fn print_table(
 
     let rows: Vec<Row> = downloads
         .into_iter()
-        .map(|d| {
+        .enumerate()
+        .map(|(i, d)| {
             let total = d.size.unwrap_or(0);
             Row {
+                idx: i + 1,
                 hash: truncate(&d.root_hash, 16),
                 name: truncate(&d.name.unwrap_or_else(|| "-".to_string()), 32),
                 size: d.size.map(human_size).unwrap_or_else(|| "-".to_string()),
@@ -264,9 +268,9 @@ pub async fn start(client: &ApiClient, target: &str, provider: Option<&str>) -> 
 }
 
 pub async fn cancel(client: &ApiClient, hash: &str) -> Result<()> {
-    let dl = client.find_download_by_hash(hash).await?;
+    let dl = client.find_download_by_idx_or_hash(hash).await?;
     match dl {
-        None => bail!("No download found with hash prefix '{hash}'"),
+        None => bail!("No download found for '{hash}'"),
         Some(d) => {
             client.cancel_download(d.id).await?;
             println!(
@@ -286,9 +290,9 @@ pub async fn cancel(client: &ApiClient, hash: &str) -> Result<()> {
 pub async fn clean(client: &ApiClient, hash: Option<&str>) -> Result<()> {
     if let Some(h) = hash {
         // Single entry — must be finished (not active).
-        let dl = client.find_download_by_hash(h).await?;
+        let dl = client.find_download_by_idx_or_hash(h).await?;
         match dl {
-            None => bail!("No download found with hash prefix '{h}'"),
+            None => bail!("No download found for '{h}'"),
             Some(d) if !is_finished(&d.state) => {
                 bail!(
                     "Download '{}' is still active. Use `rucio cancel` to stop it first.",

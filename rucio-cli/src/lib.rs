@@ -72,12 +72,12 @@ pub enum Commands {
     },
     /// Cancel an in-progress download
     Cancel {
-        /// Root hash of the download (hex)
+        /// Row number from `rucio downloads` (e.g. 1) or root hash (full or prefix)
         hash: String,
     },
     /// Remove completed/failed/cancelled downloads from the history
     Clean {
-        /// Root hash prefix to remove a specific entry (omit to remove all finished downloads)
+        /// Row number from `rucio downloads` (e.g. 1) or root hash prefix (omit to remove all finished downloads)
         hash: Option<String>,
     },
     /// Search for files on the network

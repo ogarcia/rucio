@@ -342,6 +342,19 @@ impl ApiClient {
         }
     }
 
+    /// Resolve a download by 1-based row index (as shown in `rucio downloads`)
+    /// or by hash prefix.  Returns `None` if nothing matches.
+    pub async fn find_download_by_idx_or_hash(
+        &self,
+        arg: &str,
+    ) -> Result<Option<DownloadResponse>> {
+        if let Ok(idx) = arg.trim().parse::<usize>() {
+            let resp = self.list_downloads().await?;
+            return Ok(resp.downloads.into_iter().nth(idx.saturating_sub(1)));
+        }
+        self.find_download_by_hash(arg).await
+    }
+
     // -----------------------------------------------------------------------
     // WebSocket event stream
     // -----------------------------------------------------------------------
