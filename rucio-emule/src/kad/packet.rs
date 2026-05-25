@@ -179,6 +179,9 @@ pub struct Contact {
     pub tcp_port: u16,
     /// Kad protocol version (2–11).
     pub version: u8,
+    /// UDP obfuscation key received from this peer via HELLO_RES.
+    /// None = unknown (no handshake yet or peer has obfuscation disabled).
+    pub udp_key: Option<u32>,
 }
 
 impl Contact {
@@ -249,6 +252,10 @@ pub struct HelloPayload {
     pub version: u8,
     /// Number of tags (we skip them for simplicity).
     pub tag_count: u8,
+    /// UDP obfuscation key advertised by the peer (TAG_UDPKEY = 0x08), if present.
+    pub udp_key: Option<u32>,
+    /// Our external IPv4 as seen by the peer (TAG_SENDER_IP = 0x09), if present.
+    pub sender_ip: Option<std::net::Ipv4Addr>,
 }
 
 #[derive(Debug, Clone)]
@@ -366,6 +373,7 @@ pub fn decode(data: &[u8]) -> Result<KadPacket, PacketError> {
                         udp_port,
                         tcp_port: tcp_p,
                         version: ver,
+                        udp_key: None,
                     });
                 }
             }
@@ -390,16 +398,68 @@ pub fn decode(data: &[u8]) -> Result<KadPacket, PacketError> {
                 cur.read_exact(&mut b)?;
                 b[0]
             };
-            let payload = HelloPayload {
+            // Parse tags looking for TAG_UDPKEY (0x08 = u32 value named "UDPK").
+            let mut udp_key: Option<u32> = None;
+            let mut sender_ip: Option<std::net::Ipv4Addr> = None;
+            for _ in 0..tag_count {
+                // Kad tag format: type(1) + name_len(1) + name(n) + value
+                let tag_type = {
+                    let mut b = [0u8];
+                    cur.read_exact(&mut b).ok();
+                    b[0]
+                };
+                let name_len = {
+                    let mut b = [0u8];
+                    cur.read_exact(&mut b).ok();
+                    b[0]
+                };
+                let mut name = vec![0u8; name_len as usize];
+                cur.read_exact(&mut name).ok();
+                match (tag_type, name.as_slice()) {
+                    // TAG_UDPKEY: type=0x03 (u32), name="UDPK" or name_len=1 name=[0x08]
+                    (0x03, [0x08]) | (0x03, b"UDPK") => {
+                        udp_key = read_u32(&mut cur).ok();
+                    }
+                    // TAG_SENDER_IP: type=0x03 (u32 BE network bytes), name=[0x09]
+                    (0x03, [0x09]) => {
+                        if let Ok(raw) = read_u32(&mut cur) {
+                            sender_ip = Some(std::net::Ipv4Addr::from(raw));
+                        }
+                    }
+                    // Skip unknown tags: need to consume value bytes.
+                    // Type 0x03 = u32 (4 bytes), 0x02 = u16 (2 bytes),
+                    // 0x05 = IPv4 (4 bytes), 0x09 = bool (1 byte), 0x0b = u8 (1 byte)
+                    (0x03, _) => {
+                        let mut b = [0u8; 4];
+                        cur.read_exact(&mut b).ok();
+                    }
+                    (0x02, _) => {
+                        let mut b = [0u8; 2];
+                        cur.read_exact(&mut b).ok();
+                    }
+                    (0x05, _) => {
+                        let mut b = [0u8; 4];
+                        cur.read_exact(&mut b).ok();
+                    }
+                    (0x09, _) | (0x0b, _) => {
+                        let mut b = [0u8; 1];
+                        cur.read_exact(&mut b).ok();
+                    }
+                    _ => break, // unknown type — stop parsing to avoid mis-alignment
+                }
+            }
+            let p = HelloPayload {
                 id,
                 tcp_port,
                 version,
                 tag_count,
+                udp_key,
+                sender_ip,
             };
             if opcode == Opcode::HelloReq as u8 {
-                KadPacket::HelloReq(payload)
+                KadPacket::HelloReq(p)
             } else {
-                KadPacket::HelloRes(payload)
+                KadPacket::HelloRes(p)
             }
         }
 
@@ -441,8 +501,10 @@ pub fn decode(data: &[u8]) -> Result<KadPacket, PacketError> {
                         udp_port,
                         tcp_port: tcp_p,
                         version: ver,
+                        udp_key: None,
                     });
                 }
+                // ver < 2 = Kad1-only peer; we still consume the bytes but skip adding.
             }
             KadPacket::Res(ResPayload { target, contacts })
         }
@@ -600,13 +662,20 @@ pub fn encode_bootstrap_req() -> Vec<u8> {
     vec![KAD2_PROTO, Opcode::BootstrapReq as u8]
 }
 
-/// Build a `KADEMLIA2_HELLO_REQ` advertising our node details.
-pub fn encode_hello_req(our_id: &KadId, tcp_port: u16) -> Vec<u8> {
+/// Build a `KADEMLIA2_HELLO_REQ` advertising our node details, including our UDPKey.
+///
+/// `our_udp_key`: our u32 obfuscation key (advertised so peers can send us obfuscated packets).
+pub fn encode_hello_req(our_id: &KadId, tcp_port: u16, our_udp_key: u32) -> Vec<u8> {
     let mut buf = vec![KAD2_PROTO, Opcode::HelloReq as u8];
     our_id.write_to(&mut buf).unwrap();
     write_u16(&mut buf, tcp_port).unwrap();
     buf.push(KAD_VERSION);
-    buf.push(0); // tag count = 0
+    // 1 tag: TAG_UDPKEY (type=0x03 u32, name=[0x08])
+    buf.push(1); // tag count
+    buf.push(0x03); // type = u32
+    buf.push(1); // name length = 1
+    buf.push(0x08); // name = TAG_UDPKEY
+    write_u32(&mut buf, our_udp_key).unwrap();
     buf
 }
 
@@ -764,6 +833,7 @@ mod tests {
             udp_port: 4672,
             tcp_port: 4662,
             version: 11,
+            udp_key: None,
         };
 
         let pkt = encode_bootstrap_res(&our_id, 4662, std::slice::from_ref(&contact));
@@ -789,6 +859,7 @@ mod tests {
             udp_port: 4672,
             tcp_port: 4662,
             version: 11,
+            udp_key: None,
         };
 
         let pkt = encode_res(&target, std::slice::from_ref(&contact));

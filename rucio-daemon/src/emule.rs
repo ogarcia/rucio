@@ -35,6 +35,10 @@ pub async fn start_kad_task(config: &Config) -> Result<KadHandle> {
     let our_id = KadId::random();
     let task_cfg = KadTaskConfig {
         tcp_port: config.emule.kad_port, // advertise same port (TCP unused for now)
+        initial_external_ip: config
+            .emule
+            .external_ip
+            .unwrap_or(std::net::Ipv4Addr::UNSPECIFIED),
         ..KadTaskConfig::default()
     };
 

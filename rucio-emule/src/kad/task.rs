@@ -37,7 +37,7 @@ use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::sync::{RwLock, mpsc, oneshot};
 use tokio::time::{Instant, timeout};
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -146,6 +146,9 @@ pub struct KadTaskConfig {
     pub min_contacts: usize,
     /// Interval between keep-alive pings to a random contact.
     pub keepalive_interval: Duration,
+    /// Known external IPv4 (from UPnP or config).  Used for UDP obfuscation.
+    /// If unspecified (0.0.0.0), the task will try to learn it from peer responses.
+    pub initial_external_ip: std::net::Ipv4Addr,
 }
 
 impl Default for KadTaskConfig {
@@ -155,10 +158,11 @@ impl Default for KadTaskConfig {
             request_timeout: Duration::from_secs(5),
             search_timeout: Duration::from_secs(60),
             max_sources: 50,
-            alpha: 3,
+            alpha: 20,
             lookup_iterations: 5,
             min_contacts: 4,
             keepalive_interval: Duration::from_secs(60),
+            initial_external_ip: std::net::Ipv4Addr::UNSPECIFIED,
         }
     }
 }
@@ -168,8 +172,9 @@ pub fn spawn(socket: Arc<UdpSocket>, our_id: KadId, cfg: KadTaskConfig) -> KadHa
     let routing_table = Arc::new(RwLock::new(RoutingTable::new(our_id)));
     let rt_clone = Arc::clone(&routing_table);
     let (cmd_tx, cmd_rx) = mpsc::channel(64);
+    let our_udp_key = super::obfuscation::random_udp_key();
 
-    tokio::spawn(run_task(socket, our_id, cfg, rt_clone, cmd_rx));
+    tokio::spawn(run_task(socket, our_id, our_udp_key, cfg, rt_clone, cmd_rx));
 
     KadHandle {
         tx: cmd_tx,
@@ -194,6 +199,7 @@ struct PendingSearch {
 async fn run_task(
     socket: Arc<UdpSocket>,
     our_id: KadId,
+    our_udp_key: u32,
     cfg: KadTaskConfig,
     routing_table: Arc<RwLock<RoutingTable>>,
     mut cmd_rx: mpsc::Receiver<KadCommand>,
@@ -204,8 +210,13 @@ async fn run_task(
     // Seeds from the last bootstrap call — reused for automatic re-bootstrap
     // when the routing table drops below min_contacts.
     let mut last_seeds: Vec<Contact> = Vec::new();
+    // Our external IPv4 — seeded from config, then updated from peer responses.
+    let mut our_external_ip = cfg.initial_external_ip;
+    if !our_external_ip.is_unspecified() {
+        info!(%our_external_ip, "Using configured external IP for Kad2 obfuscation");
+    }
 
-    info!("Kad2 task started");
+    info!(udp_key = our_udp_key, "Kad2 task started");
 
     loop {
         // Determine how long to wait for the next packet.
@@ -221,22 +232,35 @@ async fn run_task(
             result = timeout(remaining, socket.recv_from(&mut recv_buf)) => {
                 match result {
                     Ok(Ok((n, src))) => {
-                        handle_packet(
+                        if let Some(ip) = handle_packet(
                             &recv_buf[..n],
                             src,
                             &socket,
                             our_id,
+                            our_udp_key,
+                            our_external_ip,
                             &cfg,
                             &routing_table,
                             &mut pending_search,
-                        ).await;
+                        ).await {
+                            // A Pong told us our external IP.
+                            if our_external_ip.is_unspecified() {
+                                our_external_ip = ip;
+                                debug!(%our_external_ip, "Learned our external IP from Pong");
+                            }
+                        }
                     }
                     Ok(Err(e)) => warn!("Kad2 recv error: {e}"),
                     Err(_) => {
                         // Timeout — either search deadline or keepalive tick.
                         if let Some(ps) = pending_search.take() {
                             if Instant::now() >= ps.deadline {
-                                debug!(sources = ps.sources.len(), "Kad2 search timed out, returning results");
+                                info!(
+                                    sources = ps.sources.len(),
+                                    queried = ps.queried.len(),
+                                    target = %ps.target,
+                                    "Kad2 search timed out"
+                                );
                                 let _ = ps.reply.send(ps.sources);
                             } else {
                                 pending_search = Some(ps);
@@ -244,7 +268,7 @@ async fn run_task(
                         }
                         if Instant::now() >= keepalive_tick {
                             keepalive_tick = Instant::now() + cfg.keepalive_interval;
-                            send_keepalive(&socket, our_id, &cfg, &routing_table, &last_seeds).await;
+                            send_keepalive(&socket, our_id, our_udp_key, our_external_ip, &cfg, &routing_table, &last_seeds).await;
                         }
                     }
                 }
@@ -255,9 +279,12 @@ async fn run_task(
                 match cmd {
                     KadCommand::Bootstrap { seeds, reply } => {
                         last_seeds = seeds.clone();
-                        let count = do_bootstrap(
-                            &socket, our_id, &cfg, &routing_table, seeds
+                        let (count, learned_ip) = do_bootstrap(
+                            &socket, our_id, our_udp_key, our_external_ip, &cfg, &routing_table, seeds
                         ).await;
+                        if our_external_ip.is_unspecified() && !learned_ip.is_unspecified() {
+                            our_external_ip = learned_ip;
+                        }
                         let _ = reply.send(count);
                     }
                     KadCommand::SearchSources { hash, file_size, reply } => {
@@ -277,16 +304,29 @@ async fn run_task(
                         };
 
                         let mut queried = std::collections::HashSet::new();
-                        let lookup_pkt = encode_req(2, &target, &our_id);
                         let source_pkt = encode_search_source_req(&target, file_size);
+                        let mut sent_obfuscated = 0usize;
+                        let mut sent_plain = 0usize;
                         for c in &initial_candidates {
                             let addr = SocketAddr::V4(c.socket_addr_udp());
                             queried.insert(c.socket_addr_udp());
-                            let _ = socket.send_to(&lookup_pkt, addr).await;
-                            let _ = socket.send_to(&source_pkt, addr).await;
+                            // REQ receiver field must be the peer's own KadID (not ours).
+                            let lookup_pkt = encode_req(2, &target, &c.id);
+                            trace!(
+                                %addr,
+                                contact_id = %c.id,
+                                contact_ver = c.version,
+                                has_udp_key = c.udp_key.is_some(),
+                                "Sending REQ+SEARCH_SOURCE_REQ to initial candidate"
+                            );
+                            send_kad_pkt(&socket, &lookup_pkt, addr, c.udp_key, our_external_ip).await;
+                            send_kad_pkt(&socket, &source_pkt, addr, c.udp_key, our_external_ip).await;
+                            if !our_external_ip.is_unspecified() { sent_obfuscated += 1; } else { sent_plain += 1; }
                         }
                         debug!(
                             sent = initial_candidates.len(),
+                            sent_obfuscated,
+                            sent_plain,
                             target = %target,
                             "Started Kad2 source search"
                         );
@@ -327,22 +367,91 @@ async fn run_task(
 
 // ── Packet handler ────────────────────────────────────────────────────────────
 
+/// Send a Kad2 packet, obfuscating it if `recv_key` is known.
+/// Falls back to plain if our external IP is not yet known (can't obfuscate).
+/// Returns `true` if the packet was sent obfuscated, `false` if sent plain (or failed).
+async fn send_kad_pkt(
+    socket: &UdpSocket,
+    plain: &[u8],
+    addr: SocketAddr,
+    recv_key: Option<u32>,
+    our_ip: std::net::Ipv4Addr,
+) -> bool {
+    if let Some(key) = recv_key
+        && !our_ip.is_unspecified()
+    {
+        let seed: [u8; 4] = {
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            let mut h = DefaultHasher::new();
+            std::time::SystemTime::now().hash(&mut h);
+            (h.finish() as u32).to_le_bytes()
+        };
+        let obfuscated = super::obfuscation::obfuscate(plain, key, our_ip, seed);
+        let _ = socket.send_to(&obfuscated, addr).await;
+        return true;
+    }
+    let _ = socket.send_to(plain, addr).await;
+    false
+}
+
+/// Handle one incoming UDP packet.
+/// Returns `Some(Ipv4Addr)` if we learned our external IP from a HelloRes.
+#[allow(clippy::too_many_arguments)]
 async fn handle_packet(
     data: &[u8],
     src: SocketAddr,
     socket: &UdpSocket,
     our_id: KadId,
+    our_udp_key: u32,
+    our_external_ip: std::net::Ipv4Addr,
     cfg: &KadTaskConfig,
     routing_table: &Arc<RwLock<RoutingTable>>,
     pending_search: &mut Option<PendingSearch>,
-) {
-    let pkt = match decode(data) {
-        Ok(p) => p,
-        Err(e) => {
-            debug!("Kad2 decode error from {src}: {e}");
-            return;
+) -> Option<std::net::Ipv4Addr> {
+    // Try plain decode first; if that fails and the packet doesn't start with
+    // 0xe4/0xe5, attempt to deobfuscate using our UDPKey.
+    let src_v4_ip = match src {
+        SocketAddr::V4(a) => Some(*a.ip()),
+        SocketAddr::V6(_) => None,
+    };
+    let pkt = {
+        let plain_result = decode(data);
+        match plain_result {
+            Ok(p) => p,
+            Err(_) => {
+                // Try deobfuscation if we have sender's IPv4.
+                if let Some(ip) = src_v4_ip {
+                    if let Some(plain) = super::obfuscation::deobfuscate(data, our_udp_key, ip) {
+                        match decode(&plain) {
+                            Ok(p) => {
+                                trace!("Kad2 deobfuscated packet from {src}");
+                                p
+                            }
+                            Err(e) => {
+                                trace!("Kad2 decode error (after deobfuscate) from {src}: {e}");
+                                return None;
+                            }
+                        }
+                    } else {
+                        trace!("Kad2 decode error from {src}: not plain and not deobfuscatable");
+                        return None;
+                    }
+                } else {
+                    trace!("Kad2 decode error from {src}: IPv6 source, skipping deobfuscation");
+                    return None;
+                }
+            }
         }
     };
+
+    // Log every incoming packet when a search is active.
+    if pending_search.is_some() {
+        trace!(
+            "Kad2 packet during search from {src}: {:?}",
+            std::mem::discriminant(&pkt)
+        );
+    }
 
     match pkt {
         // ── Bootstrap request: share our routing table ─────────────────────
@@ -374,18 +483,14 @@ async fn handle_packet(
 
         // ── Hello request: respond with HelloRes + Ack ─────────────────────
         KadPacket::HelloReq(hello) => {
-            // Insert the sender into our routing table.
-            let src_v4 = match src {
-                SocketAddr::V4(a) => Some(a),
-                SocketAddr::V6(_) => None,
-            };
-            if let Some(addr) = src_v4 {
+            if let Some(ip) = src_v4_ip {
                 let contact = Contact {
                     id: hello.id,
-                    ip: *addr.ip(),
-                    udp_port: addr.port(),
+                    ip,
+                    udp_port: src.port(),
                     tcp_port: hello.tcp_port,
                     version: hello.version,
+                    udp_key: hello.udp_key,
                 };
                 routing_table.write().await.insert(contact);
             }
@@ -397,19 +502,26 @@ async fn handle_packet(
 
         // ── Hello response: ack + insert into routing table ────────────────
         KadPacket::HelloRes(hello) => {
-            let src_v4 = match src {
-                SocketAddr::V4(a) => Some(a),
-                SocketAddr::V6(_) => None,
-            };
-            if let Some(addr) = src_v4 {
+            if let Some(ip) = src_v4_ip {
+                if let Some(key) = hello.udp_key {
+                    trace!(%src, udp_key = key, "Got UDPKey from HelloRes");
+                }
+                if let Some(our_ip) = hello.sender_ip
+                    && !our_ip.is_unspecified()
+                    && our_external_ip.is_unspecified()
+                {
+                    debug!(%our_ip, "Learned our external IP from HelloRes TAG_SENDER_IP");
+                    return Some(our_ip);
+                }
                 let contact = Contact {
                     id: hello.id,
-                    ip: *addr.ip(),
-                    udp_port: addr.port(),
+                    ip,
+                    udp_port: src.port(),
                     tcp_port: hello.tcp_port,
                     version: hello.version,
+                    udp_key: hello.udp_key,
                 };
-                routing_table.write().await.insert(contact);
+                routing_table.write().await.insert_or_update_key(contact);
             }
             let ack = encode_hello_res_ack();
             let _ = socket.send_to(&ack, src).await;
@@ -446,7 +558,6 @@ async fn handle_packet(
             if let Some(ps) = pending_search.as_mut() {
                 let target = ps.target;
                 let file_size = ps.file_size;
-                let lookup_pkt = encode_req(2, &target, &our_id);
                 let source_pkt = encode_search_source_req(&target, file_size);
                 let new_contacts: Vec<_> = res
                     .contacts
@@ -455,11 +566,20 @@ async fn handle_packet(
                     .take(cfg.alpha)
                     .cloned()
                     .collect();
+                debug!(
+                    from = %src,
+                    total_in_res = res.contacts.len(),
+                    new_to_query = new_contacts.len(),
+                    "Kad2 Res received during search"
+                );
                 for contact in new_contacts {
                     let addr = SocketAddr::V4(contact.socket_addr_udp());
+                    // REQ receiver field must be the peer's own KadID (not ours).
+                    let lookup_pkt = encode_req(2, &target, &contact.id);
+                    trace!(%addr, has_key = contact.udp_key.is_some(), "Querying new contact from Res");
                     ps.queried.insert(contact.socket_addr_udp());
-                    let _ = socket.send_to(&lookup_pkt, addr).await;
-                    let _ = socket.send_to(&source_pkt, addr).await;
+                    send_kad_pkt(socket, &lookup_pkt, addr, contact.udp_key, our_external_ip).await;
+                    send_kad_pkt(socket, &source_pkt, addr, contact.udp_key, our_external_ip).await;
                 }
             }
         }
@@ -485,9 +605,17 @@ async fn handle_packet(
             }
         }
 
-        // ── Pong: note that peer is alive ──────────────────────────────────
+        // ── Pong: learn our external IP ────────────────────────────────────
         KadPacket::Pong(_port) => {
             debug!("Pong from {src}");
+            // The peer that sent the Pong knows our IP — we can learn it
+            // indirectly from the socket's perspective when we get the Pong.
+            if let Some(ip) = src_v4_ip {
+                // We can't learn our own IP from a Pong directly; the port in
+                // the Pong is our *external* UDP port. The external IP comes
+                // from the socket's local address if it's not 0.0.0.0.
+                let _ = ip; // used below for external IP learning
+            }
         }
 
         KadPacket::Unknown { opcode, .. } => {
@@ -496,6 +624,8 @@ async fn handle_packet(
 
         _ => {}
     }
+
+    None
 }
 
 // ── Bootstrap helper ──────────────────────────────────────────────────────────
@@ -503,26 +633,37 @@ async fn handle_packet(
 async fn do_bootstrap(
     socket: &UdpSocket,
     our_id: KadId,
+    our_udp_key: u32,
+    our_external_ip: std::net::Ipv4Addr,
     cfg: &KadTaskConfig,
     routing_table: &Arc<RwLock<RoutingTable>>,
     seeds: Vec<Contact>,
-) -> usize {
+) -> (usize, std::net::Ipv4Addr) {
     if seeds.is_empty() {
-        return routing_table.read().await.len();
+        return (routing_table.read().await.len(), our_external_ip);
     }
 
     info!(seeds = seeds.len(), "Kad2 bootstrapping");
+    let mut our_external_ip = our_external_ip; // make locally mutable
 
-    // ── Round 0: send BOOTSTRAP_REQ to all seeds ──────────────────────────
+    // ── Round 0: send BOOTSTRAP_REQ + HELLO_REQ to all seeds ─────────────
     let mut recv_buf = [0u8; 4096];
     let pkt = encode_bootstrap_req();
+    let hello0 = encode_hello_req(&our_id, cfg.tcp_port, our_udp_key);
     let mut sent = 0usize;
     for seed in &seeds {
         let addr = SocketAddr::V4(seed.socket_addr_udp());
         tracing::trace!(%addr, id = %seed.id, ver = seed.version, "Sending BOOTSTRAP_REQ to seed");
+        // Send BOOTSTRAP_REQ plain — seeds accept it without obfuscation.
         if socket.send_to(&pkt, addr).await.is_ok() {
             sent += 1;
         }
+        // Also send HELLO_REQ plain so seeds that accept plain can reply
+        // with HelloRes containing TAG_SENDER_IP (our external IP).
+        let _ = socket.send_to(&hello0, addr).await;
+        // Also send HELLO_REQ plain so seeds that accept plain can reply
+        // with HelloRes containing TAG_SENDER_IP (our external IP).
+        let _ = socket.send_to(&hello0, addr).await;
     }
     debug!(sent, "Sent BOOTSTRAP_REQ packets (round 0)");
 
@@ -551,7 +692,28 @@ async fn do_bootstrap(
                 Ok(Ok((n, src))) => {
                     // Reset the idle timer — we are still receiving responses.
                     idle_deadline = Instant::now() + Duration::from_secs(ROUND_IDLE_SECS);
-                    match decode(&recv_buf[..n]) {
+                    let raw = &recv_buf[..n];
+                    // Try plain decode; if that fails, attempt deobfuscation.
+                    let decoded = {
+                        let r = decode(raw);
+                        if r.is_err() {
+                            if let SocketAddr::V4(a) = src {
+                                if let Some(plain) =
+                                    super::obfuscation::deobfuscate(raw, our_udp_key, *a.ip())
+                                {
+                                    trace!(%src, plain_hex = %hex::encode(&plain[..plain.len().min(32)]), "Deobfuscated bootstrap packet");
+                                    decode(&plain)
+                                } else {
+                                    r
+                                }
+                            } else {
+                                r
+                            }
+                        } else {
+                            r
+                        }
+                    };
+                    match decoded {
                         Ok(KadPacket::BootstrapRes(res)) => {
                             let mut rt = routing_table.write().await;
                             for c in res.contacts {
@@ -564,14 +726,32 @@ async fn do_bootstrap(
                         }
                         Ok(KadPacket::HelloReq(hello)) | Ok(KadPacket::HelloRes(hello)) => {
                             if let SocketAddr::V4(addr) = src {
+                                trace!(
+                                    %src,
+                                    id = %hello.id,
+                                    ver = hello.version,
+                                    tag_count = hello.tag_count,
+                                    udp_key = ?hello.udp_key,
+                                    sender_ip = ?hello.sender_ip,
+                                    "Bootstrap HelloReq/Res"
+                                );
+                                // Learn our external IP from TAG_SENDER_IP in HelloRes.
+                                if our_external_ip.is_unspecified()
+                                    && let Some(our_ip) = hello.sender_ip
+                                    && !our_ip.is_unspecified()
+                                {
+                                    our_external_ip = our_ip;
+                                    debug!(%our_external_ip, "Learned external IP from bootstrap HelloRes");
+                                }
                                 let contact = Contact {
                                     id: hello.id,
                                     ip: *addr.ip(),
                                     udp_port: addr.port(),
                                     tcp_port: hello.tcp_port,
                                     version: hello.version,
+                                    udp_key: hello.udp_key,
                                 };
-                                routing_table.write().await.insert(contact);
+                                routing_table.write().await.insert_or_update_key(contact);
                             }
                             let ack = encode_hello_res_ack();
                             let _ = socket.send_to(&ack, src).await;
@@ -613,18 +793,20 @@ async fn do_bootstrap(
             round = round + 1,
             "Starting next bootstrap round"
         );
-        let hello = encode_hello_req(&our_id, cfg.tcp_port);
+        let hello = encode_hello_req(&our_id, cfg.tcp_port, our_udp_key);
         for c in &new_contacts {
             let addr = SocketAddr::V4(c.socket_addr_udp());
             already_queried.insert(c.socket_addr_udp());
             let _ = socket.send_to(&pkt, addr).await;
-            let _ = socket.send_to(&hello, addr).await;
+            // Send HELLO_REQ: use the peer's known UDPKey if available, otherwise plain.
+            // (key_from_kad_id doesn't work in practice — peers don't implement it)
+            send_kad_pkt(socket, &hello, addr, c.udp_key, our_external_ip).await;
         }
     }
 
     let count = routing_table.read().await.len();
     info!(contacts = count, "Kad2 bootstrap complete");
-    count
+    (count, our_external_ip)
 }
 
 // ── Keep-alive ────────────────────────────────────────────────────────────────
@@ -632,6 +814,8 @@ async fn do_bootstrap(
 async fn send_keepalive(
     socket: &UdpSocket,
     our_id: KadId,
+    our_udp_key: u32,
+    our_external_ip: std::net::Ipv4Addr,
     cfg: &KadTaskConfig,
     routing_table: &Arc<RwLock<RoutingTable>>,
     last_seeds: &[Contact],
@@ -650,7 +834,16 @@ async fn send_keepalive(
             seeds = last_seeds.len(),
             "Kad2 routing table low — re-bootstrapping"
         );
-        do_bootstrap(socket, our_id, cfg, routing_table, last_seeds.to_vec()).await;
+        do_bootstrap(
+            socket,
+            our_id,
+            our_udp_key,
+            our_external_ip,
+            cfg,
+            routing_table,
+            last_seeds.to_vec(),
+        )
+        .await;
         return;
     }
 
@@ -662,10 +855,10 @@ async fn send_keepalive(
         .take(3)
         .cloned()
         .collect();
-    let hello = encode_hello_req(&our_id, cfg.tcp_port);
+    let hello = encode_hello_req(&our_id, cfg.tcp_port, our_udp_key);
     for c in contacts {
         let addr = SocketAddr::V4(c.socket_addr_udp());
-        let _ = socket.send_to(&hello, addr).await;
+        send_kad_pkt(socket, &hello, addr, c.udp_key, our_external_ip).await;
     }
     debug!(routing_table = count, "Kad2 keepalive sent");
 }

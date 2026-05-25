@@ -97,11 +97,21 @@ pub struct EmuleConfig {
     /// source search to work.  The eMule standard port is 4672.
     /// When running in a container, map this port with `-p 4672:4672/udp`.
     pub kad_port: u16,
+
+    /// Our external IPv4 address as seen by peers on the internet.
+    ///
+    /// Required for Kad2 UDP obfuscation.  If left as `None` (default), ruciod
+    /// tries to learn it via UPnP or from peer responses.  Set this explicitly
+    /// when UPnP is unavailable (e.g. CGNAT) via `RUCIOD_EXTERNAL_IP`.
+    pub external_ip: Option<std::net::Ipv4Addr>,
 }
 
 impl Default for EmuleConfig {
     fn default() -> Self {
-        Self { kad_port: 4672 }
+        Self {
+            kad_port: 4672,
+            external_ip: None,
+        }
     }
 }
 
@@ -378,6 +388,12 @@ impl Config {
             && n > 0
         {
             self.emule.kad_port = n;
+        }
+        if let Ok(v) = std::env::var("RUCIOD_EXTERNAL_IP")
+            && !v.is_empty()
+            && let Ok(ip) = v.parse::<std::net::Ipv4Addr>()
+        {
+            self.emule.external_ip = Some(ip);
         }
         // RUCIOD_UPNP=false / 0 / no disables UPnP; any other non-empty value enables it.
         if let Ok(v) = std::env::var("RUCIOD_UPNP")

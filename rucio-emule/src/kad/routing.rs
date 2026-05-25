@@ -105,6 +105,7 @@ pub fn parse_nodes_dat(data: &[u8]) -> Result<Vec<Contact>, RoutingError> {
                 udp_port,
                 tcp_port,
                 version,
+                udp_key: None,
             });
         }
     }
@@ -205,6 +206,23 @@ impl RoutingTable {
         self.buckets[idx].add(contact)
     }
 
+    /// Insert a contact, or update its `udp_key` if it already exists.
+    pub fn insert_or_update_key(&mut self, contact: Contact) -> bool {
+        if contact.id == self.our_id {
+            return false;
+        }
+        let idx = bucket_index(&self.our_id, &contact.id);
+        let bucket = &mut self.buckets[idx];
+        // If already present, update the key.
+        if let Some(existing) = bucket.entries.iter_mut().find(|c| c.id == contact.id) {
+            if contact.udp_key.is_some() {
+                existing.udp_key = contact.udp_key;
+            }
+            return false;
+        }
+        bucket.add(contact)
+    }
+
     /// Load all contacts from a parsed `nodes.dat`.
     pub fn load_nodes_dat(&mut self, contacts: Vec<Contact>) {
         for c in contacts {
@@ -265,6 +283,7 @@ mod tests {
             udp_port: udp,
             tcp_port: tcp,
             version: 9,
+            udp_key: None,
         }
     }
 

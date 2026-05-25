@@ -29,6 +29,7 @@ flate2   = { workspace = true }
 
 # utils
 tracing  = { workspace = true }
+md-5 = "0.11.0"
 
 [dev-dependencies]
 tempfile = { workspace = true }
