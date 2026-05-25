@@ -37,9 +37,26 @@ pub struct NetworkConfig {
     ///
     /// Must be reachable from the internet for peers to connect.
     /// When running in a container, map this port with `-p 4321:4321`.
-    /// UPnP will attempt to open this port automatically.
+    /// UPnP will attempt to open this port automatically when `upnp = true`.
     #[serde(default = "NetworkConfig::default_listen_port")]
     pub listen_port: u16,
+    /// Enable UPnP/IGD automatic port mapping.  Default: `true`.
+    ///
+    /// When enabled, the daemon asks the LAN router to forward:
+    ///   - TCP `listen_port` (libp2p)
+    ///   - UDP `emule.kad_port` (Kad2, only with the `emule-compat` feature)
+    ///
+    /// Set to `false` if:
+    ///   - You have already configured port forwarding manually on your router.
+    ///   - You are running on a VPS / cloud server with no NAT (direct public IP).
+    ///   - You are running inside a container without `-p` mappings and the host
+    ///     handles forwarding externally.
+    ///   - UPnP is disabled or unavailable on your network.
+    ///
+    /// When `false`, the daemon starts without attempting UPnP discovery and
+    /// the `external_ip` field in `/api/v1/status` will always be `null`.
+    #[serde(default = "NetworkConfig::default_upnp")]
+    pub upnp: bool,
     /// Upload bandwidth limit in KB/s.  0 = unlimited (default).
     #[serde(default)]
     pub upload_limit_kbps: u64,
@@ -52,6 +69,10 @@ impl NetworkConfig {
     fn default_listen_port() -> u16 {
         4321
     }
+
+    fn default_upnp() -> bool {
+        true
+    }
 }
 
 impl Default for NetworkConfig {
@@ -59,6 +80,7 @@ impl Default for NetworkConfig {
         Self {
             bootstrap_peers: vec![],
             listen_port: Self::default_listen_port(),
+            upnp: Self::default_upnp(),
             upload_limit_kbps: 0,
             download_limit_kbps: 0,
         }
@@ -296,6 +318,7 @@ impl Config {
     /// | `RUCIOD_EMULE_TEMP_DIR`     | `storage.emule_temp_dir`     | path               |
     /// | `RUCIOD_NODES_DAT`          | `storage.nodes_dat_path`     | path               |
     /// | `RUCIOD_KAD_PORT`           | `emule.kad_port`             | integer 1-65535    |
+    /// | `RUCIOD_UPNP`               | `network.upnp`               | `true`/`false`     |
     pub fn apply_env_overrides(&mut self) {
         if let Ok(v) = std::env::var("RUCIOD_API_LISTEN")
             && !v.is_empty()
@@ -355,6 +378,12 @@ impl Config {
             && n > 0
         {
             self.emule.kad_port = n;
+        }
+        // RUCIOD_UPNP=false / 0 / no disables UPnP; any other non-empty value enables it.
+        if let Ok(v) = std::env::var("RUCIOD_UPNP")
+            && !v.is_empty()
+        {
+            self.network.upnp = !matches!(v.to_lowercase().as_str(), "false" | "0" | "no" | "off");
         }
     }
 

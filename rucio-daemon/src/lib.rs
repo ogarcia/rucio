@@ -175,14 +175,19 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     };
 
     // --- UPnP port mapping --------------------------------------------------
-    let upnp_cfg = upnp::UpnpConfig {
-        tcp_port: config.network.listen_port,
-        #[cfg(feature = "emule-compat")]
-        udp_port: Some(config.emule.kad_port),
-        #[cfg(not(feature = "emule-compat"))]
-        udp_port: None,
+    let external_ip = if config.network.upnp {
+        let upnp_cfg = upnp::UpnpConfig {
+            tcp_port: config.network.listen_port,
+            #[cfg(feature = "emule-compat")]
+            udp_port: Some(config.emule.kad_port),
+            #[cfg(not(feature = "emule-compat"))]
+            udp_port: None,
+        };
+        upnp::spawn(upnp_cfg)
+    } else {
+        info!("UPnP disabled by configuration");
+        Arc::new(tokio::sync::RwLock::new(None))
     };
-    let external_ip = upnp::spawn(upnp_cfg);
 
     let app_state = api::AppState {
         db: db.clone(),
