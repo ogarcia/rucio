@@ -197,6 +197,9 @@ pub struct AppState {
     pub upload_throttle: Arc<TokenBucket>,
     /// Download bandwidth throttle (global, across all peers).  0 KB/s = unlimited.
     pub download_throttle: Arc<TokenBucket>,
+    /// Handle to the Kad2 background task (only present with `emule-compat` feature).
+    #[cfg(feature = "emule-compat")]
+    pub kad_handle: rucio_emule::kad::task::KadHandle,
 }
 
 /// Live node status kept in memory and updated by the event loop.

@@ -146,18 +146,28 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     // --- API server ---------------------------------------------------------
     let (ws_tx, _) = tokio::sync::broadcast::channel::<WsEvent>(256);
 
-    // --- Kad2 UDP socket (emule-compat) -------------------------------------
+    // --- Kad2 background task (emule-compat) --------------------------------
     #[cfg(feature = "emule-compat")]
-    let kad_socket = {
-        match crate::emule::bind_kad_socket(&config).await {
-            Ok(s) => s,
+    let kad_handle = {
+        match crate::emule::start_kad_task(&config).await {
+            Ok(h) => h,
             Err(e) => {
-                warn!("Failed to bind Kad2 UDP socket: {e} — eMule downloads will not work");
-                // Create a fallback on an ephemeral port so the daemon still starts.
-                Arc::new(
+                warn!("Failed to start Kad2 task: {e} — eMule downloads will not work");
+                // Fallback: bind ephemeral port so we at least compile.
+                let socket = Arc::new(
                     tokio::net::UdpSocket::bind("0.0.0.0:0")
                         .await
                         .expect("bind fallback UDP socket"),
+                );
+                let port = config.emule.kad_port;
+                warn!(
+                    port,
+                    "Falling back to ephemeral Kad2 socket — NAT will block replies"
+                );
+                rucio_emule::kad::task::spawn(
+                    socket,
+                    rucio_emule::kad::packet::KadId::random(),
+                    rucio_emule::kad::task::KadTaskConfig::default(),
                 )
             }
         }
@@ -177,6 +187,8 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
         metrics: Arc::clone(&session_metrics),
         upload_throttle: Arc::clone(&upload_throttle),
         download_throttle: Arc::clone(&download_throttle),
+        #[cfg(feature = "emule-compat")]
+        kad_handle: kad_handle.clone(),
     };
 
     let listen_addr = config.api.listen.clone();
@@ -187,13 +199,16 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
         }
     });
 
-    // --- eMule: auto-bootstrap nodes.dat if missing -------------------------
+    // --- eMule: auto-bootstrap nodes.dat + Kad2 network --------------------
     #[cfg(feature = "emule-compat")]
     {
         let save_path = crate::emule::effective_nodes_dat_path(&config);
+        let kad = kad_handle.clone();
+        let config_clone = Arc::clone(&config);
 
-        if !save_path.exists() {
-            tokio::spawn(async move {
+        tokio::spawn(async move {
+            // Step 1: ensure nodes.dat is present.
+            if !save_path.exists() {
                 info!(path = %save_path.display(), "nodes.dat not found — downloading in background");
                 match crate::emule::bootstrap_nodes_dat(
                     &save_path,
@@ -202,10 +217,37 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                 .await
                 {
                     Ok(n) => info!(contacts = n, path = %save_path.display(), "nodes.dat ready"),
-                    Err(e) => warn!("Auto-bootstrap of nodes.dat failed: {e}"),
+                    Err(e) => {
+                        warn!("Auto-bootstrap of nodes.dat failed: {e}");
+                        return;
+                    }
                 }
-            });
-        }
+            }
+
+            // Step 2: bootstrap the Kad2 routing table.
+            let bytes = match std::fs::read(&save_path) {
+                Ok(b) => b,
+                Err(e) => {
+                    warn!("Failed to read nodes.dat for bootstrap: {e}");
+                    return;
+                }
+            };
+            let contacts = match rucio_emule::kad::routing::parse_nodes_dat(&bytes) {
+                Ok(c) => c,
+                Err(e) => {
+                    warn!("Failed to parse nodes.dat: {e}");
+                    return;
+                }
+            };
+            if contacts.is_empty() {
+                warn!("nodes.dat is empty — Kad2 bootstrap skipped");
+                return;
+            }
+            let seeds: Vec<_> = contacts.into_iter().take(50).collect();
+            let count = kad.bootstrap(seeds).await;
+            info!(contacts = count, "Kad2 startup bootstrap complete");
+            let _ = config_clone; // keep alive
+        });
     }
 
     // --- Main loop ----------------------------------------------------------
@@ -315,10 +357,10 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                                 let config = config.clone();
                                 let db = db.clone();
                                 let ws_tx = ws_tx.clone();
-                                let socket = Arc::clone(&kad_socket);
+                                let kad = kad_handle.clone();
                                 tokio::spawn(async move {
                                     if let Err(e) = crate::emule::run_ed2k_download(
-                                        &link, &config, &db, &ws_tx, socket,
+                                        &link, &config, &db, &ws_tx, &kad,
                                     )
                                     .await
                                     {

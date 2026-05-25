@@ -69,6 +69,15 @@ async fn test_state() -> (
         metrics: Arc::new(crate::metrics::Metrics::default()),
         upload_throttle: Arc::new(crate::throttle::TokenBucket::new(0)),
         download_throttle: Arc::new(crate::throttle::TokenBucket::new(0)),
+        #[cfg(feature = "emule-compat")]
+        kad_handle: {
+            let socket = Arc::new(tokio::net::UdpSocket::bind("0.0.0.0:0").await.unwrap());
+            rucio_emule::kad::task::spawn(
+                socket,
+                rucio_emule::kad::packet::KadId::random(),
+                rucio_emule::kad::task::KadTaskConfig::default(),
+            )
+        },
     };
     (state, cmd_rx, download_rx, dir)
 }

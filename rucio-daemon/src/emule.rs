@@ -8,8 +8,7 @@
 use anyhow::{Context, Result};
 use rucio_emule::Ed2kLink;
 use rucio_emule::kad::packet::KadId;
-use rucio_emule::kad::routing::RoutingTable;
-use rucio_emule::kad::search::{SearchConfig, bootstrap, search_sources};
+use rucio_emule::kad::task::{KadHandle, KadTaskConfig};
 use rucio_emule::transfer::{DownloadEvent, DownloadOptions, download_file};
 use std::sync::Arc;
 use std::time::Duration;
@@ -21,26 +20,33 @@ use crate::config::Config;
 use crate::db::Db;
 use rucio_core::api::ws::WsEvent;
 
-/// Bind the persistent Kad2 UDP socket on the configured port.
+/// Bind the persistent Kad2 UDP socket on the configured port and spawn the
+/// Kad2 background task.
 ///
-/// This socket is created once at daemon startup and shared across all
-/// `bootstrap()` and `search_sources()` calls.  Using a fixed, known port
-/// is required so that remote Kad2 nodes can send replies back to us —
-/// an ephemeral port would be unreachable behind NAT or in a container.
-pub async fn bind_kad_socket(config: &Config) -> Result<Arc<UdpSocket>> {
+/// The returned [`KadHandle`] is the only way to interact with Kad2 from the
+/// rest of the daemon — it must **not** share the underlying socket.
+pub async fn start_kad_task(config: &Config) -> Result<KadHandle> {
     let port = config.emule.kad_port;
     let socket = UdpSocket::bind(format!("0.0.0.0:{port}"))
         .await
         .with_context(|| format!("bind Kad2 UDP socket on port {port}"))?;
     info!(port, "Kad2 UDP socket bound");
-    Ok(Arc::new(socket))
+
+    let our_id = KadId::random();
+    let task_cfg = KadTaskConfig {
+        tcp_port: config.emule.kad_port, // advertise same port (TCP unused for now)
+        ..KadTaskConfig::default()
+    };
+
+    let handle = rucio_emule::kad::task::spawn(Arc::new(socket), our_id, task_cfg);
+    Ok(handle)
 }
 
-/// Run a full eMule download pipeline:
+/// Run a full eMule download pipeline using the running Kad2 task:
 ///
 /// 1. Parse the `ed2k://` link.
-/// 2. Load `nodes.dat` and bootstrap the Kad2 routing table.
-/// 3. Search the Kad2 network for sources.
+/// 2. Bootstrap the Kad2 routing table from nodes.dat (if not already connected).
+/// 3. Search the Kad2 network for sources via the `KadHandle`.
 /// 4. Download the file from discovered peers.
 /// 5. Verify the final file with its ed2k hash.
 /// 6. Compute the BLAKE3 hash for Rucio DHT integration.
@@ -49,62 +55,48 @@ pub async fn run_ed2k_download(
     config: &Arc<Config>,
     _db: &Db,
     ws_tx: &broadcast::Sender<WsEvent>,
-    kad_socket: Arc<UdpSocket>,
+    kad: &KadHandle,
 ) -> Result<()> {
     // 1. Parse the link.
     let link = Ed2kLink::parse(link_str).with_context(|| format!("parse ed2k link: {link_str}"))?;
     info!(name = %link.name, size = link.size, hash = %link.hash, "Starting eMule download");
 
-    // 2. Load nodes.dat.
-    let nodes_dat_path = effective_nodes_dat_path(config);
-
-    let nodes_dat_bytes = std::fs::read(&nodes_dat_path)
-        .with_context(|| format!("read nodes.dat: {}", nodes_dat_path.display()))?;
-
-    let contacts =
-        rucio_emule::kad::routing::parse_nodes_dat(&nodes_dat_bytes).context("parse nodes.dat")?;
-    info!(count = contacts.len(), "Loaded nodes.dat");
-
-    if contacts.is_empty() {
-        anyhow::bail!("nodes.dat contains no valid Kad2 contacts");
+    // 2. Bootstrap if the routing table is thin.
+    let contact_count = kad.contact_count().await;
+    if contact_count < 4 {
+        info!(
+            contact_count,
+            "Routing table thin — bootstrapping from nodes.dat"
+        );
+        let nodes_dat_path = effective_nodes_dat_path(config);
+        let nodes_dat_bytes = std::fs::read(&nodes_dat_path)
+            .with_context(|| format!("read nodes.dat: {}", nodes_dat_path.display()))?;
+        let contacts = rucio_emule::kad::routing::parse_nodes_dat(&nodes_dat_bytes)
+            .context("parse nodes.dat")?;
+        info!(count = contacts.len(), "Loaded nodes.dat contacts");
+        if contacts.is_empty() {
+            anyhow::bail!("nodes.dat contains no valid Kad2 contacts");
+        }
+        let seeds: Vec<_> = contacts.into_iter().take(50).collect();
+        let after = kad.bootstrap(seeds).await;
+        info!(contacts = after, "Kad2 bootstrap done");
+    } else {
+        info!(
+            contact_count,
+            "Kad2 routing table ready, skipping bootstrap"
+        );
     }
 
-    // 3. Bootstrap routing table.
-    let mut routing_table = RoutingTable::new(KadId::random());
-    let seeds: Vec<_> = contacts.iter().take(20).cloned().collect();
-    routing_table.load_nodes_dat(contacts);
+    // 3. Search for sources.
+    info!("Searching Kad2 for sources");
+    let sources = kad.search_sources(link.hash, link.size).await;
 
-    bootstrap(
-        &mut routing_table,
-        &seeds,
-        Duration::from_secs(5),
-        Arc::clone(&kad_socket),
-    )
-    .await
-    .context("Kad2 bootstrap")?;
-    info!(contacts = routing_table.len(), "Kad2 routing table ready");
-
-    // 4. Search for sources.
-    let search_cfg = SearchConfig {
-        timeout: Duration::from_secs(30),
-        request_timeout: Duration::from_secs(5),
-        max_sources: 50,
-        file_size: link.size,
-        ..SearchConfig::default()
-    };
-
-    let results = search_sources(&link.hash, &routing_table, search_cfg, kad_socket)
-        .await
-        .context("Kad2 source search")?;
-
-    if results.sources.is_empty() {
+    if sources.is_empty() {
         anyhow::bail!("No sources found for {} ({})", link.name, link.hash);
     }
-    info!(sources = results.sources.len(), "Found eMule sources");
+    info!(sources = sources.len(), "Found eMule sources");
 
-    // 5. Download from the first available source.
-    // In a production implementation we would try multiple sources and retry failed
-    // chunks from others.  For now we try sources sequentially until one succeeds.
+    // 4. Download from discovered sources.
     let emule_temp = &config.storage.emule_temp_dir;
     std::fs::create_dir_all(emule_temp)
         .with_context(|| format!("create emule temp dir: {}", emule_temp.display()))?;
@@ -113,7 +105,7 @@ pub async fn run_ed2k_download(
     let final_path = config.storage.download_dir.join(&link.name);
 
     let mut downloaded = false;
-    for source in &results.sources {
+    for source in &sources {
         if source.tcp_port == 0 || source.ip.is_unspecified() {
             continue;
         }
@@ -182,7 +174,7 @@ pub async fn run_ed2k_download(
         anyhow::bail!("All eMule sources failed for {}", link.name);
     }
 
-    // 6. Move to download dir and compute BLAKE3 hash.
+    // 5. Move to download dir and compute BLAKE3 hash.
     std::fs::create_dir_all(config.storage.download_dir.as_path())
         .context("create download dir")?;
     tokio::fs::rename(&part_path, &final_path)
@@ -213,9 +205,6 @@ pub async fn run_ed2k_download(
 
 /// Resolve the effective `nodes.dat` path: the configured value when present,
 /// otherwise the platform default (`$XDG_DATA_HOME/rucio/nodes.dat`).
-///
-/// This mirrors the logic used at startup for the auto-bootstrap task and in
-/// the `GET /api/v1/emule/status` handler so all code agrees on one path.
 pub fn effective_nodes_dat_path(config: &crate::config::Config) -> std::path::PathBuf {
     config.storage.nodes_dat_path.clone().unwrap_or_else(|| {
         dirs::data_local_dir()
@@ -226,10 +215,6 @@ pub fn effective_nodes_dat_path(config: &crate::config::Config) -> std::path::Pa
 }
 
 /// Download a fresh `nodes.dat` from `url` and save it to `path`.
-///
-/// Returns the number of Kad2 contacts parsed from the file, or an error if
-/// the download or parse failed.  Called at daemon startup when no
-/// `nodes.dat` is present, and by the `POST /api/v1/emule/bootstrap` handler.
 pub async fn bootstrap_nodes_dat(path: &std::path::Path, url: &str) -> Result<usize> {
     use rucio_core::api::emule::EMULE_USER_AGENT;
 

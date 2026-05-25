@@ -616,6 +616,66 @@ pub fn encode_ping() -> Vec<u8> {
     vec![KAD2_PROTO, Opcode::Ping as u8]
 }
 
+/// Build a `KADEMLIA2_PONG` packet, echoing back the caller's external UDP port.
+pub fn encode_pong(external_port: u16) -> Vec<u8> {
+    let mut buf = vec![KAD2_PROTO, Opcode::Pong as u8];
+    write_u16(&mut buf, external_port).unwrap();
+    buf
+}
+
+/// Build a `KADEMLIA2_HELLO_RES` advertising our node.
+pub fn encode_hello_res(our_id: &KadId, tcp_port: u16) -> Vec<u8> {
+    let mut buf = vec![KAD2_PROTO, Opcode::HelloRes as u8];
+    our_id.write_to(&mut buf).unwrap();
+    write_u16(&mut buf, tcp_port).unwrap();
+    buf.push(KAD_VERSION);
+    buf.push(0); // tag count = 0
+    buf
+}
+
+/// Build a `KADEMLIA2_HELLO_RES_ACK` packet.
+pub fn encode_hello_res_ack() -> Vec<u8> {
+    vec![KAD2_PROTO, Opcode::HelloResAck as u8]
+}
+
+/// Build a `KADEMLIA2_BOOTSTRAP_RES` with the given contacts.
+///
+/// Sends up to 20 contacts from the routing table.
+pub fn encode_bootstrap_res(our_id: &KadId, tcp_port: u16, contacts: &[Contact]) -> Vec<u8> {
+    let mut buf = vec![KAD2_PROTO, Opcode::BootstrapRes as u8];
+    our_id.write_to(&mut buf).unwrap();
+    write_u16(&mut buf, tcp_port).unwrap();
+    buf.push(KAD_VERSION);
+    let count = contacts.len().min(20) as u16;
+    write_u16(&mut buf, count).unwrap();
+    for c in contacts.iter().take(20) {
+        c.id.write_to(&mut buf).unwrap();
+        let ip_u32 = u32::from_be_bytes(c.ip.octets());
+        buf.extend_from_slice(&ip_u32.to_le_bytes());
+        write_u16(&mut buf, c.udp_port).unwrap();
+        write_u16(&mut buf, c.tcp_port).unwrap();
+        buf.push(c.version);
+    }
+    buf
+}
+
+/// Build a `KADEMLIA2_RES` node-lookup response.
+pub fn encode_res(target: &KadId, contacts: &[Contact]) -> Vec<u8> {
+    let mut buf = vec![KAD2_PROTO, Opcode::Res as u8];
+    target.write_to(&mut buf).unwrap();
+    let count = contacts.len().min(20) as u8;
+    buf.push(count);
+    for c in contacts.iter().take(20) {
+        c.id.write_to(&mut buf).unwrap();
+        let ip_u32 = u32::from_be_bytes(c.ip.octets());
+        buf.extend_from_slice(&ip_u32.to_le_bytes());
+        write_u16(&mut buf, c.udp_port).unwrap();
+        write_u16(&mut buf, c.tcp_port).unwrap();
+        buf.push(c.version);
+    }
+    buf
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

@@ -36,7 +36,7 @@ pub async fn get_emule_status(State(state): State<AppState>) -> Json<EmuleStatus
             Err(_) => (false, 0),
         };
 
-        let connected_peers = state.node_status.read().await.connected_peers;
+        let connected_peers = state.kad_handle.contact_count().await;
 
         EmuleStatusResponse {
             feature_enabled: true,
