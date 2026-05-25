@@ -252,7 +252,7 @@ async fn run_task(
                             let _ = reply.send(vec![]);
                             continue;
                         }
-                        let target = KadId::from_bytes(*hash.as_bytes());
+                        let target = KadId::from_ed2k_hash(hash.as_bytes());
                         let deadline = Instant::now() + cfg.search_timeout;
                         // Start iterative lookup.
                         start_lookup(
@@ -493,8 +493,8 @@ async fn do_bootstrap(
 
     // Collect responses; also send BOOTSTRAP_REQ to newly discovered contacts
     // for up to `BOOTSTRAP_ROUNDS` additional rounds.
-    const BOOTSTRAP_ROUNDS: usize = 3;
-    const TARGET_CONTACTS: usize = 50;
+    const BOOTSTRAP_ROUNDS: usize = 5;
+    const TARGET_CONTACTS: usize = 200;
     let mut already_queried: std::collections::HashSet<std::net::SocketAddrV4> =
         seeds.iter().map(|c| c.socket_addr_udp()).collect();
 
