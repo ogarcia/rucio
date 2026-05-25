@@ -729,4 +729,55 @@ mod tests {
         // 16 bytes target + 2 bytes start + 8 bytes size = 26 payload bytes
         assert_eq!(pkt.len(), 2 + 16 + 2 + 8);
     }
+
+    /// Regression test: contact IPs in BootstrapRes and Res must survive an
+    /// encode → decode roundtrip with the correct byte order (LE on the wire).
+    #[test]
+    fn test_bootstrap_res_ip_roundtrip() {
+        use std::net::Ipv4Addr;
+
+        let our_id = KadId::from_bytes([0xab; 16]);
+        let contact = Contact {
+            id: KadId::from_bytes([0x01; 16]),
+            ip: Ipv4Addr::new(192, 168, 1, 100),
+            udp_port: 4672,
+            tcp_port: 4662,
+            version: 11,
+        };
+
+        let pkt = encode_bootstrap_res(&our_id, 4662, std::slice::from_ref(&contact));
+        let decoded = decode(&pkt).unwrap();
+
+        let KadPacket::BootstrapRes(res) = decoded else {
+            panic!("expected BootstrapRes");
+        };
+        assert_eq!(res.contacts.len(), 1);
+        assert_eq!(res.contacts[0].ip, Ipv4Addr::new(192, 168, 1, 100));
+        assert_eq!(res.contacts[0].udp_port, 4672);
+    }
+
+    /// Same check for Res (node-lookup response).
+    #[test]
+    fn test_res_ip_roundtrip() {
+        use std::net::Ipv4Addr;
+
+        let target = KadId::from_bytes([0x77; 16]);
+        let contact = Contact {
+            id: KadId::from_bytes([0x02; 16]),
+            ip: Ipv4Addr::new(10, 0, 0, 1),
+            udp_port: 4672,
+            tcp_port: 4662,
+            version: 11,
+        };
+
+        let pkt = encode_res(&target, std::slice::from_ref(&contact));
+        let decoded = decode(&pkt).unwrap();
+
+        let KadPacket::Res(res) = decoded else {
+            panic!("expected Res");
+        };
+        assert_eq!(res.contacts.len(), 1);
+        assert_eq!(res.contacts[0].ip, Ipv4Addr::new(10, 0, 0, 1));
+        assert_eq!(res.contacts[0].udp_port, 4672);
+    }
 }
