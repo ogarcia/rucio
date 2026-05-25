@@ -474,7 +474,8 @@ async fn do_bootstrap(
 
     info!(seeds = seeds.len(), "Kad2 bootstrapping");
 
-    // Send BOOTSTRAP_REQ to all seeds.
+    // ── Round 0: send BOOTSTRAP_REQ to all seeds ──────────────────────────
+    let mut recv_buf = [0u8; 4096];
     let pkt = encode_bootstrap_req();
     let mut sent = 0usize;
     for seed in &seeds {
@@ -483,79 +484,84 @@ async fn do_bootstrap(
             sent += 1;
         }
     }
-    debug!(sent, "Sent BOOTSTRAP_REQ packets");
+    debug!(sent, "Sent BOOTSTRAP_REQ packets (round 0)");
 
-    // Collect responses for request_timeout * 2.
-    let deadline = Instant::now() + cfg.request_timeout * 2;
-    let mut recv_buf = [0u8; 4096];
-    loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
+    // Collect responses; also send BOOTSTRAP_REQ to newly discovered contacts
+    // for up to `BOOTSTRAP_ROUNDS` additional rounds.
+    const BOOTSTRAP_ROUNDS: usize = 3;
+    const TARGET_CONTACTS: usize = 50;
+    let mut already_queried: std::collections::HashSet<std::net::SocketAddrV4> =
+        seeds.iter().map(|c| c.socket_addr_udp()).collect();
+
+    for round in 0..BOOTSTRAP_ROUNDS {
+        let deadline = Instant::now() + cfg.request_timeout * 2;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            match timeout(remaining, socket.recv_from(&mut recv_buf)).await {
+                Ok(Ok((n, src))) => match decode(&recv_buf[..n]) {
+                    Ok(KadPacket::BootstrapRes(res)) => {
+                        let mut rt = routing_table.write().await;
+                        let before = rt.len();
+                        for c in res.contacts {
+                            rt.insert(c);
+                        }
+                        debug!(
+                            "BootstrapRes from {src} (round {round}), table={}",
+                            rt.len()
+                        );
+                        let _ = before;
+                    }
+                    Ok(KadPacket::HelloReq(hello)) | Ok(KadPacket::HelloRes(hello)) => {
+                        if let SocketAddr::V4(addr) = src {
+                            let contact = Contact {
+                                id: hello.id,
+                                ip: *addr.ip(),
+                                udp_port: addr.port(),
+                                tcp_port: hello.tcp_port,
+                                version: hello.version,
+                            };
+                            routing_table.write().await.insert(contact);
+                        }
+                        let ack = encode_hello_res_ack();
+                        let _ = socket.send_to(&ack, src).await;
+                    }
+                    _ => {}
+                },
+                Ok(Err(e)) => warn!("bootstrap recv error: {e}"),
+                Err(_) => break,
+            }
+        }
+
+        let count = routing_table.read().await.len();
+        if count >= TARGET_CONTACTS {
             break;
         }
-        match timeout(remaining, socket.recv_from(&mut recv_buf)).await {
-            Ok(Ok((n, src))) => {
-                if let Ok(KadPacket::BootstrapRes(res)) = decode(&recv_buf[..n]) {
-                    let mut rt = routing_table.write().await;
-                    for c in res.contacts {
-                        rt.insert(c);
-                    }
-                    debug!("BootstrapRes from {src}, table={}", rt.len());
-                }
-            }
-            Ok(Err(e)) => warn!("bootstrap recv error: {e}"),
-            Err(_) => break,
-        }
-    }
 
-    // Send HELLO_REQ to the 10 closest contacts we now know about.
-    let contacts = {
-        let rt = routing_table.read().await;
-        rt.all_contacts().take(10).cloned().collect::<Vec<_>>()
-    };
-    let hello = encode_hello_req(&our_id, cfg.tcp_port);
-    for c in &contacts {
-        let addr = SocketAddr::V4(c.socket_addr_udp());
-        let _ = socket.send_to(&hello, addr).await;
-    }
-
-    // Brief wait for HelloRes.
-    let deadline = Instant::now() + cfg.request_timeout;
-    loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
+        // Send BOOTSTRAP_REQ + HELLO_REQ to newly discovered contacts.
+        let new_contacts: Vec<_> = {
+            let rt = routing_table.read().await;
+            rt.all_contacts()
+                .filter(|c| !already_queried.contains(&c.socket_addr_udp()))
+                .cloned()
+                .collect()
+        };
+        if new_contacts.is_empty() {
             break;
         }
-        match timeout(remaining, socket.recv_from(&mut recv_buf)).await {
-            Ok(Ok((n, src))) => {
-                if let Ok(pkt) = decode(&recv_buf[..n]) {
-                    match pkt {
-                        KadPacket::HelloRes(hello) | KadPacket::HelloReq(hello) => {
-                            if let SocketAddr::V4(addr) = src {
-                                let contact = Contact {
-                                    id: hello.id,
-                                    ip: *addr.ip(),
-                                    udp_port: addr.port(),
-                                    tcp_port: hello.tcp_port,
-                                    version: hello.version,
-                                };
-                                routing_table.write().await.insert(contact);
-                            }
-                            let ack = encode_hello_res_ack();
-                            let _ = socket.send_to(&ack, src).await;
-                        }
-                        KadPacket::BootstrapRes(res) => {
-                            let mut rt = routing_table.write().await;
-                            for c in res.contacts {
-                                rt.insert(c);
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            Ok(Err(e)) => warn!("bootstrap hello recv error: {e}"),
-            Err(_) => break,
+        debug!(
+            new = new_contacts.len(),
+            round = round + 1,
+            "Starting next bootstrap round"
+        );
+        let hello = encode_hello_req(&our_id, cfg.tcp_port);
+        for c in &new_contacts {
+            let addr = SocketAddr::V4(c.socket_addr_udp());
+            already_queried.insert(c.socket_addr_udp());
+            let _ = socket.send_to(&pkt, addr).await;
+            let _ = socket.send_to(&hello, addr).await;
         }
     }
 
