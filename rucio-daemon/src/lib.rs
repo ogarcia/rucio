@@ -253,13 +253,17 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     });
 
     // --- eMule: ensure nodes.dat is present (download if missing) -----------
-    // The Kad2 routing table was already bootstrapped in start_kad_task() from
-    // kad_cache.dat + nodes.dat.  This block only downloads nodes.dat in the
-    // background when it is absent so future restarts have a seed file.
+    // On a cold start (no nodes.dat, no kad_cache.dat) the Kad2 routing table
+    // is empty.  We download nodes.dat in the background and, once it lands on
+    // disk, immediately feed its contacts into the running Kad2 task so the
+    // node starts connecting to the eMule network without waiting for the first
+    // download request.
     #[cfg(feature = "emule-compat")]
     {
         let save_path = crate::emule::effective_nodes_dat_path(&config);
         if !save_path.exists() {
+            let kad_cold = kad_handle.clone();
+            let config_cold = config.clone();
             tokio::spawn(async move {
                 info!(path = %save_path.display(), "nodes.dat not found — downloading in background");
                 match crate::emule::bootstrap_nodes_dat(
@@ -269,7 +273,14 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                 .await
                 {
                     Ok(n) => {
-                        info!(contacts = n, path = %save_path.display(), "nodes.dat downloaded")
+                        info!(contacts = n, path = %save_path.display(), "nodes.dat downloaded");
+                        // Feed the fresh contacts into the live Kad2 task so it
+                        // starts connecting immediately (cold-start bootstrap).
+                        let seeds = crate::emule::load_kad_seeds(&config_cold, 200);
+                        if !seeds.is_empty() {
+                            let seeded = kad_cold.bootstrap(seeds).await;
+                            info!(contacts = seeded, "Kad2 cold-start bootstrap complete");
+                        }
                     }
                     Err(e) => warn!("Failed to download nodes.dat: {e}"),
                 }
