@@ -274,7 +274,7 @@ the file value untouched.
 | `RUCIOD_DOWNLOAD_LIMIT_KBPS` | `network.download_limit_kbps` | `0` (unlimited) | integer KB/s |
 | `RUCIOD_UPNP` | `network.upnp` | `true` | `true`/`false` (also `1`/`0`, `yes`/`no`, `on`/`off`) |
 | `RUCIOD_NODES_DAT` | `storage.nodes_dat_path` | *(unset)* | path |
-| `RUCIOD_EMULE_TEMP_DIR` | `storage.emule_temp_dir` | platform default | path |
+| `RUCIOD_EMULE_TEMP_DIR` | `emule.temp_dir` | platform default | path |
 | `RUCIOD_EMULE_UDP_PORT` | `emule.udp_port` | `4672` | integer 1–65535 |
 | `RUCIOD_EMULE_TCP_PORT` | `emule.tcp_port` | `4662` | integer 1–65535 |
 | `RUCIOD_EXTERNAL_IP` | `emule.external_ip` | *(auto)* | IPv4 address |

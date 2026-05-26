@@ -91,6 +91,13 @@ impl Default for NetworkConfig {
 /// Only meaningful when the `emule-compat` feature is compiled in.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmuleConfig {
+    /// Directory for in-progress eMule downloads (.part files).
+    ///
+    /// Separate from the rucio temp dir so eMule and libp2p partials never
+    /// mix.  Override via `RUCIOD_EMULE_TEMP_DIR`.
+    #[serde(default = "default_emule_temp_dir")]
+    pub temp_dir: PathBuf,
+
     /// UDP port for the persistent Kad2 socket.
     ///
     /// This port must be reachable from the internet for Kad2 bootstrap and
@@ -145,6 +152,7 @@ impl EmuleConfig {
 impl Default for EmuleConfig {
     fn default() -> Self {
         Self {
+            temp_dir: default_emule_temp_dir(),
             udp_port: 4672,
             tcp_port: Self::default_tcp_port(),
             external_ip: None,
@@ -163,10 +171,6 @@ pub struct StorageConfig {
     /// Files are moved to `download_dir` once fully downloaded.
     pub temp_dir: PathBuf,
     pub database_path: PathBuf,
-    /// Directory for in-progress eMule downloads (separate from Rucio .part dir).
-    /// Only used when the `emule-compat` feature is enabled.
-    #[serde(default = "default_emule_temp_dir")]
-    pub emule_temp_dir: PathBuf,
     /// Path to an eMule `nodes.dat` file used to bootstrap the Kad2 network.
     /// Optional — eMule Kad search is disabled when this is `None`.
     #[serde(default)]
@@ -205,7 +209,6 @@ impl Default for StorageConfig {
                 .join("rucio")
                 .join("tmp"),
             database_path: default_data_dir().join("rucio.db"),
-            emule_temp_dir: default_emule_temp_dir(),
             nodes_dat_path: None,
         }
     }
@@ -363,7 +366,7 @@ impl Config {
     /// | `RUCIOD_BOOTSTRAP_PEERS`    | `network.bootstrap_peers`    | comma-separated multiaddrs |
     /// | `RUCIOD_UPLOAD_LIMIT_KBPS`  | `network.upload_limit_kbps`  | integer KB/s, 0=unlimited |
     /// | `RUCIOD_DOWNLOAD_LIMIT_KBPS`| `network.download_limit_kbps`| integer KB/s, 0=unlimited |
-    /// | `RUCIOD_EMULE_TEMP_DIR`     | `storage.emule_temp_dir`     | path               |
+    /// | `RUCIOD_EMULE_TEMP_DIR`     | `emule.temp_dir`             | path               |
     /// | `RUCIOD_NODES_DAT`          | `storage.nodes_dat_path`     | path               |
     /// | `RUCIOD_EMULE_UDP_PORT`     | `emule.udp_port`             | integer 1-65535    |
     /// | `RUCIOD_EMULE_TCP_PORT`     | `emule.tcp_port`             | integer 1-65535    |
@@ -415,7 +418,7 @@ impl Config {
         if let Ok(v) = std::env::var("RUCIOD_EMULE_TEMP_DIR")
             && !v.is_empty()
         {
-            self.storage.emule_temp_dir = PathBuf::from(v);
+            self.emule.temp_dir = PathBuf::from(v);
         }
         if let Ok(v) = std::env::var("RUCIOD_NODES_DAT")
             && !v.is_empty()

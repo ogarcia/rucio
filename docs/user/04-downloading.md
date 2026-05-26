@@ -175,7 +175,7 @@ other download.
 | Key | Default | Description |
 |---|---|---|
 | `storage.nodes_dat_path` | `<data-dir>/rucio/nodes.dat` | Path to the Kad2 bootstrap file |
-| `storage.emule_temp_dir` | `<cache-dir>/rucio/emule-tmp` | Temporary directory for eMule `.part` files |
+| `emule.temp_dir` | `<cache-dir>/rucio/emule-tmp` | Temporary directory for eMule `.part` files |
 | `emule.udp_port` | `4672` | UDP port for Kad2 routing and source search |
 | `emule.tcp_port` | `4662` | TCP port for incoming peer connections (High-ID) |
 

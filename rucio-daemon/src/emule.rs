@@ -143,7 +143,7 @@ pub async fn run_ed2k_download(
     }
 
     // Create the temp directory and paths once — they never change.
-    let emule_temp = &config.storage.emule_temp_dir;
+    let emule_temp = &config.emule.temp_dir;
     std::fs::create_dir_all(emule_temp)
         .with_context(|| format!("create emule temp dir: {}", emule_temp.display()))?;
     let part_path = emule_temp.join(format!("{}.part", link.hash));
