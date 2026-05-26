@@ -23,6 +23,9 @@ pub struct KadSource {
     pub ip: Ipv4Addr,
     pub tcp_port: u16,
     pub udp_port: u16,
+    /// The peer's KadID / UserHash (16 bytes).  Used to derive the RC4 key
+    /// for TCP obfuscated connections.
+    pub user_hash: [u8; 16],
 }
 
 /// One file result from a Kad keyword search.
@@ -238,6 +241,7 @@ impl ActiveSearch {
                                 ip: s.ip,
                                 tcp_port: s.tcp_port,
                                 udp_port: s.udp_port,
+                                user_hash: *s.id.as_bytes(),
                             });
                         }
                     }

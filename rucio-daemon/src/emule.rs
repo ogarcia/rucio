@@ -228,6 +228,7 @@ pub async fn run_ed2k_download(
 
         for source in valid_sources.into_iter().take(max_workers) {
             let peer = std::net::SocketAddrV4::new(source.ip, source.tcp_port);
+            let peer_hash = source.user_hash;
             let work = work_queue.clone();
             let done = done_vec.clone();
             let met = met_path.clone();
@@ -247,6 +248,7 @@ pub async fn run_ed2k_download(
                     file_size,
                     hash,
                     start_offset: 0,
+                    peer_hash: Some(peer_hash),
                 };
 
                 loop {

@@ -21,6 +21,28 @@
 //!
 //! We implement only the **downloader** side.
 //!
+//! ## TCP obfuscation
+//!
+//! Many eMule peers enable "obfuscated TCP" (RC4 encrypted stream).  Peers
+//! that *require* obfuscation will close a plain connection immediately before
+//! sending HELLOANSWER — this is the "read HELLOANSWER" error seen in logs.
+//!
+//! When `DownloadOptions::peer_hash` is set and a plain connection is
+//! rejected, `Session::connect` automatically retries using RC4.
+//!
+//! Wire format (outgoing obfuscated handshake):
+//! ```text
+//! [4]  random_key    — plaintext
+//! [4]  RC4(0x12345678 LE)   — magic confirming key agreement
+//! [1]  RC4(connect_options) — 0x03 = supported | requested
+//! [1]  RC4(pad_len)  — 0 (no padding)
+//! ...  RC4(eMule frames)    — HELLO and all subsequent data
+//! ```
+//!
+//! RC4 key = `MD5(peer_hash[16] || random_key[4])`.
+//! Both directions (send and receive) share a single RC4 cipher instance
+//! because the eMule TCP protocol is strictly sequential (request → response).
+//!
 //! ## Chunk / part layout
 //!
 //! eMule splits files into 9,728,000-byte "parts" for MD4 hash verification.
@@ -31,19 +53,27 @@
 //! compute the BLAKE3 hash for Rucio DHT integration.
 
 use crate::ed2k::{CHUNK_SIZE, Ed2kHash};
+use crate::kad::obfuscation::Rc4;
 use anyhow::{Context, Result, bail};
-use md4::{Digest, Md4};
+use md4::Md4;
+use md5::{Digest, Md5};
+use std::io;
 use std::net::SocketAddrV4;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 // ── Protocol constants ────────────────────────────────────────────────────────
 
 /// Protocol header byte for standard ed2k TCP messages.
 const PROTO_ED2K: u8 = 0xe3;
+
+// Magic value for TCP obfuscation handshake (0x12345678 in LE).
+const MAGIC_TCP: [u8; 4] = [0x78, 0x56, 0x34, 0x12];
+// Obfuscation supported + requested (not required, so we still accept plain peers).
+const TCP_CONNECT_OPTIONS: u8 = 0x03;
 
 // ── Opcodes ───────────────────────────────────────────────────────────────────
 
@@ -72,55 +102,109 @@ fn build_message(opcode: u8, payload: &[u8]) -> Vec<u8> {
     msg
 }
 
-/// Read a single eMule TCP frame from `stream`.
+/// Read one eMule TCP frame, applying RC4 decryption if a cipher is active.
 /// Returns `(protocol, opcode, payload)`.
-async fn read_frame(stream: &mut TcpStream) -> Result<(u8, u8, Vec<u8>)> {
+async fn read_frame(
+    stream: &mut TcpStream,
+    cipher: &mut Option<Rc4>,
+) -> io::Result<(u8, u8, Vec<u8>)> {
     let mut hdr = [0u8; 6];
-    stream
-        .read_exact(&mut hdr)
-        .await
-        .context("read frame header")?;
+    stream.read_exact(&mut hdr).await?;
+    if let Some(rc4) = cipher {
+        rc4.apply(&mut hdr);
+    }
     let proto = hdr[0];
     let len = u32::from_le_bytes([hdr[1], hdr[2], hdr[3], hdr[4]]) as usize;
     if len == 0 {
-        bail!("zero-length frame");
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "zero-length frame",
+        ));
     }
     let opcode = hdr[5];
-    let payload_len = len - 1; // len includes opcode byte
+    let payload_len = len - 1;
     let mut payload = vec![0u8; payload_len];
     if payload_len > 0 {
-        stream
-            .read_exact(&mut payload)
-            .await
-            .context("read frame payload")?;
+        stream.read_exact(&mut payload).await?;
+        if let Some(rc4) = cipher {
+            rc4.apply(&mut payload);
+        }
     }
     Ok((proto, opcode, payload))
+}
+
+/// Write a framed eMule message, applying RC4 encryption if a cipher is active.
+async fn write_frame(
+    stream: &mut TcpStream,
+    cipher: &mut Option<Rc4>,
+    opcode: u8,
+    payload: &[u8],
+) -> io::Result<()> {
+    let mut msg = build_message(opcode, payload);
+    if let Some(rc4) = cipher {
+        rc4.apply(&mut msg);
+    }
+    stream.write_all(&msg).await
 }
 
 // ── HELLO packet ─────────────────────────────────────────────────────────────
 
 /// Build a minimal HELLO payload advertising ourselves as a Kad2 client.
 fn build_hello(our_hash: &[u8; 16]) -> Vec<u8> {
-    // Wire format: hash_size(1) + hash(16) + client_id(4) + tcp_port(2) + tag_count(4) + tags
-    //              + server_ip(4) + server_port(2)
     let mut p = Vec::new();
-    // Hash size prefix required by the protocol
     p.push(16u8);
-    // Client hash
     p.extend_from_slice(our_hash);
-    // Client ID (0 = low-ID, fine for a pure downloader)
-    p.extend_from_slice(&0u32.to_le_bytes());
-    // TCP port (0 = not listening)
-    p.extend_from_slice(&0u16.to_le_bytes());
-    // Tag count
-    p.extend_from_slice(&0u32.to_le_bytes());
-    // Server IP + port (unused)
-    p.extend_from_slice(&0u32.to_le_bytes());
-    p.extend_from_slice(&0u16.to_le_bytes());
+    p.extend_from_slice(&0u32.to_le_bytes()); // client ID = 0 (low-ID)
+    p.extend_from_slice(&0u16.to_le_bytes()); // TCP port = 0 (not listening)
+    p.extend_from_slice(&0u32.to_le_bytes()); // tag count = 0
+    p.extend_from_slice(&0u32.to_le_bytes()); // server IP (unused)
+    p.extend_from_slice(&0u16.to_le_bytes()); // server port (unused)
     p
 }
 
-// ── Download session ──────────────────────────────────────────────────────────
+// ── Obfuscation helpers ───────────────────────────────────────────────────────
+
+/// Derive the RC4 session key for an obfuscated TCP connection:
+/// `MD5(peer_hash[16] || rand[4])`
+fn tcp_obf_rc4_key(peer_hash: &[u8; 16], rand: &[u8; 4]) -> [u8; 16] {
+    let mut h = Md5::new();
+    h.update(peer_hash);
+    h.update(rand);
+    h.finalize().into()
+}
+
+/// Generate 4 pseudo-random bytes for the obfuscation key exchange.
+fn random_tcp_key() -> [u8; 4] {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let mut h = DefaultHasher::new();
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+        .hash(&mut h);
+    std::process::id().hash(&mut h);
+    let v = h.finish();
+    [v as u8, (v >> 8) as u8, (v >> 16) as u8, (v >> 24) as u8]
+}
+
+// ── Error sentinel ────────────────────────────────────────────────────────────
+
+/// Returned by `connect_plain` when the peer closes the connection before
+/// sending HELLOANSWER — the typical sign that it requires TCP obfuscation.
+#[derive(Debug)]
+struct PeerClosedBeforeHello;
+
+impl std::fmt::Display for PeerClosedBeforeHello {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("peer closed connection before HELLOANSWER (may require TCP obfuscation)")
+    }
+}
+
+impl std::error::Error for PeerClosedBeforeHello {}
+
+// ── Download options ──────────────────────────────────────────────────────────
 
 /// Options for [`download_file`] and [`Session::connect`].
 #[derive(Debug, Clone)]
@@ -138,6 +222,10 @@ pub struct DownloadOptions {
     /// Byte offset to resume from (used only by [`download_file`]).
     /// When using [`Session`] directly, pass the range to [`Session::download_range`].
     pub start_offset: u64,
+    /// Peer's KadID / UserHash (16 bytes).  When `Some`, a plain TCP connection
+    /// that is rejected before HELLOANSWER will be automatically retried with
+    /// RC4 obfuscation.
+    pub peer_hash: Option<[u8; 16]>,
 }
 
 impl Default for DownloadOptions {
@@ -149,9 +237,12 @@ impl Default for DownloadOptions {
             file_size: 0,
             hash: Ed2kHash::from_bytes([0u8; 16]),
             start_offset: 0,
+            peer_hash: None,
         }
     }
 }
+
+// ── Progress events ───────────────────────────────────────────────────────────
 
 /// A progress event emitted during download.
 #[derive(Debug)]
@@ -178,10 +269,16 @@ pub struct Session {
     op_timeout: Duration,
     hash: Ed2kHash,
     file_size: u64,
+    /// RC4 cipher for obfuscated connections; `None` for plain connections.
+    cipher: Option<Rc4>,
 }
 
 impl Session {
     /// Connect to `peer` and perform the full eMule handshake.
+    ///
+    /// Tries a plain TCP connection first.  If the peer closes the connection
+    /// before sending HELLOANSWER (which indicates it requires obfuscation) and
+    /// `opts.peer_hash` is `Some`, transparently retries using RC4 obfuscation.
     ///
     /// Emits [`DownloadEvent::Connected`], [`DownloadEvent::Queued`] (0 or
     /// more times), and [`DownloadEvent::Started`] via `on_event`.
@@ -193,10 +290,31 @@ impl Session {
     where
         F: FnMut(DownloadEvent),
     {
-        let our_hash = [
-            0x52u8, 0x75, 0x63, 0x69, 0x6f, 0x52, 0x75, 0x63, 0x69, 0x6f, 0x52, 0x75, 0x63, 0x69,
-            0x6f, 0x00,
-        ];
+        match Self::connect_plain(peer, opts, on_event).await {
+            Ok(session) => Ok(session),
+            Err(e) if e.is::<PeerClosedBeforeHello>() && opts.peer_hash.is_some() => {
+                // Plain connection was rejected — retry with RC4 obfuscation.
+                warn!(
+                    %peer,
+                    "Plain TCP rejected before HELLOANSWER — retrying with RC4 obfuscation"
+                );
+                Self::connect_obfuscated(peer, opts, on_event).await
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Attempt a plain (unencrypted) TCP connection and handshake.
+    async fn connect_plain<F>(
+        peer: SocketAddrV4,
+        opts: &DownloadOptions,
+        on_event: &mut F,
+    ) -> Result<Self>
+    where
+        F: FnMut(DownloadEvent),
+    {
+        let our_hash = our_client_hash();
+        let mut cipher: Option<Rc4> = None;
 
         let mut stream = timeout(opts.op_timeout, TcpStream::connect(peer))
             .await
@@ -204,18 +322,101 @@ impl Session {
             .context("connect to peer")?;
         on_event(DownloadEvent::Connected);
 
-        // ── HELLO handshake ──────────────────────────────────────────────────
-        let hello_payload = build_hello(&our_hash);
+        Self::do_handshake(&mut stream, &mut cipher, opts, &our_hash, on_event).await?;
+
+        Ok(Self {
+            stream,
+            op_timeout: opts.op_timeout,
+            hash: opts.hash,
+            file_size: opts.file_size,
+            cipher,
+        })
+    }
+
+    /// Attempt an RC4-obfuscated TCP connection and handshake.
+    async fn connect_obfuscated<F>(
+        peer: SocketAddrV4,
+        opts: &DownloadOptions,
+        on_event: &mut F,
+    ) -> Result<Self>
+    where
+        F: FnMut(DownloadEvent),
+    {
+        let peer_hash = opts.peer_hash.as_ref().unwrap();
+        let our_hash = our_client_hash();
+
+        let mut stream = timeout(opts.op_timeout, TcpStream::connect(peer))
+            .await
+            .context("connect timeout (obfuscated)")?
+            .context("connect to peer (obfuscated)")?;
+        on_event(DownloadEvent::Connected);
+
+        // Send obfuscation header:
+        //   rand[4] (plain) + RC4(magic[4] + connect_opts[1] + pad_len[1])
+        let rand = random_tcp_key();
+        let rc4_key = tcp_obf_rc4_key(peer_hash, &rand);
+        let mut rc4 = Rc4::new(&rc4_key);
+
+        let mut obf_header = Vec::with_capacity(10);
+        obf_header.extend_from_slice(&rand); // plaintext
+        let mut enc = [0u8; 6];
+        enc[..4].copy_from_slice(&MAGIC_TCP);
+        enc[4] = TCP_CONNECT_OPTIONS;
+        enc[5] = 0; // no padding
+        rc4.apply(&mut enc);
+        obf_header.extend_from_slice(&enc);
+
         stream
-            .write_all(&build_message(OP_HELLO, &hello_payload))
+            .write_all(&obf_header)
+            .await
+            .context("send obfuscation header")?;
+
+        let mut cipher = Some(rc4);
+
+        Self::do_handshake(&mut stream, &mut cipher, opts, &our_hash, on_event).await?;
+
+        info!(%peer, "eMule TCP obfuscation established");
+        Ok(Self {
+            stream,
+            op_timeout: opts.op_timeout,
+            hash: opts.hash,
+            file_size: opts.file_size,
+            cipher,
+        })
+    }
+
+    /// Shared handshake logic (HELLO → FILEREQUEST → STARTUPLOAD), used by
+    /// both plain and obfuscated paths.  Returns a `PeerClosedBeforeHello`
+    /// sentinel if the peer closes before HELLOANSWER.
+    async fn do_handshake<F>(
+        stream: &mut TcpStream,
+        cipher: &mut Option<Rc4>,
+        opts: &DownloadOptions,
+        our_hash: &[u8; 16],
+        on_event: &mut F,
+    ) -> Result<()>
+    where
+        F: FnMut(DownloadEvent),
+    {
+        // ── HELLO ────────────────────────────────────────────────────────────
+        let hello_payload = build_hello(our_hash);
+        write_frame(stream, cipher, OP_HELLO, &hello_payload)
             .await
             .context("send HELLO")?;
 
         loop {
-            let (_proto, opcode, _payload) = timeout(opts.op_timeout, read_frame(&mut stream))
-                .await
-                .context("HELLOANSWER timeout")?
-                .context("read HELLOANSWER")?;
+            let frame = timeout(opts.op_timeout, read_frame(stream, cipher)).await;
+            let (_proto, opcode, _payload) = match frame {
+                Err(_timeout) => return Err(anyhow::Error::new(PeerClosedBeforeHello)),
+                Ok(Err(e))
+                    if e.kind() == io::ErrorKind::ConnectionReset
+                        || e.kind() == io::ErrorKind::UnexpectedEof =>
+                {
+                    return Err(anyhow::Error::new(PeerClosedBeforeHello));
+                }
+                Ok(Err(e)) => return Err(anyhow::Error::new(e).context("read HELLOANSWER")),
+                Ok(Ok(frame)) => frame,
+            };
             if opcode == OP_HELLOANSWER {
                 break;
             }
@@ -223,13 +424,12 @@ impl Session {
         }
 
         // ── FILEREQUEST ──────────────────────────────────────────────────────
-        stream
-            .write_all(&build_message(OP_FILEREQUEST, opts.hash.as_bytes()))
+        write_frame(stream, cipher, OP_FILEREQUEST, opts.hash.as_bytes())
             .await
             .context("send FILEREQUEST")?;
 
         loop {
-            let (_proto, opcode, _payload) = timeout(opts.op_timeout, read_frame(&mut stream))
+            let (_proto, opcode, _payload) = timeout(opts.op_timeout, read_frame(stream, cipher))
                 .await
                 .context("FILEREQUEST_ANSWER timeout")?
                 .context("read FILEREQUEST_ANSWER")?;
@@ -241,14 +441,13 @@ impl Session {
         }
 
         // ── STARTUPLOAD_REQ ──────────────────────────────────────────────────
-        stream
-            .write_all(&build_message(OP_STARTUPLOAD_REQ, opts.hash.as_bytes()))
+        write_frame(stream, cipher, OP_STARTUPLOAD_REQ, opts.hash.as_bytes())
             .await
             .context("send STARTUPLOAD_REQ")?;
 
         let mut queue_waits = 0;
         loop {
-            let (_proto, opcode, payload) = timeout(opts.op_timeout, read_frame(&mut stream))
+            let (_proto, opcode, payload) = timeout(opts.op_timeout, read_frame(stream, cipher))
                 .await
                 .context("ACCEPTUPLOAD timeout")?
                 .context("read ACCEPTUPLOAD")?;
@@ -269,8 +468,7 @@ impl Session {
                         bail!("exceeded max queue waits ({rank})");
                     }
                     tokio::time::sleep(Duration::from_secs(5)).await;
-                    stream
-                        .write_all(&build_message(OP_STARTUPLOAD_REQ, opts.hash.as_bytes()))
+                    write_frame(stream, cipher, OP_STARTUPLOAD_REQ, opts.hash.as_bytes())
                         .await
                         .context("re-send STARTUPLOAD_REQ")?;
                 }
@@ -279,12 +477,7 @@ impl Session {
             }
         }
 
-        Ok(Self {
-            stream,
-            op_timeout: opts.op_timeout,
-            hash: opts.hash,
-            file_size: opts.file_size,
-        })
+        Ok(())
     }
 
     /// Download bytes `[start, end)` from the peer, writing to `out_writer`.
@@ -314,6 +507,7 @@ impl Session {
 
         send_request_parts(
             &mut self.stream,
+            &mut self.cipher,
             self.hash.as_bytes(),
             start,
             end,
@@ -325,14 +519,16 @@ impl Session {
             if bytes_received >= end {
                 break;
             }
-            let (_proto, opcode, payload) = timeout(self.op_timeout, read_frame(&mut self.stream))
-                .await
-                .context("data receive timeout")?
-                .context("read data frame")?;
+            let (_proto, opcode, payload) = timeout(
+                self.op_timeout,
+                read_frame(&mut self.stream, &mut self.cipher),
+            )
+            .await
+            .context("data receive timeout")?
+            .context("read data frame")?;
 
             match opcode {
                 OP_SENDINGPART => {
-                    // Wire format: hash(16) + start(4) + end(4) + data
                     if payload.len() < 24 {
                         warn!("malformed SENDINGPART (too short: {} bytes)", payload.len());
                         continue;
@@ -371,6 +567,7 @@ impl Session {
                     if bytes_received >= batch_end && bytes_received < end {
                         send_request_parts(
                             &mut self.stream,
+                            &mut self.cipher,
                             self.hash.as_bytes(),
                             bytes_received,
                             end,
@@ -394,13 +591,8 @@ impl Session {
 
 /// Download a file from a single eMule peer, writing data to `out_writer`.
 ///
-/// This is a convenience wrapper around [`Session::connect`] +
-/// [`Session::download_range`] for callers that need a simple sequential
-/// download from a single peer.  For parallel multi-peer downloads use
-/// [`Session`] directly.
-///
-/// Emits progress events via `on_event` callback.  Returns the number of
-/// bytes written.
+/// Convenience wrapper around [`Session::connect`] + [`Session::download_range`].
+/// For parallel multi-peer downloads use [`Session`] directly.
 pub async fn download_file<W, F>(
     peer: SocketAddrV4,
     opts: DownloadOptions,
@@ -424,15 +616,26 @@ where
     Ok(bytes)
 }
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Fixed client hash used in HELLO packets.  Not secret — identifies us as a
+/// Rucio client on the eMule network.
+fn our_client_hash() -> [u8; 16] {
+    [
+        0x52, 0x75, 0x63, 0x69, 0x6f, 0x52, 0x75, 0x63, 0x69, 0x6f, 0x52, 0x75, 0x63, 0x69, 0x6f,
+        0x00,
+    ]
+}
+
 /// Send a `REQUESTPARTS` message for up to 3 consecutive 180 KB windows.
 async fn send_request_parts(
     stream: &mut TcpStream,
+    cipher: &mut Option<Rc4>,
     file_hash: &[u8; 16],
     offset: u64,
     max_end: u64,
     window: u64,
 ) -> Result<()> {
-    // REQUESTPARTS payload: hash(16) + start0(4) + start1(4) + start2(4) + end0(4) + end1(4) + end2(4)
     let mut payload = Vec::with_capacity(16 + 6 * 4);
     payload.extend_from_slice(file_hash);
 
@@ -454,8 +657,7 @@ async fn send_request_parts(
     for e in &ends {
         payload.extend_from_slice(&e.to_le_bytes());
     }
-    stream
-        .write_all(&build_message(OP_REQUESTPARTS, &payload))
+    write_frame(stream, cipher, OP_REQUESTPARTS, &payload)
         .await
         .context("send REQUESTPARTS")
 }
@@ -469,10 +671,8 @@ mod tests {
     #[test]
     fn test_build_message_framing() {
         let msg = build_message(OP_HELLO, &[0xaa, 0xbb]);
-        // protocol(1) + len(4) + opcode(1) + payload(2) = 8 bytes
         assert_eq!(msg.len(), 8);
         assert_eq!(msg[0], PROTO_ED2K);
-        // len = 3 (opcode + 2 payload bytes), LE
         assert_eq!(&msg[1..5], &[3, 0, 0, 0]);
         assert_eq!(msg[5], OP_HELLO);
         assert_eq!(&msg[6..], &[0xaa, 0xbb]);
@@ -481,8 +681,36 @@ mod tests {
     #[test]
     fn test_build_hello_length() {
         let h = build_hello(&[0u8; 16]);
-        // hash_size(1) + hash(16) + client_id(4) + tcp_port(2) + tag_count(4) + server_ip(4) + server_port(2) = 33
         assert_eq!(h.len(), 33);
-        assert_eq!(h[0], 16u8); // hash_size prefix
+        assert_eq!(h[0], 16u8);
+    }
+
+    #[test]
+    fn test_obf_key_derivation() {
+        let peer_hash = [0xABu8; 16];
+        let rand = [0x01, 0x02, 0x03, 0x04];
+        let key = tcp_obf_rc4_key(&peer_hash, &rand);
+        // Key is a 16-byte MD5 — just verify it's not all zeros.
+        assert_ne!(key, [0u8; 16]);
+        // Same inputs → same key (deterministic).
+        assert_eq!(key, tcp_obf_rc4_key(&peer_hash, &rand));
+    }
+
+    #[test]
+    fn test_obf_header_length() {
+        // Obfuscation header: rand(4) + encrypted(magic(4) + opts(1) + pad_len(1)) = 10 bytes.
+        let peer_hash = [0u8; 16];
+        let rand = random_tcp_key();
+        let rc4_key = tcp_obf_rc4_key(&peer_hash, &rand);
+        let mut rc4 = Rc4::new(&rc4_key);
+        let mut obf_header = Vec::with_capacity(10);
+        obf_header.extend_from_slice(&rand);
+        let mut enc = [0u8; 6];
+        enc[..4].copy_from_slice(&MAGIC_TCP);
+        enc[4] = TCP_CONNECT_OPTIONS;
+        enc[5] = 0;
+        rc4.apply(&mut enc);
+        obf_header.extend_from_slice(&enc);
+        assert_eq!(obf_header.len(), 10);
     }
 }

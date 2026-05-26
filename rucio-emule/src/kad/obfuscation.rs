@@ -36,14 +36,14 @@ use std::net::Ipv4Addr;
 const MAGICVALUE_UDP_SYNC_CLIENT: u32 = 0x395F2EC1;
 
 /// A minimal RC4 stream cipher (pure-Rust, no external crate needed).
-struct Rc4 {
+pub(crate) struct Rc4 {
     s: [u8; 256],
     i: u8,
     j: u8,
 }
 
 impl Rc4 {
-    fn new(key: &[u8]) -> Self {
+    pub(crate) fn new(key: &[u8]) -> Self {
         let mut s = [0u8; 256];
         for (i, v) in s.iter_mut().enumerate() {
             *v = i as u8;
@@ -59,7 +59,7 @@ impl Rc4 {
     }
 
     /// XOR-encrypt/decrypt `data` in place.
-    fn apply(&mut self, data: &mut [u8]) {
+    pub(crate) fn apply(&mut self, data: &mut [u8]) {
         for byte in data.iter_mut() {
             self.i = self.i.wrapping_add(1);
             self.j = self.j.wrapping_add(self.s[self.i as usize]);
