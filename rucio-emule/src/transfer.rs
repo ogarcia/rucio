@@ -581,7 +581,9 @@ impl Session {
                     }
                 }
                 OP_COMPRESSEDPART => {
-                    if payload.len() < 20 {
+                    // Wire format (parallel to OP_SENDINGPART):
+                    //   hash[16] + start_offset[4] + packed_size[4] + zlib_data[packed_size]
+                    if payload.len() < 24 {
                         warn!(
                             "malformed OP_COMPRESSEDPART (too short: {} bytes)",
                             payload.len()
@@ -591,8 +593,9 @@ impl Session {
                     let range_start =
                         u32::from_le_bytes([payload[16], payload[17], payload[18], payload[19]])
                             as u64;
+                    // payload[20..24] = packed_size (informational; we decompress all remaining)
                     let mut decompressed = Vec::new();
-                    if let Err(e) = ZlibDecoder::new(&payload[20..]).read_to_end(&mut decompressed)
+                    if let Err(e) = ZlibDecoder::new(&payload[24..]).read_to_end(&mut decompressed)
                     {
                         warn!(error = %e, "OP_COMPRESSEDPART decompression failed");
                         continue;
