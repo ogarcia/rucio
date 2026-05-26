@@ -9,6 +9,7 @@ use anyhow::{Context, Result};
 use rucio_emule::Ed2kLink;
 use rucio_emule::ed2k::CHUNK_SIZE;
 use rucio_emule::kad::packet::KadId;
+use rucio_emule::kad::search::KadSource;
 use rucio_emule::kad::task::{KadHandle, KadTaskConfig};
 use rucio_emule::transfer::{DownloadEvent, DownloadOptions, Session};
 use std::collections::VecDeque;
@@ -16,7 +17,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::AsyncSeekExt;
 use tokio::net::UdpSocket;
 use tokio::sync::broadcast;
@@ -137,7 +138,14 @@ pub async fn run_ed2k_download(
     // Number of ed2k slices (one per CHUNK_SIZE block).
     let num_slices = link.size.div_ceil(CHUNK_SIZE as u64) as usize;
 
+    // How long to reuse a source cache before querying Kad2 again.
+    // eMule's own re-ask interval is 30 minutes; we match it to avoid
+    // hammering the network with repeated source requests for the same hash.
+    const SOURCE_CACHE_SECS: u64 = 30 * 60;
+
     // 3 + 4. Main retry loop: search → try peers → if all fail, search again.
+    let mut cached_sources: Vec<KadSource> = Vec::new();
+    let mut last_search_at: Option<Instant> = None;
     let mut retry_count: u32 = 0;
     loop {
         // Check for user cancellation before doing any work.
@@ -165,13 +173,34 @@ pub async fn run_ed2k_download(
             let _ = crate::db::emule_downloads::set_bytes_done(db, download_id, bytes_done).await;
         }
 
-        // --- Search for sources ---
-        let _ = crate::db::emule_downloads::set_status(db, download_id, "finding_providers", None)
-            .await;
-        info!("Searching Kad2 for sources");
-        let sources = kad.search_sources(link.hash, link.size).await;
+        // --- Search for sources (skip if cache is still fresh) ---
+        let cache_age_secs = last_search_at.map_or(u64::MAX, |t| t.elapsed().as_secs());
+        let needs_search = cached_sources.is_empty() || cache_age_secs >= SOURCE_CACHE_SECS;
 
-        if sources.is_empty() {
+        if needs_search {
+            let _ =
+                crate::db::emule_downloads::set_status(db, download_id, "finding_providers", None)
+                    .await;
+            info!("Searching Kad2 for sources");
+            let fresh = kad.search_sources(link.hash, link.size).await;
+            // Merge new peers into the cache — deduplicate by (IP, tcp_port).
+            for s in fresh {
+                if !cached_sources
+                    .iter()
+                    .any(|c| c.ip == s.ip && c.tcp_port == s.tcp_port)
+                {
+                    cached_sources.push(s);
+                }
+            }
+            last_search_at = Some(Instant::now());
+        } else {
+            info!(
+                count = cached_sources.len(),
+                cache_age_secs, "Reusing cached sources from previous round"
+            );
+        }
+
+        if cached_sources.is_empty() {
             let delay = retry_delay_secs(retry_count);
             retry_count += 1;
             info!(
@@ -183,7 +212,12 @@ pub async fn run_ed2k_download(
             tokio::time::sleep(Duration::from_secs(delay)).await;
             continue;
         }
-        info!(count = sources.len(), "Found eMule sources");
+        info!(
+            count = cached_sources.len(),
+            "Proceeding with eMule sources"
+        );
+
+        let sources = cached_sources.clone();
 
         // --- Attempt parallel download from discovered sources ---
         let _ = crate::db::emule_downloads::set_status(db, download_id, "downloading", None).await;
@@ -435,9 +469,15 @@ pub async fn run_ed2k_download(
 
         if !all_done {
             let new_slices = done_count_after.saturating_sub(done_count);
-            // If we made real progress this round, sources exist — reset backoff.
             if new_slices > 0 {
+                // Progress made — sources are reachable; reset backoff and
+                // keep the cache so the next round skips the 60 s Kad search.
                 retry_count = 0;
+            } else {
+                // No progress at all — cached sources are likely all dead.
+                // Clear them so the next round triggers a fresh Kad2 search.
+                cached_sources.clear();
+                last_search_at = None;
             }
             let delay = retry_delay_secs(retry_count);
             retry_count += 1;
