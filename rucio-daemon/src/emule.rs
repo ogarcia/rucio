@@ -68,6 +68,15 @@ pub async fn start_kad_task(config: &Config) -> Result<KadHandle> {
     Ok(handle)
 }
 
+/// Exponential back-off for source-search retries.
+/// Sequence: 30 s, 60 s, 2 min, 4 min, 8 min, 16 min, 30 min (cap), …
+fn retry_delay_secs(attempt: u32) -> u64 {
+    const BASE: u64 = 30;
+    const MAX: u64 = 30 * 60;
+    // Cap the shift so we never overflow u64 before the min() clamps us.
+    (BASE * (1_u64 << attempt.min(10))).min(MAX)
+}
+
 /// Run a full eMule download pipeline using the running Kad2 task.
 ///
 /// The `download_id` is the `emule_downloads.id` row that was already created
@@ -90,10 +99,6 @@ pub async fn run_ed2k_download(
     ws_tx: &broadcast::Sender<WsEvent>,
     kad: &KadHandle,
 ) -> Result<()> {
-    // How long to wait before re-searching when no sources are found or all
-    // peers fail.  30 minutes matches eMule's default re-ask interval.
-    const SEARCH_RETRY_SECS: u64 = 30 * 60;
-
     // 1. Parse the link.
     let link = Ed2kLink::parse(link_str).with_context(|| format!("parse ed2k link: {link_str}"))?;
     info!(name = %link.name, size = link.size, hash = %link.hash, "Starting eMule download");
@@ -133,6 +138,7 @@ pub async fn run_ed2k_download(
     let num_slices = link.size.div_ceil(CHUNK_SIZE as u64) as usize;
 
     // 3 + 4. Main retry loop: search → try peers → if all fail, search again.
+    let mut retry_count: u32 = 0;
     loop {
         // Check for user cancellation before doing any work.
         if is_cancelled(db, download_id).await {
@@ -166,13 +172,15 @@ pub async fn run_ed2k_download(
         let sources = kad.search_sources(link.hash, link.size).await;
 
         if sources.is_empty() {
+            let delay = retry_delay_secs(retry_count);
+            retry_count += 1;
             info!(
                 name = %link.name,
                 hash = %link.hash,
-                retry_in_secs = SEARCH_RETRY_SECS,
+                retry_in_secs = delay,
                 "No Kad2 sources found — will retry"
             );
-            tokio::time::sleep(Duration::from_secs(SEARCH_RETRY_SECS)).await;
+            tokio::time::sleep(Duration::from_secs(delay)).await;
             continue;
         }
         info!(count = sources.len(), "Found eMule sources");
@@ -422,13 +430,15 @@ pub async fn run_ed2k_download(
         // Check if all slices are now done.
         let all_done = done_vec.lock().unwrap().iter().all(|&d| d);
         if !all_done {
+            let delay = retry_delay_secs(retry_count);
+            retry_count += 1;
             warn!(
                 name = %link.name,
                 hash = %link.hash,
-                retry_in_secs = SEARCH_RETRY_SECS,
+                retry_in_secs = delay,
                 "Not all slices complete — back to finding_providers"
             );
-            tokio::time::sleep(Duration::from_secs(SEARCH_RETRY_SECS)).await;
+            tokio::time::sleep(Duration::from_secs(delay)).await;
             continue;
         }
 

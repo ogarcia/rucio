@@ -56,6 +56,15 @@ const DEFAULT_CHUNK_SIZE: u32 = 256 * 1024; // 256 KiB
 /// How long to wait for a manifest response before trying another peer.
 const MANIFEST_TIMEOUT_SECS: u64 = 10;
 
+/// Exponential back-off for DHT re-queries when no providers are available.
+/// Sequence: 2 min, 4 min, 8 min, 16 min, 22 min (cap), …
+fn refind_delay_secs(attempt: u32) -> u64 {
+    const BASE: u64 = 2 * 60;
+    const MAX: u64 = 22 * 60;
+    // Cap the shift so we never overflow u64 before the min() clamps us.
+    (BASE * (1_u64 << attempt.min(10))).min(MAX)
+}
+
 // ---------------------------------------------------------------------------
 // Magnet parser
 // ---------------------------------------------------------------------------
@@ -128,6 +137,9 @@ struct PendingManifest {
     /// When we last issued a `FindProviders` DHT query for this hash.
     /// Used to avoid hammering the DHT when no providers are available.
     last_find_at: Instant,
+    /// How many times the DHT re-query has been issued with no result.
+    /// Drives exponential back-off via `refind_delay_secs()`.
+    refind_count: u32,
 }
 
 /// Per-peer slot tracking for an active download.
@@ -286,6 +298,7 @@ impl DownloadEngine {
                         requested_at: Instant::now(),
                         last_find_at: Instant::now(),
                         db_id: row.id,
+                        refind_count: 0,
                     },
                 );
                 continue;
@@ -442,6 +455,7 @@ impl DownloadEngine {
                 requested_at: Instant::now(),
                 last_find_at: Instant::now(),
                 db_id,
+                refind_count: 0,
             },
         );
 
@@ -527,10 +541,6 @@ impl DownloadEngine {
     /// `finding_providers` and re-issues a `FindProviders` DHT query —
     /// it never fails permanently, matching the behaviour of the eMule client.
     pub async fn tick_manifest_timeouts(&mut self) {
-        // How long to wait before re-querying the DHT after exhausting all
-        // known providers.  Matches the reprovide interval on the seeder side.
-        const REFIND_SECS: u64 = 22 * 60;
-
         let mut retry_find: Vec<[u8; 32]> = Vec::new();
 
         for (root_hash, pm) in &mut self.pending_manifests {
@@ -560,19 +570,22 @@ impl DownloadEngine {
                         id_tx,
                     })
                     .await;
-            } else if pm.last_find_at.elapsed().as_secs() >= REFIND_SECS {
+            } else if pm.last_find_at.elapsed().as_secs() >= refind_delay_secs(pm.refind_count) {
                 // All known providers exhausted.  Re-query the DHT instead of
                 // giving up — the file may become available later.
+                let delay = refind_delay_secs(pm.refind_count);
                 warn!(
                     root_hash = hex::encode(root_hash),
+                    retry_in_secs = delay,
                     "Manifest timed out — all providers exhausted, re-querying DHT"
                 );
                 pm.providers.clear();
                 pm.attempt = 0;
+                pm.refind_count += 1;
                 pm.last_find_at = Instant::now();
                 retry_find.push(*root_hash);
             }
-            // If last_find_at < REFIND_SECS we just wait — the tick will fire
+            // If elapsed < refind_delay we just wait — the tick will fire
             // again in MANIFEST_TIMEOUT_SECS and re-evaluate.
         }
 
@@ -1635,6 +1648,7 @@ mod tests {
                 requested_at: std::time::Instant::now(),
                 last_find_at: std::time::Instant::now(),
                 db_id: 0,
+                refind_count: 0,
             },
         );
 
