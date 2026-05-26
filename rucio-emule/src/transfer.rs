@@ -55,9 +55,10 @@
 use crate::ed2k::{CHUNK_SIZE, Ed2kHash};
 use crate::kad::obfuscation::Rc4;
 use anyhow::{Context, Result, bail};
+use flate2::read::ZlibDecoder;
 use md4::Md4;
 use md5::{Digest, Md5};
-use std::io;
+use std::io::{self, Read as _};
 use std::net::SocketAddrV4;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -84,6 +85,10 @@ const OP_FILEREQUEST_ANSWER: u8 = 0x59;
 const OP_FILENOTFOUND: u8 = 0x92;
 const OP_REQUESTPARTS: u8 = 0x47;
 const OP_SENDINGPART: u8 = 0x46;
+/// Extended-protocol (0xc5) opcode: zlib-compressed file data block.
+/// Payload: hash[16] + start_offset[4 LE] + zlib_data[…]
+/// Range end is implicit: start_offset + decompressed.len()
+const OP_COMPRESSEDPART: u8 = 0x40;
 const OP_STARTUPLOAD_REQ: u8 = 0x54;
 const OP_ACCEPTUPLOAD_REQ: u8 = 0x55;
 const OP_QUEUE_RANK: u8 = 0x5c;
@@ -552,7 +557,6 @@ impl Session {
                         total: self.file_size,
                     });
 
-                    // Verify completed ed2k parts.
                     part_buf.extend_from_slice(data);
                     let part_end = current_part_start + CHUNK_SIZE as u64;
                     if bytes_received >= part_end || bytes_received >= end {
@@ -563,7 +567,59 @@ impl Session {
                         current_part_start = bytes_received;
                     }
 
-                    // Request next batch once current one is consumed.
+                    if bytes_received >= batch_end && bytes_received < end {
+                        send_request_parts(
+                            &mut self.stream,
+                            &mut self.cipher,
+                            self.hash.as_bytes(),
+                            bytes_received,
+                            end,
+                            PART_WINDOW,
+                        )
+                        .await?;
+                        batch_end = (bytes_received + 3 * PART_WINDOW).min(end);
+                    }
+                }
+                OP_COMPRESSEDPART => {
+                    if payload.len() < 20 {
+                        warn!(
+                            "malformed OP_COMPRESSEDPART (too short: {} bytes)",
+                            payload.len()
+                        );
+                        continue;
+                    }
+                    let range_start =
+                        u32::from_le_bytes([payload[16], payload[17], payload[18], payload[19]])
+                            as u64;
+                    let mut decompressed = Vec::new();
+                    if let Err(e) = ZlibDecoder::new(&payload[20..]).read_to_end(&mut decompressed)
+                    {
+                        warn!(error = %e, "OP_COMPRESSEDPART decompression failed");
+                        continue;
+                    }
+                    let range_end = range_start + decompressed.len() as u64;
+
+                    out_writer
+                        .write_all(&decompressed)
+                        .await
+                        .context("write compressed chunk data")?;
+                    bytes_received = range_end.min(end);
+
+                    on_event(DownloadEvent::Progress {
+                        bytes_received,
+                        total: self.file_size,
+                    });
+
+                    part_buf.extend_from_slice(&decompressed);
+                    let part_end = current_part_start + CHUNK_SIZE as u64;
+                    if bytes_received >= part_end || bytes_received >= end {
+                        let part_index = (current_part_start / CHUNK_SIZE as u64) as usize;
+                        let _chunk_hash = Md4::digest(&part_buf);
+                        on_event(DownloadEvent::ChunkVerified { part_index });
+                        part_buf.clear();
+                        current_part_start = bytes_received;
+                    }
+
                     if bytes_received >= batch_end && bytes_received < end {
                         send_request_parts(
                             &mut self.stream,
