@@ -523,14 +523,8 @@ impl Session {
         let mut current_part_start = start;
         let mut batch_end = (start + 3 * PART_WINDOW).min(end);
 
-        // Accumulator for fragmented OP_PACKEDPART blocks.  eMule's
-        // CreatePackedPackets splits one compressed block into ~10 KB
-        // sub-packets that all repeat the same (start, packed_size) header and
-        // each carry a contiguous slice of the zlib stream.  We concatenate the
-        // slices keyed by (start, packed_size) and decompress only once the full
-        // `packed_size` bytes have arrived.
-        let mut packed_buf: Vec<u8> = Vec::new();
-        let mut packed_key: Option<(u64, usize)> = None;
+        // Reassembles fragmented OP_PACKEDPART blocks (see `PackedReassembler`).
+        let mut packed = PackedReassembler::default();
 
         send_request_parts(
             &mut self.stream,
@@ -622,43 +616,20 @@ impl Session {
                     let packed_size =
                         u32::from_le_bytes([payload[20], payload[21], payload[22], payload[23]])
                             as usize;
-                    let fragment = &payload[24..];
 
-                    // A change of (start, packed_size) signals a new block.
-                    if packed_key != Some((range_start, packed_size)) {
-                        if !packed_buf.is_empty() {
+                    let decompressed = match packed.push(range_start, packed_size, &payload[24..]) {
+                        Ok(Some(data)) => data,
+                        Ok(None) => continue, // waiting for more sub-packets
+                        Err(e) => {
                             warn!(
-                                discarded = packed_buf.len(),
-                                "discarding incomplete packed block before a new one"
+                                error = %e,
+                                packed_size,
+                                range_start,
+                                "OP_COMPRESSEDPART decompression failed"
                             );
+                            continue;
                         }
-                        packed_buf.clear();
-                        packed_key = Some((range_start, packed_size));
-                    }
-                    packed_buf.extend_from_slice(fragment);
-
-                    // Still waiting for the remaining sub-packets.
-                    if packed_buf.len() < packed_size {
-                        continue;
-                    }
-
-                    // Full compressed block received — decompress it once.
-                    let mut decompressed = Vec::new();
-                    if let Err(e) =
-                        ZlibDecoder::new(&packed_buf[..packed_size]).read_to_end(&mut decompressed)
-                    {
-                        warn!(
-                            error = %e,
-                            packed_size,
-                            range_start,
-                            "OP_COMPRESSEDPART decompression failed"
-                        );
-                        packed_buf.clear();
-                        packed_key = None;
-                        continue;
-                    }
-                    packed_buf.clear();
-                    packed_key = None;
+                    };
 
                     let range_end = range_start + decompressed.len() as u64;
 
@@ -779,6 +750,60 @@ async fn send_request_parts(
     write_frame(stream, cipher, OP_REQUESTPARTS, &payload)
         .await
         .context("send REQUESTPARTS")
+}
+
+/// Reassembles a fragmented eMule `OP_PACKEDPART` compressed block.
+///
+/// eMule's `CreatePackedPackets` compresses a whole block into a single zlib
+/// stream of `packed_size` bytes, then splits it into ~10 KB sub-packets that
+/// all repeat the same `(block_start, packed_size)` header and each carry a
+/// contiguous slice of the stream.  Feed every sub-packet's fragment through
+/// [`Self::push`]; the full block is inflated once `packed_size` bytes have
+/// arrived.
+#[derive(Default)]
+struct PackedReassembler {
+    /// Accumulated compressed bytes for the block currently being received.
+    buf: Vec<u8>,
+    /// `(block_start, packed_size)` identifying the current block; `None` when
+    /// no block is in progress.
+    key: Option<(u64, usize)>,
+}
+
+impl PackedReassembler {
+    /// Append one sub-packet `fragment` belonging to block `(start, packed_size)`.
+    ///
+    /// Returns `Ok(None)` while more fragments are still needed, `Ok(Some(data))`
+    /// with the decompressed block once it is complete, or `Err` if the
+    /// reassembled stream is not valid zlib.  A change of `(start, packed_size)`
+    /// discards any partially-received previous block.
+    fn push(
+        &mut self,
+        start: u64,
+        packed_size: usize,
+        fragment: &[u8],
+    ) -> io::Result<Option<Vec<u8>>> {
+        if self.key != Some((start, packed_size)) {
+            if !self.buf.is_empty() {
+                warn!(
+                    discarded = self.buf.len(),
+                    "discarding incomplete packed block before a new one"
+                );
+            }
+            self.buf.clear();
+            self.key = Some((start, packed_size));
+        }
+        self.buf.extend_from_slice(fragment);
+
+        if self.buf.len() < packed_size {
+            return Ok(None);
+        }
+
+        let mut out = Vec::new();
+        let result = ZlibDecoder::new(&self.buf[..packed_size]).read_to_end(&mut out);
+        self.buf.clear();
+        self.key = None;
+        result.map(|_| Some(out))
+    }
 }
 
 // ── Upload context ────────────────────────────────────────────────────────────
@@ -1108,5 +1133,97 @@ mod tests {
         rc4.apply(&mut enc);
         obf_header.extend_from_slice(&enc);
         assert_eq!(obf_header.len(), 10);
+    }
+
+    // ── PackedReassembler ──────────────────────────────────────────────────
+
+    use flate2::Compression;
+    use flate2::write::ZlibEncoder;
+    use std::io::Write as _;
+
+    /// zlib-compress `data` the way an eMule peer would before fragmenting it.
+    fn zlib_compress(data: &[u8]) -> Vec<u8> {
+        let mut enc = ZlibEncoder::new(Vec::new(), Compression::default());
+        enc.write_all(data).unwrap();
+        enc.finish().unwrap()
+    }
+
+    /// Build a sample payload that barely compresses (incompressible), the
+    /// real-world case where eMule still sends OP_PACKEDPART and the stream
+    /// spans many fragments.
+    fn sample_payload(len: usize) -> Vec<u8> {
+        (0..len)
+            .map(|i| (i.wrapping_mul(2654435761) >> 13) as u8)
+            .collect()
+    }
+
+    #[test]
+    fn packed_reassembler_rejoins_fragments() {
+        let original = sample_payload(200_000);
+        let packed = zlib_compress(&original);
+        let packed_size = packed.len();
+
+        // Split into ~10 KB fragments, like eMule's CreatePackedPackets.
+        let mut r = PackedReassembler::default();
+        let mut out = None;
+        let mut chunks = packed.chunks(10_240).peekable();
+        while let Some(chunk) = chunks.next() {
+            let res = r.push(4096, packed_size, chunk).unwrap();
+            if chunks.peek().is_some() {
+                // Not the last fragment — nothing decompressed yet.
+                assert!(res.is_none(), "decompressed before all fragments arrived");
+            } else {
+                out = res;
+            }
+        }
+        assert_eq!(out.as_deref(), Some(original.as_slice()));
+    }
+
+    #[test]
+    fn packed_reassembler_handles_single_fragment() {
+        let original = sample_payload(500);
+        let packed = zlib_compress(&original);
+        let mut r = PackedReassembler::default();
+        let out = r.push(0, packed.len(), &packed).unwrap();
+        assert_eq!(out.as_deref(), Some(original.as_slice()));
+    }
+
+    #[test]
+    fn packed_reassembler_discards_incomplete_block_on_new_key() {
+        let block_a = zlib_compress(&sample_payload(50_000));
+        let block_b_data = sample_payload(20_000);
+        let block_b = zlib_compress(&block_b_data);
+
+        let mut r = PackedReassembler::default();
+        // Feed only the first fragment of block A — it stays incomplete.
+        assert!(
+            r.push(0, block_a.len(), &block_a[..1024])
+                .unwrap()
+                .is_none()
+        );
+
+        // A different (start, packed_size) starts block B, discarding A.
+        let mut out = None;
+        let mut chunks = block_b.chunks(4096).peekable();
+        while let Some(chunk) = chunks.next() {
+            let res = r.push(99_999, block_b.len(), chunk).unwrap();
+            if chunks.peek().is_none() {
+                out = res;
+            }
+        }
+        assert_eq!(out.as_deref(), Some(block_b_data.as_slice()));
+    }
+
+    #[test]
+    fn packed_reassembler_errors_on_corrupt_stream() {
+        // Bytes that are not a valid zlib stream must surface as an error.
+        let garbage = vec![0xde, 0xad, 0xbe, 0xef, 0x00, 0x11, 0x22, 0x33];
+        let mut r = PackedReassembler::default();
+        let res = r.push(0, garbage.len(), &garbage);
+        assert!(res.is_err(), "expected corrupt stream to error");
+        // After an error the reassembler is reset and ready for a new block.
+        let good = zlib_compress(b"hello world");
+        let out = r.push(0, good.len(), &good).unwrap();
+        assert_eq!(out.as_deref(), Some(b"hello world".as_slice()));
     }
 }
