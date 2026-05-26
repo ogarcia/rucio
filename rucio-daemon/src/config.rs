@@ -98,7 +98,6 @@ pub struct EmuleConfig {
     /// When running in a container, map this port with `-p 4672:4672/udp`.
     ///
     /// Default: 4672.  Override via `RUCIOD_EMULE_UDP_PORT`.
-    #[serde(alias = "kad_port")]
     pub udp_port: u16,
 
     /// TCP port for incoming eMule peer connections (High-ID mode).
@@ -424,7 +423,6 @@ impl Config {
             self.storage.nodes_dat_path = Some(PathBuf::from(v));
         }
         if let Ok(v) = std::env::var("RUCIOD_EMULE_UDP_PORT")
-            .or_else(|_| std::env::var("RUCIOD_KAD_PORT")) // legacy alias
             && !v.is_empty()
             && let Ok(n) = v.parse::<u16>()
             && n > 0
