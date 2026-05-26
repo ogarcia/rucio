@@ -332,7 +332,9 @@ pub async fn run_ed2k_download(
                         DownloadEvent::Queued { rank } => {
                             info!(%peer, rank, "Queued at eMule peer")
                         }
-                        DownloadEvent::Started => info!(%peer, "eMule upload started"),
+                        DownloadEvent::Started => {
+                            info!(%peer, "Peer granted upload slot — transfer starting")
+                        }
                         _ => {}
                     };
                     let mut session = match Session::connect(peer, &opts, &mut on_connect).await {
