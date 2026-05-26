@@ -303,8 +303,23 @@ pub async fn run_ed2k_download(
                         }
                     };
 
+                    // Bytes from all already-completed slices (not counting the
+                    // one we are about to download).  Used to report cumulative
+                    // progress rather than the raw absolute offset of this slice.
+                    let cumulative_before: u64 = {
+                        let d = done.lock().unwrap();
+                        d.iter()
+                            .enumerate()
+                            .filter(|&(_, &done_flag)| done_flag)
+                            .map(|(i, _)| {
+                                let s = i as u64 * CHUNK_SIZE as u64;
+                                (s + CHUNK_SIZE as u64).min(file_size) - s
+                            })
+                            .sum()
+                    };
+
                     // Download the slice.
-                    let bytes_tracker = Arc::new(AtomicU64::new(slice_start));
+                    let bytes_tracker = Arc::new(AtomicU64::new(cumulative_before));
                     let tracker = bytes_tracker.clone();
                     let ws_c = ws.clone();
                     let db_c = db_w.clone();
@@ -315,14 +330,18 @@ pub async fn run_ed2k_download(
                             bytes_received,
                             total,
                         } => {
-                            tracker.store(bytes_received, Ordering::Relaxed);
+                            // bytes_received is an absolute file offset; subtract
+                            // slice_start to get bytes downloaded within this slice,
+                            // then add cumulative_before for the running total.
+                            let total_done = cumulative_before + (bytes_received - slice_start);
+                            tracker.store(total_done, Ordering::Relaxed);
                             let _ = ws_c.send(WsEvent::DownloadProgress(vec![
                                 rucio_core::api::downloads::DownloadResponse {
                                     id: download_id,
                                     root_hash: hash_hex_cc.clone(),
                                     name: Some(name_cc.clone()),
                                     size: Some(total),
-                                    bytes_done: bytes_received,
+                                    bytes_done: total_done,
                                     state: rucio_core::api::downloads::DownloadState::Downloading,
                                     error: None,
                                 },
@@ -360,6 +379,27 @@ pub async fn run_ed2k_download(
                                 d.clone()
                             };
                             save_progress(&met, &snapshot);
+                            // Update DB with the true cumulative total so it
+                            // never regresses when slices are downloaded out of
+                            // file order.
+                            let cumulative: u64 = snapshot
+                                .iter()
+                                .enumerate()
+                                .filter(|&(_, &d)| d)
+                                .map(|(i, _)| {
+                                    let s = i as u64 * CHUNK_SIZE as u64;
+                                    (s + CHUNK_SIZE as u64).min(file_size) - s
+                                })
+                                .sum();
+                            let db_upd = db_w.clone();
+                            tokio::spawn(async move {
+                                let _ = crate::db::emule_downloads::set_bytes_done(
+                                    &db_upd,
+                                    download_id,
+                                    cumulative,
+                                )
+                                .await;
+                            });
                         }
                         Err(e) => {
                             warn!(%peer, slice = slice_idx, error = ?e,
