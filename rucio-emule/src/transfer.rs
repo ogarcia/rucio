@@ -523,6 +523,15 @@ impl Session {
         let mut current_part_start = start;
         let mut batch_end = (start + 3 * PART_WINDOW).min(end);
 
+        // Accumulator for fragmented OP_PACKEDPART blocks.  eMule's
+        // CreatePackedPackets splits one compressed block into ~10 KB
+        // sub-packets that all repeat the same (start, packed_size) header and
+        // each carry a contiguous slice of the zlib stream.  We concatenate the
+        // slices keyed by (start, packed_size) and decompress only once the full
+        // `packed_size` bytes have arrived.
+        let mut packed_buf: Vec<u8> = Vec::new();
+        let mut packed_key: Option<(u64, usize)> = None;
+
         send_request_parts(
             &mut self.stream,
             &mut self.cipher,
@@ -594,8 +603,12 @@ impl Session {
                     }
                 }
                 OP_COMPRESSEDPART => {
-                    // Wire format (parallel to OP_SENDINGPART):
-                    //   hash[16] + start_offset[4] + packed_size[4] + zlib_data[packed_size]
+                    // Per-sub-packet wire format:
+                    //   hash[16] + block_start[4 LE] + packed_size[4 LE] + zlib_fragment[…]
+                    // `packed_size` is the TOTAL compressed length of the block;
+                    // the zlib stream is delivered across several sub-packets that
+                    // all repeat this same header.  Accumulate the fragments and
+                    // decompress only once the whole stream has arrived.
                     if payload.len() < 24 {
                         warn!(
                             "malformed OP_COMPRESSEDPART (too short: {} bytes)",
@@ -609,32 +622,44 @@ impl Session {
                     let packed_size =
                         u32::from_le_bytes([payload[20], payload[21], payload[22], payload[23]])
                             as usize;
-                    debug!(
-                        payload_len = payload.len(),
-                        range_start,
-                        packed_size,
-                        zlib_byte0 = format!("0x{:02x}", payload[24]),
-                        zlib_byte1 = format!("0x{:02x}", payload[25]),
-                        "OP_COMPRESSEDPART decompressing"
-                    );
-                    let mut decompressed = Vec::new();
-                    if let Err(e) = ZlibDecoder::new(&payload[24..]).read_to_end(&mut decompressed)
-                    {
-                        let header_hex = hex::encode(&payload[..payload.len().min(32)]);
-                        warn!(
-                            error = %e,
-                            payload_len = payload.len(),
-                            header_hex,
-                            "OP_COMPRESSEDPART decompression failed"
-                        );
+                    let fragment = &payload[24..];
+
+                    // A change of (start, packed_size) signals a new block.
+                    if packed_key != Some((range_start, packed_size)) {
+                        if !packed_buf.is_empty() {
+                            warn!(
+                                discarded = packed_buf.len(),
+                                "discarding incomplete packed block before a new one"
+                            );
+                        }
+                        packed_buf.clear();
+                        packed_key = Some((range_start, packed_size));
+                    }
+                    packed_buf.extend_from_slice(fragment);
+
+                    // Still waiting for the remaining sub-packets.
+                    if packed_buf.len() < packed_size {
                         continue;
                     }
-                    debug!(
-                        range_start,
-                        range_end = range_start + decompressed.len() as u64,
-                        decompressed_len = decompressed.len(),
-                        "OP_COMPRESSEDPART decompressed OK"
-                    );
+
+                    // Full compressed block received — decompress it once.
+                    let mut decompressed = Vec::new();
+                    if let Err(e) =
+                        ZlibDecoder::new(&packed_buf[..packed_size]).read_to_end(&mut decompressed)
+                    {
+                        warn!(
+                            error = %e,
+                            packed_size,
+                            range_start,
+                            "OP_COMPRESSEDPART decompression failed"
+                        );
+                        packed_buf.clear();
+                        packed_key = None;
+                        continue;
+                    }
+                    packed_buf.clear();
+                    packed_key = None;
+
                     let range_end = range_start + decompressed.len() as u64;
 
                     out_writer
