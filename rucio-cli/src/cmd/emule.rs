@@ -35,16 +35,24 @@ pub async fn run(client: &ApiClient, cmd: EmuleCmd) -> Result<()> {
 async fn status(client: &ApiClient) -> Result<()> {
     let s = client.emule_status().await?;
 
-    let feature = if s.feature_enabled {
+    let active = s.feature_enabled && s.runtime_enabled;
+    let label = if active {
         "enabled".green().to_string()
     } else {
         "disabled".red().to_string()
     };
-    println!("eMule compatibility: {feature}");
+    println!("eMule compatibility: {label}");
 
     if !s.feature_enabled {
         println!(
             "\n{} Rebuild the daemon with `--features emule-compat` to enable eMule support.",
+            "hint:".yellow()
+        );
+        return Ok(());
+    }
+    if !s.runtime_enabled {
+        println!(
+            "\n{} Set `emule.enabled = true` in config.toml or `RUCIOD_EMULE_ENABLED=true`.",
             "hint:".yellow()
         );
         return Ok(());

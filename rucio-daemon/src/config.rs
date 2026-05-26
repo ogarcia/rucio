@@ -91,6 +91,14 @@ impl Default for NetworkConfig {
 /// Only meaningful when the `emule-compat` feature is compiled in.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmuleConfig {
+    /// Enable the eMule / Kad2 subsystem at runtime.
+    ///
+    /// Set to `false` to disable all eMule functionality even when the binary
+    /// is compiled with `emule-compat`.  Useful for fat-binary distributions
+    /// where the user does not want eMule.  Override via `RUCIOD_EMULE_ENABLED`.
+    #[serde(default = "EmuleConfig::default_enabled")]
+    pub enabled: bool,
+
     /// Directory for in-progress eMule downloads (.part files).
     ///
     /// Separate from the rucio temp dir so eMule and libp2p partials never
@@ -140,6 +148,10 @@ pub struct EmuleConfig {
 }
 
 impl EmuleConfig {
+    fn default_enabled() -> bool {
+        true
+    }
+
     fn default_tcp_port() -> u16 {
         4662
     }
@@ -152,6 +164,7 @@ impl EmuleConfig {
 impl Default for EmuleConfig {
     fn default() -> Self {
         Self {
+            enabled: true,
             temp_dir: default_emule_temp_dir(),
             udp_port: 4672,
             tcp_port: Self::default_tcp_port(),
@@ -366,6 +379,7 @@ impl Config {
     /// | `RUCIOD_BOOTSTRAP_PEERS`    | `network.bootstrap_peers`    | comma-separated multiaddrs |
     /// | `RUCIOD_UPLOAD_LIMIT_KBPS`  | `network.upload_limit_kbps`  | integer KB/s, 0=unlimited |
     /// | `RUCIOD_DOWNLOAD_LIMIT_KBPS`| `network.download_limit_kbps`| integer KB/s, 0=unlimited |
+    /// | `RUCIOD_EMULE_ENABLED`      | `emule.enabled`              | `true`/`false`     |
     /// | `RUCIOD_EMULE_TEMP_DIR`     | `emule.temp_dir`             | path               |
     /// | `RUCIOD_NODES_DAT`          | `storage.nodes_dat_path`     | path               |
     /// | `RUCIOD_EMULE_UDP_PORT`     | `emule.udp_port`             | integer 1-65535    |
@@ -414,6 +428,11 @@ impl Config {
             && let Ok(n) = v.parse::<u64>()
         {
             self.network.download_limit_kbps = n;
+        }
+        if let Ok(v) = std::env::var("RUCIOD_EMULE_ENABLED")
+            && !v.is_empty()
+        {
+            self.emule.enabled = !matches!(v.to_lowercase().as_str(), "false" | "0" | "no" | "off");
         }
         if let Ok(v) = std::env::var("RUCIOD_EMULE_TEMP_DIR")
             && !v.is_empty()

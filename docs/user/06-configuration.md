@@ -170,6 +170,24 @@ port 4321).
 
 ---
 
+### `emule.enabled`
+
+Enable or disable the eMule / Kad2 subsystem at runtime.
+
+Set to `false` to disable all eMule functionality without recompiling.
+This is useful when running a fat binary that includes eMule support but
+you do not want to use it — the eMule-related ports are not bound and no
+eMule downloads can be started.
+
+```sh
+rucio config set emule.enabled false
+rucio config set emule.enabled true
+```
+
+**Default:** `true`
+
+---
+
 ### `emule.udp_port`
 
 UDP port for the Kad2 socket used to communicate with the eMule network.
@@ -274,6 +292,7 @@ the file value untouched.
 | `RUCIOD_DOWNLOAD_LIMIT_KBPS` | `network.download_limit_kbps` | `0` (unlimited) | integer KB/s |
 | `RUCIOD_UPNP` | `network.upnp` | `true` | `true`/`false` (also `1`/`0`, `yes`/`no`, `on`/`off`) |
 | `RUCIOD_NODES_DAT` | `storage.nodes_dat_path` | *(unset)* | path |
+| `RUCIOD_EMULE_ENABLED` | `emule.enabled` | `true` | `true`/`false` (also `1`/`0`, `yes`/`no`, `on`/`off`) |
 | `RUCIOD_EMULE_TEMP_DIR` | `emule.temp_dir` | platform default | path |
 | `RUCIOD_EMULE_UDP_PORT` | `emule.udp_port` | `4672` | integer 1–65535 |
 | `RUCIOD_EMULE_TCP_PORT` | `emule.tcp_port` | `4662` | integer 1–65535 |

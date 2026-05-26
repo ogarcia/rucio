@@ -37,6 +37,12 @@ pub struct EmuleBootstrapResponse {
 pub struct EmuleStatusResponse {
     /// Whether the `emule-compat` feature is compiled into this daemon binary.
     pub feature_enabled: bool,
+    /// Whether eMule is enabled at runtime (`emule.enabled` config key).
+    /// Always `false` when `feature_enabled` is `false`.
+    /// Defaults to `true` when deserialising from an older daemon that does not
+    /// send this field.
+    #[serde(default = "bool_true")]
+    pub runtime_enabled: bool,
     /// Effective path for `nodes.dat` — either the configured value or the
     /// platform default.  Always present when `feature_enabled` is true.
     pub nodes_dat_path: Option<String>,
@@ -48,4 +54,8 @@ pub struct EmuleStatusResponse {
     pub connected_peers: usize,
     /// Whether the node considers itself well-connected (≥ 4 peers).
     pub is_connected: bool,
+}
+
+fn bool_true() -> bool {
+    true
 }

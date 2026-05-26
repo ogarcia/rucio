@@ -183,12 +183,23 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
 
     // --- Kad2 background task (emule-compat) --------------------------------
     #[cfg(feature = "emule-compat")]
-    let kad_handle = {
+    let kad_handle = if !config.emule.enabled {
+        info!("eMule subsystem disabled by configuration");
+        let socket = Arc::new(
+            tokio::net::UdpSocket::bind("0.0.0.0:0")
+                .await
+                .expect("bind ephemeral UDP socket"),
+        );
+        rucio_emule::kad::task::spawn(
+            socket,
+            rucio_emule::kad::packet::KadId::random(),
+            rucio_emule::kad::task::KadTaskConfig::default(),
+        )
+    } else {
         match crate::emule::start_kad_task(&config).await {
             Ok(h) => h,
             Err(e) => {
                 warn!("Failed to start Kad2 task: {e} — eMule downloads will not work");
-                // Fallback: bind ephemeral port so we at least compile.
                 let socket = Arc::new(
                     tokio::net::UdpSocket::bind("0.0.0.0:0")
                         .await
@@ -210,7 +221,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
 
     // --- eMule TCP listener (emule-compat, High-ID mode) --------------------
     #[cfg(feature = "emule-compat")]
-    {
+    if config.emule.enabled {
         let tcp_port = config.emule.tcp_port;
         match crate::emule::start_emule_tcp_listener(&config).await {
             Ok(listener) => {
@@ -229,9 +240,17 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
         let upnp_cfg = upnp::UpnpConfig {
             tcp_port: config.network.listen_port,
             #[cfg(feature = "emule-compat")]
-            udp_port: Some(config.emule.udp_port),
+            udp_port: if config.emule.enabled {
+                Some(config.emule.udp_port)
+            } else {
+                None
+            },
             #[cfg(feature = "emule-compat")]
-            emule_tcp_port: Some(config.emule.tcp_port),
+            emule_tcp_port: if config.emule.enabled {
+                Some(config.emule.tcp_port)
+            } else {
+                None
+            },
             #[cfg(not(feature = "emule-compat"))]
             udp_port: None,
             #[cfg(not(feature = "emule-compat"))]
@@ -277,7 +296,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     // node starts connecting to the eMule network without waiting for the first
     // download request.
     #[cfg(feature = "emule-compat")]
-    {
+    if config.emule.enabled {
         let save_path = crate::emule::effective_nodes_dat_path(&config);
         if !save_path.exists() {
             let kad_cold = kad_handle.clone();
@@ -308,7 +327,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
 
     // --- eMule: resume interrupted downloads --------------------------------
     #[cfg(feature = "emule-compat")]
-    {
+    if config.emule.enabled {
         let emule_rows = db::emule_downloads::list_resumable(&db)
             .await
             .unwrap_or_default();
@@ -374,7 +393,9 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                 // Persist the Kad2 routing table so the next startup seeds from
                 // discovered contacts instead of doing a cold bootstrap.
                 #[cfg(feature = "emule-compat")]
-                emule::save_kad_cache(&config, &kad_handle).await;
+                if config.emule.enabled {
+                    emule::save_kad_cache(&config, &kad_handle).await;
+                }
                 break;
             }
             _ = metrics_tick.tick() => {
@@ -497,19 +518,23 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                         api::DownloadRequest::StartEd2k { link, download_id } => {
                             #[cfg(feature = "emule-compat")]
                             {
-                                let config = config.clone();
-                                let db = db.clone();
-                                let ws_tx = ws_tx.clone();
-                                let kad = kad_handle.clone();
-                                tokio::spawn(async move {
-                                    if let Err(e) = crate::emule::run_ed2k_download(
-                                        &link, download_id, &config, &db, &ws_tx, &kad,
-                                    )
-                                    .await
-                                    {
-                                        warn!("eMule download failed: {e}");
-                                    }
-                                });
+                                if !config.emule.enabled {
+                                    warn!("Received StartEd2k request but eMule is disabled (emule.enabled = false)");
+                                } else {
+                                    let config = config.clone();
+                                    let db = db.clone();
+                                    let ws_tx = ws_tx.clone();
+                                    let kad = kad_handle.clone();
+                                    tokio::spawn(async move {
+                                        if let Err(e) = crate::emule::run_ed2k_download(
+                                            &link, download_id, &config, &db, &ws_tx, &kad,
+                                        )
+                                        .await
+                                        {
+                                            warn!("eMule download failed: {e}");
+                                        }
+                                    });
+                                }
                             }
                             #[cfg(not(feature = "emule-compat"))]
                             {
