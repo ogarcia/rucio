@@ -504,7 +504,7 @@ async fn handle_packet(
             }
             let resp = encode_hello_res(&our_id, cfg.tcp_port);
             let _ = socket.send_to(&resp, src).await;
-            let ack = encode_hello_res_ack();
+            let ack = encode_hello_res_ack(&our_id);
             let _ = socket.send_to(&ack, src).await;
         }
 
@@ -531,7 +531,7 @@ async fn handle_packet(
                 };
                 routing_table.write().await.insert_or_update_key(contact);
             }
-            let ack = encode_hello_res_ack();
+            let ack = encode_hello_res_ack(&our_id);
             let _ = socket.send_to(&ack, src).await;
         }
 
@@ -634,11 +634,7 @@ async fn do_bootstrap(
         if socket.send_to(&pkt, addr).await.is_ok() {
             sent += 1;
         }
-        // Also send HELLO_REQ plain so seeds that accept plain can reply
-        // with HelloRes containing TAG_SENDER_IP (our external IP).
-        let _ = socket.send_to(&hello0, addr).await;
-        // Also send HELLO_REQ plain so seeds that accept plain can reply
-        // with HelloRes containing TAG_SENDER_IP (our external IP).
+        // Also send HELLO_REQ so seeds can reply with HelloRes.
         let _ = socket.send_to(&hello0, addr).await;
     }
     debug!(sent, "Sent BOOTSTRAP_REQ packets (round 0)");
@@ -732,7 +728,7 @@ async fn do_bootstrap(
                                 };
                                 routing_table.write().await.insert_or_update_key(contact);
                             }
-                            let ack = encode_hello_res_ack();
+                            let ack = encode_hello_res_ack(&our_id);
                             let _ = socket.send_to(&ack, src).await;
                         }
                         Ok(other) => {

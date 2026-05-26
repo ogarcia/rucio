@@ -23,8 +23,8 @@ use thiserror::Error;
 /// Protocol header byte for unencrypted Kad2 UDP packets.
 pub const KAD2_PROTO: u8 = 0xe4;
 
-/// Current Kad version we advertise (version 11 is the last common Kad2 version).
-pub const KAD_VERSION: u8 = 11;
+/// Current Kad version we advertise (KADEMLIA_VERSION = 0x09 per eMule opcodes.h).
+pub const KAD_VERSION: u8 = 9;
 
 // ── Opcodes ───────────────────────────────────────────────────────────────────
 
@@ -42,7 +42,7 @@ pub enum Opcode {
     /// Hello request — payload: contact descriptor.
     HelloReq = 0x11,
     /// Hello response — payload: contact descriptor.
-    HelloRes = 0x12,
+    HelloRes = 0x19,
     /// Hello response ACK.
     HelloResAck = 0x22,
     /// Node lookup request.
@@ -50,9 +50,9 @@ pub enum Opcode {
     /// Node lookup response.
     Res = 0x29,
     /// Search source request (find sources for a file hash).
-    SearchSourceReq = 0x19,
-    /// Search response.
-    SearchRes = 0x2b,
+    SearchSourceReq = 0x34,
+    /// Search response (keyword or source).
+    SearchRes = 0x3b,
     /// Keyword search request.
     SearchKeyReq = 0x33,
     /// Ping.
@@ -60,9 +60,9 @@ pub enum Opcode {
     /// Pong.
     Pong = 0x61,
     /// Publish source request.
-    PublishSourceReq = 0x35,
+    PublishSourceReq = 0x44,
     /// Publish response.
-    PublishRes = 0x38,
+    PublishRes = 0x4b,
 }
 
 impl Opcode {
@@ -71,17 +71,17 @@ impl Opcode {
             0x01 => Some(Self::BootstrapReq),
             0x09 => Some(Self::BootstrapRes),
             0x11 => Some(Self::HelloReq),
-            0x12 => Some(Self::HelloRes),
+            0x19 => Some(Self::HelloRes),
             0x22 => Some(Self::HelloResAck),
             0x21 => Some(Self::Req),
             0x29 => Some(Self::Res),
-            0x19 => Some(Self::SearchSourceReq),
-            0x2b => Some(Self::SearchRes),
+            0x34 => Some(Self::SearchSourceReq),
+            0x3b => Some(Self::SearchRes),
             0x33 => Some(Self::SearchKeyReq),
             0x60 => Some(Self::Ping),
             0x61 => Some(Self::Pong),
-            0x35 => Some(Self::PublishSourceReq),
-            0x38 => Some(Self::PublishRes),
+            0x44 => Some(Self::PublishSourceReq),
+            0x4b => Some(Self::PublishRes),
             _ => None,
         }
     }
@@ -932,8 +932,14 @@ pub fn encode_hello_res(our_id: &KadId, tcp_port: u16) -> Vec<u8> {
 }
 
 /// Build a `KADEMLIA2_HELLO_RES_ACK` packet.
-pub fn encode_hello_res_ack() -> Vec<u8> {
-    vec![KAD2_PROTO, Opcode::HelloResAck as u8]
+///
+/// Wire format per eMule: `[NodeID(16)][tag_count=0(1)]` — minimum 17 bytes;
+/// shorter packets are rejected by eMule's `Process_KADEMLIA2_HELLO_RES_ACK`.
+pub fn encode_hello_res_ack(our_id: &KadId) -> Vec<u8> {
+    let mut buf = vec![KAD2_PROTO, Opcode::HelloResAck as u8];
+    our_id.write_to(&mut buf).unwrap();
+    buf.push(0); // tag count = 0
+    buf
 }
 
 /// Build a `KADEMLIA2_BOOTSTRAP_RES` with the given contacts.
