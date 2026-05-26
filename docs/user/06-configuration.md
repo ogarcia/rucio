@@ -222,6 +222,24 @@ rucio config set emule.tcp_port 4662
 
 ---
 
+### `emule.max_parallel_peers`
+
+Maximum number of simultaneous peer connections per eMule download.
+
+Each active eMule download opens up to this many concurrent TCP connections
+to different sources and fetches different file slices in parallel.  Higher
+values can improve speed when many sources are available, but increase the
+number of open sockets.  The effective concurrency is also bounded by the
+number of discovered sources and the number of remaining slices.
+
+```sh
+rucio config set emule.max_parallel_peers 5
+```
+
+**Default:** `5`  **Range:** `1–50`
+
+---
+
 ## Configuration file
 
 The configuration is stored as TOML and is loaded at daemon startup.
