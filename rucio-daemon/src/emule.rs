@@ -11,7 +11,9 @@ use rucio_emule::kad::packet::KadId;
 use rucio_emule::kad::task::{KadHandle, KadTaskConfig};
 use rucio_emule::transfer::{DownloadEvent, DownloadOptions, download_file};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+use tokio::io::AsyncSeekExt;
 use tokio::net::UdpSocket;
 use tokio::sync::broadcast;
 use tracing::{info, warn};
@@ -115,6 +117,13 @@ pub async fn run_ed2k_download(
         );
     }
 
+    // Create the temp directory and part-file path once — they never change.
+    let emule_temp = &config.storage.emule_temp_dir;
+    std::fs::create_dir_all(emule_temp)
+        .with_context(|| format!("create emule temp dir: {}", emule_temp.display()))?;
+    let part_path = emule_temp.join(format!("{}.part", link.hash));
+    let final_path = config.storage.download_dir.join(&link.name);
+
     // 3 + 4. Main retry loop: search → try peers → if all fail, search again.
     //
     // This loop never exits on its own except via `return Ok(())` (completed)
@@ -125,6 +134,19 @@ pub async fn run_ed2k_download(
         if is_cancelled(db, download_id).await {
             info!(name = %link.name, "eMule download cancelled by user");
             return Ok(());
+        }
+
+        // Determine how many bytes we already have on disk.  This is the
+        // authoritative resume offset — more reliable than bytes_done in the
+        // DB which might lag due to crashes or throttled updates.
+        let resume_offset: u64 = tokio::fs::metadata(&part_path)
+            .await
+            .map(|m| m.len())
+            .unwrap_or(0);
+        if resume_offset > 0 {
+            info!(resume_offset, name = %link.name, "Resuming from partial file");
+            let _ =
+                crate::db::emule_downloads::set_bytes_done(db, download_id, resume_offset).await;
         }
 
         // --- Search for sources ---
@@ -148,14 +170,11 @@ pub async fn run_ed2k_download(
         // --- Attempt to download from discovered sources ---
         let _ = crate::db::emule_downloads::set_status(db, download_id, "downloading", None).await;
 
-        let emule_temp = &config.storage.emule_temp_dir;
-        std::fs::create_dir_all(emule_temp)
-            .with_context(|| format!("create emule temp dir: {}", emule_temp.display()))?;
-
-        let part_path = emule_temp.join(format!("{}.part", link.hash));
-        let final_path = config.storage.download_dir.join(&link.name);
-
+        // current_offset tracks how far we've downloaded across multiple peer
+        // attempts within the same source-search round.
+        let mut current_offset = resume_offset;
         let mut downloaded = false;
+
         for source in &sources {
             if is_cancelled(db, download_id).await {
                 info!(name = %link.name, "eMule download cancelled by user");
@@ -166,13 +185,17 @@ pub async fn run_ed2k_download(
                 continue;
             }
             let peer = std::net::SocketAddrV4::new(source.ip, source.tcp_port);
-            let file = tokio::fs::OpenOptions::new()
+
+            // Open the part file without truncating so partial data is preserved.
+            let mut file = tokio::fs::OpenOptions::new()
                 .write(true)
                 .create(true)
-                .truncate(true)
                 .open(&part_path)
                 .await
                 .with_context(|| format!("open part file: {}", part_path.display()))?;
+            file.seek(std::io::SeekFrom::Start(current_offset))
+                .await
+                .with_context(|| format!("seek part file to {current_offset}"))?;
 
             let opts = DownloadOptions {
                 timeout: Duration::from_secs(3600),
@@ -180,19 +203,24 @@ pub async fn run_ed2k_download(
                 max_queue_waits: 5,
                 file_size: link.size,
                 hash: link.hash,
+                start_offset: current_offset,
             };
 
+            // Shared atomic so the sync event callback can pass bytes_received
+            // to the async ChunkVerified handler for periodic DB updates.
+            let bytes_tracker = Arc::new(AtomicU64::new(current_offset));
+
             let ws = ws_tx.clone();
+            let db_ev = db.clone();
             let name_clone = link.name.clone();
             let hash_hex = link.hash.to_hex();
+            let tracker = bytes_tracker.clone();
             match download_file(peer, opts, file, move |ev| match ev {
                 DownloadEvent::Connected => info!(%peer, "Connected to eMule peer"),
                 DownloadEvent::Queued { rank } => info!(%peer, rank, "Queued at eMule peer"),
                 DownloadEvent::Started => info!(%peer, "eMule upload started"),
-                DownloadEvent::Progress {
-                    bytes_received,
-                    total,
-                } => {
+                DownloadEvent::Progress { bytes_received, total } => {
+                    tracker.store(bytes_received, Ordering::Relaxed);
                     let _ = ws.send(WsEvent::DownloadProgress(vec![
                         rucio_core::api::downloads::DownloadResponse {
                             id: download_id,
@@ -207,6 +235,14 @@ pub async fn run_ed2k_download(
                 }
                 DownloadEvent::ChunkVerified { part_index } => {
                     info!(part_index, "eMule chunk verified");
+                    // Persist progress to DB every ~9.7 MB (one ed2k part).
+                    let bytes = tracker.load(Ordering::Relaxed);
+                    let db = db_ev.clone();
+                    tokio::spawn(async move {
+                        let _ =
+                            crate::db::emule_downloads::set_bytes_done(&db, download_id, bytes)
+                                .await;
+                    });
                 }
                 DownloadEvent::ChunkFailed { part_index } => {
                     warn!(part_index, "eMule chunk verification failed");
@@ -215,14 +251,20 @@ pub async fn run_ed2k_download(
             })
             .await
             {
-                Ok(bytes) => {
-                    info!(bytes, name = %link.name, "eMule download finished");
+                Ok(_) => {
+                    info!(name = %link.name, "eMule download finished");
                     downloaded = true;
                     break;
                 }
                 Err(e) => {
-                    warn!(%peer, error = %e, "eMule peer failed, trying next");
-                    let _ = tokio::fs::remove_file(&part_path).await;
+                    // Keep the part file so the next peer (or next restart) can
+                    // resume from where this peer stopped.
+                    current_offset = tokio::fs::metadata(&part_path)
+                        .await
+                        .map(|m| m.len())
+                        .unwrap_or(current_offset);
+                    warn!(%peer, error = %e, bytes_so_far = current_offset,
+                          "eMule peer failed, trying next");
                 }
             }
         }

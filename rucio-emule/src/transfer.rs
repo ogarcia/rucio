@@ -135,6 +135,9 @@ pub struct DownloadOptions {
     pub file_size: u64,
     /// Expected ed2k hash for per-part verification.
     pub hash: Ed2kHash,
+    /// Byte offset to resume from.  The caller must have already seeked the
+    /// writer to this position.  Defaults to 0 (start from the beginning).
+    pub start_offset: u64,
 }
 
 impl Default for DownloadOptions {
@@ -145,6 +148,7 @@ impl Default for DownloadOptions {
             max_queue_waits: 10,
             file_size: 0,
             hash: Ed2kHash::from_bytes([0u8; 16]),
+            start_offset: 0,
         }
     }
 }
@@ -278,18 +282,20 @@ where
     // never request overlapping ranges.
     const PART_WINDOW: u64 = 180 * 1024;
 
-    let mut bytes_received: u64 = 0;
-    let mut part_buf: Vec<u8> = Vec::new();
-    let mut current_part_start: u64 = 0;
     let file_size = opts.file_size;
+    // Resume from where the caller left off.  The writer must already be
+    // seeked to this offset before calling download_file.
+    let mut bytes_received: u64 = opts.start_offset;
+    let mut part_buf: Vec<u8> = Vec::new();
+    let mut current_part_start: u64 = opts.start_offset;
     // Byte offset that marks the end of the current batch (3 windows).
-    let mut batch_end: u64 = (3 * PART_WINDOW).min(file_size);
+    let mut batch_end: u64 = (opts.start_offset + 3 * PART_WINDOW).min(file_size);
 
     // Send the first REQUESTPARTS.
     send_request_parts(
         &mut stream,
         opts.hash.as_bytes(),
-        bytes_received,
+        opts.start_offset,
         file_size,
         PART_WINDOW,
     )
