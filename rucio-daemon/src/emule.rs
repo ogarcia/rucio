@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::io::AsyncSeekExt;
 use tokio::net::UdpSocket;
-use tokio::sync::broadcast;
+use tokio::sync::{Semaphore, broadcast};
 use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 
@@ -107,6 +107,7 @@ fn retry_delay_secs(attempt: u32) -> u64 {
 /// - The user cancels it (detected by polling the DB status).
 /// - A hard infrastructure error occurs (cannot read nodes.dat, cannot create
 ///   temp directory, I/O error on the completed file, etc.).
+#[allow(clippy::too_many_arguments)]
 pub async fn run_ed2k_download(
     link_str: &str,
     download_id: i64,
@@ -115,6 +116,7 @@ pub async fn run_ed2k_download(
     ws_tx: &broadcast::Sender<WsEvent>,
     kad: &KadHandle,
     active_downloads: &ActiveDownloads,
+    download_slots: &Arc<Semaphore>,
 ) -> Result<()> {
     // 1. Parse the link.
     let link = Ed2kLink::parse(link_str).with_context(|| format!("parse ed2k link: {link_str}"))?;
@@ -165,6 +167,25 @@ pub async fn run_ed2k_download(
             num_slices,
         },
     );
+
+    // Acquire a global download slot.  When all slots are busy the download
+    // parks here in the `queued` state until a running download finishes,
+    // capping the total number of open peer connections across all downloads.
+    let _slot = match download_slots.clone().try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => {
+            info!(name = %link.name, "All download slots busy — queued");
+            let _ = crate::db::emule_downloads::set_status(db, download_id, "queued", None).await;
+            match download_slots.clone().acquire_owned().await {
+                Ok(permit) => permit,
+                Err(_) => {
+                    // Semaphore closed — daemon shutting down.
+                    active_downloads.write().await.remove(&hash_key);
+                    return Ok(());
+                }
+            }
+        }
+    };
 
     // How long to reuse a source cache before querying Kad2 again.
     // eMule's own re-ask interval is 30 minutes; we match it to avoid

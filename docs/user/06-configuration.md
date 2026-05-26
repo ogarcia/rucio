@@ -261,6 +261,23 @@ rucio config set emule.max_upload_slots 4
 
 ---
 
+### `emule.max_concurrent_downloads`
+
+Maximum number of eMule downloads that run at the same time.
+
+When you queue more eMule downloads than this, the surplus wait in the
+`queued` state until a running download finishes.  Because each active
+download opens up to `emule.max_parallel_peers` TCP connections, this cap
+bounds the total number of open sockets so a large queue cannot exhaust them.
+
+```sh
+rucio config set emule.max_concurrent_downloads 3
+```
+
+**Default:** `3`  **Range:** `1–50`
+
+---
+
 ## Configuration file
 
 The configuration is stored as TOML and is loaded at daemon startup.
@@ -312,6 +329,7 @@ udp_port           = 4672
 tcp_port           = 4662
 max_parallel_peers = 5
 max_upload_slots   = 4
+max_concurrent_downloads = 3
 # temp_dir     = "~/.cache/rucio/emule-tmp"  # platform default
 # external_ip  = "1.2.3.4"                   # auto-detected via UPnP or peer responses
 ```
@@ -347,6 +365,7 @@ the file value untouched.
 | `RUCIOD_EXTERNAL_IP` | `emule.external_ip` | *(auto)* | IPv4 address |
 | `RUCIOD_EMULE_MAX_PARALLEL` | `emule.max_parallel_peers` | `5` | integer 1–50 |
 | `RUCIOD_EMULE_MAX_UPLOAD_SLOTS` | `emule.max_upload_slots` | `4` | integer 1–50 |
+| `RUCIOD_EMULE_MAX_CONCURRENT_DOWNLOADS` | `emule.max_concurrent_downloads` | `3` | integer 1–50 |
 
 ### Docker / container example
 

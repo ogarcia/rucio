@@ -198,6 +198,13 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     #[cfg(feature = "emule-compat")]
     let emule_inbound_connections = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
 
+    // Global cap on concurrently active eMule downloads.  Surplus downloads
+    // wait in the `queued` state until a running download finishes.
+    #[cfg(feature = "emule-compat")]
+    let emule_download_slots = std::sync::Arc::new(tokio::sync::Semaphore::new(
+        config.emule.max_concurrent_downloads.clamp(1, 50),
+    ));
+
     // --- Kad2 background task (emule-compat) --------------------------------
     #[cfg(feature = "emule-compat")]
     let kad_handle = if !config.emule.enabled {
@@ -372,6 +379,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                 let ws_tx = ws_tx.clone();
                 let kad = kad_handle.clone();
                 let ad = active_downloads.clone();
+                let slots = emule_download_slots.clone();
                 tokio::spawn(async move {
                     if let Err(e) = crate::emule::run_ed2k_download(
                         &row.ed2k_link,
@@ -381,6 +389,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                         &ws_tx,
                         &kad,
                         &ad,
+                        &slots,
                     )
                     .await
                     {
@@ -558,9 +567,11 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                                     let ws_tx = ws_tx.clone();
                                     let kad = kad_handle.clone();
                                     let ad = active_downloads.clone();
+                                    let slots = emule_download_slots.clone();
                                     tokio::spawn(async move {
                                         if let Err(e) = crate::emule::run_ed2k_download(
                                             &link, download_id, &config, &db, &ws_tx, &kad, &ad,
+                                            &slots,
                                         )
                                         .await
                                         {
