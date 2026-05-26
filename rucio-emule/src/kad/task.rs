@@ -822,18 +822,30 @@ async fn send_keepalive(
         return;
     }
 
-    // Normal keepalive: send HELLO_REQ to a few random contacts.
-    let contacts: Vec<_> = routing_table
-        .read()
-        .await
-        .all_contacts()
-        .take(3)
-        .cloned()
-        .collect();
+    // Normal keepalive: send HELLO_REQ to 3 randomly-selected contacts so that
+    // we cycle through the whole table over time rather than always hitting the
+    // same three entries at the front of bucket 0.
+    let all: Vec<_> = routing_table.read().await.all_contacts().cloned().collect();
+    let n = all.len();
     let hello = encode_hello_req(&our_id, cfg.tcp_port, our_udp_key);
-    for c in contacts {
-        let addr = SocketAddr::V4(c.socket_addr_udp());
-        send_kad_pkt(socket, &hello, addr, c.udp_key, our_external_ip).await;
+    if n > 0 {
+        // Derive a pseudo-random offset from wall-clock nanoseconds — no
+        // external dependency needed, and sufficient for non-security use.
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut h = DefaultHasher::new();
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .subsec_nanos()
+            .hash(&mut h);
+        let offset = h.finish() as usize;
+        for i in 0..3usize.min(n) {
+            // Stride of 31 (prime) to spread the three picks across the table.
+            let c = &all[(offset + i * 31) % n];
+            let addr = SocketAddr::V4(c.socket_addr_udp());
+            send_kad_pkt(socket, &hello, addr, c.udp_key, our_external_ip).await;
+        }
     }
     debug!(routing_table = count, "Kad2 keepalive sent");
 }

@@ -148,18 +148,28 @@ pub struct KBucket {
 }
 
 impl KBucket {
-    /// Try to add a contact.  Returns `true` if added, `false` if bucket full.
+    /// Try to add a contact.
+    ///
+    /// - Duplicate IDs update the existing entry's UDP key and return `false`.
+    /// - If the bucket has room, the contact is appended and `true` is returned.
+    /// - If the bucket is full, the oldest entry (index 0) is evicted to make
+    ///   room for the new contact.  This mirrors eMule's behaviour of preferring
+    ///   fresh peers over stale ones when no live-ping infrastructure is present.
     pub fn add(&mut self, contact: Contact) -> bool {
-        // Don't add duplicates.
-        if self.entries.iter().any(|c| c.id == contact.id) {
+        if let Some(existing) = self.entries.iter_mut().find(|c| c.id == contact.id) {
+            if contact.udp_key.is_some() {
+                existing.udp_key = contact.udp_key;
+            }
             return false;
         }
         if self.entries.len() < K {
             self.entries.push(contact);
-            true
         } else {
-            false
+            // Evict oldest (front) and push the new contact at the back.
+            self.entries.remove(0);
+            self.entries.push(contact);
         }
+        true
     }
 
     pub fn contacts(&self) -> &[Contact] {
@@ -212,15 +222,7 @@ impl RoutingTable {
             return false;
         }
         let idx = bucket_index(&self.our_id, &contact.id);
-        let bucket = &mut self.buckets[idx];
-        // If already present, update the key.
-        if let Some(existing) = bucket.entries.iter_mut().find(|c| c.id == contact.id) {
-            if contact.udp_key.is_some() {
-                existing.udp_key = contact.udp_key;
-            }
-            return false;
-        }
-        bucket.add(contact)
+        self.buckets[idx].add(contact)
     }
 
     /// Load all contacts from a parsed `nodes.dat`.
