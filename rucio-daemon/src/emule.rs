@@ -427,14 +427,24 @@ pub async fn run_ed2k_download(
         // Wait for all workers to finish.
         while join_set.join_next().await.is_some() {}
 
-        // Check if all slices are now done.
-        let all_done = done_vec.lock().unwrap().iter().all(|&d| d);
+        // Check if all slices are now done (drop guard before any await).
+        let (done_count_after, all_done) = {
+            let g = done_vec.lock().unwrap();
+            (g.iter().filter(|&&d| d).count(), g.iter().all(|&d| d))
+        };
+
         if !all_done {
+            let new_slices = done_count_after.saturating_sub(done_count);
+            // If we made real progress this round, sources exist — reset backoff.
+            if new_slices > 0 {
+                retry_count = 0;
+            }
             let delay = retry_delay_secs(retry_count);
             retry_count += 1;
             warn!(
                 name = %link.name,
                 hash = %link.hash,
+                new_slices,
                 retry_in_secs = delay,
                 "Not all slices complete — back to finding_providers"
             );
