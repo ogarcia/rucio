@@ -1,4 +1,4 @@
-//! `rucio download list`, `rucio download get <target>`, `rucio download info <X>`,
+//! `rucio download list`, `rucio download get <target>`, `rucio download show <X>`,
 //! `rucio download cancel <idx|hash>`, `rucio download clean`
 
 use anyhow::{Result, bail};
@@ -269,7 +269,7 @@ pub async fn start(client: &ApiClient, target: &str, provider: Option<&str>) -> 
 }
 
 /// Show full details for a single download identified by row number or hash.
-pub async fn info(client: &ApiClient, target: &str) -> Result<()> {
+pub async fn show(client: &ApiClient, target: &str) -> Result<()> {
     let dl = client.find_download_by_idx_or_hash(target).await?;
     let Some(dl) = dl else {
         bail!("No download found for '{target}'");

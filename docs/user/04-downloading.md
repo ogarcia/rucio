@@ -52,8 +52,8 @@ downloads reach a terminal state (completed, failed or cancelled).
 ## Inspecting a single download
 
 ```sh
-rucio download info 1            # by row number from `rucio download list`
-rucio download info 7b4a         # hash prefix also works
+rucio download show 1            # by row number from `rucio download list`
+rucio download show 7b4a         # hash prefix also works
 ```
 
 This prints the full detail for one download: its hash, state, size and

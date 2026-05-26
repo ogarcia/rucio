@@ -114,7 +114,7 @@ pub enum DownloadAction {
         done: bool,
     },
     /// Show full details for a single download
-    Info {
+    Show {
         /// Row number from `rucio download list` (e.g. 1) or root hash (full or prefix)
         target: String,
     },
@@ -208,7 +208,7 @@ pub async fn run() -> Result<()> {
                 active,
                 done,
             } => cmd::downloads::list(&client, watch, active, done).await,
-            DownloadAction::Info { target } => cmd::downloads::info(&client, &target).await,
+            DownloadAction::Show { target } => cmd::downloads::show(&client, &target).await,
             DownloadAction::Cancel { hash } => cmd::downloads::cancel(&client, &hash).await,
             DownloadAction::Clean { hash } => cmd::downloads::clean(&client, hash.as_deref()).await,
         },
