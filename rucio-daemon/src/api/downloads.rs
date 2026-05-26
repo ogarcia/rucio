@@ -10,6 +10,9 @@ use rucio_core::api::downloads::{
     StartDownloadRequest,
 };
 
+use rucio_core::protocol::chunk::Hash;
+use rucio_core::protocol::magnet::MagnetLink;
+
 use crate::api::{AppState, DownloadRequest};
 use crate::transfer::parse_magnet;
 
@@ -121,12 +124,13 @@ pub async fn get_download(
         let pieces_done = chunks.iter().filter(|c| c.status == "done").count() as u64;
 
         let root_hash_hex = hex::encode(&row.root_hash);
-        let magnet = rucio_core::protocol::search::SearchResult::magnet_from_parts(
-            &root_hash_hex,
-            &row.name,
-            row.total_size as u64,
-            None,
-        );
+        let magnet = MagnetLink {
+            root_hash: Hash(row.root_hash[..].try_into().unwrap_or([0u8; 32])),
+            name: Some(row.name.clone()),
+            size: Some(row.total_size as u64),
+            providers: Vec::new(),
+        }
+        .to_string();
 
         Ok(Json(DownloadDetailResponse {
             id,
