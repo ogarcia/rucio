@@ -98,6 +98,18 @@ pub struct EmuleConfig {
     /// When running in a container, map this port with `-p 4672:4672/udp`.
     pub kad_port: u16,
 
+    /// TCP port for incoming eMule peer connections (High-ID mode).
+    ///
+    /// ruciod listens on this port so that other eMule clients can connect
+    /// to us directly.  Without it we operate as Low-ID and receive lower
+    /// priority in upload queues, resulting in significantly slower downloads.
+    /// The eMule standard port is 4662.
+    /// When running in a container, map this port with `-p 4662:4662/tcp`.
+    ///
+    /// Default: 4662.  Override via `RUCIOD_EMULE_TCP_PORT`.
+    #[serde(default = "EmuleConfig::default_tcp_port")]
+    pub tcp_port: u16,
+
     /// Our external IPv4 address as seen by peers on the internet.
     ///
     /// Required for Kad2 UDP obfuscation.  If left as `None` (default), ruciod
@@ -119,6 +131,10 @@ pub struct EmuleConfig {
 }
 
 impl EmuleConfig {
+    fn default_tcp_port() -> u16 {
+        4662
+    }
+
     fn default_max_parallel_peers() -> usize {
         5
     }
@@ -128,6 +144,7 @@ impl Default for EmuleConfig {
     fn default() -> Self {
         Self {
             kad_port: 4672,
+            tcp_port: Self::default_tcp_port(),
             external_ip: None,
             max_parallel_peers: Self::default_max_parallel_peers(),
         }
@@ -347,6 +364,7 @@ impl Config {
     /// | `RUCIOD_EMULE_TEMP_DIR`     | `storage.emule_temp_dir`     | path               |
     /// | `RUCIOD_NODES_DAT`          | `storage.nodes_dat_path`     | path               |
     /// | `RUCIOD_KAD_PORT`           | `emule.kad_port`             | integer 1-65535    |
+    /// | `RUCIOD_EMULE_TCP_PORT`     | `emule.tcp_port`             | integer 1-65535    |
     /// | `RUCIOD_EMULE_MAX_PARALLEL` | `emule.max_parallel_peers`   | integer 1-50       |
     /// | `RUCIOD_UPNP`               | `network.upnp`               | `true`/`false`     |
     pub fn apply_env_overrides(&mut self) {
@@ -408,6 +426,13 @@ impl Config {
             && n > 0
         {
             self.emule.kad_port = n;
+        }
+        if let Ok(v) = std::env::var("RUCIOD_EMULE_TCP_PORT")
+            && !v.is_empty()
+            && let Ok(n) = v.parse::<u16>()
+            && n > 0
+        {
+            self.emule.tcp_port = n;
         }
         if let Ok(v) = std::env::var("RUCIOD_EXTERNAL_IP")
             && !v.is_empty()

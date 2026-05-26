@@ -59,10 +59,10 @@ use flate2::read::ZlibDecoder;
 use md4::Md4;
 use md5::{Digest, Md5};
 use std::io::{self, Read as _};
-use std::net::SocketAddrV4;
+use std::net::{SocketAddr, SocketAddrV4};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::time::timeout;
 use tracing::{debug, info, warn};
 
@@ -154,13 +154,15 @@ async fn write_frame(
 
 // ── HELLO packet ─────────────────────────────────────────────────────────────
 
-/// Build a minimal HELLO payload advertising ourselves as a Kad2 client.
-fn build_hello(our_hash: &[u8; 16]) -> Vec<u8> {
+/// Build a HELLO / HELLOANSWER payload advertising ourselves.
+///
+/// `tcp_port` is our listening TCP port; pass 0 if not listening (Low-ID).
+fn build_hello(our_hash: &[u8; 16], tcp_port: u16) -> Vec<u8> {
     let mut p = Vec::new();
     p.push(16u8);
     p.extend_from_slice(our_hash);
-    p.extend_from_slice(&0u32.to_le_bytes()); // client ID = 0 (low-ID)
-    p.extend_from_slice(&0u16.to_le_bytes()); // TCP port = 0 (not listening)
+    p.extend_from_slice(&0u32.to_le_bytes()); // client ID = 0 (low-ID until server assigns one)
+    p.extend_from_slice(&tcp_port.to_le_bytes());
     p.extend_from_slice(&0u32.to_le_bytes()); // tag count = 0
     p.extend_from_slice(&0u32.to_le_bytes()); // server IP (unused)
     p.extend_from_slice(&0u16.to_le_bytes()); // server port (unused)
@@ -231,6 +233,9 @@ pub struct DownloadOptions {
     /// that is rejected before HELLOANSWER will be automatically retried with
     /// RC4 obfuscation.
     pub peer_hash: Option<[u8; 16]>,
+    /// Our listening TCP port to advertise in HELLO packets.
+    /// Set to 0 if not listening (Low-ID mode).
+    pub our_tcp_port: u16,
 }
 
 impl Default for DownloadOptions {
@@ -243,6 +248,7 @@ impl Default for DownloadOptions {
             hash: Ed2kHash::from_bytes([0u8; 16]),
             start_offset: 0,
             peer_hash: None,
+            our_tcp_port: 0,
         }
     }
 }
@@ -404,7 +410,7 @@ impl Session {
         F: FnMut(DownloadEvent),
     {
         // ── HELLO ────────────────────────────────────────────────────────────
-        let hello_payload = build_hello(our_hash);
+        let hello_payload = build_hello(our_hash, opts.our_tcp_port);
         write_frame(stream, cipher, OP_HELLO, &hello_payload)
             .await
             .context("send HELLO")?;
@@ -593,13 +599,35 @@ impl Session {
                     let range_start =
                         u32::from_le_bytes([payload[16], payload[17], payload[18], payload[19]])
                             as u64;
-                    // payload[20..24] = packed_size (informational; we decompress all remaining)
+                    let packed_size =
+                        u32::from_le_bytes([payload[20], payload[21], payload[22], payload[23]])
+                            as usize;
+                    debug!(
+                        payload_len = payload.len(),
+                        range_start,
+                        packed_size,
+                        zlib_byte0 = format!("0x{:02x}", payload[24]),
+                        zlib_byte1 = format!("0x{:02x}", payload[25]),
+                        "OP_COMPRESSEDPART decompressing"
+                    );
                     let mut decompressed = Vec::new();
                     if let Err(e) = ZlibDecoder::new(&payload[24..]).read_to_end(&mut decompressed)
                     {
-                        warn!(error = %e, "OP_COMPRESSEDPART decompression failed");
+                        let header_hex = hex::encode(&payload[..payload.len().min(32)]);
+                        warn!(
+                            error = %e,
+                            payload_len = payload.len(),
+                            header_hex,
+                            "OP_COMPRESSEDPART decompression failed"
+                        );
                         continue;
                     }
+                    debug!(
+                        range_start,
+                        range_end = range_start + decompressed.len() as u64,
+                        decompressed_len = decompressed.len(),
+                        "OP_COMPRESSEDPART decompressed OK"
+                    );
                     let range_end = range_start + decompressed.len() as u64;
 
                     out_writer
@@ -721,6 +749,75 @@ async fn send_request_parts(
         .context("send REQUESTPARTS")
 }
 
+// ── Incoming TCP server ───────────────────────────────────────────────────────
+
+/// Accept incoming eMule TCP connections forever.
+///
+/// Spawn this as a background task after binding the TCP port.  Each connection
+/// receives a HELLOANSWER and FILENOTFOUND for any file requested, which is
+/// enough to present ourselves as a reachable High-ID peer.
+pub async fn serve_incoming(listener: TcpListener, our_tcp_port: u16) {
+    info!(port = our_tcp_port, "eMule TCP listener started");
+    loop {
+        match listener.accept().await {
+            Ok((stream, peer)) => {
+                tokio::spawn(handle_incoming(stream, peer, our_tcp_port));
+            }
+            Err(e) => warn!("eMule TCP accept error: {e}"),
+        }
+    }
+}
+
+/// Handle one incoming eMule TCP connection.
+///
+/// Flow: HELLO → HELLOANSWER, then FILENOTFOUND for any file requests.
+/// We do not serve files but we must respond correctly to stay High-ID.
+async fn handle_incoming(mut stream: TcpStream, peer: SocketAddr, our_tcp_port: u16) {
+    debug!(%peer, "Incoming eMule TCP connection");
+    let our_hash = our_client_hash();
+    let mut cipher: Option<Rc4> = None;
+    const OP_TIMEOUT: Duration = Duration::from_secs(30);
+
+    let result: io::Result<()> = async {
+        // Wait for HELLO, skip any unexpected opcodes that arrive before it.
+        loop {
+            let (_proto, opcode, _payload) =
+                timeout(OP_TIMEOUT, read_frame(&mut stream, &mut cipher))
+                    .await
+                    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "hello timeout"))??;
+            if opcode == OP_HELLO {
+                let answer = build_hello(&our_hash, our_tcp_port);
+                write_frame(&mut stream, &mut cipher, OP_HELLOANSWER, &answer).await?;
+                break;
+            }
+        }
+
+        // Serve the session: respond FILENOTFOUND to every file request.
+        loop {
+            let (_proto, opcode, payload) =
+                match timeout(OP_TIMEOUT, read_frame(&mut stream, &mut cipher)).await {
+                    Ok(Ok(f)) => f,
+                    _ => break, // timeout or peer closed
+                };
+            if opcode == OP_FILEREQUEST {
+                // Echo back the hash so the peer knows which file we rejected.
+                let hash = if payload.len() >= 16 {
+                    &payload[..16]
+                } else {
+                    &payload[..]
+                };
+                write_frame(&mut stream, &mut cipher, OP_FILENOTFOUND, hash).await?;
+            }
+        }
+        Ok(())
+    }
+    .await;
+
+    if let Err(e) = result {
+        debug!(%peer, error = %e, "Incoming eMule TCP connection error");
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -739,7 +836,7 @@ mod tests {
 
     #[test]
     fn test_build_hello_length() {
-        let h = build_hello(&[0u8; 16]);
+        let h = build_hello(&[0u8; 16], 0);
         assert_eq!(h.len(), 33);
         assert_eq!(h[0], 16u8);
     }

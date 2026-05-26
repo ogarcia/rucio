@@ -6,6 +6,7 @@
 //! 2. Adds port mappings for:
 //!    - TCP 4321 (libp2p)
 //!    - UDP 4672 (Kad2, only when `emule-compat` feature is enabled)
+//!    - TCP 4662 (eMule peer connections, only when `emule-compat` feature is enabled)
 //! 3. Logs the external IP address.
 //! 4. Renews the leases every [`RENEW_INTERVAL`] seconds (before expiry).
 //! 5. Re-discovers the gateway if it becomes unreachable.
@@ -55,6 +56,8 @@ pub struct UpnpConfig {
     pub tcp_port: u16,
     /// Kad2 UDP port to map (external == internal).  `None` disables UDP mapping.
     pub udp_port: Option<u16>,
+    /// eMule TCP port for incoming peer connections.  `None` disables TCP mapping.
+    pub emule_tcp_port: Option<u16>,
 }
 
 /// Spawn the UPnP background task and return a handle to the external IP.
@@ -127,6 +130,9 @@ async fn try_upnp_cycle(cfg: &UpnpConfig, external_ip: &ExternalIp) -> anyhow::R
     if let Some(udp_port) = cfg.udp_port {
         add_mapping(&gateway, local_ipv4, udp_port, PortMappingProtocol::UDP).await;
     }
+    if let Some(emule_tcp) = cfg.emule_tcp_port {
+        add_mapping(&gateway, local_ipv4, emule_tcp, PortMappingProtocol::TCP).await;
+    }
 
     // ── 5. Renew loop ─────────────────────────────────────────────────────────
     loop {
@@ -152,6 +158,9 @@ async fn try_upnp_cycle(cfg: &UpnpConfig, external_ip: &ExternalIp) -> anyhow::R
 
         if let Some(udp_port) = cfg.udp_port {
             add_mapping(&gateway, local_ipv4, udp_port, PortMappingProtocol::UDP).await;
+        }
+        if let Some(emule_tcp) = cfg.emule_tcp_port {
+            add_mapping(&gateway, local_ipv4, emule_tcp, PortMappingProtocol::TCP).await;
         }
     }
 }

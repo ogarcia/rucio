@@ -33,6 +33,21 @@ use rucio_core::api::ws::WsEvent;
 ///
 /// The returned [`KadHandle`] is the only way to interact with Kad2 from the
 /// rest of the daemon — it must **not** share the underlying socket.
+/// Bind the eMule TCP listener on the configured port.
+///
+/// Returns a `TcpListener` ready to be passed to
+/// [`rucio_emule::transfer::serve_incoming`] for High-ID operation.
+/// Logs a warning and returns an error if the port cannot be bound (e.g. already
+/// in use), but the rest of the daemon keeps running in Low-ID mode.
+pub async fn start_emule_tcp_listener(config: &Config) -> Result<tokio::net::TcpListener> {
+    let port = config.emule.tcp_port;
+    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}"))
+        .await
+        .with_context(|| format!("bind eMule TCP socket on port {port}"))?;
+    info!(port, "eMule TCP socket bound (High-ID mode)");
+    Ok(listener)
+}
+
 pub async fn start_kad_task(config: &Config) -> Result<KadHandle> {
     let port = config.emule.kad_port;
     let socket = UdpSocket::bind(format!("0.0.0.0:{port}"))
@@ -42,7 +57,7 @@ pub async fn start_kad_task(config: &Config) -> Result<KadHandle> {
 
     let our_id = KadId::random();
     let task_cfg = KadTaskConfig {
-        tcp_port: config.emule.kad_port, // advertise same port (TCP unused for now)
+        tcp_port: config.emule.tcp_port,
         initial_external_ip: config
             .emule
             .external_ip
@@ -268,6 +283,8 @@ pub async fn run_ed2k_download(
 
         let mut join_set: JoinSet<()> = JoinSet::new();
 
+        let our_tcp_port = config.emule.tcp_port;
+
         for source in valid_sources.into_iter().take(max_workers) {
             let peer = std::net::SocketAddrV4::new(source.ip, source.tcp_port);
             let peer_hash = source.user_hash;
@@ -291,6 +308,7 @@ pub async fn run_ed2k_download(
                     hash,
                     start_offset: 0,
                     peer_hash: Some(peer_hash),
+                    our_tcp_port,
                 };
 
                 loop {

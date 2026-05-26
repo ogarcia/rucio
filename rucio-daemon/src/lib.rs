@@ -208,14 +208,34 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
         }
     };
 
+    // --- eMule TCP listener (emule-compat, High-ID mode) --------------------
+    #[cfg(feature = "emule-compat")]
+    {
+        let tcp_port = config.emule.tcp_port;
+        match crate::emule::start_emule_tcp_listener(&config).await {
+            Ok(listener) => {
+                tokio::spawn(rucio_emule::transfer::serve_incoming(listener, tcp_port));
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to bind eMule TCP port {tcp_port}: {e} — running as Low-ID (slower downloads)"
+                );
+            }
+        }
+    }
+
     // --- UPnP port mapping --------------------------------------------------
     let external_ip = if config.network.upnp {
         let upnp_cfg = upnp::UpnpConfig {
             tcp_port: config.network.listen_port,
             #[cfg(feature = "emule-compat")]
             udp_port: Some(config.emule.kad_port),
+            #[cfg(feature = "emule-compat")]
+            emule_tcp_port: Some(config.emule.tcp_port),
             #[cfg(not(feature = "emule-compat"))]
             udp_port: None,
+            #[cfg(not(feature = "emule-compat"))]
+            emule_tcp_port: None,
         };
         upnp::spawn(upnp_cfg)
     } else {
