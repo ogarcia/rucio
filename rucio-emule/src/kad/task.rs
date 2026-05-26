@@ -33,8 +33,9 @@ use super::routing::RoutingTable;
 use super::search::{ActiveSearch, ObfuscMode, OutPacket};
 pub use super::search::{KadSource, KeywordHit};
 use crate::ed2k::Ed2kHash;
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::sync::{RwLock, mpsc, oneshot};
@@ -70,6 +71,10 @@ pub enum KadCommand {
 pub struct KadHandle {
     tx: mpsc::Sender<KadCommand>,
     routing_table: Arc<RwLock<RoutingTable>>,
+    /// Our external IPv4 as currently known by the task, encoded as a `u32`
+    /// (`0` = still unknown).  Seeded from config and then learned from peer
+    /// responses (Pong / bootstrap HelloRes).
+    external_ip: Arc<AtomicU32>,
 }
 
 impl KadHandle {
@@ -118,6 +123,15 @@ impl KadHandle {
     /// Read the routing table directly (non-blocking snapshot).
     pub fn routing_table(&self) -> Arc<RwLock<RoutingTable>> {
         Arc::clone(&self.routing_table)
+    }
+
+    /// Our external IPv4 as learned from Kad2 peer responses, or `None` if not
+    /// yet known.  Useful for displaying the public IP when UPnP is disabled.
+    pub fn external_ip(&self) -> Option<Ipv4Addr> {
+        match self.external_ip.load(Ordering::Relaxed) {
+            0 => None,
+            raw => Some(Ipv4Addr::from(raw)),
+        }
     }
 
     /// Serialize the current routing table to `nodes.dat` format (version 3).
@@ -180,14 +194,25 @@ impl Default for KadTaskConfig {
 pub fn spawn(socket: Arc<UdpSocket>, our_id: KadId, cfg: KadTaskConfig) -> KadHandle {
     let routing_table = Arc::new(RwLock::new(RoutingTable::new(our_id)));
     let rt_clone = Arc::clone(&routing_table);
+    let external_ip = Arc::new(AtomicU32::new(0));
+    let ip_clone = Arc::clone(&external_ip);
     let (cmd_tx, cmd_rx) = mpsc::channel(64);
     let our_udp_key = super::obfuscation::random_udp_key();
 
-    tokio::spawn(run_task(socket, our_id, our_udp_key, cfg, rt_clone, cmd_rx));
+    tokio::spawn(run_task(
+        socket,
+        our_id,
+        our_udp_key,
+        cfg,
+        rt_clone,
+        ip_clone,
+        cmd_rx,
+    ));
 
     KadHandle {
         tx: cmd_tx,
         routing_table,
+        external_ip,
     }
 }
 
@@ -199,6 +224,7 @@ async fn run_task(
     our_udp_key: u32,
     cfg: KadTaskConfig,
     routing_table: Arc<RwLock<RoutingTable>>,
+    external_ip: Arc<AtomicU32>,
     mut cmd_rx: mpsc::Receiver<KadCommand>,
 ) {
     let mut recv_buf = [0u8; 4096];
@@ -216,6 +242,11 @@ async fn run_task(
     info!(udp_key = our_udp_key, "Kad2 task started");
 
     loop {
+        // Publish the current external IP so `KadHandle::external_ip` can read
+        // it.  Cheap relaxed store each iteration keeps it current regardless of
+        // which branch below learns or updates the address.
+        external_ip.store(u32::from(our_external_ip), Ordering::Relaxed);
+
         // Determine how long to wait for the next packet.
         let recv_deadline = if let Some(ref s) = active_search {
             s.deadline

@@ -71,12 +71,16 @@ pub async fn get_emule_status(State(state): State<AppState>) -> Json<EmuleStatus
 
             let upnp_external_ip = state.external_ip.read().await.clone();
             let configured_external_ip = state.config.emule.external_ip.map(|ip| ip.to_string());
+            // Fallback: the IP our Kad2 peers report back to us (works even when
+            // UPnP is off and no IP is configured).
+            let kad_external_ip = state.kad_handle.external_ip().map(|ip| ip.to_string());
 
             let (external_ip, external_ip_source) =
-                match (&upnp_external_ip, &configured_external_ip) {
-                    (Some(ip), _) => (Some(ip.clone()), Some("upnp".to_string())),
-                    (None, Some(ip)) => (Some(ip.clone()), Some("config".to_string())),
-                    (None, None) => (None, None),
+                match (&upnp_external_ip, &configured_external_ip, &kad_external_ip) {
+                    (Some(ip), _, _) => (Some(ip.clone()), Some("upnp".to_string())),
+                    (None, Some(ip), _) => (Some(ip.clone()), Some("config".to_string())),
+                    (None, None, Some(ip)) => (Some(ip.clone()), Some("peers".to_string())),
+                    (None, None, None) => (None, None),
                 };
 
             let inbound = state

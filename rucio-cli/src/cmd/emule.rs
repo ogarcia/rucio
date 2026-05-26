@@ -67,6 +67,9 @@ async fn status(client: &ApiClient) -> Result<()> {
         (Some(ip), Some("config")) => {
             println!("External IP:         {ip} ({})", "configured".dimmed())
         }
+        (Some(ip), Some("peers")) => {
+            println!("External IP:         {ip} ({})", "via peers".dimmed())
+        }
         (Some(ip), _) => println!("External IP:         {ip}"),
         (None, _) => println!("External IP:         {}", "(unknown)".yellow()),
     }
