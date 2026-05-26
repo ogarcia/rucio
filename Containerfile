@@ -33,7 +33,7 @@
 # --build-arg BUILDER=prebuilt to skip compilation and use dist/.
 ARG BUILDER=builder
 
-FROM rust:1-alpine3.23 AS builder
+FROM docker.io/rust:1-alpine3.23 AS builder
 
 # musl-dev: C headers needed by ring (pulled in by rustls via reqwest).
 # Everything else in the dependency tree is pure Rust.
@@ -59,7 +59,7 @@ FROM ${BUILDER} AS bins
 
 # ── Stage 2: runtime – daemon only (tag: master / 0.1.0 / latest) ────────────
 
-FROM alpine:3.23 AS ruciod
+FROM docker.io/alpine:3.23 AS ruciod
 
 RUN apk add --no-cache ca-certificates && \
     addgroup -S -g 10001 rucio && \
@@ -81,7 +81,7 @@ ENTRYPOINT ["/usr/bin/ruciod"]
 
 # ── Stage 3: runtime – full (tag: master-full / 0.1.0-full / latest-full) ────
 
-FROM alpine:3.23 AS full
+FROM docker.io/alpine:3.23 AS full
 
 RUN apk add --no-cache ca-certificates && \
     addgroup -S -g 10001 rucio && \

@@ -262,21 +262,23 @@ Environment variables are applied on top of the config file (or built-in
 defaults if no file exists). An empty string is treated as unset and leaves
 the file value untouched.
 
-| Variable | Config key | Format |
-|---|---|---|
-| `RUCIOD_API_LISTEN` | `api.listen` | `host:port` |
-| `RUCIOD_P2P_LISTEN` | `node.listen_addrs` | comma-separated multiaddrs |
-| `RUCIOD_DOWNLOAD_DIR` | `storage.download_dir` | path |
-| `RUCIOD_TEMP_DIR` | `storage.temp_dir` | path |
-| `RUCIOD_DB_PATH` | `storage.database_path` | path |
-| `RUCIOD_BOOTSTRAP_PEERS` | `network.bootstrap_peers` | comma-separated multiaddrs |
-| `RUCIOD_UPLOAD_LIMIT_KBPS` | `network.upload_limit_kbps` | integer KB/s, `0` = unlimited |
-| `RUCIOD_DOWNLOAD_LIMIT_KBPS` | `network.download_limit_kbps` | integer KB/s, `0` = unlimited |
-| `RUCIOD_UPNP` | `network.upnp` | `true`/`false` (also `1`/`0`, `yes`/`no`, `on`/`off`) |
-| `RUCIOD_NODES_DAT` | `storage.nodes_dat_path` | path |
-| `RUCIOD_EMULE_TEMP_DIR` | `storage.emule_temp_dir` | path |
-| `RUCIOD_EMULE_UDP_PORT` | `emule.udp_port` | integer 1–65535 |
-| `RUCIOD_EMULE_TCP_PORT` | `emule.tcp_port` | integer 1–65535 |
+| Variable | Config key | Default | Format |
+|---|---|---|---|
+| `RUCIOD_API_LISTEN` | `api.listen` | `127.0.0.1:7070` | `host:port` |
+| `RUCIOD_P2P_LISTEN` | `node.listen_addrs` | `0.0.0.0:4321, :::4321` | comma-separated multiaddrs |
+| `RUCIOD_DOWNLOAD_DIR` | `storage.download_dir` | platform default | path |
+| `RUCIOD_TEMP_DIR` | `storage.temp_dir` | platform default | path |
+| `RUCIOD_DB_PATH` | `storage.database_path` | platform default | path |
+| `RUCIOD_BOOTSTRAP_PEERS` | `network.bootstrap_peers` | *(empty)* | comma-separated multiaddrs |
+| `RUCIOD_UPLOAD_LIMIT_KBPS` | `network.upload_limit_kbps` | `0` (unlimited) | integer KB/s |
+| `RUCIOD_DOWNLOAD_LIMIT_KBPS` | `network.download_limit_kbps` | `0` (unlimited) | integer KB/s |
+| `RUCIOD_UPNP` | `network.upnp` | `true` | `true`/`false` (also `1`/`0`, `yes`/`no`, `on`/`off`) |
+| `RUCIOD_NODES_DAT` | `storage.nodes_dat_path` | *(unset)* | path |
+| `RUCIOD_EMULE_TEMP_DIR` | `storage.emule_temp_dir` | platform default | path |
+| `RUCIOD_EMULE_UDP_PORT` | `emule.udp_port` | `4672` | integer 1–65535 |
+| `RUCIOD_EMULE_TCP_PORT` | `emule.tcp_port` | `4662` | integer 1–65535 |
+| `RUCIOD_EXTERNAL_IP` | `emule.external_ip` | *(auto)* | IPv4 address |
+| `RUCIOD_EMULE_MAX_PARALLEL` | `emule.max_parallel_peers` | `5` | integer 1–50 |
 
 ### Docker / container example
 
