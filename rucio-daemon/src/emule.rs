@@ -84,6 +84,11 @@ pub async fn start_kad_task(config: &Config) -> Result<KadHandle> {
     Ok(handle)
 }
 
+/// Number of fruitless retry rounds (no sources / no progress) after which a
+/// download is reported as `stalled`.  With the back-off below this is reached
+/// after roughly 15 minutes.  The download keeps retrying regardless.
+const STALL_AFTER_ROUNDS: u32 = 5;
+
 /// Exponential back-off for source-search retries.
 /// Sequence: 30 s, 60 s, 2 min, 4 min, 8 min, 16 min, 30 min (cap), …
 fn retry_delay_secs(attempt: u32) -> u64 {
@@ -251,12 +256,22 @@ pub async fn run_ed2k_download(
         }
 
         if cached_sources.is_empty() {
+            // After several empty rounds, surface the download as `stalled` so
+            // the user can tell it is stuck (no sources) rather than just
+            // starting up.  Keep retrying regardless.
+            let status = if retry_count >= STALL_AFTER_ROUNDS {
+                "stalled"
+            } else {
+                "finding_providers"
+            };
+            let _ = crate::db::emule_downloads::set_status(db, download_id, status, None).await;
             let delay = retry_delay_secs(retry_count);
             retry_count += 1;
             info!(
                 name = %link.name,
                 hash = %link.hash,
                 retry_in_secs = delay,
+                status,
                 "No Kad2 sources found — will retry"
             );
             tokio::time::sleep(Duration::from_secs(delay)).await;
@@ -534,6 +549,13 @@ pub async fn run_ed2k_download(
                 cached_sources.clear();
                 last_search_at = None;
             }
+            // Mark as stalled once enough rounds pass without progress.
+            let status = if retry_count >= STALL_AFTER_ROUNDS {
+                "stalled"
+            } else {
+                "finding_providers"
+            };
+            let _ = crate::db::emule_downloads::set_status(db, download_id, status, None).await;
             let delay = retry_delay_secs(retry_count);
             retry_count += 1;
             warn!(
@@ -541,7 +563,8 @@ pub async fn run_ed2k_download(
                 hash = %link.hash,
                 new_slices,
                 retry_in_secs = delay,
-                "Not all slices complete — back to finding_providers"
+                status,
+                "Not all slices complete — retrying"
             );
             tokio::time::sleep(Duration::from_secs(delay)).await;
             continue;

@@ -502,6 +502,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                             rucio_core::api::downloads::DownloadState::FindingProviders
                                 | rucio_core::api::downloads::DownloadState::Queued
                                 | rucio_core::api::downloads::DownloadState::Downloading
+                                | rucio_core::api::downloads::DownloadState::Stalled
                         ) {
                             active.push(rucio_core::api::downloads::DownloadResponse {
                                 id: r.id,
@@ -522,7 +523,9 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                         if matches!(
                             state,
                             rucio_core::api::downloads::DownloadState::FindingProviders
+                                | rucio_core::api::downloads::DownloadState::Queued
                                 | rucio_core::api::downloads::DownloadState::Downloading
+                                | rucio_core::api::downloads::DownloadState::Stalled
                         ) {
                             active.push(rucio_core::api::downloads::DownloadResponse {
                                 id: -(r.id), // negative IDs mark eMule rows in WS events

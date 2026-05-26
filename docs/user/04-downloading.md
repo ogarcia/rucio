@@ -69,6 +69,7 @@ downloads, the original `ed2k://` link for eMule downloads).
 | `finding providers` | Querying the DHT for peers that have the file |
 | `queued` | Providers found; waiting for a download slot |
 | `downloading` | Actively transferring chunks |
+| `stalled` | Stuck after several search rounds with no (or unresponsive) sources; still retrying in the background |
 | `completed` | All chunks received and file moved to download directory |
 | `failed` | Could not complete the download |
 | `cancelled` | Cancelled by the user |

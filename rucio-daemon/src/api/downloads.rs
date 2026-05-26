@@ -553,6 +553,7 @@ pub(crate) fn db_status_to_state(s: &str) -> DownloadState {
         "finding_providers" => DownloadState::FindingProviders,
         "queued" => DownloadState::Queued,
         "downloading" => DownloadState::Downloading,
+        "stalled" => DownloadState::Stalled,
         "completed" => DownloadState::Completed,
         "error" => DownloadState::Failed,
         "cancelled" => DownloadState::Cancelled,

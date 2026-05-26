@@ -56,6 +56,11 @@ const DEFAULT_CHUNK_SIZE: u32 = 256 * 1024; // 256 KiB
 /// How long to wait for a manifest response before trying another peer.
 const MANIFEST_TIMEOUT_SECS: u64 = 10;
 
+/// Number of fruitless DHT re-queries after which a download is reported as
+/// `stalled` (no providers found).  With the back-off below this is reached
+/// after roughly 14 minutes.  Re-querying continues regardless.
+const STALL_AFTER_REFINDS: u32 = 3;
+
 /// Exponential back-off for DHT re-queries when no providers are available.
 /// Sequence: 2 min, 4 min, 8 min, 16 min, 22 min (cap), …
 fn refind_delay_secs(attempt: u32) -> u64 {
@@ -593,8 +598,13 @@ impl DownloadEngine {
             if let Some(pm) = self.pending_manifests.get(&root_hash) {
                 let db_id = pm.db_id;
                 if db_id > 0 {
-                    let _ =
-                        db::downloads::set_status(&self.db, db_id, "finding_providers", None).await;
+                    // After several fruitless re-queries, surface as `stalled`.
+                    let status = if pm.refind_count >= STALL_AFTER_REFINDS {
+                        "stalled"
+                    } else {
+                        "finding_providers"
+                    };
+                    let _ = db::downloads::set_status(&self.db, db_id, status, None).await;
                 }
             }
             let _ = self

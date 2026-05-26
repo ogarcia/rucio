@@ -18,6 +18,10 @@ pub enum DownloadState {
     /// Providers found; waiting to start transferring chunks.
     Queued,
     Downloading,
+    /// Still trying, but stuck: no sources/providers (or unresponsive ones)
+    /// found after several search rounds.  The daemon keeps retrying in the
+    /// background — this is not a terminal state.
+    Stalled,
     Completed,
     Failed,
     Cancelled,
