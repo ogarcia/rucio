@@ -26,7 +26,7 @@
 
 use super::packet::{
     self, Contact, KadId, KadPacket, decode, encode_bootstrap_req, encode_bootstrap_res,
-    encode_hello_req, encode_hello_res, encode_hello_res_ack, encode_pong, encode_res,
+    encode_hello_req, encode_hello_res, encode_hello_res_ack, encode_pong, encode_req, encode_res,
     kad_id_from_hash,
 };
 use super::routing::RoutingTable;
@@ -779,9 +779,121 @@ async fn do_bootstrap(
         }
     }
 
+    // After bootstrap we only have contacts in low-indexed XOR buckets (far nodes).
+    // Run an iterative find_node(our_id) to discover near-neighbourhood contacts.
+    do_find_node(
+        socket,
+        our_id,
+        our_udp_key,
+        our_external_ip,
+        cfg,
+        routing_table,
+    )
+    .await;
+
     let count = routing_table.read().await.len();
     info!(contacts = count, "Kad2 bootstrap complete");
     (count, our_external_ip)
+}
+
+// ── Post-bootstrap find_node ──────────────────────────────────────────────────
+
+/// Iterative find-node lookup for `our_id` to fill near-neighbourhood k-buckets.
+///
+/// Bootstrap only populates low XOR-distance buckets (far nodes) because
+/// BOOTSTRAP_RES returns arbitrary contacts.  Querying the closest known contacts
+/// for nodes near our own ID iteratively discovers high-indexed buckets (nodes
+/// XOR-close to us), which are essential for search convergence near our keyspace.
+async fn do_find_node(
+    socket: &UdpSocket,
+    our_id: KadId,
+    our_udp_key: u32,
+    our_external_ip: std::net::Ipv4Addr,
+    cfg: &KadTaskConfig,
+    routing_table: &Arc<RwLock<RoutingTable>>,
+) {
+    const ROUNDS: usize = 3;
+    const ROUND_SECS: u64 = 4;
+    const IDLE_SECS: u64 = 1;
+
+    let req = encode_req(0, &our_id, &our_id);
+    let mut recv_buf = [0u8; 4096];
+    let mut queried: std::collections::HashSet<std::net::SocketAddrV4> = Default::default();
+
+    for round in 0..ROUNDS {
+        let candidates: Vec<_> = {
+            let rt = routing_table.read().await;
+            rt.closest_to(&our_id, cfg.alpha)
+                .into_iter()
+                .filter(|c| !queried.contains(&c.socket_addr_udp()))
+                .collect()
+        };
+        if candidates.is_empty() {
+            break;
+        }
+        for c in &candidates {
+            let addr = SocketAddr::V4(c.socket_addr_udp());
+            queried.insert(c.socket_addr_udp());
+            send_kad_pkt(socket, &req, addr, c.udp_key, our_external_ip).await;
+        }
+        debug!(sent = candidates.len(), round, "Kad2 find_node round");
+
+        let deadline = Instant::now() + Duration::from_secs(ROUND_SECS);
+        let mut idle = Instant::now() + Duration::from_secs(IDLE_SECS);
+        loop {
+            let remaining = deadline.min(idle).saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            match timeout(remaining, socket.recv_from(&mut recv_buf)).await {
+                Ok(Ok((n, src))) => {
+                    idle = Instant::now() + Duration::from_secs(IDLE_SECS);
+                    let raw = &recv_buf[..n];
+                    let decoded = match decode(raw) {
+                        Ok(p) => Ok(p),
+                        Err(_) => {
+                            if let SocketAddr::V4(a) = src {
+                                if let Some(plain) = super::obfuscation::deobfuscate(
+                                    raw,
+                                    our_udp_key,
+                                    *a.ip(),
+                                    Some(our_id.as_bytes()),
+                                ) {
+                                    decode(&plain)
+                                } else {
+                                    continue;
+                                }
+                            } else {
+                                continue;
+                            }
+                        }
+                    };
+                    match decoded {
+                        Ok(KadPacket::Res(res)) => {
+                            let mut rt = routing_table.write().await;
+                            for c in res.contacts {
+                                rt.insert(c);
+                            }
+                        }
+                        Ok(KadPacket::BootstrapRes(res)) => {
+                            let mut rt = routing_table.write().await;
+                            for c in res.contacts {
+                                rt.insert(c);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                _ => break,
+            }
+        }
+
+        let count = routing_table.read().await.len();
+        debug!(contacts = count, round, "Kad2 find_node round complete");
+    }
+
+    let count = routing_table.read().await.len();
+    info!(contacts = count, "Kad2 find_node complete");
 }
 
 // ── Keep-alive ────────────────────────────────────────────────────────────────

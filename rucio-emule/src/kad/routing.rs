@@ -138,8 +138,8 @@ pub fn write_nodes_dat(contacts: &[Contact]) -> Vec<u8> {
 
 // ── Routing table ─────────────────────────────────────────────────────────────
 
-/// Maximum number of contacts per k-bucket (k = 10).
-pub const K: usize = 10;
+/// Maximum number of contacts per k-bucket.
+pub const K: usize = 20;
 
 /// A single k-bucket holding up to K contacts sorted oldest-first.
 #[derive(Debug, Default, Clone)]
