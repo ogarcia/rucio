@@ -11,14 +11,12 @@ pub mod upnp;
 pub mod watcher;
 
 use anyhow::{Context, Result};
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::time::Instant;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
-use rucio_core::api::search::SearchResultResponse;
 use rucio_core::api::ws::WsEvent;
 use rucio_core::protocol::search::{SearchQuery, SearchResult};
 
@@ -100,8 +98,8 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     // Shared live node status
     let node_status = Arc::new(RwLock::new(api::NodeStatus::default()));
 
-    // In-memory search store
-    let search_store: api::SearchStore = Arc::new(RwLock::new(HashMap::new()));
+    // In-memory unified search registry
+    let search_registry = Arc::new(RwLock::new(api::SearchRegistry::new()));
 
     // Wait for the node to confirm it is listening
     loop {
@@ -232,7 +230,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
         watcher_cmd: watcher.cmd_tx.clone(),
         started_at: Instant::now(),
         node_status: Arc::clone(&node_status),
-        search_store: Arc::clone(&search_store),
+        search_registry: Arc::clone(&search_registry),
         download_tx,
         indexing_count: Arc::new(AtomicUsize::new(0)),
         ws_tx: ws_tx.clone(),
@@ -580,7 +578,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                             provider: result.provider.clone(),
                         };
                         let _ = ws_tx.send(WsEvent::SearchResult(ws_result));
-                        accumulate_result(result, &search_store).await;
+                        accumulate_gossip_result(result, &search_registry).await;
                     }
                     Some(node::messages::NodeEvent::ProvidersFound { key, providers }) => {
                         if key.len() == 32 {
@@ -669,30 +667,35 @@ async fn respond_to_query(
     }
 }
 
-async fn accumulate_result(result: SearchResult, store: &api::SearchStore) {
-    let mut map = store.write().await;
-
-    if let Some(entry) = map.get_mut(&result.query_id.0) {
-        if !entry.pending {
-            return;
-        }
-        let already_have = entry
-            .results
-            .iter()
-            .any(|r| r.root_hash == result.root_hash);
-        if !already_have {
-            entry.results.push(SearchResultResponse {
-                root_hash: result.root_hash,
-                name: result.name,
-                size: result.size,
-                chunk_count: result.chunk_count,
-                mime_type: result.mime_type,
-                magnet: result.magnet,
-                provider: result.provider,
-            });
+async fn accumulate_gossip_result(result: SearchResult, registry: &api::SharedSearchRegistry) {
+    let mut reg = registry.write().await;
+    let query_id = result.query_id.0.clone();
+    if let Some(&search_id) = reg.gossip_to_id.get(&query_id) {
+        if let Some(record) = reg.records.get_mut(&search_id) {
+            // Only add results to non-cancelled searches.
+            if !record.cancelled {
+                let already_have = record.results.iter().any(|r| {
+                    matches!(
+                        &r.source,
+                        api::InternalSource::Rucio { root_hash, .. }
+                        if *root_hash == result.root_hash
+                    )
+                });
+                if !already_have {
+                    record.results.push(api::InternalResult {
+                        name: result.name.clone(),
+                        size: result.size,
+                        source: api::InternalSource::Rucio {
+                            root_hash: result.root_hash.clone(),
+                            magnet: result.magnet.clone(),
+                            provider: result.provider.clone(),
+                        },
+                    });
+                }
+            }
         }
     } else {
-        debug!(qid = %result.query_id, "Ignoring result for unknown/expired query");
+        debug!(qid = %query_id, "Ignoring Gossip result for unknown/expired search");
     }
 }
 

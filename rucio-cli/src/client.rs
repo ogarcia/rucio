@@ -17,7 +17,9 @@ use rucio_core::api::{
     downloads::{DownloadResponse, DownloadsResponse, StartDownloadRequest},
     emule::{EmuleBootstrapRequest, EmuleBootstrapResponse, EmuleStatusResponse},
     metrics::{HealthResponse, MetricsResponse},
-    search::{SearchRequest, SearchResultsResponse, SearchStartedResponse},
+    searches::{
+        SearchDetailResponse, SearchListResponse, SearchStartedResponse, StartSearchRequest,
+    },
     shares::{AddShareRequest, AddShareResponse, SharesResponse},
     status::{PeersResponse, StatusResponse},
 };
@@ -287,16 +289,29 @@ impl ApiClient {
     }
 
     // -----------------------------------------------------------------------
-    // Search
+    // Unified searches
     // -----------------------------------------------------------------------
 
     pub async fn start_search(&self, keywords: Vec<String>) -> Result<SearchStartedResponse> {
-        self.post("/api/v1/search", &SearchRequest { keywords })
+        self.post("/api/v1/searches", &StartSearchRequest { keywords })
             .await
     }
 
-    pub async fn poll_search(&self, query_id: &str) -> Result<SearchResultsResponse> {
-        self.get(&format!("/api/v1/search/{query_id}")).await
+    pub async fn get_search(&self, id: u64) -> Result<SearchDetailResponse> {
+        self.get(&format!("/api/v1/searches/{id}")).await
+    }
+
+    pub async fn list_searches(&self) -> Result<SearchListResponse> {
+        self.get("/api/v1/searches").await
+    }
+
+    pub async fn delete_search(&self, id: u64) -> Result<()> {
+        self.delete(&format!("/api/v1/searches/{id}")).await
+    }
+
+    pub async fn relaunch_search(&self, id: u64) -> Result<SearchStartedResponse> {
+        self.post(&format!("/api/v1/searches/{id}/relaunch"), &())
+            .await
     }
 
     // -----------------------------------------------------------------------

@@ -9,6 +9,7 @@ pub mod emule;
 pub mod health;
 pub mod metrics;
 pub mod search;
+pub mod searches;
 pub mod shares;
 pub mod status;
 #[cfg(test)]
@@ -32,7 +33,6 @@ use crate::metrics::Metrics;
 use crate::node::messages::NodeCmd;
 use crate::throttle::TokenBucket;
 use crate::watcher::WatcherCmd;
-use rucio_core::api::search::SearchResultResponse;
 use rucio_core::api::ws::WsEvent;
 
 // ---------------------------------------------------------------------------
@@ -84,8 +84,11 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         downloads::start_ed2k_download,
         downloads::cancel_download,
         downloads::delete_download,
-        search::start_search,
-        search::get_results,
+        searches::post_search,
+        searches::list_searches,
+        searches::get_search,
+        searches::delete_search,
+        searches::relaunch_search,
         config::get_config,
         config::put_config,
         metrics::get_metrics,
@@ -108,10 +111,14 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         rucio_core::api::downloads::DownloadState,
         rucio_core::api::downloads::DownloadResponse,
         rucio_core::api::downloads::DownloadsResponse,
-        rucio_core::api::search::SearchRequest,
-        rucio_core::api::search::SearchStartedResponse,
-        rucio_core::api::search::SearchResultResponse,
-        rucio_core::api::search::SearchResultsResponse,
+        rucio_core::api::searches::StartSearchRequest,
+        rucio_core::api::searches::SearchStartedResponse,
+        rucio_core::api::searches::SearchState,
+        rucio_core::api::searches::SearchSummary,
+        rucio_core::api::searches::SearchListResponse,
+        rucio_core::api::searches::ResultSource,
+        rucio_core::api::searches::SearchResult,
+        rucio_core::api::searches::SearchDetailResponse,
         rucio_core::api::config::ConfigResponse,
         rucio_core::api::config::NodeConfig,
         rucio_core::api::config::ApiConfig,
@@ -133,18 +140,86 @@ const SCALAR_HTML: &str = r#"<!doctype html>
 struct ApiDoc;
 
 // ---------------------------------------------------------------------------
-// SearchStore
+// SearchRegistry — unified search state (in-memory only)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug)]
-pub struct SearchEntry {
-    pub results: Vec<SearchResultResponse>,
-    pub pending: bool,
-    pub started_at: Instant,
+pub const GOSSIP_WINDOW_SECS: u64 = 30;
+pub const KAD2_TIMEOUT_SECS: u64 = 60;
+
+/// Internal (non-serialised) representation of a single search result.
+pub struct InternalResult {
+    pub name: String,
+    pub size: u64,
+    pub source: InternalSource,
 }
 
-pub type SearchStore = Arc<RwLock<HashMap<String, SearchEntry>>>;
-pub const SEARCH_WINDOW_SECS: u64 = 30;
+/// Which network produced an [`InternalResult`].
+pub enum InternalSource {
+    Rucio {
+        root_hash: String,
+        magnet: String,
+        provider: String,
+    },
+    Emule {
+        hash_hex: String,
+        ed2k_link: String,
+    },
+}
+
+/// One in-progress or finished unified search.
+pub struct SearchRecord {
+    pub id: u64,
+    pub keywords: Vec<String>,
+    pub cancelled: bool,
+    pub kad2_done: bool,
+    pub results: Vec<InternalResult>,
+    pub started_at: std::time::Instant,
+    /// UUID string of the Gossipsub query — used to map incoming results.
+    pub gossip_query_id: String,
+}
+
+impl SearchRecord {
+    /// Compute the effective state based on elapsed time and kad2_done flag.
+    pub fn effective_state(&self) -> rucio_core::api::searches::SearchState {
+        use rucio_core::api::searches::SearchState;
+        if self.cancelled {
+            return SearchState::Cancelled;
+        }
+        let elapsed = self.started_at.elapsed().as_secs();
+        if elapsed >= KAD2_TIMEOUT_SECS || (self.kad2_done && elapsed >= GOSSIP_WINDOW_SECS) {
+            SearchState::Done
+        } else {
+            SearchState::Running
+        }
+    }
+}
+
+/// In-memory store for all unified searches.
+pub struct SearchRegistry {
+    pub records: HashMap<u64, SearchRecord>,
+    /// Maps Gossipsub query UUID string → numeric search ID.
+    pub gossip_to_id: HashMap<String, u64>,
+    pub next_id: u64,
+}
+
+impl SearchRegistry {
+    pub fn new() -> Self {
+        Self {
+            records: HashMap::new(),
+            gossip_to_id: HashMap::new(),
+            next_id: 1,
+        }
+    }
+}
+
+impl Default for SearchRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Thread-safe handle to the search registry.
+pub type SharedSearchRegistry = Arc<RwLock<SearchRegistry>>;
 
 // ---------------------------------------------------------------------------
 // DownloadRequest — sent from API handlers to the download engine
@@ -188,7 +263,7 @@ pub struct AppState {
     pub watcher_cmd: mpsc::Sender<WatcherCmd>,
     pub started_at: Instant,
     pub node_status: Arc<RwLock<NodeStatus>>,
-    pub search_store: SearchStore,
+    pub search_registry: SharedSearchRegistry,
     /// Channel to request new downloads from the engine in the main loop.
     pub download_tx: mpsc::Sender<DownloadRequest>,
     /// Number of files currently being indexed in the background.
@@ -263,9 +338,15 @@ fn v1_router() -> Router<AppState> {
             "/downloads/{id}/history",
             routing::delete(downloads::delete_download),
         )
-        // search
-        .route("/search", routing::post(search::start_search))
-        .route("/search/{query_id}", routing::get(search::get_results))
+        // unified searches
+        .route("/searches", routing::post(searches::post_search))
+        .route("/searches", routing::get(searches::list_searches))
+        .route("/searches/{id}", routing::get(searches::get_search))
+        .route("/searches/{id}", routing::delete(searches::delete_search))
+        .route(
+            "/searches/{id}/relaunch",
+            routing::post(searches::relaunch_search),
+        )
         // config
         .route("/config", routing::get(config::get_config))
         .route("/config", routing::put(config::put_config))

@@ -1,18 +1,17 @@
 //! `rucio search <keywords...>`
 //!
-//! Starts an async search, then polls every second until:
-//!   - the daemon closes the query (`pending = false`), or
-//!   - no new results arrive for IDLE_POLLS consecutive polls (early exit), or
-//!   - the global timeout is reached.
+//! Starts a unified search (Gossipsub + Kad2), then polls every second until:
+//!   - the daemon reports the search as Done or Cancelled, or
+//!   - the global timeout is reached (65 seconds — a bit beyond KAD2_TIMEOUT).
 //!
-//! Results are deduplicated by root_hash so that the same file offered by
-//! multiple peers is shown as a single row with a "Sources" count.  All
-//! provider PeerIds are saved in `~/.local/share/rucio/last_search.json`
-//! so that `rucio get <N>` can start a multi-source download automatically.
+//! Results are deduplicated by download link.  All entries are saved in
+//! `~/.local/share/rucio/last_search.json` so that `rucio get <N>` can start
+//! a download automatically.
 
 use std::collections::HashMap;
 
 use anyhow::Result;
+use rucio_core::api::searches::{ResultSource, SearchState};
 use tabled::{Table, Tabled};
 use tokio::time::{Duration, sleep};
 
@@ -21,9 +20,8 @@ use crate::color;
 use crate::state::{CachedResult, LastSearch};
 
 const POLL_INTERVAL_MS: u64 = 1_000;
-const MAX_POLLS: u32 = 30; // 30-second hard timeout
-/// Exit after this many consecutive polls with no new results (early idle exit).
-const IDLE_POLLS: u32 = 3;
+/// Hard timeout in seconds — slightly beyond Kad2's 60 s window.
+const MAX_POLLS: u32 = 65;
 
 pub async fn search(client: &ApiClient, keywords: Vec<String>) -> Result<()> {
     if keywords.is_empty() {
@@ -33,18 +31,17 @@ pub async fn search(client: &ApiClient, keywords: Vec<String>) -> Result<()> {
     println!("Searching for: {}", color::value(&keywords.join(" ")));
 
     let started = client.start_search(keywords).await?;
-    let query_id = started.query_id;
-    println!("Query ID: {}", color::value(&query_id));
+    let search_id = started.id;
+    println!("Search ID: {}", color::value(&search_id.to_string()));
 
-    // Accumulated deduplicated results across all polls.
-    let mut grouped: Vec<CachedResult> = Vec::new();
-    let mut hash_to_idx: HashMap<String, usize> = HashMap::new();
-    let mut idle_count: u32 = 0;
+    // Track accumulated results by download_link to deduplicate.
+    let mut cached: Vec<CachedResult> = Vec::new();
+    let mut link_to_idx: HashMap<String, usize> = HashMap::new();
 
     for attempt in 0..MAX_POLLS {
         sleep(Duration::from_millis(POLL_INTERVAL_MS)).await;
 
-        let resp = match client.poll_search(&query_id).await {
+        let resp = match client.get_search(search_id).await {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("Poll error: {e}");
@@ -52,60 +49,58 @@ pub async fn search(client: &ApiClient, keywords: Vec<String>) -> Result<()> {
             }
         };
 
-        // Merge new results into grouped, tracking whether anything is new.
-        let mut new_results = 0usize;
+        // Merge new results.
         for r in &resp.results {
-            if let Some(&idx) = hash_to_idx.get(&r.root_hash) {
-                // Already have this file; add provider if not already listed.
-                if !grouped[idx].providers.contains(&r.provider) {
-                    grouped[idx].providers.push(r.provider.clone());
-                    new_results += 1;
+            let link = r.download_link.clone().unwrap_or_default();
+            if let Some(&idx) = link_to_idx.get(&link) {
+                // Already have this entry — add provider if present and new.
+                if let Some(p) = &r.provider
+                    && !cached[idx].providers.contains(p)
+                {
+                    cached[idx].providers.push(p.clone());
                 }
             } else {
-                let idx = grouped.len();
-                hash_to_idx.insert(r.root_hash.clone(), idx);
-                grouped.push(CachedResult {
+                let source_str = match r.source {
+                    ResultSource::Rucio => "rucio",
+                    ResultSource::Emule => "emule",
+                };
+                let idx = cached.len();
+                link_to_idx.insert(link.clone(), idx);
+                cached.push(CachedResult {
                     name: r.name.clone(),
                     size: r.size,
-                    magnet: r.magnet.clone(),
-                    providers: vec![r.provider.clone()],
+                    download_link: link,
+                    providers: r.provider.clone().into_iter().collect(),
+                    source: source_str.to_string(),
                 });
-                new_results += 1;
             }
         }
 
-        if new_results > 0 {
-            idle_count = 0;
-        } else if !grouped.is_empty() {
-            // Results exist but nothing new arrived this tick.
-            idle_count += 1;
-        }
-
-        if attempt % 5 == 4 && resp.pending && idle_count < IDLE_POLLS {
+        if attempt % 5 == 4 && matches!(resp.state, SearchState::Running) {
             println!(
                 "Still searching… ({}/{}s, {} result(s) so far)",
                 attempt + 1,
                 MAX_POLLS,
-                grouped.len()
+                cached.len()
             );
         }
 
-        // Exit if the daemon closed the query or we've been idle long enough.
-        if !resp.pending || idle_count >= IDLE_POLLS {
-            let reason = if !resp.pending {
-                "query closed"
-            } else {
-                "no new results"
+        // Exit when the daemon reports the search is finished.
+        if !matches!(resp.state, SearchState::Running) {
+            let reason = match resp.state {
+                SearchState::Done => "done",
+                SearchState::Cancelled => "cancelled",
+                SearchState::Running => unreachable!(),
             };
-            save_and_print(&grouped, reason);
+            save_and_print(&cached, reason);
             return Ok(());
         }
     }
 
-    if grouped.is_empty() {
+    if cached.is_empty() {
         println!("Search timed out with no results.");
     } else {
-        save_and_print(&grouped, "timeout");
+        save_and_print(&cached, "timeout");
     }
     Ok(())
 }
@@ -134,8 +129,10 @@ fn print_results(results: &[CachedResult]) {
         name: String,
         #[tabled(rename = "Size")]
         size: String,
-        #[tabled(rename = "Sources")]
-        sources: String,
+        #[tabled(rename = "Source")]
+        source: String,
+        #[tabled(rename = "Providers")]
+        providers: String,
     }
 
     let rows: Vec<Row> = results
@@ -145,7 +142,12 @@ fn print_results(results: &[CachedResult]) {
             idx: i + 1,
             name: r.name.clone(),
             size: human_size(r.size),
-            sources: color::sources(r.providers.len()),
+            source: r.source.clone(),
+            providers: if r.providers.is_empty() {
+                "-".to_string()
+            } else {
+                color::sources(r.providers.len())
+            },
         })
         .collect();
 

@@ -251,7 +251,7 @@ pub async fn start(client: &ApiClient, target: &str, provider: Option<&str>) -> 
         let entry = state.get(idx).ok_or_else(|| {
             anyhow::anyhow!("No result #{idx} in last search. Run `rucio search` first.")
         })?;
-        (entry.magnet.clone(), entry.providers.clone())
+        (entry.download_link.clone(), entry.providers.clone())
     } else {
         (target.to_string(), vec![])
     };

@@ -3,6 +3,7 @@ pub mod downloads;
 pub mod emule;
 pub mod metrics;
 pub mod search;
+pub mod searches;
 pub mod shares;
 pub mod status;
 pub mod ws;

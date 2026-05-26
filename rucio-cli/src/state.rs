@@ -13,9 +13,13 @@ use std::path::PathBuf;
 pub struct CachedResult {
     pub name: String,
     pub size: u64,
-    pub magnet: String,
-    /// All known providers for this file (same hash, different peers).
+    /// Download link: a `rucio:` magnet for Rucio results, or an `ed2k://` link
+    /// for eMule results.
+    pub download_link: String,
+    /// All known providers for this file (non-empty only for Rucio results).
     pub providers: Vec<String>,
+    /// Which network provided this result: `"rucio"` or `"emule"`.
+    pub source: String,
 }
 
 /// The full last-search state written to disk.
