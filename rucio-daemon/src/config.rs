@@ -134,7 +134,7 @@ pub struct EmuleConfig {
     /// when UPnP is unavailable (e.g. CGNAT) via `RUCIOD_EXTERNAL_IP`.
     pub external_ip: Option<std::net::Ipv4Addr>,
 
-    /// Maximum number of simultaneous peer connections per eMule download.
+    /// Number of simultaneous peer connections opened per eMule download.
     ///
     /// Files are divided into ed2k-part-sized slices (~9.7 MB each) and
     /// distributed across up to this many concurrent TCP connections.
@@ -142,9 +142,9 @@ pub struct EmuleConfig {
     /// sources and the number of remaining slices, so setting this higher than
     /// needed has no cost.
     ///
-    /// Default: 5.  Range: 1–50.  Override via `RUCIOD_EMULE_MAX_PARALLEL`.
-    #[serde(default = "EmuleConfig::default_max_parallel_peers")]
-    pub max_parallel_peers: usize,
+    /// Default: 5.  Range: 1–50.  Override via `RUCIOD_EMULE_DOWNLOAD_SLOTS_PER_FILE`.
+    #[serde(default = "EmuleConfig::default_download_slots_per_file")]
+    pub download_slots_per_file: usize,
 
     /// Maximum number of simultaneous eMule upload slots.
     ///
@@ -161,7 +161,7 @@ pub struct EmuleConfig {
     /// When more downloads than this are requested, the surplus wait in the
     /// `queued` state until a running download finishes.  This caps the total
     /// number of open TCP connections (each active download opens up to
-    /// `max_parallel_peers` of them) so a large queue does not exhaust sockets.
+    /// `download_slots_per_file` of them) so a large queue does not exhaust sockets.
     ///
     /// Default: 3.  Range: 1–50.  Override via `RUCIOD_EMULE_MAX_CONCURRENT_DOWNLOADS`.
     #[serde(default = "EmuleConfig::default_max_concurrent_downloads")]
@@ -177,7 +177,7 @@ impl EmuleConfig {
         4662
     }
 
-    fn default_max_parallel_peers() -> usize {
+    fn default_download_slots_per_file() -> usize {
         5
     }
 
@@ -198,7 +198,7 @@ impl Default for EmuleConfig {
             udp_port: 4672,
             tcp_port: Self::default_tcp_port(),
             external_ip: None,
-            max_parallel_peers: Self::default_max_parallel_peers(),
+            download_slots_per_file: Self::default_download_slots_per_file(),
             max_upload_slots: Self::default_max_upload_slots(),
             max_concurrent_downloads: Self::default_max_concurrent_downloads(),
         }
@@ -415,7 +415,7 @@ impl Config {
     /// | `RUCIOD_NODES_DAT`          | `storage.nodes_dat_path`     | path               |
     /// | `RUCIOD_EMULE_UDP_PORT`     | `emule.udp_port`             | integer 1-65535    |
     /// | `RUCIOD_EMULE_TCP_PORT`     | `emule.tcp_port`             | integer 1-65535    |
-    /// | `RUCIOD_EMULE_MAX_PARALLEL` | `emule.max_parallel_peers`   | integer 1-50       |
+    /// | `RUCIOD_EMULE_DOWNLOAD_SLOTS_PER_FILE` | `emule.download_slots_per_file` | integer 1-50 |
     /// | `RUCIOD_EMULE_MAX_UPLOAD_SLOTS` | `emule.max_upload_slots` | integer 1-50       |
     /// | `RUCIOD_EMULE_MAX_CONCURRENT_DOWNLOADS` | `emule.max_concurrent_downloads` | integer 1-50 |
     /// | `RUCIOD_UPNP`               | `network.upnp`               | `true`/`false`     |
@@ -497,12 +497,12 @@ impl Config {
         {
             self.emule.external_ip = Some(ip);
         }
-        if let Ok(v) = std::env::var("RUCIOD_EMULE_MAX_PARALLEL")
+        if let Ok(v) = std::env::var("RUCIOD_EMULE_DOWNLOAD_SLOTS_PER_FILE")
             && !v.is_empty()
             && let Ok(n) = v.parse::<usize>()
             && (1..=50).contains(&n)
         {
-            self.emule.max_parallel_peers = n;
+            self.emule.download_slots_per_file = n;
         }
         if let Ok(v) = std::env::var("RUCIOD_EMULE_MAX_UPLOAD_SLOTS")
             && !v.is_empty()

@@ -45,7 +45,14 @@ pub async fn get_config(State(state): State<AppState>) -> Json<ConfigResponse> {
             database_path: cfg.storage.database_path.to_string_lossy().into_owned(),
         },
         emule: EmuleConfig {
-            max_parallel_peers: cfg.emule.max_parallel_peers,
+            enabled: cfg.emule.enabled,
+            temp_dir: cfg.emule.temp_dir.to_string_lossy().into_owned(),
+            udp_port: cfg.emule.udp_port,
+            tcp_port: cfg.emule.tcp_port,
+            external_ip: cfg.emule.external_ip.map(|ip| ip.to_string()),
+            download_slots_per_file: cfg.emule.download_slots_per_file,
+            max_upload_slots: cfg.emule.max_upload_slots,
+            max_concurrent_downloads: cfg.emule.max_concurrent_downloads,
         },
     })
 }
@@ -59,7 +66,7 @@ pub async fn get_config(State(state): State<AppState>) -> Json<ConfigResponse> {
 /// - `network.download_limit_kbps` — download bandwidth cap (0 = unlimited).
 ///
 /// **Changes that require a daemon restart**
-/// - `node.listen_addrs`, `network.bootstrap_peers`, `storage.*`
+/// - `node.listen_addrs`, `network.bootstrap_peers`, `storage.*`, `emule.*`
 ///
 /// Read-only fields (`node.identity_path`, `api.listen`) are silently ignored.
 #[utoipa::path(
@@ -93,7 +100,14 @@ pub async fn put_config(
     new_cfg.network.download_limit_kbps = req.network.download_limit_kbps;
     new_cfg.storage.download_dir = req.storage.download_dir.into();
     new_cfg.storage.temp_dir = req.storage.temp_dir.into();
-    new_cfg.emule.max_parallel_peers = req.emule.max_parallel_peers.clamp(1, 50);
+    new_cfg.emule.enabled = req.emule.enabled;
+    new_cfg.emule.temp_dir = req.emule.temp_dir.into();
+    new_cfg.emule.udp_port = req.emule.udp_port;
+    new_cfg.emule.tcp_port = req.emule.tcp_port;
+    new_cfg.emule.external_ip = req.emule.external_ip.and_then(|s| s.parse().ok());
+    new_cfg.emule.download_slots_per_file = req.emule.download_slots_per_file.clamp(1, 50);
+    new_cfg.emule.max_upload_slots = req.emule.max_upload_slots.clamp(1, 50);
+    new_cfg.emule.max_concurrent_downloads = req.emule.max_concurrent_downloads.clamp(1, 50);
     // identity_path and api.listen intentionally not writable at runtime
 
     match new_cfg.save() {

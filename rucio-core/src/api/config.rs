@@ -10,8 +10,23 @@ pub struct ConfigResponse {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct EmuleConfig {
-    /// Maximum number of simultaneous peer connections per eMule download.
-    pub max_parallel_peers: usize,
+    /// Whether the eMule / Kad2 subsystem is enabled at runtime.
+    pub enabled: bool,
+    /// Directory where in-progress eMule `.part` files are stored.
+    pub temp_dir: String,
+    /// UDP port for the Kad2 socket.
+    pub udp_port: u16,
+    /// TCP port for incoming eMule peer connections.
+    pub tcp_port: u16,
+    /// Manually configured external IPv4 address, or `null` to auto-detect.
+    #[serde(default)]
+    pub external_ip: Option<String>,
+    /// Number of simultaneous peer connections opened per eMule download.
+    pub download_slots_per_file: usize,
+    /// Maximum number of simultaneous eMule upload slots.
+    pub max_upload_slots: usize,
+    /// Maximum number of eMule downloads that run concurrently.
+    pub max_concurrent_downloads: usize,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]

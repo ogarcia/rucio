@@ -225,9 +225,9 @@ rucio config set emule.tcp_port 4662
 
 ---
 
-### `emule.max_parallel_peers`
+### `emule.download_slots_per_file`
 
-Maximum number of simultaneous peer connections per eMule download.
+Number of simultaneous peer connections opened per eMule download.
 
 Each active eMule download opens up to this many concurrent TCP connections
 to different sources and fetches different file slices in parallel.  Higher
@@ -236,7 +236,7 @@ number of open sockets.  The effective concurrency is also bounded by the
 number of discovered sources and the number of remaining slices.
 
 ```sh
-rucio config set emule.max_parallel_peers 5
+rucio config set emule.download_slots_per_file 5
 ```
 
 **Default:** `5`  **Range:** `1–50`
@@ -267,7 +267,7 @@ Maximum number of eMule downloads that run at the same time.
 
 When you queue more eMule downloads than this, the surplus wait in the
 `queued` state until a running download finishes.  Because each active
-download opens up to `emule.max_parallel_peers` TCP connections, this cap
+download opens up to `emule.download_slots_per_file` TCP connections, this cap
 bounds the total number of open sockets so a large queue cannot exhaust them.
 
 ```sh
@@ -327,8 +327,8 @@ bootstrap_peers = [
 enabled            = true
 udp_port           = 4672
 tcp_port           = 4662
-max_parallel_peers = 5
-max_upload_slots   = 4
+download_slots_per_file  = 5
+max_upload_slots         = 4
 max_concurrent_downloads = 3
 # temp_dir     = "~/.cache/rucio/emule-tmp"  # platform default
 # external_ip  = "1.2.3.4"                   # auto-detected via UPnP or peer responses
@@ -363,7 +363,7 @@ the file value untouched.
 | `RUCIOD_EMULE_UDP_PORT` | `emule.udp_port` | `4672` | integer 1–65535 |
 | `RUCIOD_EMULE_TCP_PORT` | `emule.tcp_port` | `4662` | integer 1–65535 |
 | `RUCIOD_EXTERNAL_IP` | `emule.external_ip` | *(auto)* | IPv4 address |
-| `RUCIOD_EMULE_MAX_PARALLEL` | `emule.max_parallel_peers` | `5` | integer 1–50 |
+| `RUCIOD_EMULE_DOWNLOAD_SLOTS_PER_FILE` | `emule.download_slots_per_file` | `5` | integer 1–50 |
 | `RUCIOD_EMULE_MAX_UPLOAD_SLOTS` | `emule.max_upload_slots` | `4` | integer 1–50 |
 | `RUCIOD_EMULE_MAX_CONCURRENT_DOWNLOADS` | `emule.max_concurrent_downloads` | `3` | integer 1–50 |
 

@@ -304,7 +304,7 @@ pub async fn run_ed2k_download(
 
         let max_workers = config
             .emule
-            .max_parallel_peers
+            .download_slots_per_file
             .clamp(1, 50)
             .min(valid_sources.len())
             .min(num_remaining);

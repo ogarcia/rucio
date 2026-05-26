@@ -112,28 +112,37 @@ pub enum ConfigAction {
     /// Set a configuration value (restarts may be required for some changes)
     ///
     /// Settable keys:
-    ///   storage.download_dir          <path>
-    ///   storage.temp_dir              <path>
-    ///   network.bootstrap_peers       <multiaddr>  (appends to the list)
-    ///   node.listen_addrs             <multiaddr>  (appends to the list)
-    ///   network.upload_limit_kbps     <integer>    (0 = unlimited, applied immediately)
-    ///   network.download_limit_kbps   <integer>    (0 = unlimited, applied immediately)
+    ///   storage.download_dir            <path>
+    ///   storage.temp_dir                <path>
+    ///   network.bootstrap_peers         <multiaddr>  (appends to the list)
+    ///   node.listen_addrs               <multiaddr>  (appends to the list)
+    ///   network.upload_limit_kbps       <integer>    (0 = unlimited, applied immediately)
+    ///   network.download_limit_kbps     <integer>    (0 = unlimited, applied immediately)
+    ///   emule.enabled                   <bool>
+    ///   emule.temp_dir                  <path>
+    ///   emule.udp_port                  <integer>    (1-65535)
+    ///   emule.tcp_port                  <integer>    (1-65535)
+    ///   emule.external_ip               <ipv4>
+    ///   emule.download_slots_per_file   <integer>    (1-50)
+    ///   emule.max_upload_slots          <integer>    (1-50)
+    ///   emule.max_concurrent_downloads  <integer>    (1-50)
     Set {
         /// Configuration key (e.g. storage.download_dir)
         key: String,
         /// New value
         value: String,
     },
-    /// Remove a value from a list configuration key
+    /// Remove a value from a configuration key
     ///
-    /// Applicable list keys:
-    ///   network.bootstrap_peers <multiaddr>
-    ///   node.listen_addrs       <multiaddr>
+    /// List keys remove the given entry; scalar keys revert to their default.
+    ///   network.bootstrap_peers <multiaddr>   (removes one entry)
+    ///   node.listen_addrs       <multiaddr>   (removes one entry)
+    ///   emule.external_ip                     (reverts to auto-detect)
     Unset {
         /// Configuration key
         key: String,
-        /// Value to remove from the list
-        value: String,
+        /// Value to remove (required for list keys, ignored for scalar keys)
+        value: Option<String>,
     },
 }
 
@@ -168,7 +177,9 @@ pub async fn run() -> Result<()> {
         Commands::Config { action } => match action {
             ConfigAction::Show => cmd::config::show(&client).await,
             ConfigAction::Set { key, value } => cmd::config::set(&client, &key, &value).await,
-            ConfigAction::Unset { key, value } => cmd::config::unset(&client, &key, &value).await,
+            ConfigAction::Unset { key, value } => {
+                cmd::config::unset(&client, &key, value.as_deref()).await
+            }
         },
         Commands::Metrics => cmd::status::metrics_cmd(&client).await,
         Commands::Emule { action } => cmd::emule::run(&client, action).await,
