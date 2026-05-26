@@ -198,7 +198,7 @@ This handles:
 ## ed2k download flow
 
 ```
-rucio get "ed2k://|file|name.ext|size|md4hash|/"
+rucio download get "ed2k://|file|name.ext|size|md4hash|/"
     │
     ▼
 Parse ed2k link → extract MD4 hash + size
@@ -222,7 +222,7 @@ All chunks done → compute BLAKE3 of complete file
                 → state: completed
 ```
 
-The download appears in `rucio downloads` and supports `--watch` throughout.
+The download appears in `rucio download list` and supports `--watch` throughout.
 
 ---
 

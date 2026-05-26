@@ -363,7 +363,7 @@ impl ApiClient {
         }
     }
 
-    /// Resolve a download by 1-based row index (as shown in `rucio downloads`)
+    /// Resolve a download by 1-based row index (as shown in `rucio download list`)
     /// or by hash prefix.  Returns `None` if nothing matches.
     pub async fn find_download_by_idx_or_hash(
         &self,

@@ -8,23 +8,23 @@ You can start a download from a search result or from a magnet link.
 
 ```sh
 rucio search "moby dick"
-rucio get 1
+rucio download get 1
 ```
 
 **From a magnet link:**
 
 ```sh
-rucio get "rucio:7b4a...?name=moby-dick.epub&size=980123"
+rucio download get "rucio:7b4a...?name=moby-dick.epub&size=980123"
 ```
 
 rucio immediately registers the download and begins locating peers that have
-the file. The download appears in `rucio downloads` right away, even before any
+the file. The download appears in `rucio download list` right away, even before any
 data has been transferred.
 
 ## Listing downloads
 
 ```sh
-rucio downloads
+rucio download list
 ```
 
 ```
@@ -36,14 +36,14 @@ rucio downloads
 Filter by state:
 
 ```sh
-rucio downloads --active     # only in-progress downloads
-rucio downloads --done       # only completed/failed/cancelled
+rucio download list --active     # only in-progress downloads
+rucio download list --done       # only completed/failed/cancelled
 ```
 
 ## Watching progress in real time
 
 ```sh
-rucio downloads --watch
+rucio download list --watch
 ```
 
 The command refreshes every second and exits automatically once all active
@@ -52,8 +52,8 @@ downloads reach a terminal state (completed, failed or cancelled).
 ## Inspecting a single download
 
 ```sh
-rucio info 1            # by row number from `rucio downloads`
-rucio info 7b4a         # hash prefix also works
+rucio download info 1            # by row number from `rucio download list`
+rucio download info 7b4a         # hash prefix also works
 ```
 
 This prints the full detail for one download: its hash, state, size and
@@ -87,11 +87,11 @@ No action is required — resumption is automatic.
 ## Cancelling a download
 
 ```sh
-rucio cancel 7b4a           # hash prefix is enough
+rucio download cancel 7b4a           # hash prefix is enough
 ```
 
 This removes the in-progress `.part` file from the temp directory and marks
-the download as cancelled. The entry remains visible in `rucio downloads`
+the download as cancelled. The entry remains visible in `rucio download list`
 until you clean it.
 
 ## Cleaning up the history
@@ -100,8 +100,8 @@ Completed, failed and cancelled entries stay in the list until explicitly
 removed. Active downloads cannot be deleted — cancel them first.
 
 ```sh
-rucio clean                 # removes all non-active entries
-rucio clean 7b4a            # removes a specific entry by hash prefix
+rucio download clean                 # removes all non-active entries
+rucio download clean 7b4a            # removes a specific entry by hash prefix
 ```
 
 ## Where files land
@@ -165,10 +165,10 @@ nodes.dat status:    present (150 contacts)
 
 ### Starting an eMule download
 
-Pass any `ed2k://` link to `rucio get`:
+Pass any `ed2k://` link to `rucio download get`:
 
 ```sh
-rucio get "ed2k://|file|ubuntu-24.04.2-desktop-amd64.iso|6114656256|a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4|/"
+rucio download get "ed2k://|file|ubuntu-24.04.2-desktop-amd64.iso|6114656256|a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4|/"
 ```
 
 The daemon will:
@@ -180,7 +180,7 @@ The daemon will:
 5. Compute the BLAKE3 hash of the completed file and register it in the Rucio
    DHT so other Rucio peers can find it.
 
-The download appears in `rucio downloads` and supports `--watch` like any
+The download appears in `rucio download list` and supports `--watch` like any
 other download.
 
 ### Configuration

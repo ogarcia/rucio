@@ -25,7 +25,7 @@ cycles with no new results — typically 5–10 seconds.
 
 | Column | Meaning |
 |---|---|
-| `#` | Row number, used with `rucio get` |
+| `#` | Row number, used with `rucio download get` |
 | `Name` | File name as announced by the sharing peer |
 | `Size` | File size in human-readable form |
 | `Peers` | Number of peers known to have this file at query time |
@@ -33,10 +33,10 @@ cycles with no new results — typically 5–10 seconds.
 
 ## Downloading a result
 
-Pass the row number directly to `rucio get`:
+Pass the row number directly to `rucio download get`:
 
 ```sh
-rucio get 3
+rucio download get 3
 ```
 
 The row numbers are only valid for the most recent search. If you run another
@@ -49,7 +49,7 @@ word is matched against file names announced by peers. A search for
 `"great expectations"` will match files whose name contains both words.
 
 **Results depend on connected peers.** If the network is small or your node has
-few connections, results may be sparse. Check `rucio status` to see how many
+few connections, results may be sparse. Check `rucio node status` to see how many
 peers you are connected to.
 
 **The same file from multiple peers is deduplicated by hash.** If three peers
@@ -59,7 +59,7 @@ download chunks from all of them in parallel.
 **You can download without searching** if you already have a magnet link:
 
 ```sh
-rucio get "rucio:7b4a...?name=great-expectations.epub&size=1258291"
+rucio download get "rucio:7b4a...?name=great-expectations.epub&size=1258291"
 ```
 
 See [Magnet links](07-magnet-links.md) for more detail.

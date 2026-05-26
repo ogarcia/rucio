@@ -15,7 +15,7 @@ When rucio receives an Identify response from a peer it:
 1. Emits a `PeerDiscovered` event with the peer's announced `listen_addrs`.
 2. Adds those addresses to the Kademlia routing table, so the peer is
    reachable even if it was found via mDNS.
-3. Records the peer in the SQLite database for display in `rucio peers`.
+3. Records the peer in the SQLite database for display in `rucio node peers`.
 
 The peer's **observed address** (what the remote end sees as our source
 address) is also stored and used to classify the node as HighID or LowID.
@@ -115,7 +115,7 @@ When `network.upnp = true` (the default), the daemon spawns a background
    - TCP `emule.tcp_port` (eMule peer connections, only with the `emule-compat` feature)
 3. Renews the leases periodically before they expire.
 4. Writes the discovered external IP address to `AppState.external_ip`, which
-   is returned in `GET /api/v1/status` and displayed in `rucio status`.
+   is returned in `GET /api/v1/status` and displayed in `rucio node status`.
 
 UPnP is silently skipped if the router does not support IGD or if the daemon
 is running on a host with a direct public IP (no NAT). Set `network.upnp =

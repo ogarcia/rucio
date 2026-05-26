@@ -24,16 +24,16 @@ rucio:7b4a3f9c...?name=great-expectations.epub&size=1258291
 
 ## Getting a magnet link for a file you share
 
-**From the shares list** — using the row number printed by `rucio shares`:
+**From the shares list** — using the row number printed by `rucio share list`:
 
 ```sh
-rucio magnet 2
+rucio share magnet 2
 ```
 
 **Offline, without a running daemon** — from any local file:
 
 ```sh
-rucio magnet --file /path/to/any/file.mkv
+rucio share magnet --file /path/to/any/file.mkv
 ```
 
 This hashes the file locally and prints the magnet link. No daemon or network
@@ -42,10 +42,10 @@ running rucio.
 
 ## Using a magnet link to download
 
-Paste the full link as the argument to `rucio get`:
+Paste the full link as the argument to `rucio download get`:
 
 ```sh
-rucio get "rucio:7b4a3f9c...?name=great-expectations.epub&size=1258291"
+rucio download get "rucio:7b4a3f9c...?name=great-expectations.epub&size=1258291"
 ```
 
 rucio parses the link, registers the download, and starts locating peers that

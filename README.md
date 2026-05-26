@@ -58,13 +58,13 @@ ruciod
 **Share a directory:**
 
 ```sh
-rucio add ~/Movies
+rucio share add ~/Movies
 ```
 
 **Check what you are sharing:**
 
 ```sh
-rucio shares
+rucio share list
 ```
 
 **Search the network:**
@@ -76,21 +76,21 @@ rucio search "big buck bunny"
 **Download a result** (by index from the last search, or by magnet link):
 
 ```sh
-rucio get 1
-rucio get "rucio:abc123...?name=big_buck_bunny.mkv&size=734003200"
+rucio download get 1
+rucio download get "rucio:abc123...?name=big_buck_bunny.mkv&size=734003200"
 ```
 
 **Watch progress:**
 
 ```sh
-rucio downloads --watch
+rucio download list --watch
 ```
 
 **Get a magnet link to share with someone:**
 
 ```sh
-rucio magnet 1          # by row number from `rucio shares`
-rucio magnet --file /path/to/file.mkv   # offline, no daemon needed
+rucio share magnet 1          # by row number from `rucio share list`
+rucio share magnet --file /path/to/file.mkv   # offline, no daemon needed
 ```
 
 ## Documentation

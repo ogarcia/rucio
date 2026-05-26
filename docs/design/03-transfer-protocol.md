@@ -109,7 +109,7 @@ missing ones. Chunks already written to the `.part` file are not re-downloaded.
 When a download is started for a hash that has no known providers yet (e.g.
 from a bare magnet link with no `peer=` parameters), the download is
 registered in the database immediately with the state `finding_providers`.
-This gives the user immediate feedback in `rucio downloads`.
+This gives the user immediate feedback in `rucio download list`.
 
 The engine queries the Kademlia DHT for providers. Once at least one provider
 is found, the download transitions to `queued` and the manifest is fetched.

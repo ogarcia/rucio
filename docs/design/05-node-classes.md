@@ -13,7 +13,7 @@ directly. A HighID node:
 
 - Can serve file chunks to any peer that requests them.
 - Is a full participant in the DHT as both a client and a server.
-- Appears in `rucio status` as `HighID`.
+- Appears in `rucio node status` as `HighID`.
 
 ### LowID
 
@@ -25,7 +25,7 @@ Other peers on the internet generally cannot dial it directly. A LowID node:
   reach it).
 - May still serve chunks to peers on the same LAN, since mDNS-discovered
   peers can use the local address.
-- Appears in `rucio status` as `LowID`.
+- Appears in `rucio node status` as `LowID`.
 
 ### Unknown
 
@@ -52,7 +52,7 @@ no observed address yet                                     →  Unknown
 applies the above rules. It returns a short label (`"LAN"`, `"link-local"`,
 etc.) for local addresses, or an empty string for public addresses.
 
-## Display in `rucio status`
+## Display in `rucio node status`
 
 ```
 Connectivity:   HighID  ·  4 peer(s)  ·  observed 203.0.113.5:4001

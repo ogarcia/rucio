@@ -1,13 +1,13 @@
 # Sharing files
 
-rucio shares **directories**, not individual files. Adding a directory causes
+rucio share list **directories**, not individual files. Adding a directory causes
 every file inside it (recursively) to be hashed and announced to the network.
 New files dropped into a shared directory are picked up automatically.
 
 ## Adding a directory
 
 ```sh
-rucio add /path/to/directory
+rucio share add /path/to/directory
 ```
 
 The path must be absolute and must exist on the machine where the daemon is
@@ -24,7 +24,7 @@ Large directories can take a while to index. Check how many files are still
 pending:
 
 ```sh
-rucio indexing
+rucio share indexing
 ```
 
 ```
@@ -37,7 +37,7 @@ on the network.
 ## Listing shared files
 
 ```sh
-rucio shares
+rucio share list
 ```
 
 ```
@@ -50,20 +50,20 @@ rucio shares
 ## Getting a magnet link for a shared file
 
 ```sh
-rucio magnet 2          # by row number from `rucio shares`
+rucio share magnet 2          # by row number from `rucio share list`
 ```
 
 ```
 rucio:cc01...?name=lecture-02.mp4&size=417333248
 ```
 
-You can send this link to anyone. They can paste it directly into `rucio get`.
+You can send this link to anyone. They can paste it directly into `rucio download get`.
 See [Magnet links](07-magnet-links.md) for more detail.
 
 ## Removing a shared directory
 
 ```sh
-rucio remove /path/to/directory
+rucio share remove /path/to/directory
 ```
 
 This removes the directory from the database and stops announcing its files.

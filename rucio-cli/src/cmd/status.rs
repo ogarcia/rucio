@@ -1,4 +1,4 @@
-//! `rucio status` and `rucio peers`
+//! `rucio node status`, `rucio node peers`, `rucio node metrics`
 
 use anyhow::Result;
 use rucio_core::protocol::node::NodeClass;
@@ -229,7 +229,7 @@ fn format_bytes(bytes: u64) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// `rucio metrics`
+// `rucio node metrics`
 // ---------------------------------------------------------------------------
 
 /// Print full metrics (session + lifetime totals).

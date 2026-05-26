@@ -98,7 +98,7 @@ Set to `false` if:
 - You are running inside a container and the host handles forwarding.
 - UPnP is disabled or unavailable on your network.
 
-When `false`, the `external_ip` field in `rucio status` will always be empty,
+When `false`, the `external_ip` field in `rucio node status` will always be empty,
 and `rucio emule status` will report `Connectivity: unknown` unless
 `emule.external_ip` is configured manually (or a peer has already connected
 to us, in which case it reports `open`).

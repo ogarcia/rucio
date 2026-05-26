@@ -5,8 +5,8 @@
 //!   - the global timeout is reached (65 seconds — a bit beyond KAD2_TIMEOUT).
 //!
 //! Results are deduplicated by download link.  All entries are saved in
-//! `~/.local/share/rucio/last_search.json` so that `rucio get <N>` can start
-//! a download automatically.
+//! `~/.local/share/rucio/last_search.json` so that `rucio download get <N>` can
+//! start a download automatically.
 
 use std::collections::HashMap;
 
@@ -152,7 +152,7 @@ fn print_results(results: &[CachedResult]) {
         .collect();
 
     println!("{}", Table::new(rows));
-    println!("Use `rucio get <#>` to download.");
+    println!("Use `rucio download get <#>` to download.");
 }
 
 fn human_size(bytes: u64) -> String {

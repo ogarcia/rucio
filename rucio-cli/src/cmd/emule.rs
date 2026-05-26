@@ -15,8 +15,8 @@ pub enum EmuleCmd {
     /// Download and install a fresh nodes.dat from the eMule Kad network.
     ///
     /// The file is saved to the path configured in the daemon
-    /// (`storage.nodes_dat_path`).  Run this once before using `rucio get
-    /// ed2k://…` for the first time.
+    /// (`storage.nodes_dat_path`).  Run this once before using `rucio download
+    /// get ed2k://…` for the first time.
     Bootstrap {
         /// URL to download nodes.dat from.
         ///
@@ -156,7 +156,7 @@ async fn bootstrap(client: &ApiClient, url: Option<String>) -> Result<()> {
         resp.contacts.bold(),
         resp.path.cyan()
     );
-    println!("You can now use `rucio get ed2k://…` to download eMule files.");
+    println!("You can now use `rucio download get ed2k://…` to download eMule files.");
 
     Ok(())
 }

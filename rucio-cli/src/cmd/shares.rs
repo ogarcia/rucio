@@ -1,4 +1,5 @@
-//! `rucio shares`, `rucio add <path>`, `rucio remove <hash|path>`, `rucio magnet <target>`
+//! `rucio share list`, `rucio share add <path>`, `rucio share remove <hash|path>`,
+//! `rucio share magnet <target>`, `rucio share indexing`
 
 use anyhow::{Result, bail};
 use futures_util::StreamExt as _;
@@ -115,7 +116,7 @@ pub async fn remove(client: &ApiClient, target: &str) -> Result<()> {
 /// With `--file <path>`: hashes the file locally, no daemon required.
 ///
 /// Otherwise `target` is resolved against local shares in order:
-///   1. Row number from `rucio shares` (e.g. `3`)
+///   1. Row number from `rucio share list` (e.g. `3`)
 ///   2. Exact file name — if unique among all shares
 ///   3. Hash prefix / full hash
 ///
@@ -160,7 +161,7 @@ pub async fn magnet(client: &ApiClient, target: Option<&str>, file: Option<&str>
                 println!("{}", color::value(&s.magnet));
                 return Ok(());
             }
-            None => bail!("No share at row {n}. Run `rucio shares` to see the list."),
+            None => bail!("No share at row {n}. Run `rucio share list` to see the list."),
         }
     }
 

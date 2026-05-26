@@ -1,5 +1,5 @@
 //! Persistent CLI state: last search results saved to disk so that
-//! `rucio get <N>` can reference results from a previous `rucio search`.
+//! `rucio download get <N>` can reference results from a previous `rucio search`.
 //!
 //! Location: `$XDG_DATA_HOME/rucio/last_search.json`
 //! (falls back to `~/.local/share/rucio/last_search.json`)

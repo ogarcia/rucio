@@ -26,7 +26,7 @@ terminal multiplexer (`tmux`, `screen`).
 In a second terminal:
 
 ```sh
-rucio status
+rucio node status
 ```
 
 Example output:
@@ -44,20 +44,20 @@ download. See [Node classes](../design/05-node-classes.md) for more detail.
 ## 3. Share a directory
 
 ```sh
-rucio add ~/Documents/ebooks
+rucio share add ~/Documents/ebooks
 ```
 
 rucio scans the directory, hashes every file with BLAKE3, and announces them
 to the network. Large directories take a moment — check progress with:
 
 ```sh
-rucio indexing
+rucio share indexing
 ```
 
 Once indexing is complete, list what you are sharing:
 
 ```sh
-rucio shares
+rucio share list
 ```
 
 ```
@@ -86,27 +86,27 @@ few seconds:
 Use the row number from the last search:
 
 ```sh
-rucio get 1
+rucio download get 1
 ```
 
 Or paste a magnet link directly:
 
 ```sh
-rucio get "rucio:7b4a...?name=great-expectations.epub&size=1258291"
+rucio download get "rucio:7b4a...?name=great-expectations.epub&size=1258291"
 ```
 
 ## 6. Watch download progress
 
 ```sh
-rucio downloads --watch
+rucio download list --watch
 ```
 
 The command exits automatically once all active downloads finish. Completed
 downloads stay in the list until you clean them:
 
 ```sh
-rucio clean          # removes all completed entries
-rucio clean 7b4a     # removes a specific entry by hash prefix
+rucio download clean          # removes all completed entries
+rucio download clean 7b4a     # removes a specific entry by hash prefix
 ```
 
 ## Next steps

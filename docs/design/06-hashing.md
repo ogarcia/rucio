@@ -86,7 +86,7 @@ daemon dependency, the CLI can compute hashes and produce magnet links without
 a running daemon:
 
 ```sh
-rucio magnet --file /path/to/file.mkv
+rucio share magnet --file /path/to/file.mkv
 ```
 
 This is useful for generating links on a machine where rucio is not running

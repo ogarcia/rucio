@@ -75,7 +75,7 @@ Tracks the state of each individual chunk for active downloads.
 
 #### `peers`
 
-Stores discovered peers for display in `rucio peers` and for bootstrap hints.
+Stores discovered peers for display in `rucio node peers` and for bootstrap hints.
 
 | Column | Type | Description |
 |---|---|---|
@@ -85,7 +85,7 @@ Stores discovered peers for display in `rucio peers` and for bootstrap hints.
 
 ## Directory sharing model
 
-rucio shares **directories**, not individual files. This simplifies the
+rucio share list **directories**, not individual files. This simplifies the
 inotify/FSEvents watcher model — there is a single watcher per shared
 directory rather than one per file.
 

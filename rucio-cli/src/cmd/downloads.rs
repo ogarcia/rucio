@@ -1,4 +1,5 @@
-//! `rucio downloads`, `rucio get <target>`, `rucio cancel <idx|hash>`, `rucio clean`
+//! `rucio download list`, `rucio download get <target>`, `rucio download info <X>`,
+//! `rucio download cancel <idx|hash>`, `rucio download clean`
 
 use anyhow::{Result, bail};
 use futures_util::StreamExt as _;
@@ -351,7 +352,7 @@ pub async fn clean(client: &ApiClient, hash: Option<&str>) -> Result<()> {
             None => bail!("No download found for '{h}'"),
             Some(d) if !is_finished(&d.state) => {
                 bail!(
-                    "Download '{}' is still active. Use `rucio cancel` to stop it first.",
+                    "Download '{}' is still active. Use `rucio download cancel` to stop it first.",
                     d.name.unwrap_or_else(|| d.root_hash.clone())
                 )
             }

@@ -21,34 +21,77 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Show daemon status
-    Status,
-    /// List connected peers
-    Peers,
+    /// Manage shared files
+    Share {
+        #[command(subcommand)]
+        action: ShareAction,
+    },
+    /// Manage downloads
+    Download {
+        #[command(subcommand)]
+        action: DownloadAction,
+    },
+    /// Node and daemon information
+    Node {
+        #[command(subcommand)]
+        action: NodeAction,
+    },
+    /// Search for files on the network
+    Search {
+        /// Keywords to search for
+        keywords: Vec<String>,
+    },
+    /// Show or update configuration
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+    /// eMule Kad compatibility commands
+    Emule {
+        #[command(subcommand)]
+        action: cmd::emule::EmuleCmd,
+    },
+}
+
+/// `rucio share …` — manage shared files.
+#[derive(Subcommand, Debug)]
+pub enum ShareAction {
     /// Share a directory
     Add {
         /// Path to the directory to share (individual files are not accepted)
         path: String,
+    },
+    /// List shared files
+    List {
+        /// Only show files whose name contains this string (case-insensitive)
+        #[arg(long)]
+        filter: Option<String>,
     },
     /// Stop sharing a file or directory
     Remove {
         /// Root hash (hex) of a single file, or filesystem path (file or directory)
         target: String,
     },
-    /// List shared files
-    Shares {
-        /// Optional filter — only show files whose name contains this string (case-insensitive)
-        filter: Option<String>,
-    },
     /// Get the magnet link for a file — shared or not
     Magnet {
-        /// Row number from `rucio shares`, file name (unique), or hash (full or prefix).
+        /// Row number from `rucio share list`, file name (unique), or hash (full or prefix).
         /// Omit when using --file.
         target: Option<String>,
         /// Compute the magnet link for a local file without sharing it or contacting the daemon
         #[arg(long, value_name = "PATH")]
         file: Option<String>,
     },
+    /// Show how many files are currently being indexed
+    Indexing {
+        /// Keep watching until indexing finishes
+        #[arg(short, long)]
+        watch: bool,
+    },
+}
+
+/// `rucio download …` — manage downloads.
+#[derive(Subcommand, Debug)]
+pub enum DownloadAction {
     /// Download a file (by search result index, magnet link, or ed2k link)
     Get {
         /// Search result index (e.g. 1), a full magnet link (rucio:<hash>…), or an
@@ -59,7 +102,7 @@ pub enum Commands {
         provider: Option<String>,
     },
     /// List active and completed downloads
-    Downloads {
+    List {
         /// Refresh the table every second until all downloads finish
         #[arg(short, long)]
         watch: bool,
@@ -72,42 +115,30 @@ pub enum Commands {
     },
     /// Show full details for a single download
     Info {
-        /// Row number from `rucio downloads` (e.g. 1) or root hash (full or prefix)
+        /// Row number from `rucio download list` (e.g. 1) or root hash (full or prefix)
         target: String,
     },
     /// Cancel an in-progress download
     Cancel {
-        /// Row number from `rucio downloads` (e.g. 1) or root hash (full or prefix)
+        /// Row number from `rucio download list` (e.g. 1) or root hash (full or prefix)
         hash: String,
     },
     /// Remove completed/failed/cancelled downloads from the history
     Clean {
-        /// Row number from `rucio downloads` (e.g. 1) or root hash prefix (omit to remove all finished downloads)
+        /// Row number from `rucio download list` (e.g. 1) or root hash prefix (omit to remove all finished downloads)
         hash: Option<String>,
     },
-    /// Search for files on the network
-    Search {
-        /// Keywords to search for
-        keywords: Vec<String>,
-    },
-    /// Show how many files are currently being indexed
-    Indexing {
-        /// Keep watching until indexing finishes
-        #[arg(short, long)]
-        watch: bool,
-    },
-    /// Show or update configuration
-    Config {
-        #[command(subcommand)]
-        action: ConfigAction,
-    },
+}
+
+/// `rucio node …` — node and daemon information.
+#[derive(Subcommand, Debug)]
+pub enum NodeAction {
+    /// Show daemon status
+    Status,
+    /// List connected peers
+    Peers,
     /// Show transfer metrics (session and lifetime totals)
     Metrics,
-    /// eMule Kad compatibility commands
-    Emule {
-        #[command(subcommand)]
-        action: cmd::emule::EmuleCmd,
-    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -159,27 +190,34 @@ pub async fn run() -> Result<()> {
     let client = ApiClient::new(&cli.api);
 
     match cli.command {
-        Commands::Status => cmd::status::status(&client).await,
-        Commands::Peers => cmd::status::peers(&client).await,
-        Commands::Shares { filter } => cmd::shares::list(&client, filter.as_deref()).await,
-        Commands::Magnet { target, file } => {
-            cmd::shares::magnet(&client, target.as_deref(), file.as_deref()).await
-        }
-        Commands::Add { path } => cmd::shares::add(&client, &path).await,
-        Commands::Remove { target } => cmd::shares::remove(&client, &target).await,
-        Commands::Downloads {
-            watch,
-            active,
-            done,
-        } => cmd::downloads::list(&client, watch, active, done).await,
-        Commands::Get { target, provider } => {
-            cmd::downloads::start(&client, &target, provider.as_deref()).await
-        }
-        Commands::Info { target } => cmd::downloads::info(&client, &target).await,
-        Commands::Cancel { hash } => cmd::downloads::cancel(&client, &hash).await,
-        Commands::Clean { hash } => cmd::downloads::clean(&client, hash.as_deref()).await,
+        Commands::Share { action } => match action {
+            ShareAction::Add { path } => cmd::shares::add(&client, &path).await,
+            ShareAction::List { filter } => cmd::shares::list(&client, filter.as_deref()).await,
+            ShareAction::Remove { target } => cmd::shares::remove(&client, &target).await,
+            ShareAction::Magnet { target, file } => {
+                cmd::shares::magnet(&client, target.as_deref(), file.as_deref()).await
+            }
+            ShareAction::Indexing { watch } => cmd::shares::indexing(&client, watch).await,
+        },
+        Commands::Download { action } => match action {
+            DownloadAction::Get { target, provider } => {
+                cmd::downloads::start(&client, &target, provider.as_deref()).await
+            }
+            DownloadAction::List {
+                watch,
+                active,
+                done,
+            } => cmd::downloads::list(&client, watch, active, done).await,
+            DownloadAction::Info { target } => cmd::downloads::info(&client, &target).await,
+            DownloadAction::Cancel { hash } => cmd::downloads::cancel(&client, &hash).await,
+            DownloadAction::Clean { hash } => cmd::downloads::clean(&client, hash.as_deref()).await,
+        },
+        Commands::Node { action } => match action {
+            NodeAction::Status => cmd::status::status(&client).await,
+            NodeAction::Peers => cmd::status::peers(&client).await,
+            NodeAction::Metrics => cmd::status::metrics_cmd(&client).await,
+        },
         Commands::Search { keywords } => cmd::search::search(&client, keywords).await,
-        Commands::Indexing { watch } => cmd::shares::indexing(&client, watch).await,
         Commands::Config { action } => match action {
             ConfigAction::Show => cmd::config::show(&client).await,
             ConfigAction::Set { key, value } => cmd::config::set(&client, &key, &value).await,
@@ -187,7 +225,6 @@ pub async fn run() -> Result<()> {
                 cmd::config::unset(&client, &key, value.as_deref()).await
             }
         },
-        Commands::Metrics => cmd::status::metrics_cmd(&client).await,
         Commands::Emule { action } => cmd::emule::run(&client, action).await,
     }
 }
