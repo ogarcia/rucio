@@ -6,7 +6,8 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use rucio_core::api::downloads::{
-    DownloadResponse, DownloadState, DownloadsResponse, StartDownloadRequest,
+    DownloadDetailResponse, DownloadResponse, DownloadState, DownloadsResponse,
+    StartDownloadRequest,
 };
 
 use crate::api::{AppState, DownloadRequest};
@@ -77,6 +78,116 @@ pub async fn list_downloads(State(state): State<AppState>) -> Json<DownloadsResp
 
     // Sort newest first (libp2p rows already come newest-first; eMule too; merge keeps order)
     Json(DownloadsResponse { downloads })
+}
+
+/// Download detail
+///
+/// Returns the full state of a single download: identity, progress (bytes and
+/// completed pieces), destination path, timestamps, and — for eMule downloads
+/// — the original `ed2k://` link.  Pieces are libp2p chunks for rucio
+/// downloads and 9.28 MB slices for eMule downloads.
+///
+/// Use **negative IDs** (e.g. `-3`) for eMule downloads, as returned by
+/// `GET /api/v1/downloads`.
+#[utoipa::path(
+    get,
+    path = "/api/v1/downloads/{id}",
+    params(
+        ("id" = i64, Path, description = "Numeric download ID from `GET /api/v1/downloads`. Negative = eMule download.")
+    ),
+    responses(
+        (status = 200, description = "Download detail.", body = DownloadDetailResponse),
+        (status = 404, description = "No download with that ID.")
+    )
+)]
+pub async fn get_download(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<Json<DownloadDetailResponse>, StatusCode> {
+    if id >= 0 {
+        // libp2p download
+        let row = crate::db::downloads::get(&state.db, id)
+            .await
+            .map_err(|e| {
+                tracing::error!("DB error fetching download {id}: {e}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
+            .ok_or(StatusCode::NOT_FOUND)?;
+
+        let chunks = crate::db::downloads::chunks_for(&state.db, id)
+            .await
+            .unwrap_or_default();
+        let pieces_total = chunks.len() as u64;
+        let pieces_done = chunks.iter().filter(|c| c.status == "done").count() as u64;
+
+        Ok(Json(DownloadDetailResponse {
+            id,
+            kind: "rucio".to_string(),
+            root_hash: hex::encode(&row.root_hash),
+            name: Some(row.name),
+            size: Some(row.total_size as u64),
+            bytes_done: row.bytes_done as u64,
+            state: db_status_to_state(&row.status),
+            error: row.error_msg,
+            dest_path: non_empty(row.dest_path),
+            added_at: row.added_at,
+            updated_at: row.updated_at,
+            ed2k_link: None,
+            pieces_done: Some(pieces_done),
+            pieces_total: (pieces_total > 0).then_some(pieces_total),
+        }))
+    } else {
+        // eMule download
+        #[cfg(feature = "emule-compat")]
+        {
+            let emule_id = -id;
+            let row = crate::db::emule_downloads::get(&state.db, emule_id)
+                .await
+                .map_err(|e| {
+                    tracing::error!("DB error fetching emule download {emule_id}: {e}");
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?
+                .ok_or(StatusCode::NOT_FOUND)?;
+
+            // Completed slices come from the .part.met progress bitmap.
+            let chunk = rucio_emule::ed2k::CHUNK_SIZE as u64;
+            let num_slices = (row.total_size as u64).div_ceil(chunk) as usize;
+            let met_path = state
+                .config
+                .emule
+                .temp_dir
+                .join(format!("{}.part.met", hex::encode(&row.ed2k_hash)));
+            let done = rucio_emule::progress::load_progress(&met_path, num_slices);
+            let pieces_done = done.iter().filter(|&&d| d).count() as u64;
+
+            Ok(Json(DownloadDetailResponse {
+                id,
+                kind: "emule".to_string(),
+                root_hash: hex::encode(&row.ed2k_hash),
+                name: Some(row.name),
+                size: Some(row.total_size as u64),
+                bytes_done: row.bytes_done as u64,
+                state: db_status_to_state(&row.status),
+                error: row.error_msg,
+                dest_path: non_empty(row.dest_path),
+                added_at: row.added_at,
+                updated_at: row.updated_at,
+                ed2k_link: Some(row.ed2k_link),
+                pieces_done: Some(pieces_done),
+                pieces_total: Some(num_slices as u64),
+            }))
+        }
+        #[cfg(not(feature = "emule-compat"))]
+        {
+            let _ = &state;
+            Err(StatusCode::NOT_FOUND)
+        }
+    }
+}
+
+/// Map an empty path string (the "not yet known" sentinel in the DB) to `None`.
+fn non_empty(s: String) -> Option<String> {
+    (!s.is_empty()).then_some(s)
 }
 
 /// Start a download

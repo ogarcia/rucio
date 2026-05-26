@@ -158,6 +158,19 @@ pub async fn get_status(db: &Db, id: i64) -> Result<Option<String>> {
     Ok(row.map(|r| r.get("status")))
 }
 
+/// Fetch a single eMule download by ID, or `None` if it does not exist.
+pub async fn get(db: &Db, id: i64) -> Result<Option<EmuleDownloadRow>> {
+    let row = sqlx::query(
+        "SELECT id, ed2k_hash, name, total_size, ed2k_link, status,
+                bytes_done, dest_path, error_msg, added_at, updated_at
+         FROM emule_downloads WHERE id = ?1",
+    )
+    .bind(id)
+    .fetch_optional(db)
+    .await?;
+    Ok(row.as_ref().map(row_from_sqlx))
+}
+
 /// Update the status (and optional error message) of an eMule download.
 pub async fn set_status(db: &Db, id: i64, status: &str, error_msg: Option<&str>) -> Result<()> {
     sqlx::query(

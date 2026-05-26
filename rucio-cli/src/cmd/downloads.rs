@@ -267,6 +267,57 @@ pub async fn start(client: &ApiClient, target: &str, provider: Option<&str>) -> 
     Ok(())
 }
 
+/// Show full details for a single download identified by row number or hash.
+pub async fn info(client: &ApiClient, target: &str) -> Result<()> {
+    let dl = client.find_download_by_idx_or_hash(target).await?;
+    let Some(dl) = dl else {
+        bail!("No download found for '{target}'");
+    };
+    let d = client.get_download(dl.id).await?;
+
+    let total = d.size.unwrap_or(0);
+    let pct = if total > 0 {
+        (d.bytes_done as f64 / total as f64 * 100.0).round() as u64
+    } else {
+        0
+    };
+
+    println!(
+        "{}",
+        color::section(d.name.as_deref().unwrap_or("(unknown)"))
+    );
+    println!("  ID:         {} ({})", d.id, d.kind);
+    println!("  Hash:       {}", color::value(&d.root_hash));
+    println!("  State:      {}", color::download_state(&d.state));
+    println!(
+        "  Size:       {}",
+        d.size.map(human_size).unwrap_or_else(|| "-".to_string())
+    );
+    println!("  Downloaded: {} ({pct}%)", human_size(d.bytes_done));
+    println!("  Progress:   {}", color::progress_bar(d.bytes_done, total));
+    if let (Some(done), Some(total)) = (d.pieces_done, d.pieces_total) {
+        let label = if d.kind == "emule" {
+            "Slices"
+        } else {
+            "Chunks"
+        };
+        println!("  {label}:     {done} / {total}");
+    }
+    if let Some(path) = &d.dest_path {
+        println!("  Saved to:   {}", color::value(path));
+    }
+    if let Some(link) = &d.ed2k_link {
+        println!("  ed2k link:  {}", color::value(link));
+    }
+    println!("  Added:      {}", human_time_ago(d.added_at));
+    println!("  Updated:    {}", human_time_ago(d.updated_at));
+    if let Some(err) = &d.error {
+        println!("  Error:      {}", color::error(err));
+    }
+
+    Ok(())
+}
+
 pub async fn cancel(client: &ApiClient, hash: &str) -> Result<()> {
     let dl = client.find_download_by_idx_or_hash(hash).await?;
     match dl {
@@ -351,6 +402,24 @@ fn human_size(bytes: u64) -> String {
         format!("{val:.1} {unit}")
     } else {
         format!("{val:.0} {unit}")
+    }
+}
+
+/// Format a Unix timestamp (seconds) as a coarse "… ago" string.
+fn human_time_ago(unix_secs: i64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let secs = (now - unix_secs).max(0);
+    if secs < 60 {
+        format!("{secs}s ago")
+    } else if secs < 3600 {
+        format!("{}m {}s ago", secs / 60, secs % 60)
+    } else if secs < 86400 {
+        format!("{}h {}m ago", secs / 3600, (secs % 3600) / 60)
+    } else {
+        format!("{}d {}h ago", secs / 86400, (secs % 86400) / 3600)
     }
 }
 

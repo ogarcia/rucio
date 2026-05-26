@@ -70,6 +70,11 @@ pub enum Commands {
         #[arg(long, conflicts_with = "active")]
         done: bool,
     },
+    /// Show full details for a single download
+    Info {
+        /// Row number from `rucio downloads` (e.g. 1) or root hash (full or prefix)
+        target: String,
+    },
     /// Cancel an in-progress download
     Cancel {
         /// Row number from `rucio downloads` (e.g. 1) or root hash (full or prefix)
@@ -170,6 +175,7 @@ pub async fn run() -> Result<()> {
         Commands::Get { target, provider } => {
             cmd::downloads::start(&client, &target, provider.as_deref()).await
         }
+        Commands::Info { target } => cmd::downloads::info(&client, &target).await,
         Commands::Cancel { hash } => cmd::downloads::cancel(&client, &hash).await,
         Commands::Clean { hash } => cmd::downloads::clean(&client, hash.as_deref()).await,
         Commands::Search { keywords } => cmd::search::search(&client, keywords).await,

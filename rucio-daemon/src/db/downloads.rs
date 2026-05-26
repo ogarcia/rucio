@@ -185,6 +185,31 @@ pub async fn list(db: &Db) -> Result<Vec<DownloadRow>> {
         .collect())
 }
 
+/// Fetch a single download by ID, or `None` if it does not exist.
+pub async fn get(db: &Db, id: i64) -> Result<Option<DownloadRow>> {
+    let row = sqlx::query(
+        "SELECT id, root_hash, name, total_size, dest_path, status,
+                bytes_done, error_msg, added_at, updated_at
+         FROM downloads WHERE id = ?1",
+    )
+    .bind(id)
+    .fetch_optional(db)
+    .await?;
+
+    Ok(row.map(|r| DownloadRow {
+        id: r.get("id"),
+        root_hash: r.get("root_hash"),
+        name: r.get("name"),
+        total_size: r.get("total_size"),
+        dest_path: r.get("dest_path"),
+        status: r.get("status"),
+        bytes_done: r.get("bytes_done"),
+        error_msg: r.get("error_msg"),
+        added_at: r.get("added_at"),
+        updated_at: r.get("updated_at"),
+    }))
+}
+
 /// Mark a chunk as done and update `bytes_done` on the parent download.
 pub async fn chunk_done(db: &Db, download_id: i64, chunk_idx: u32, chunk_size: u32) -> Result<()> {
     let mut tx = db.begin().await?;

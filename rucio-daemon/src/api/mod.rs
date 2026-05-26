@@ -80,6 +80,7 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         shares::remove_share,
         shares::remove_shares_by_path,
         downloads::list_downloads,
+        downloads::get_download,
         downloads::start_download,
         downloads::start_ed2k_download,
         downloads::cancel_download,
@@ -111,6 +112,7 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         rucio_core::api::downloads::DownloadState,
         rucio_core::api::downloads::DownloadResponse,
         rucio_core::api::downloads::DownloadsResponse,
+        rucio_core::api::downloads::DownloadDetailResponse,
         rucio_core::api::searches::StartSearchRequest,
         rucio_core::api::searches::SearchStartedResponse,
         rucio_core::api::searches::SearchState,
@@ -342,7 +344,7 @@ fn v1_router() -> Router<AppState> {
         )
         .route(
             "/downloads/{id}",
-            routing::delete(downloads::cancel_download),
+            routing::get(downloads::get_download).delete(downloads::cancel_download),
         )
         .route(
             "/downloads/{id}/history",

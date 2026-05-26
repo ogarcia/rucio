@@ -14,7 +14,9 @@ pub type WsStream =
 
 use rucio_core::api::{
     config::ConfigResponse,
-    downloads::{DownloadResponse, DownloadsResponse, StartDownloadRequest},
+    downloads::{
+        DownloadDetailResponse, DownloadResponse, DownloadsResponse, StartDownloadRequest,
+    },
     emule::{EmuleBootstrapRequest, EmuleBootstrapResponse, EmuleStatusResponse},
     metrics::{HealthResponse, MetricsResponse},
     searches::{
@@ -196,6 +198,10 @@ impl ApiClient {
 
     pub async fn list_downloads(&self) -> Result<DownloadsResponse> {
         self.get("/api/v1/downloads").await
+    }
+
+    pub async fn get_download(&self, id: i64) -> Result<DownloadDetailResponse> {
+        self.get(&format!("/api/v1/downloads/{id}")).await
     }
 
     pub async fn start_download(&self, magnet: &str, providers: Vec<String>) -> Result<()> {

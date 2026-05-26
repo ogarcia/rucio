@@ -49,6 +49,18 @@ rucio downloads --watch
 The command refreshes every second and exits automatically once all active
 downloads reach a terminal state (completed, failed or cancelled).
 
+## Inspecting a single download
+
+```sh
+rucio info 1            # by row number from `rucio downloads`
+rucio info 7b4a         # hash prefix also works
+```
+
+This prints the full detail for one download: its hash, state, size and
+progress (both in bytes and in completed pieces — libp2p chunks for rucio
+downloads, 9.28 MB slices for eMule), the destination path, when it was added
+and last updated, and — for eMule downloads — the original `ed2k://` link.
+
 ## Download states
 
 | State | Meaning |
