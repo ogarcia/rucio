@@ -21,7 +21,7 @@ use tokio::io::AsyncSeekExt;
 use tokio::net::UdpSocket;
 use tokio::sync::broadcast;
 use tokio::task::JoinSet;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::config::Config;
 use crate::db::Db;
@@ -296,8 +296,8 @@ pub async fn run_ed2k_download(
                     let mut session = match Session::connect(peer, &opts, &mut on_connect).await {
                         Ok(s) => s,
                         Err(e) => {
-                            warn!(%peer, slice = slice_idx, error = ?e,
-                                      "Failed to connect to eMule peer");
+                            debug!(%peer, slice = slice_idx, error = %e,
+                                       "Failed to connect to eMule peer");
                             work.lock()
                                 .unwrap()
                                 .push_front((slice_idx, slice_start, slice_end));
@@ -404,8 +404,8 @@ pub async fn run_ed2k_download(
                             });
                         }
                         Err(e) => {
-                            warn!(%peer, slice = slice_idx, error = ?e,
-                                  "Slice download failed — returning to queue");
+                            debug!(%peer, slice = slice_idx, error = %e,
+                                   "Slice download failed — retrying");
                             work.lock()
                                 .unwrap()
                                 .push_front((slice_idx, slice_start, slice_end));

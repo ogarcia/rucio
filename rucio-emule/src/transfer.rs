@@ -294,9 +294,9 @@ impl Session {
             Ok(session) => Ok(session),
             Err(e) if e.is::<PeerClosedBeforeHello>() && opts.peer_hash.is_some() => {
                 // Plain connection was rejected — retry with RC4 obfuscation.
-                warn!(
+                debug!(
                     %peer,
-                    "Plain TCP rejected before HELLOANSWER — retrying with RC4 obfuscation"
+                    "Plain TCP rejected — retrying with RC4 obfuscation"
                 );
                 Self::connect_obfuscated(peer, opts, on_event).await
             }
