@@ -235,12 +235,15 @@ be sent outbound but responses are blocked by NAT/firewall.
 | Environment | Action |
 |---|---|
 | Container (Docker/Podman) | `-p 4672:4672` (maps both TCP and UDP) |
-| VPS / bare metal | `ufw allow 4672/udp` (or equivalent) |
-| Home router | Port-forward `4672/udp` → local machine IP |
-| WSL2 | Port-forward from Windows + Windows Firewall rule |
+| VPS / bare metal | `ufw allow 4672/udp && ufw allow 4662/tcp` |
+| Home router | Port-forward `4672/udp` and `4662/tcp` → local machine IP |
+| WSL2 | Port-forward from Windows + Windows Firewall rules |
 
-The default port `4672` can be changed via `RUCIOD_EMULE_UDP_PORT` or
-`emule.udp_port` in `config.toml`. Update the port mapping accordingly.
+Two ports must be open for full functionality:
 
-> **Container note:** `-p 40066:40066` without `/udp` in Podman/Docker maps
-> **both TCP and UDP** on that port. This is intentional and correct.
+| Port | Env var | Config key | Protocol | Effect if closed |
+|---|---|---|---|---|
+| `4672` | `RUCIOD_EMULE_UDP_PORT` | `emule.udp_port` | UDP | Kad2 bootstrap and source search fail |
+| `4662` | `RUCIOD_EMULE_TCP_PORT` | `emule.tcp_port` | TCP | Node runs as Low-ID (slower downloads) |
+
+> **Container note:** `-p 4672:4672/udp -p 4662:4662/tcp`

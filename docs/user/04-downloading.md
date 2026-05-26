@@ -176,7 +176,8 @@ other download.
 |---|---|---|
 | `storage.nodes_dat_path` | `<data-dir>/rucio/nodes.dat` | Path to the Kad2 bootstrap file |
 | `storage.emule_temp_dir` | `<cache-dir>/rucio/emule-tmp` | Temporary directory for eMule `.part` files |
-| `emule.udp_port` | `4672` | UDP port for the Kad2 socket |
+| `emule.udp_port` | `4672` | UDP port for Kad2 routing and source search |
+| `emule.tcp_port` | `4662` | TCP port for incoming peer connections (High-ID) |
 
 Environment variable overrides:
 
@@ -184,21 +185,29 @@ Environment variable overrides:
 RUCIOD_NODES_DAT=/path/to/nodes.dat ruciod
 RUCIOD_EMULE_TEMP_DIR=/mnt/fast/emule-tmp ruciod
 RUCIOD_EMULE_UDP_PORT=4672 ruciod
+RUCIOD_EMULE_TCP_PORT=4662 ruciod
 ```
 
 ### Network requirements — port mapping
 
-The Kad2 protocol requires that the UDP port `4672` (or the value of
-`emule.udp_port`) is **reachable from the internet**.  Without this,
-bootstrap packets can be sent outbound but responses never arrive.
+Two ports must be **reachable from the internet** for full eMule functionality:
+
+| Port | Protocol | Purpose |
+|---|---|---|
+| `4672` (`emule.udp_port`) | UDP | Kad2 routing, bootstrap, source search |
+| `4662` (`emule.tcp_port`) | TCP | Incoming peer connections (High-ID) |
+
+Without the UDP port, bootstrap packets can be sent but responses never arrive.
+Without the TCP port, the node runs as **Low-ID** — still functional, but with
+lower priority in upload queues and noticeably slower downloads.
 
 | Environment | What to do |
 |---|---|
-| Container (Docker/Podman) | `-p 4672:4672/udp` in `docker run` / `podman run` |
-| VPS / bare metal | Open `4672/udp` in the firewall (`ufw allow 4672/udp`) |
-| Home router | Port-forward `4672/udp` → local IP of the server |
+| Container (Docker/Podman) | `-p 4672:4672/udp -p 4662:4662/tcp` |
+| VPS / bare metal | `ufw allow 4672/udp && ufw allow 4662/tcp` |
+| Home router | Port-forward both ports → local IP of the server |
 | WSL2 | Port-forward from Windows + allow in Windows Firewall |
 
-The port can be changed via `RUCIOD_EMULE_UDP_PORT` or `emule.udp_port` in
-`config.toml`.  When changed, update the firewall / port mapping accordingly.
+Both ports can be changed via their respective env vars or `config.toml` keys.
+When changed, update the firewall / port mapping accordingly.
 

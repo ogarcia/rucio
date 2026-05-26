@@ -112,6 +112,7 @@ When `network.upnp = true` (the default), the daemon spawns a background
 2. Requests port mappings for:
    - TCP `network.listen_port` (libp2p)
    - UDP `emule.udp_port` (Kad2, only with the `emule-compat` feature)
+   - TCP `emule.tcp_port` (eMule peer connections, only with the `emule-compat` feature)
 3. Renews the leases periodically before they expire.
 4. Writes the discovered external IP address to `AppState.external_ip`, which
    is returned in `GET /api/v1/status` and displayed in `rucio status`.

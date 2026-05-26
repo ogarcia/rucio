@@ -175,15 +175,32 @@ port 4321).
 UDP port for the Kad2 socket used to communicate with the eMule network.
 Only meaningful when the daemon is built with the `emule-compat` feature.
 
-This port must be reachable from the internet for Kad2 bootstrap to work.
-When running in a container, map it with `-p 4672:4672` (Podman/Docker map
-both TCP and UDP when no protocol suffix is given).
+This port must be reachable from the internet for Kad2 bootstrap and source
+search to work.  When running in a container, map it with `-p 4672:4672/udp`.
 
 ```sh
 rucio config set emule.udp_port 4672
 ```
 
 **Default:** `4672` (eMule standard)
+
+---
+
+### `emule.tcp_port`
+
+TCP port on which ruciod listens for incoming eMule peer connections.
+Only meaningful when the daemon is built with the `emule-compat` feature.
+
+Having this port reachable from the internet makes the node **High-ID** on the
+eMule network, which gives it higher priority in upload queues and results in
+significantly faster downloads.  Without it the node runs as Low-ID.
+When running in a container, map it with `-p 4662:4662/tcp`.
+
+```sh
+rucio config set emule.tcp_port 4662
+```
+
+**Default:** `4662` (eMule standard)
 
 ---
 
@@ -259,6 +276,7 @@ the file value untouched.
 | `RUCIOD_NODES_DAT` | `storage.nodes_dat_path` | path |
 | `RUCIOD_EMULE_TEMP_DIR` | `storage.emule_temp_dir` | path |
 | `RUCIOD_EMULE_UDP_PORT` | `emule.udp_port` | integer 1–65535 |
+| `RUCIOD_EMULE_TCP_PORT` | `emule.tcp_port` | integer 1–65535 |
 
 ### Docker / container example
 
@@ -301,9 +319,10 @@ docker run \
   -e RUCIOD_DB_PATH=/data/rucio.db \
   -e RUCIOD_NODES_DAT=/data/nodes.dat \
   -e RUCIOD_EMULE_UDP_PORT=40066 \
+  -e RUCIOD_EMULE_TCP_PORT=40067 \
   -e RUCIOD_UPNP=false \
   -v rucio-data:/data \
-  -p 7070:7070 -p 4321:4321 -p 40066:40066 \
+  -p 7070:7070 -p 4321:4321 -p 40066:40066/udp -p 40067:40067/tcp \
   ghcr.io/yourorg/rucio
 ```
 
