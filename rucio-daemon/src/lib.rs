@@ -188,6 +188,16 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     let active_downloads: rucio_emule::transfer::ActiveDownloads =
         std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
 
+    // Upload concurrency limiter and inbound-connection counter — created up
+    // front so the status endpoint can read them whether or not the TCP
+    // listener binds successfully.
+    #[cfg(feature = "emule-compat")]
+    let emule_upload_slots = std::sync::Arc::new(tokio::sync::Semaphore::new(
+        config.emule.max_upload_slots.clamp(1, 50),
+    ));
+    #[cfg(feature = "emule-compat")]
+    let emule_inbound_connections = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+
     // --- Kad2 background task (emule-compat) --------------------------------
     #[cfg(feature = "emule-compat")]
     let kad_handle = if !config.emule.enabled {
@@ -233,12 +243,11 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
         match crate::emule::start_emule_tcp_listener(&config).await {
             Ok(listener) => {
                 let upload_ctx = std::sync::Arc::new(rucio_emule::transfer::UploadContext {
-                    slots: std::sync::Arc::new(tokio::sync::Semaphore::new(
-                        config.emule.max_upload_slots.clamp(1, 50),
-                    )),
+                    slots: emule_upload_slots.clone(),
                     temp_dir: config.emule.temp_dir.clone(),
                     tcp_port,
                     downloads: active_downloads.clone(),
+                    inbound_connections: emule_inbound_connections.clone(),
                 });
                 tokio::spawn(rucio_emule::transfer::serve_incoming(listener, upload_ctx));
             }
@@ -293,6 +302,12 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
         download_throttle: Arc::clone(&download_throttle),
         #[cfg(feature = "emule-compat")]
         kad_handle: kad_handle.clone(),
+        #[cfg(feature = "emule-compat")]
+        emule_active_downloads: active_downloads.clone(),
+        #[cfg(feature = "emule-compat")]
+        emule_upload_slots: emule_upload_slots.clone(),
+        #[cfg(feature = "emule-compat")]
+        emule_inbound_connections: emule_inbound_connections.clone(),
         external_ip,
     };
 

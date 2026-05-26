@@ -281,6 +281,16 @@ pub struct AppState {
     /// Handle to the Kad2 background task (only present with `emule-compat` feature).
     #[cfg(feature = "emule-compat")]
     pub kad_handle: rucio_emule::kad::task::KadHandle,
+    /// Live whitelist of files currently being downloaded via eMule.
+    #[cfg(feature = "emule-compat")]
+    pub emule_active_downloads: rucio_emule::transfer::ActiveDownloads,
+    /// Semaphore bounding eMule upload concurrency.  Held by `UploadContext`
+    /// too; cloned here so the status endpoint can read `available_permits()`.
+    #[cfg(feature = "emule-compat")]
+    pub emule_upload_slots: Arc<tokio::sync::Semaphore>,
+    /// Counter of inbound eMule TCP connections accepted since startup.
+    #[cfg(feature = "emule-compat")]
+    pub emule_inbound_connections: Arc<std::sync::atomic::AtomicU64>,
     /// External IP address as reported by UPnP gateway.  `None` when no gateway found.
     pub external_ip: crate::upnp::ExternalIp,
 }

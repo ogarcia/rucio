@@ -78,6 +78,14 @@ async fn test_state() -> (
                 rucio_emule::kad::task::KadTaskConfig::default(),
             )
         },
+        #[cfg(feature = "emule-compat")]
+        emule_active_downloads: Arc::new(
+            tokio::sync::RwLock::new(std::collections::HashMap::new()),
+        ),
+        #[cfg(feature = "emule-compat")]
+        emule_upload_slots: Arc::new(tokio::sync::Semaphore::new(4)),
+        #[cfg(feature = "emule-compat")]
+        emule_inbound_connections: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         external_ip: Arc::new(tokio::sync::RwLock::new(None)),
     };
     (state, cmd_rx, download_rx, dir)

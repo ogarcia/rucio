@@ -5,7 +5,9 @@
 use axum::Json;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
-use rucio_core::api::emule::{EmuleBootstrapRequest, EmuleBootstrapResponse, EmuleStatusResponse};
+use rucio_core::api::emule::{
+    EmuleBootstrapRequest, EmuleBootstrapResponse, EmuleConnectivity, EmuleStatusResponse,
+};
 use serde::{Deserialize, Serialize};
 use utoipa::IntoParams;
 
@@ -15,8 +17,13 @@ use crate::api::AppState;
 
 /// eMule compatibility status
 ///
-/// Returns whether the `emule-compat` feature is compiled in, the configured
-/// `nodes.dat` path, and how many Kad2 contacts it contains.
+/// Returns the full runtime state of the eMule subsystem: whether the
+/// `emule-compat` feature is compiled in and enabled at runtime, the
+/// configured `nodes.dat` path and contact count, the Kad2 routing table size,
+/// the eMule TCP / Kad UDP ports, the external IP (UPnP or configured), the
+/// inferred TCP connectivity class (`open` / `firewalled` / `unknown`) with a
+/// short explanation, the number of active downloads, upload slot usage, and
+/// the count of inbound TCP connections accepted since startup.
 #[utoipa::path(
     get,
     path = "/api/v1/emule/status",
@@ -36,6 +43,16 @@ pub async fn get_emule_status(State(state): State<AppState>) -> Json<EmuleStatus
                 contacts: 0,
                 connected_peers: 0,
                 is_connected: false,
+                external_ip: None,
+                external_ip_source: None,
+                tcp_port: None,
+                udp_port: None,
+                connectivity: EmuleConnectivity::Unknown,
+                connectivity_reason: None,
+                active_downloads: 0,
+                upload_slots_total: 0,
+                upload_slots_in_use: 0,
+                inbound_connections: 0,
             }
         } else {
             let effective_path = crate::emule::effective_nodes_dat_path(&state.config);
@@ -52,6 +69,31 @@ pub async fn get_emule_status(State(state): State<AppState>) -> Json<EmuleStatus
 
             let connected_peers = state.kad_handle.contact_count().await;
 
+            let upnp_external_ip = state.external_ip.read().await.clone();
+            let configured_external_ip = state.config.emule.external_ip.map(|ip| ip.to_string());
+
+            let (external_ip, external_ip_source) =
+                match (&upnp_external_ip, &configured_external_ip) {
+                    (Some(ip), _) => (Some(ip.clone()), Some("upnp".to_string())),
+                    (None, Some(ip)) => (Some(ip.clone()), Some("config".to_string())),
+                    (None, None) => (None, None),
+                };
+
+            let inbound = state
+                .emule_inbound_connections
+                .load(std::sync::atomic::Ordering::Relaxed);
+
+            let upload_slots_total = state.config.emule.max_upload_slots.clamp(1, 50);
+            let upload_slots_in_use =
+                upload_slots_total.saturating_sub(state.emule_upload_slots.available_permits());
+
+            let (connectivity, connectivity_reason) = classify_connectivity(
+                inbound,
+                state.config.network.upnp,
+                upnp_external_ip.as_deref(),
+                configured_external_ip.as_deref(),
+            );
+
             EmuleStatusResponse {
                 feature_enabled: true,
                 runtime_enabled: true,
@@ -60,6 +102,16 @@ pub async fn get_emule_status(State(state): State<AppState>) -> Json<EmuleStatus
                 contacts,
                 connected_peers,
                 is_connected: connected_peers >= 4,
+                external_ip,
+                external_ip_source,
+                tcp_port: Some(state.config.emule.tcp_port),
+                udp_port: Some(state.config.emule.udp_port),
+                connectivity,
+                connectivity_reason: Some(connectivity_reason),
+                active_downloads: state.emule_active_downloads.read().await.len(),
+                upload_slots_total,
+                upload_slots_in_use,
+                inbound_connections: inbound,
             }
         }
     };
@@ -75,10 +127,59 @@ pub async fn get_emule_status(State(state): State<AppState>) -> Json<EmuleStatus
             contacts: 0,
             connected_peers: 0,
             is_connected: false,
+            external_ip: None,
+            external_ip_source: None,
+            tcp_port: None,
+            udp_port: None,
+            connectivity: EmuleConnectivity::Unknown,
+            connectivity_reason: None,
+            active_downloads: 0,
+            upload_slots_total: 0,
+            upload_slots_in_use: 0,
+            inbound_connections: 0,
         }
     };
 
     Json(resp)
+}
+
+/// Infer the eMule TCP port's connectivity class from the data the daemon has
+/// at hand.  Strongest evidence first: an actual inbound connection proves the
+/// port is open; UPnP success is a strong proxy; a manually configured external
+/// IP is the user's promise; everything else is uncertain.
+#[cfg(feature = "emule-compat")]
+fn classify_connectivity(
+    inbound: u64,
+    upnp_enabled: bool,
+    upnp_external_ip: Option<&str>,
+    configured_external_ip: Option<&str>,
+) -> (EmuleConnectivity, String) {
+    if inbound > 0 {
+        let s = if inbound == 1 { "" } else { "s" };
+        return (
+            EmuleConnectivity::Open,
+            format!("{inbound} inbound connection{s} served"),
+        );
+    }
+    if upnp_enabled {
+        if upnp_external_ip.is_some() {
+            return (EmuleConnectivity::Open, "UPnP mapped TCP port".to_string());
+        }
+        return (
+            EmuleConnectivity::Firewalled,
+            "UPnP enabled but no mapping established".to_string(),
+        );
+    }
+    if configured_external_ip.is_some() {
+        return (
+            EmuleConnectivity::Open,
+            "external IP configured by user".to_string(),
+        );
+    }
+    (
+        EmuleConnectivity::Unknown,
+        "UPnP disabled and no external IP configured".to_string(),
+    )
 }
 
 // ── POST /api/v1/emule/bootstrap ─────────────────────────────────────────────

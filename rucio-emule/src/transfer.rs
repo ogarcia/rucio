@@ -63,6 +63,7 @@ use std::io::{self, Read as _};
 use std::net::{SocketAddr, SocketAddrV4};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -786,6 +787,9 @@ pub struct UploadContext {
     pub tcp_port: u16,
     /// Files currently being downloaded — the upload whitelist.
     pub downloads: ActiveDownloads,
+    /// Counter of inbound TCP connections accepted since startup.
+    /// Used by the status endpoint as direct evidence of reachability.
+    pub inbound_connections: Arc<AtomicU64>,
 }
 
 // ── Incoming TCP server ───────────────────────────────────────────────────────
@@ -801,6 +805,7 @@ pub async fn serve_incoming(listener: TcpListener, ctx: Arc<UploadContext>) {
     loop {
         match listener.accept().await {
             Ok((stream, peer)) => {
+                ctx.inbound_connections.fetch_add(1, Ordering::Relaxed);
                 let ctx = Arc::clone(&ctx);
                 tokio::spawn(handle_incoming(stream, peer, ctx));
             }

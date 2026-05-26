@@ -3,6 +3,7 @@
 use anyhow::Result;
 use clap::Subcommand;
 use owo_colors::OwoColorize;
+use rucio_core::api::emule::EmuleConnectivity;
 
 use crate::client::ApiClient;
 
@@ -58,7 +59,36 @@ async fn status(client: &ApiClient) -> Result<()> {
         return Ok(());
     }
 
-    // nodes.dat
+    // ── Identity: external IP and ports ──────────────────────────────────────
+    match (&s.external_ip, s.external_ip_source.as_deref()) {
+        (Some(ip), Some("upnp")) => {
+            println!("External IP:         {ip} ({})", "via UPnP".dimmed())
+        }
+        (Some(ip), Some("config")) => {
+            println!("External IP:         {ip} ({})", "configured".dimmed())
+        }
+        (Some(ip), _) => println!("External IP:         {ip}"),
+        (None, _) => println!("External IP:         {}", "(unknown)".yellow()),
+    }
+    if let Some(p) = s.tcp_port {
+        println!("eMule TCP port:      {p}");
+    }
+    if let Some(p) = s.udp_port {
+        println!("Kad UDP port:        {p}");
+    }
+
+    // ── Connectivity ─────────────────────────────────────────────────────────
+    let conn_label = match s.connectivity {
+        EmuleConnectivity::Open => "open".green().to_string(),
+        EmuleConnectivity::Firewalled => "firewalled".red().to_string(),
+        EmuleConnectivity::Unknown => "unknown".yellow().to_string(),
+    };
+    match s.connectivity_reason.as_deref() {
+        Some(reason) => println!("Connectivity:        {conn_label} ({})", reason.dimmed()),
+        None => println!("Connectivity:        {conn_label}"),
+    }
+
+    // ── nodes.dat ────────────────────────────────────────────────────────────
     match &s.nodes_dat_path {
         None => println!("nodes.dat path:      {}", "(unknown)".yellow()),
         Some(p) => {
@@ -78,30 +108,36 @@ async fn status(client: &ApiClient) -> Result<()> {
         }
     }
 
-    // connectivity
-    let peers_str = if s.connected_peers == 1 {
-        "1 peer".to_string()
+    // ── Kad routing table state ──────────────────────────────────────────────
+    let contacts_str = if s.connected_peers == 1 {
+        "1 contact".to_string()
     } else {
-        format!("{} peers", s.connected_peers)
+        format!("{} contacts", s.connected_peers)
     };
     if s.is_connected {
         println!(
-            "Network:             {} ({})",
-            "connected".green(),
-            peers_str
+            "Kad routing table:   {contacts_str} ({})",
+            "connected".green()
         );
     } else if s.connected_peers > 0 {
         println!(
-            "Network:             {} ({}) — connecting…",
-            "degraded".yellow(),
-            peers_str
+            "Kad routing table:   {contacts_str} ({})",
+            "connecting…".yellow()
         );
     } else {
         println!(
-            "Network:             {} — no peers yet, wait a moment or check your bootstrap peers",
-            "offline".red()
+            "Kad routing table:   {} — no contacts yet, wait a moment or check your bootstrap peers",
+            "empty".red()
         );
     }
+
+    // ── Activity ─────────────────────────────────────────────────────────────
+    println!("Active downloads:    {}", s.active_downloads);
+    println!(
+        "Upload slots:        {} / {} in use",
+        s.upload_slots_in_use, s.upload_slots_total
+    );
+    println!("Inbound connections: {}", s.inbound_connections);
 
     Ok(())
 }
