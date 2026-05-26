@@ -793,7 +793,7 @@ pub fn encode_bootstrap_req() -> Vec<u8> {
     vec![KAD2_PROTO, Opcode::BootstrapReq as u8]
 }
 
-/// Parse a `KADEMLIA2_SEARCH_RES` (0x2b) payload as a **source** search result.
+/// Parse a `KADEMLIA2_SEARCH_RES` (0x3b) payload as a **source** search result.
 ///
 /// Wire format (from aMule `Indexed.cpp SendValidSourceResult`):
 ///   sender_id(16) + target(16) + count(2) + [count × (answer_id(16) + tag_list)]
@@ -820,7 +820,7 @@ pub fn parse_search_res_sources(payload: &[u8]) -> io::Result<SearchResPayload> 
     })
 }
 
-/// Parse a `KADEMLIA2_SEARCH_RES` (0x2b) payload as a **keyword** search result.
+/// Parse a `KADEMLIA2_SEARCH_RES` (0x3b) payload as a **keyword** search result.
 ///
 /// Wire format (from aMule `Indexed.cpp SendValidKeywordResult`):
 ///   sender_id(16) + target(16) + count(2) + [count × (answer_id(16) + tag_list)]
@@ -849,8 +849,8 @@ pub fn parse_search_res_keywords(payload: &[u8]) -> io::Result<KeywordResPayload
 
 /// Build a `KADEMLIA2_SEARCH_KEY_REQ` (opcode 0x33) for a keyword search.
 ///
-/// `target` is `MD4(keyword_utf8)` interpreted as a KadId (bytes as-is, BE on wire).
-/// `start_pos = 0` — no pagination.
+/// `target` must be the output of [`keyword_target`] (4-byte-chunk-reversed MD4).
+/// `start_pos = 0` — no pagination, no search term filter.
 pub fn encode_search_key_req(target: &KadId) -> Vec<u8> {
     let mut buf = vec![KAD2_PROTO, Opcode::SearchKeyReq as u8];
     target.write_to(&mut buf).unwrap();
@@ -859,15 +859,31 @@ pub fn encode_search_key_req(target: &KadId) -> Vec<u8> {
     buf
 }
 
-/// Compute the Kad target for a keyword search: `MD4(keyword_utf8)`.
+/// Convert a raw 16-byte MD4 hash to a [`KadId`] in eMule's CUInt128 wire format.
 ///
-/// Per eMule `KadGetKeywordHash`: bytes stored big-endian in `CUInt128`,
-/// which means they appear on the wire in the same byte order as the MD4 output.
+/// eMule/aMule store CUInt128 on the wire as four consecutive LE uint32s in
+/// big-endian word order (`SetValueBE` + `WriteUInt32`), so each 4-byte chunk
+/// of the MD4 output is byte-reversed on the wire.  All hash-derived KadIds
+/// (keyword targets, file source targets) must use this encoding to land in the
+/// correct part of the Kad keyspace.
+pub fn kad_id_from_hash(hash: &[u8; 16]) -> KadId {
+    let mut bytes = [0u8; 16];
+    for i in 0..4 {
+        bytes[i * 4] = hash[i * 4 + 3];
+        bytes[i * 4 + 1] = hash[i * 4 + 2];
+        bytes[i * 4 + 2] = hash[i * 4 + 1];
+        bytes[i * 4 + 3] = hash[i * 4];
+    }
+    KadId::from_bytes(bytes)
+}
+
+/// Compute the Kad target for a keyword search: `MD4(keyword_utf8)`.
 pub fn keyword_target(keyword: &str) -> KadId {
     use md4::{Digest, Md4};
     let mut h = Md4::new();
     h.update(keyword.as_bytes());
-    KadId::from_bytes(h.finalize().into())
+    let hash: [u8; 16] = h.finalize().into();
+    kad_id_from_hash(&hash)
 }
 
 /// Build a `KADEMLIA2_HELLO_REQ` advertising our node details, including our UDPKey.

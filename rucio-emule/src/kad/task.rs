@@ -27,6 +27,7 @@
 use super::packet::{
     self, Contact, KadId, KadPacket, decode, encode_bootstrap_req, encode_bootstrap_res,
     encode_hello_req, encode_hello_res, encode_hello_res_ack, encode_pong, encode_res,
+    kad_id_from_hash,
 };
 use super::routing::RoutingTable;
 use super::search::{ActiveSearch, ObfuscMode, OutPacket};
@@ -237,8 +238,7 @@ async fn run_task(
                                 %src,
                                 "Kad2 raw pkt during search"
                             );
-                            // Dump full hex when we get a SearchRes (0x2b) for debugging.
-                            if recv_buf[0] == 0xe4 && recv_buf[1] == 0x2b {
+                            if recv_buf[0] == 0xe4 && recv_buf[1] == 0x3b {
                                 debug!(hex = %hex::encode(&recv_buf[..n]), %src, "Kad2 SearchRes raw hex");
                             }
                         }
@@ -302,7 +302,7 @@ async fn run_task(
                             let _ = reply.send(vec![]);
                             continue;
                         }
-                        let target = KadId::from_bytes(*hash.as_bytes());
+                        let target = kad_id_from_hash(hash.as_bytes());
                         let deadline = Instant::now() + cfg.search_timeout;
                         let initial_candidates: Vec<_> = {
                             let rt = routing_table.read().await;
