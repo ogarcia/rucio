@@ -117,6 +117,7 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         rucio_core::api::config::ApiConfig,
         rucio_core::api::config::NetworkConfig,
         rucio_core::api::config::StorageConfig,
+        rucio_core::api::config::EmuleConfig,
         rucio_core::protocol::node::NodeClass,
         rucio_core::api::metrics::MetricsResponse,
         rucio_core::api::metrics::SessionMetrics,

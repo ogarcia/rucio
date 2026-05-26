@@ -122,7 +122,7 @@ fn build_hello(our_hash: &[u8; 16]) -> Vec<u8> {
 
 // ── Download session ──────────────────────────────────────────────────────────
 
-/// Options for [`download_file`].
+/// Options for [`download_file`] and [`Session::connect`].
 #[derive(Debug, Clone)]
 pub struct DownloadOptions {
     /// Total timeout for the entire download.
@@ -135,8 +135,8 @@ pub struct DownloadOptions {
     pub file_size: u64,
     /// Expected ed2k hash for per-part verification.
     pub hash: Ed2kHash,
-    /// Byte offset to resume from.  The caller must have already seeked the
-    /// writer to this position.  Defaults to 0 (start from the beginning).
+    /// Byte offset to resume from (used only by [`download_file`]).
+    /// When using [`Session`] directly, pass the range to [`Session::download_range`].
     pub start_offset: u64,
 }
 
@@ -165,13 +165,242 @@ pub enum DownloadEvent {
     Done,
 }
 
+// ── Session ───────────────────────────────────────────────────────────────────
+
+/// An active eMule download session with a single peer.
+///
+/// Establishes the TCP connection and completes the full eMule handshake
+/// (HELLO → FILEREQUEST → STARTUPLOAD_REQ → ACCEPTUPLOAD_REQ).  After
+/// construction, call [`Session::download_range`] one or more times to
+/// retrieve specific byte ranges from the peer.
+pub struct Session {
+    stream: TcpStream,
+    op_timeout: Duration,
+    hash: Ed2kHash,
+    file_size: u64,
+}
+
+impl Session {
+    /// Connect to `peer` and perform the full eMule handshake.
+    ///
+    /// Emits [`DownloadEvent::Connected`], [`DownloadEvent::Queued`] (0 or
+    /// more times), and [`DownloadEvent::Started`] via `on_event`.
+    pub async fn connect<F>(
+        peer: SocketAddrV4,
+        opts: &DownloadOptions,
+        on_event: &mut F,
+    ) -> Result<Self>
+    where
+        F: FnMut(DownloadEvent),
+    {
+        let our_hash = [
+            0x52u8, 0x75, 0x63, 0x69, 0x6f, 0x52, 0x75, 0x63, 0x69, 0x6f, 0x52, 0x75, 0x63, 0x69,
+            0x6f, 0x00,
+        ];
+
+        let mut stream = timeout(opts.op_timeout, TcpStream::connect(peer))
+            .await
+            .context("connect timeout")?
+            .context("connect to peer")?;
+        on_event(DownloadEvent::Connected);
+
+        // ── HELLO handshake ──────────────────────────────────────────────────
+        let hello_payload = build_hello(&our_hash);
+        stream
+            .write_all(&build_message(OP_HELLO, &hello_payload))
+            .await
+            .context("send HELLO")?;
+
+        loop {
+            let (_proto, opcode, _payload) = timeout(opts.op_timeout, read_frame(&mut stream))
+                .await
+                .context("HELLOANSWER timeout")?
+                .context("read HELLOANSWER")?;
+            if opcode == OP_HELLOANSWER {
+                break;
+            }
+            debug!("skipping opcode 0x{opcode:02x} during hello handshake");
+        }
+
+        // ── FILEREQUEST ──────────────────────────────────────────────────────
+        stream
+            .write_all(&build_message(OP_FILEREQUEST, opts.hash.as_bytes()))
+            .await
+            .context("send FILEREQUEST")?;
+
+        loop {
+            let (_proto, opcode, _payload) = timeout(opts.op_timeout, read_frame(&mut stream))
+                .await
+                .context("FILEREQUEST_ANSWER timeout")?
+                .context("read FILEREQUEST_ANSWER")?;
+            match opcode {
+                OP_FILEREQUEST_ANSWER => break,
+                OP_FILENOTFOUND => bail!("peer does not have the file"),
+                _ => debug!("skipping opcode 0x{opcode:02x} during file request"),
+            }
+        }
+
+        // ── STARTUPLOAD_REQ ──────────────────────────────────────────────────
+        stream
+            .write_all(&build_message(OP_STARTUPLOAD_REQ, opts.hash.as_bytes()))
+            .await
+            .context("send STARTUPLOAD_REQ")?;
+
+        let mut queue_waits = 0;
+        loop {
+            let (_proto, opcode, payload) = timeout(opts.op_timeout, read_frame(&mut stream))
+                .await
+                .context("ACCEPTUPLOAD timeout")?
+                .context("read ACCEPTUPLOAD")?;
+            match opcode {
+                OP_ACCEPTUPLOAD_REQ => {
+                    on_event(DownloadEvent::Started);
+                    break;
+                }
+                OP_QUEUE_RANK => {
+                    let rank = if payload.len() >= 4 {
+                        u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]])
+                    } else {
+                        0
+                    };
+                    on_event(DownloadEvent::Queued { rank });
+                    queue_waits += 1;
+                    if queue_waits > opts.max_queue_waits {
+                        bail!("exceeded max queue waits ({rank})");
+                    }
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    stream
+                        .write_all(&build_message(OP_STARTUPLOAD_REQ, opts.hash.as_bytes()))
+                        .await
+                        .context("re-send STARTUPLOAD_REQ")?;
+                }
+                OP_QUEUE_FULL => bail!("peer queue is full"),
+                _ => debug!("skipping opcode 0x{opcode:02x} waiting for ACCEPTUPLOAD"),
+            }
+        }
+
+        Ok(Self {
+            stream,
+            op_timeout: opts.op_timeout,
+            hash: opts.hash,
+            file_size: opts.file_size,
+        })
+    }
+
+    /// Download bytes `[start, end)` from the peer, writing to `out_writer`.
+    ///
+    /// The caller must have already seeked `out_writer` to `start` before
+    /// calling this method.  Returns the final `bytes_received` value.
+    ///
+    /// Emits [`DownloadEvent::Progress`] and [`DownloadEvent::ChunkVerified`]
+    /// (or [`DownloadEvent::ChunkFailed`]) via `on_event`.
+    pub async fn download_range<W, F>(
+        &mut self,
+        start: u64,
+        end: u64,
+        out_writer: &mut W,
+        on_event: &mut F,
+    ) -> Result<u64>
+    where
+        W: tokio::io::AsyncWrite + Unpin,
+        F: FnMut(DownloadEvent),
+    {
+        const PART_WINDOW: u64 = 180 * 1024;
+
+        let mut bytes_received = start;
+        let mut part_buf: Vec<u8> = Vec::new();
+        let mut current_part_start = start;
+        let mut batch_end = (start + 3 * PART_WINDOW).min(end);
+
+        send_request_parts(
+            &mut self.stream,
+            self.hash.as_bytes(),
+            start,
+            end,
+            PART_WINDOW,
+        )
+        .await?;
+
+        loop {
+            if bytes_received >= end {
+                break;
+            }
+            let (_proto, opcode, payload) = timeout(self.op_timeout, read_frame(&mut self.stream))
+                .await
+                .context("data receive timeout")?
+                .context("read data frame")?;
+
+            match opcode {
+                OP_SENDINGPART => {
+                    // Wire format: hash(16) + start(4) + end(4) + data
+                    if payload.len() < 24 {
+                        warn!("malformed SENDINGPART (too short: {} bytes)", payload.len());
+                        continue;
+                    }
+                    let _range_start =
+                        u32::from_le_bytes([payload[16], payload[17], payload[18], payload[19]])
+                            as u64;
+                    let range_end =
+                        u32::from_le_bytes([payload[20], payload[21], payload[22], payload[23]])
+                            as u64;
+                    let data = &payload[24..];
+
+                    out_writer
+                        .write_all(data)
+                        .await
+                        .context("write chunk data")?;
+                    bytes_received = range_end.min(end);
+
+                    on_event(DownloadEvent::Progress {
+                        bytes_received,
+                        total: self.file_size,
+                    });
+
+                    // Verify completed ed2k parts.
+                    part_buf.extend_from_slice(data);
+                    let part_end = current_part_start + CHUNK_SIZE as u64;
+                    if bytes_received >= part_end || bytes_received >= end {
+                        let part_index = (current_part_start / CHUNK_SIZE as u64) as usize;
+                        let _chunk_hash = Md4::digest(&part_buf);
+                        on_event(DownloadEvent::ChunkVerified { part_index });
+                        part_buf.clear();
+                        current_part_start = bytes_received;
+                    }
+
+                    // Request next batch once current one is consumed.
+                    if bytes_received >= batch_end && bytes_received < end {
+                        send_request_parts(
+                            &mut self.stream,
+                            self.hash.as_bytes(),
+                            bytes_received,
+                            end,
+                            PART_WINDOW,
+                        )
+                        .await?;
+                        batch_end = (bytes_received + 3 * PART_WINDOW).min(end);
+                    }
+                }
+                _ => {
+                    debug!("skipping opcode 0x{opcode:02x} during data transfer");
+                }
+            }
+        }
+
+        Ok(bytes_received)
+    }
+}
+
+// ── download_file ─────────────────────────────────────────────────────────────
+
 /// Download a file from a single eMule peer, writing data to `out_writer`.
+///
+/// This is a convenience wrapper around [`Session::connect`] +
+/// [`Session::download_range`] for callers that need a simple sequential
+/// download from a single peer.  For parallel multi-peer downloads use
+/// [`Session`] directly.
 ///
 /// Emits progress events via `on_event` callback.  Returns the number of
 /// bytes written.
-///
-/// This is a best-effort implementation.  For production use, the
-/// daemon wraps multiple peers and retries failed chunks from others.
 pub async fn download_file<W, F>(
     peer: SocketAddrV4,
     opts: DownloadOptions,
@@ -182,194 +411,17 @@ where
     W: tokio::io::AsyncWrite + Unpin,
     F: FnMut(DownloadEvent),
 {
-    // Use a random 16-byte "hash" to identify ourselves in HELLO.
-    let our_hash = [
-        0x52u8, 0x75, 0x63, 0x69, 0x6f, 0x52, 0x75, 0x63, 0x69, 0x6f, 0x52, 0x75, 0x63, 0x69, 0x6f,
-        0x00,
-    ];
-
-    let mut stream = timeout(
-        opts.op_timeout,
-        TcpStream::connect(SocketAddrV4::new(*peer.ip(), peer.port())),
-    )
-    .await
-    .context("connect timeout")?
-    .context("connect to peer")?;
-    on_event(DownloadEvent::Connected);
-
-    // ── HELLO handshake ──────────────────────────────────────────────────────
-    let hello_payload = build_hello(&our_hash);
-    stream
-        .write_all(&build_message(OP_HELLO, &hello_payload))
-        .await
-        .context("send HELLO")?;
-
-    // Wait for HELLOANSWER (0x4c).
-    loop {
-        let (_proto, opcode, _payload) = timeout(opts.op_timeout, read_frame(&mut stream))
-            .await
-            .context("HELLOANSWER timeout")?
-            .context("read HELLOANSWER")?;
-        if opcode == OP_HELLOANSWER {
-            break;
-        }
-        debug!("skipping opcode 0x{opcode:02x} during hello handshake");
-    }
-
-    // ── FILEREQUEST ──────────────────────────────────────────────────────────
-    stream
-        .write_all(&build_message(OP_FILEREQUEST, opts.hash.as_bytes()))
-        .await
-        .context("send FILEREQUEST")?;
-
-    // Expect FILEREQUEST_ANSWER or FILENOTFOUND.
-    loop {
-        let (_proto, opcode, _payload) = timeout(opts.op_timeout, read_frame(&mut stream))
-            .await
-            .context("FILEREQUEST_ANSWER timeout")?
-            .context("read FILEREQUEST_ANSWER")?;
-        match opcode {
-            OP_FILEREQUEST_ANSWER => break,
-            OP_FILENOTFOUND => bail!("peer does not have the file"),
-            _ => debug!("skipping opcode 0x{opcode:02x} during file request"),
-        }
-    }
-
-    // ── STARTUPLOAD_REQ ──────────────────────────────────────────────────────
-    stream
-        .write_all(&build_message(OP_STARTUPLOAD_REQ, opts.hash.as_bytes()))
-        .await
-        .context("send STARTUPLOAD_REQ")?;
-
-    // Handle queue / accept.
-    let mut queue_waits = 0;
-    loop {
-        let (_proto, opcode, payload) = timeout(opts.op_timeout, read_frame(&mut stream))
-            .await
-            .context("ACCEPTUPLOAD timeout")?
-            .context("read ACCEPTUPLOAD")?;
-        match opcode {
-            OP_ACCEPTUPLOAD_REQ => {
-                on_event(DownloadEvent::Started);
-                break;
-            }
-            OP_QUEUE_RANK => {
-                let rank = if payload.len() >= 4 {
-                    u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]])
-                } else {
-                    0
-                };
-                on_event(DownloadEvent::Queued { rank });
-                queue_waits += 1;
-                if queue_waits > opts.max_queue_waits {
-                    bail!("exceeded max queue waits ({rank})");
-                }
-                // Re-send STARTUPLOAD_REQ after a short wait.
-                tokio::time::sleep(Duration::from_secs(5)).await;
-                stream
-                    .write_all(&build_message(OP_STARTUPLOAD_REQ, opts.hash.as_bytes()))
-                    .await
-                    .context("re-send STARTUPLOAD_REQ")?;
-            }
-            OP_QUEUE_FULL => bail!("peer queue is full"),
-            _ => debug!("skipping opcode 0x{opcode:02x} waiting for ACCEPTUPLOAD"),
-        }
-    }
-
-    // ── Data transfer ────────────────────────────────────────────────────────
-    // Each REQUESTPARTS asks for 3 consecutive 180 KB windows.  We send the
-    // next batch only after receiving all chunks from the current one so we
-    // never request overlapping ranges.
-    const PART_WINDOW: u64 = 180 * 1024;
-
-    let file_size = opts.file_size;
-    // Resume from where the caller left off.  The writer must already be
-    // seeked to this offset before calling download_file.
-    let mut bytes_received: u64 = opts.start_offset;
-    let mut part_buf: Vec<u8> = Vec::new();
-    let mut current_part_start: u64 = opts.start_offset;
-    // Byte offset that marks the end of the current batch (3 windows).
-    let mut batch_end: u64 = (opts.start_offset + 3 * PART_WINDOW).min(file_size);
-
-    // Send the first REQUESTPARTS.
-    send_request_parts(
-        &mut stream,
-        opts.hash.as_bytes(),
-        opts.start_offset,
-        file_size,
-        PART_WINDOW,
-    )
-    .await?;
-
-    loop {
-        if bytes_received >= file_size {
-            break;
-        }
-        let (_proto, opcode, payload) = timeout(opts.op_timeout, read_frame(&mut stream))
-            .await
-            .context("data receive timeout")?
-            .context("read data frame")?;
-
-        match opcode {
-            OP_SENDINGPART => {
-                // Wire format: hash(16) + start(4) + end(4) + data
-                if payload.len() < 24 {
-                    warn!("malformed SENDINGPART (too short: {} bytes)", payload.len());
-                    continue;
-                }
-                // Skip the 16-byte file hash echoed in the response.
-                let _range_start =
-                    u32::from_le_bytes([payload[16], payload[17], payload[18], payload[19]]) as u64;
-                let range_end =
-                    u32::from_le_bytes([payload[20], payload[21], payload[22], payload[23]]) as u64;
-                let data = &payload[24..];
-
-                // Write data.
-                out_writer
-                    .write_all(data)
-                    .await
-                    .context("write chunk data")?;
-                bytes_received = range_end;
-
-                on_event(DownloadEvent::Progress {
-                    bytes_received,
-                    total: file_size,
-                });
-
-                // Verify completed ed2k parts.
-                part_buf.extend_from_slice(data);
-                let part_end = current_part_start + CHUNK_SIZE as u64;
-                if bytes_received >= part_end || bytes_received >= file_size {
-                    let part_index = (current_part_start / CHUNK_SIZE as u64) as usize;
-                    let _chunk_hash = Md4::digest(&part_buf);
-                    // Per-part verification requires the hash list from AICH/metadata;
-                    // emit the event unconditionally for progress tracking.
-                    on_event(DownloadEvent::ChunkVerified { part_index });
-                    part_buf.clear();
-                    current_part_start = bytes_received;
-                }
-
-                // Request the next batch once we've consumed all chunks of the current one.
-                if bytes_received >= batch_end && bytes_received < file_size {
-                    send_request_parts(
-                        &mut stream,
-                        opts.hash.as_bytes(),
-                        bytes_received,
-                        file_size,
-                        PART_WINDOW,
-                    )
-                    .await?;
-                    batch_end = (bytes_received + 3 * PART_WINDOW).min(file_size);
-                }
-            }
-            _ => {
-                debug!("skipping opcode 0x{opcode:02x} during data transfer");
-            }
-        }
-    }
-
+    let mut session = Session::connect(peer, &opts, &mut on_event).await?;
+    let bytes = session
+        .download_range(
+            opts.start_offset,
+            opts.file_size,
+            &mut out_writer,
+            &mut on_event,
+        )
+        .await?;
     on_event(DownloadEvent::Done);
-    Ok(bytes_received)
+    Ok(bytes)
 }
 
 /// Send a `REQUESTPARTS` message for up to 3 consecutive 180 KB windows.
@@ -377,7 +429,7 @@ async fn send_request_parts(
     stream: &mut TcpStream,
     file_hash: &[u8; 16],
     offset: u64,
-    file_size: u64,
+    max_end: u64,
     window: u64,
 ) -> Result<()> {
     // REQUESTPARTS payload: hash(16) + start0(4) + start1(4) + start2(4) + end0(4) + end1(4) + end2(4)
@@ -388,12 +440,12 @@ async fn send_request_parts(
     let mut ends = [0u32; 3];
     for i in 0..3 {
         let s = offset + (i as u64) * window;
-        if s >= file_size {
-            starts[i] = s.min(file_size) as u32;
+        if s >= max_end {
+            starts[i] = s.min(max_end) as u32;
             ends[i] = starts[i];
         } else {
             starts[i] = s as u32;
-            ends[i] = (s + window).min(file_size) as u32;
+            ends[i] = (s + window).min(max_end) as u32;
         }
     }
     for s in &starts {

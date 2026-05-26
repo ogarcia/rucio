@@ -201,14 +201,12 @@ pub async fn add_bytes(db: &Db, id: i64, bytes: u64) -> Result<()> {
 
 /// Set `bytes_done` to an absolute value (used for resume progress tracking).
 pub async fn set_bytes_done(db: &Db, id: i64, bytes: u64) -> Result<()> {
-    sqlx::query(
-        "UPDATE emule_downloads SET bytes_done = ?1, updated_at = ?2 WHERE id = ?3",
-    )
-    .bind(bytes as i64)
-    .bind(now_secs() as i64)
-    .bind(id)
-    .execute(db)
-    .await?;
+    sqlx::query("UPDATE emule_downloads SET bytes_done = ?1, updated_at = ?2 WHERE id = ?3")
+        .bind(bytes as i64)
+        .bind(now_secs() as i64)
+        .bind(id)
+        .execute(db)
+        .await?;
     Ok(())
 }
 

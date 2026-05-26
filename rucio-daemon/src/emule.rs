@@ -7,15 +7,20 @@
 
 use anyhow::{Context, Result};
 use rucio_emule::Ed2kLink;
+use rucio_emule::ed2k::CHUNK_SIZE;
 use rucio_emule::kad::packet::KadId;
 use rucio_emule::kad::task::{KadHandle, KadTaskConfig};
-use rucio_emule::transfer::{DownloadEvent, DownloadOptions, download_file};
+use rucio_emule::transfer::{DownloadEvent, DownloadOptions, Session};
+use std::collections::VecDeque;
+use std::path::Path;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::io::AsyncSeekExt;
 use tokio::net::UdpSocket;
 use tokio::sync::broadcast;
+use tokio::task::JoinSet;
 use tracing::{info, warn};
 
 use crate::config::Config;
@@ -93,8 +98,7 @@ pub async fn run_ed2k_download(
     let link = Ed2kLink::parse(link_str).with_context(|| format!("parse ed2k link: {link_str}"))?;
     info!(name = %link.name, size = link.size, hash = %link.hash, "Starting eMule download");
 
-    // 2. Bootstrap if the routing table is thin (e.g. startup bootstrap failed
-    //    or we lost all contacts and the keepalive hasn't fired yet).
+    // 2. Bootstrap if the routing table is thin.
     let contact_count = kad.contact_count().await;
     if contact_count < 4 {
         info!(
@@ -117,18 +121,18 @@ pub async fn run_ed2k_download(
         );
     }
 
-    // Create the temp directory and part-file path once — they never change.
+    // Create the temp directory and paths once — they never change.
     let emule_temp = &config.storage.emule_temp_dir;
     std::fs::create_dir_all(emule_temp)
         .with_context(|| format!("create emule temp dir: {}", emule_temp.display()))?;
     let part_path = emule_temp.join(format!("{}.part", link.hash));
+    let met_path = emule_temp.join(format!("{}.part.met", link.hash));
     let final_path = config.storage.download_dir.join(&link.name);
 
+    // Number of ed2k slices (one per CHUNK_SIZE block).
+    let num_slices = link.size.div_ceil(CHUNK_SIZE as u64) as usize;
+
     // 3 + 4. Main retry loop: search → try peers → if all fail, search again.
-    //
-    // This loop never exits on its own except via `return Ok(())` (completed)
-    // or `?` propagation of a hard I/O error.  Cancellation is detected by
-    // checking the DB status at the top of each iteration.
     loop {
         // Check for user cancellation before doing any work.
         if is_cancelled(db, download_id).await {
@@ -136,17 +140,23 @@ pub async fn run_ed2k_download(
             return Ok(());
         }
 
-        // Determine how many bytes we already have on disk.  This is the
-        // authoritative resume offset — more reliable than bytes_done in the
-        // DB which might lag due to crashes or throttled updates.
-        let resume_offset: u64 = tokio::fs::metadata(&part_path)
-            .await
-            .map(|m| m.len())
-            .unwrap_or(0);
-        if resume_offset > 0 {
-            info!(resume_offset, name = %link.name, "Resuming from partial file");
-            let _ =
-                crate::db::emule_downloads::set_bytes_done(db, download_id, resume_offset).await;
+        // Determine which slices have already been downloaded by consulting
+        // the .part.met progress file.  Completed slices are skipped.
+        let done_slices = load_progress(&met_path, num_slices);
+        let done_count = done_slices.iter().filter(|&&d| d).count();
+        let bytes_done: u64 = done_slices
+            .iter()
+            .enumerate()
+            .filter(|&(_, &d)| d)
+            .map(|(i, _)| {
+                let start = i as u64 * CHUNK_SIZE as u64;
+                (start + CHUNK_SIZE as u64).min(link.size) - start
+            })
+            .sum();
+
+        if bytes_done > 0 {
+            info!(bytes_done, name = %link.name, "Resuming from previous progress");
+            let _ = crate::db::emule_downloads::set_bytes_done(db, download_id, bytes_done).await;
         }
 
         // --- Search for sources ---
@@ -167,158 +177,299 @@ pub async fn run_ed2k_download(
         }
         info!(count = sources.len(), "Found eMule sources");
 
-        // --- Attempt to download from discovered sources ---
+        // --- Attempt parallel download from discovered sources ---
         let _ = crate::db::emule_downloads::set_status(db, download_id, "downloading", None).await;
 
-        // current_offset tracks how far we've downloaded across multiple peer
-        // attempts within the same source-search round.
-        let mut current_offset = resume_offset;
-        let mut downloaded = false;
-
-        for source in &sources {
-            if is_cancelled(db, download_id).await {
-                info!(name = %link.name, "eMule download cancelled by user");
-                return Ok(());
-            }
-
-            if source.tcp_port == 0 || source.ip.is_unspecified() {
-                continue;
-            }
-            let peer = std::net::SocketAddrV4::new(source.ip, source.tcp_port);
-
-            // Open the part file without truncating so partial data is preserved.
-            let mut file = tokio::fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .open(&part_path)
-                .await
-                .with_context(|| format!("open part file: {}", part_path.display()))?;
-            file.seek(std::io::SeekFrom::Start(current_offset))
-                .await
-                .with_context(|| format!("seek part file to {current_offset}"))?;
-
-            let opts = DownloadOptions {
-                timeout: Duration::from_secs(3600),
-                op_timeout: Duration::from_secs(30),
-                max_queue_waits: 5,
-                file_size: link.size,
-                hash: link.hash,
-                start_offset: current_offset,
-            };
-
-            // Shared atomic so the sync event callback can pass bytes_received
-            // to the async ChunkVerified handler for periodic DB updates.
-            let bytes_tracker = Arc::new(AtomicU64::new(current_offset));
-
-            let ws = ws_tx.clone();
-            let db_ev = db.clone();
-            let name_clone = link.name.clone();
-            let hash_hex = link.hash.to_hex();
-            let tracker = bytes_tracker.clone();
-            match download_file(peer, opts, file, move |ev| match ev {
-                DownloadEvent::Connected => info!(%peer, "Connected to eMule peer"),
-                DownloadEvent::Queued { rank } => info!(%peer, rank, "Queued at eMule peer"),
-                DownloadEvent::Started => info!(%peer, "eMule upload started"),
-                DownloadEvent::Progress { bytes_received, total } => {
-                    tracker.store(bytes_received, Ordering::Relaxed);
-                    let _ = ws.send(WsEvent::DownloadProgress(vec![
-                        rucio_core::api::downloads::DownloadResponse {
-                            id: download_id,
-                            root_hash: hash_hex.clone(),
-                            name: Some(name_clone.clone()),
-                            size: Some(total),
-                            bytes_done: bytes_received,
-                            state: rucio_core::api::downloads::DownloadState::Downloading,
-                            error: None,
-                        },
-                    ]));
-                }
-                DownloadEvent::ChunkVerified { part_index } => {
-                    info!(part_index, "eMule chunk verified");
-                    // Persist progress to DB every ~9.7 MB (one ed2k part).
-                    let bytes = tracker.load(Ordering::Relaxed);
-                    let db = db_ev.clone();
-                    tokio::spawn(async move {
-                        let _ =
-                            crate::db::emule_downloads::set_bytes_done(&db, download_id, bytes)
-                                .await;
-                    });
-                }
-                DownloadEvent::ChunkFailed { part_index } => {
-                    warn!(part_index, "eMule chunk verification failed");
-                }
-                DownloadEvent::Done => info!(%peer, "eMule download complete"),
-            })
-            .await
-            {
-                Ok(_) => {
-                    info!(name = %link.name, "eMule download finished");
-                    downloaded = true;
-                    break;
-                }
-                Err(e) => {
-                    // Keep the part file so the next peer (or next restart) can
-                    // resume from where this peer stopped.
-                    current_offset = tokio::fs::metadata(&part_path)
-                        .await
-                        .map(|m| m.len())
-                        .unwrap_or(current_offset);
-                    warn!(%peer, error = %e, bytes_so_far = current_offset,
-                          "eMule peer failed, trying next");
-                }
-            }
+        // All slices complete already (shouldn't happen since the file would
+        // have been renamed, but be robust).
+        if done_count == num_slices {
+            info!(name = %link.name, "All slices already complete");
+            break;
         }
 
-        if !downloaded {
+        // Build work queue from incomplete slices.
+        let remaining: VecDeque<(usize, u64, u64)> = done_slices
+            .iter()
+            .enumerate()
+            .filter(|&(_, &d)| !d)
+            .map(|(i, _)| {
+                let start = i as u64 * CHUNK_SIZE as u64;
+                let end = (start + CHUNK_SIZE as u64).min(link.size);
+                (i, start, end)
+            })
+            .collect();
+        let num_remaining = remaining.len();
+
+        let work_queue = Arc::new(Mutex::new(remaining));
+        let done_vec = Arc::new(Mutex::new(done_slices));
+
+        // Filter out sources with unusable addresses.
+        let valid_sources: Vec<_> = sources
+            .iter()
+            .filter(|s| s.tcp_port != 0 && !s.ip.is_unspecified())
+            .cloned()
+            .collect();
+
+        let max_workers = config
+            .emule
+            .max_parallel_peers
+            .clamp(1, 50)
+            .min(valid_sources.len())
+            .min(num_remaining);
+
+        info!(
+            workers = max_workers,
+            remaining_slices = num_remaining,
+            sources = valid_sources.len(),
+            "Starting parallel eMule download"
+        );
+
+        let mut join_set: JoinSet<()> = JoinSet::new();
+
+        for source in valid_sources.into_iter().take(max_workers) {
+            let peer = std::net::SocketAddrV4::new(source.ip, source.tcp_port);
+            let work = work_queue.clone();
+            let done = done_vec.clone();
+            let met = met_path.clone();
+            let part = part_path.clone();
+            let ws = ws_tx.clone();
+            let db_w = db.clone();
+            let name_c = link.name.clone();
+            let hash_hex_c = link.hash.to_hex();
+            let hash = link.hash;
+            let file_size = link.size;
+
+            join_set.spawn(async move {
+                let opts = DownloadOptions {
+                    timeout: Duration::from_secs(3600),
+                    op_timeout: Duration::from_secs(30),
+                    max_queue_waits: 5,
+                    file_size,
+                    hash,
+                    start_offset: 0,
+                };
+
+                loop {
+                    // Claim the next incomplete slice.
+                    let slice_opt = { work.lock().unwrap().pop_front() };
+                    let (slice_idx, slice_start, slice_end) = match slice_opt {
+                        None => break,
+                        Some(s) => s,
+                    };
+
+                    // Open part file seeked to this slice's start offset.
+                    let file = tokio::fs::OpenOptions::new()
+                        .write(true)
+                        .create(true)
+                        .truncate(false)
+                        .open(&part)
+                        .await;
+                    let mut file = match file {
+                        Ok(f) => f,
+                        Err(e) => {
+                            warn!(%peer, slice = slice_idx, error = %e, "Failed to open part file");
+                            work.lock()
+                                .unwrap()
+                                .push_front((slice_idx, slice_start, slice_end));
+                            break;
+                        }
+                    };
+                    if let Err(e) = file.seek(std::io::SeekFrom::Start(slice_start)).await {
+                        warn!(%peer, slice = slice_idx, error = %e, "Failed to seek part file");
+                        work.lock()
+                            .unwrap()
+                            .push_front((slice_idx, slice_start, slice_end));
+                        break;
+                    }
+
+                    // Connect and perform the eMule handshake.
+                    let mut on_connect = |ev: DownloadEvent| match ev {
+                        DownloadEvent::Connected => info!(%peer, "Connected to eMule peer"),
+                        DownloadEvent::Queued { rank } => {
+                            info!(%peer, rank, "Queued at eMule peer")
+                        }
+                        DownloadEvent::Started => info!(%peer, "eMule upload started"),
+                        _ => {}
+                    };
+                    let mut session = match Session::connect(peer, &opts, &mut on_connect).await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            warn!(%peer, slice = slice_idx, error = %e,
+                                      "Failed to connect to eMule peer");
+                            work.lock()
+                                .unwrap()
+                                .push_front((slice_idx, slice_start, slice_end));
+                            break;
+                        }
+                    };
+
+                    // Download the slice.
+                    let bytes_tracker = Arc::new(AtomicU64::new(slice_start));
+                    let tracker = bytes_tracker.clone();
+                    let ws_c = ws.clone();
+                    let db_c = db_w.clone();
+                    let name_cc = name_c.clone();
+                    let hash_hex_cc = hash_hex_c.clone();
+                    let mut on_progress = move |ev: DownloadEvent| match ev {
+                        DownloadEvent::Progress {
+                            bytes_received,
+                            total,
+                        } => {
+                            tracker.store(bytes_received, Ordering::Relaxed);
+                            let _ = ws_c.send(WsEvent::DownloadProgress(vec![
+                                rucio_core::api::downloads::DownloadResponse {
+                                    id: download_id,
+                                    root_hash: hash_hex_cc.clone(),
+                                    name: Some(name_cc.clone()),
+                                    size: Some(total),
+                                    bytes_done: bytes_received,
+                                    state: rucio_core::api::downloads::DownloadState::Downloading,
+                                    error: None,
+                                },
+                            ]));
+                        }
+                        DownloadEvent::ChunkVerified { part_index } => {
+                            info!(part_index, "eMule chunk verified");
+                            let bytes = tracker.load(Ordering::Relaxed);
+                            let db = db_c.clone();
+                            tokio::spawn(async move {
+                                let _ = crate::db::emule_downloads::set_bytes_done(
+                                    &db,
+                                    download_id,
+                                    bytes,
+                                )
+                                .await;
+                            });
+                        }
+                        DownloadEvent::ChunkFailed { part_index } => {
+                            warn!(part_index, "eMule chunk verification failed");
+                        }
+                        _ => {}
+                    };
+
+                    match session
+                        .download_range(slice_start, slice_end, &mut file, &mut on_progress)
+                        .await
+                    {
+                        Ok(_) => {
+                            info!(%peer, slice = slice_idx, "Slice downloaded successfully");
+                            // Mark slice as done and persist progress.
+                            let snapshot = {
+                                let mut d = done.lock().unwrap();
+                                d[slice_idx] = true;
+                                d.clone()
+                            };
+                            save_progress(&met, &snapshot);
+                        }
+                        Err(e) => {
+                            warn!(%peer, slice = slice_idx, error = %e,
+                                  "Slice download failed — returning to queue");
+                            work.lock()
+                                .unwrap()
+                                .push_front((slice_idx, slice_start, slice_end));
+                            break;
+                        }
+                    }
+                }
+            });
+        }
+
+        // Wait for all workers to finish.
+        while join_set.join_next().await.is_some() {}
+
+        // Check if all slices are now done.
+        let all_done = done_vec.lock().unwrap().iter().all(|&d| d);
+        if !all_done {
             warn!(
                 name = %link.name,
                 hash = %link.hash,
                 retry_in_secs = SEARCH_RETRY_SECS,
-                "All Kad2 sources failed — back to finding_providers"
+                "Not all slices complete — back to finding_providers"
             );
             tokio::time::sleep(Duration::from_secs(SEARCH_RETRY_SECS)).await;
             continue;
         }
 
-        // --- Download succeeded: move to final destination and compute BLAKE3 ---
-        std::fs::create_dir_all(config.storage.download_dir.as_path())
-            .context("create download dir")?;
-        tokio::fs::rename(&part_path, &final_path)
-            .await
-            .with_context(|| format!("move {} → {}", part_path.display(), final_path.display()))?;
-
-        let path_clone = final_path.clone();
-        let blake3_hex = tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
-            let mut file = std::fs::File::open(&path_clone)?;
-            let mut hasher = blake3::Hasher::new();
-            std::io::copy(&mut file, &mut hasher)?;
-            Ok(hasher.finalize().to_hex().to_string())
-        })
-        .await
-        .context("spawn_blocking for BLAKE3")?
-        .with_context(|| format!("BLAKE3 hash of {}", final_path.display()))?;
-
-        let _ = crate::db::emule_downloads::set_completed(
-            db,
-            download_id,
-            final_path.to_string_lossy().as_ref(),
-        )
-        .await;
-
-        info!(
-            name = %link.name,
-            blake3 = %blake3_hex,
-            "eMule download complete — file ready in download directory"
-        );
-        return Ok(());
+        break; // all slices done, proceed to finalise
     }
+
+    // --- Download succeeded: move to final destination and compute BLAKE3 ---
+    std::fs::create_dir_all(config.storage.download_dir.as_path())
+        .context("create download dir")?;
+    tokio::fs::rename(&part_path, &final_path)
+        .await
+        .with_context(|| format!("move {} → {}", part_path.display(), final_path.display()))?;
+    // Clean up progress file.
+    let _ = tokio::fs::remove_file(&met_path).await;
+
+    let path_clone = final_path.clone();
+    let blake3_hex = tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
+        let mut file = std::fs::File::open(&path_clone)?;
+        let mut hasher = blake3::Hasher::new();
+        std::io::copy(&mut file, &mut hasher)?;
+        Ok(hasher.finalize().to_hex().to_string())
+    })
+    .await
+    .context("spawn_blocking for BLAKE3")?
+    .with_context(|| format!("BLAKE3 hash of {}", final_path.display()))?;
+
+    let _ = crate::db::emule_downloads::set_completed(
+        db,
+        download_id,
+        final_path.to_string_lossy().as_ref(),
+    )
+    .await;
+
+    info!(
+        name = %link.name,
+        blake3 = %blake3_hex,
+        "eMule download complete — file ready in download directory"
+    );
+    Ok(())
+}
+
+// ── Progress tracking ─────────────────────────────────────────────────────────
+
+/// Load per-slice completion state from a `.part.met` file.
+///
+/// File format: version(4 LE) + num_slices(4 LE) + bitset (ceil(n/8) bytes).
+/// Returns a `vec![false; num_slices]` if the file is absent or incompatible.
+fn load_progress(path: &Path, num_slices: usize) -> Vec<bool> {
+    let data = std::fs::read(path).unwrap_or_default();
+    if data.len() < 8 {
+        return vec![false; num_slices];
+    }
+    let stored_n = u32::from_le_bytes(data[4..8].try_into().unwrap_or([0; 4])) as usize;
+    if stored_n != num_slices {
+        return vec![false; num_slices];
+    }
+    let bit_bytes = &data[8..];
+    (0..num_slices)
+        .map(|i| {
+            let byte = bit_bytes.get(i / 8).copied().unwrap_or(0);
+            byte & (1 << (i % 8)) != 0
+        })
+        .collect()
+}
+
+/// Persist per-slice completion state to a `.part.met` file.
+fn save_progress(path: &Path, done: &[bool]) {
+    let mut data = Vec::with_capacity(8 + done.len().div_ceil(8));
+    data.extend_from_slice(&1u32.to_le_bytes()); // version
+    data.extend_from_slice(&(done.len() as u32).to_le_bytes());
+    let mut bits = vec![0u8; done.len().div_ceil(8)];
+    for (i, &d) in done.iter().enumerate() {
+        if d {
+            bits[i / 8] |= 1 << (i % 8);
+        }
+    }
+    data.extend_from_slice(&bits);
+    let _ = std::fs::write(path, data);
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Returns `true` if the download has been marked as `cancelled` in the DB.
-/// Used to allow the long-running download loop to respect user cancellations
-/// without polling on a separate channel.
 async fn is_cancelled(db: &Db, download_id: i64) -> bool {
     match crate::db::emule_downloads::get_status(db, download_id).await {
         Ok(Some(s)) => s == "cancelled",
@@ -338,17 +489,11 @@ pub fn effective_nodes_dat_path(config: &crate::config::Config) -> std::path::Pa
 }
 
 /// Path of the routing-table cache written by the daemon itself.
-///
-/// Lives next to `nodes.dat` but is named `kad_cache.dat` so it is never
-/// confused with the externally downloaded bootstrap file.
 pub fn kad_cache_path(config: &crate::config::Config) -> std::path::PathBuf {
     effective_nodes_dat_path(config).with_file_name("kad_cache.dat")
 }
 
 /// Save the current Kad2 routing table to `kad_cache.dat`.
-///
-/// Called at shutdown so the next startup can seed from discovered contacts
-/// instead of doing a cold bootstrap every time.
 pub async fn save_kad_cache(config: &crate::config::Config, kad: &KadHandle) {
     let bytes = kad.dump_nodes_dat().await;
     if bytes.is_empty() {
@@ -366,10 +511,7 @@ pub async fn save_kad_cache(config: &crate::config::Config, kad: &KadHandle) {
     }
 }
 
-/// Load seeds from `kad_cache.dat` (our own cached routing table from last run)
-/// and from `nodes.dat` (external bootstrap file), deduplicated.
-///
-/// Returns at most `limit` contacts.
+/// Load seeds from `kad_cache.dat` and from `nodes.dat`, deduplicated.
 pub fn load_kad_seeds(
     config: &crate::config::Config,
     limit: usize,
@@ -380,7 +522,6 @@ pub fn load_kad_seeds(
     let mut seen: HashSet<std::net::SocketAddrV4> = HashSet::new();
     let mut contacts: Vec<rucio_emule::kad::packet::Contact> = Vec::new();
 
-    // Prefer our own cache (discovered peers are higher quality than bootstrap list).
     let cache_path = kad_cache_path(config);
     if let Ok(bytes) = std::fs::read(&cache_path) {
         match parse_nodes_dat(&bytes) {
@@ -398,7 +539,6 @@ pub fn load_kad_seeds(
         }
     }
 
-    // Fill remaining slots from the external nodes.dat.
     if contacts.len() < limit {
         let nodes_dat_path = effective_nodes_dat_path(config);
         if let Ok(bytes) = std::fs::read(&nodes_dat_path) {

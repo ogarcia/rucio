@@ -5,6 +5,13 @@ pub struct ConfigResponse {
     pub api: ApiConfig,
     pub network: NetworkConfig,
     pub storage: StorageConfig,
+    pub emule: EmuleConfig,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+pub struct EmuleConfig {
+    /// Maximum number of simultaneous peer connections per eMule download.
+    pub max_parallel_peers: usize,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]

@@ -104,6 +104,24 @@ pub struct EmuleConfig {
     /// tries to learn it via UPnP or from peer responses.  Set this explicitly
     /// when UPnP is unavailable (e.g. CGNAT) via `RUCIOD_EXTERNAL_IP`.
     pub external_ip: Option<std::net::Ipv4Addr>,
+
+    /// Maximum number of simultaneous peer connections per eMule download.
+    ///
+    /// Files are divided into ed2k-part-sized slices (~9.7 MB each) and
+    /// distributed across up to this many concurrent TCP connections.
+    /// The effective concurrency is also bounded by the number of discovered
+    /// sources and the number of remaining slices, so setting this higher than
+    /// needed has no cost.
+    ///
+    /// Default: 5.  Range: 1–50.  Override via `RUCIOD_EMULE_MAX_PARALLEL`.
+    #[serde(default = "EmuleConfig::default_max_parallel_peers")]
+    pub max_parallel_peers: usize,
+}
+
+impl EmuleConfig {
+    fn default_max_parallel_peers() -> usize {
+        5
+    }
 }
 
 impl Default for EmuleConfig {
@@ -111,6 +129,7 @@ impl Default for EmuleConfig {
         Self {
             kad_port: 4672,
             external_ip: None,
+            max_parallel_peers: Self::default_max_parallel_peers(),
         }
     }
 }
@@ -328,6 +347,7 @@ impl Config {
     /// | `RUCIOD_EMULE_TEMP_DIR`     | `storage.emule_temp_dir`     | path               |
     /// | `RUCIOD_NODES_DAT`          | `storage.nodes_dat_path`     | path               |
     /// | `RUCIOD_KAD_PORT`           | `emule.kad_port`             | integer 1-65535    |
+    /// | `RUCIOD_EMULE_MAX_PARALLEL` | `emule.max_parallel_peers`   | integer 1-50       |
     /// | `RUCIOD_UPNP`               | `network.upnp`               | `true`/`false`     |
     pub fn apply_env_overrides(&mut self) {
         if let Ok(v) = std::env::var("RUCIOD_API_LISTEN")
@@ -394,6 +414,13 @@ impl Config {
             && let Ok(ip) = v.parse::<std::net::Ipv4Addr>()
         {
             self.emule.external_ip = Some(ip);
+        }
+        if let Ok(v) = std::env::var("RUCIOD_EMULE_MAX_PARALLEL")
+            && !v.is_empty()
+            && let Ok(n) = v.parse::<usize>()
+            && (1..=50).contains(&n)
+        {
+            self.emule.max_parallel_peers = n;
         }
         // RUCIOD_UPNP=false / 0 / no disables UPnP; any other non-empty value enables it.
         if let Ok(v) = std::env::var("RUCIOD_UPNP")

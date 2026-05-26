@@ -5,7 +5,7 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use rucio_core::api::config::{
-    ApiConfig, ConfigResponse, NetworkConfig, NodeConfig, StorageConfig,
+    ApiConfig, ConfigResponse, EmuleConfig, NetworkConfig, NodeConfig, StorageConfig,
 };
 
 use crate::api::AppState;
@@ -43,6 +43,9 @@ pub async fn get_config(State(state): State<AppState>) -> Json<ConfigResponse> {
             download_dir: cfg.storage.download_dir.to_string_lossy().into_owned(),
             temp_dir: cfg.storage.temp_dir.to_string_lossy().into_owned(),
             database_path: cfg.storage.database_path.to_string_lossy().into_owned(),
+        },
+        emule: EmuleConfig {
+            max_parallel_peers: cfg.emule.max_parallel_peers,
         },
     })
 }
@@ -90,6 +93,7 @@ pub async fn put_config(
     new_cfg.network.download_limit_kbps = req.network.download_limit_kbps;
     new_cfg.storage.download_dir = req.storage.download_dir.into();
     new_cfg.storage.temp_dir = req.storage.temp_dir.into();
+    new_cfg.emule.max_parallel_peers = req.emule.max_parallel_peers.clamp(1, 50);
     // identity_path and api.listen intentionally not writable at runtime
 
     match new_cfg.save() {
