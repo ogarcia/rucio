@@ -705,10 +705,13 @@ fn read_source_tags<R: Read>(r: &mut R) -> io::Result<(std::net::Ipv4Addr, u16, 
         r.read_exact(&mut name)?;
 
         match (type_byte, name.as_slice()) {
-            // TAG_SOURCEIP: uint32 LE (host-byte-order IP)
+            // TAG_SOURCEIP: uint32 in network byte order, written as LE.
+            // The wire value is the raw network-order IP (as from socket APIs),
+            // so u32::from_le_bytes gives the network-order value, which
+            // Ipv4Addr::from(u32) correctly interprets as big-endian.
             (0x03, [0xfe]) => {
                 let v = read_u32(r)?;
-                ip = std::net::Ipv4Addr::from(v.to_le_bytes());
+                ip = std::net::Ipv4Addr::from(v);
             }
             // TAG_SOURCEPORT: uint16 LE
             (0x08, [0xfd]) => {

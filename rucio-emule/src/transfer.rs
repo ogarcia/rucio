@@ -51,13 +51,13 @@ const OP_HELLO: u8 = 0x01;
 const OP_HELLOANSWER: u8 = 0x4c;
 const OP_FILEREQUEST: u8 = 0x58;
 const OP_FILEREQUEST_ANSWER: u8 = 0x59;
-const OP_FILENOTFOUND: u8 = 0x48;
+const OP_FILENOTFOUND: u8 = 0x92;
 const OP_REQUESTPARTS: u8 = 0x47;
-const OP_SENDINGCHUNK: u8 = 0x46;
-const OP_STARTUPLOAD_REQ: u8 = 0x4b;
-const OP_ACCEPTUPLOAD_REQ: u8 = 0x4c; // also HELLOANSWER — context differentiates
+const OP_SENDINGPART: u8 = 0x46;
+const OP_STARTUPLOAD_REQ: u8 = 0x54;
+const OP_ACCEPTUPLOAD_REQ: u8 = 0x55;
 const OP_QUEUE_RANK: u8 = 0x5c;
-const OP_QUEUE_FULL: u8 = 0x56;
+const OP_QUEUE_FULL: u8 = 0x93;
 
 // ── Framing ───────────────────────────────────────────────────────────────────
 
@@ -101,18 +101,20 @@ async fn read_frame(stream: &mut TcpStream) -> Result<(u8, u8, Vec<u8>)> {
 
 /// Build a minimal HELLO payload advertising ourselves as a Kad2 client.
 fn build_hello(our_hash: &[u8; 16]) -> Vec<u8> {
-    // HELLO payload: client_hash(16) + client_id_v4(4) + tcp_port(2) + tag_count(4) + tags
-    // We advertise 0 tags for simplicity.
+    // Wire format: hash_size(1) + hash(16) + client_id(4) + tcp_port(2) + tag_count(4) + tags
+    //              + server_ip(4) + server_port(2)
     let mut p = Vec::new();
-    // Hash
+    // Hash size prefix required by the protocol
+    p.push(16u8);
+    // Client hash
     p.extend_from_slice(our_hash);
-    // Claimed client id (use 0 — we're low-id, doesn't matter for download)
+    // Client ID (0 = low-ID, fine for a pure downloader)
     p.extend_from_slice(&0u32.to_le_bytes());
-    // TCP port (0 = not sharing)
+    // TCP port (0 = not listening)
     p.extend_from_slice(&0u16.to_le_bytes());
-    // Tag count (4-byte LE in ed2k TCP)
+    // Tag count
     p.extend_from_slice(&0u32.to_le_bytes());
-    // Server IP + port (unused, 0)
+    // Server IP + port (unused)
     p.extend_from_slice(&0u32.to_le_bytes());
     p.extend_from_slice(&0u16.to_le_bytes());
     p
@@ -231,7 +233,7 @@ where
 
     // ── STARTUPLOAD_REQ ──────────────────────────────────────────────────────
     stream
-        .write_all(&build_message(OP_STARTUPLOAD_REQ, &[]))
+        .write_all(&build_message(OP_STARTUPLOAD_REQ, opts.hash.as_bytes()))
         .await
         .context("send STARTUPLOAD_REQ")?;
 
@@ -261,7 +263,7 @@ where
                 // Re-send STARTUPLOAD_REQ after a short wait.
                 tokio::time::sleep(Duration::from_secs(5)).await;
                 stream
-                    .write_all(&build_message(OP_STARTUPLOAD_REQ, &[]))
+                    .write_all(&build_message(OP_STARTUPLOAD_REQ, opts.hash.as_bytes()))
                     .await
                     .context("re-send STARTUPLOAD_REQ")?;
             }
@@ -271,14 +273,17 @@ where
     }
 
     // ── Data transfer ────────────────────────────────────────────────────────
-    // Request parts sequentially. Each REQUESTPARTS message requests up to
-    // 3 ranges of at most 180 KB each (eMule's typical window).
+    // Each REQUESTPARTS asks for 3 consecutive 180 KB windows.  We send the
+    // next batch only after receiving all chunks from the current one so we
+    // never request overlapping ranges.
     const PART_WINDOW: u64 = 180 * 1024;
 
     let mut bytes_received: u64 = 0;
     let mut part_buf: Vec<u8> = Vec::new();
     let mut current_part_start: u64 = 0;
     let file_size = opts.file_size;
+    // Byte offset that marks the end of the current batch (3 windows).
+    let mut batch_end: u64 = (3 * PART_WINDOW).min(file_size);
 
     // Send the first REQUESTPARTS.
     send_request_parts(
@@ -300,17 +305,18 @@ where
             .context("read data frame")?;
 
         match opcode {
-            OP_SENDINGCHUNK => {
-                // Payload: start(4) + end(4) + data
-                if payload.len() < 8 {
-                    warn!("malformed SENDINGCHUNK (too short)");
+            OP_SENDINGPART => {
+                // Wire format: hash(16) + start(4) + end(4) + data
+                if payload.len() < 24 {
+                    warn!("malformed SENDINGPART (too short: {} bytes)", payload.len());
                     continue;
                 }
+                // Skip the 16-byte file hash echoed in the response.
                 let _range_start =
-                    u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]) as u64;
+                    u32::from_le_bytes([payload[16], payload[17], payload[18], payload[19]]) as u64;
                 let range_end =
-                    u32::from_le_bytes([payload[4], payload[5], payload[6], payload[7]]) as u64;
-                let data = &payload[8..];
+                    u32::from_le_bytes([payload[20], payload[21], payload[22], payload[23]]) as u64;
+                let data = &payload[24..];
 
                 // Write data.
                 out_writer
@@ -330,15 +336,15 @@ where
                 if bytes_received >= part_end || bytes_received >= file_size {
                     let part_index = (current_part_start / CHUNK_SIZE as u64) as usize;
                     let _chunk_hash = Md4::digest(&part_buf);
-                    // We can't verify without the per-part hash list (would need
-                    // it from a separate metadata fetch).  For now, emit the event.
+                    // Per-part verification requires the hash list from AICH/metadata;
+                    // emit the event unconditionally for progress tracking.
                     on_event(DownloadEvent::ChunkVerified { part_index });
                     part_buf.clear();
                     current_part_start = bytes_received;
                 }
 
-                // Request more if we haven't finished.
-                if bytes_received < file_size {
+                // Request the next batch once we've consumed all chunks of the current one.
+                if bytes_received >= batch_end && bytes_received < file_size {
                     send_request_parts(
                         &mut stream,
                         opts.hash.as_bytes(),
@@ -347,6 +353,7 @@ where
                         PART_WINDOW,
                     )
                     .await?;
+                    batch_end = (bytes_received + 3 * PART_WINDOW).min(file_size);
                 }
             }
             _ => {
@@ -416,7 +423,8 @@ mod tests {
     #[test]
     fn test_build_hello_length() {
         let h = build_hello(&[0u8; 16]);
-        // 16 + 4 + 2 + 4 + 4 + 2 = 32
-        assert_eq!(h.len(), 32);
+        // hash_size(1) + hash(16) + client_id(4) + tcp_port(2) + tag_count(4) + server_ip(4) + server_port(2) = 33
+        assert_eq!(h.len(), 33);
+        assert_eq!(h[0], 16u8); // hash_size prefix
     }
 }
