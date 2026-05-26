@@ -593,6 +593,10 @@ async fn handle_packet(
             if opcode == 0x35 && payload.len() >= 16 {
                 let hash = hex::encode(&payload[..16]);
                 debug!("Kad2 PUBLISH_SOURCE_REQ from {src} target={hash}");
+            } else if matches!(opcode, 0x43..=0x48 | 0x4b) {
+                // Normal publish/firewall-check opcodes sent by peers that have
+                // us in their routing table — not implemented, not worth logging.
+                trace!("Kad2 publish opcode 0x{opcode:02x} from {src}");
             } else {
                 debug!("Unknown Kad2 opcode 0x{opcode:02x} from {src}");
             }
