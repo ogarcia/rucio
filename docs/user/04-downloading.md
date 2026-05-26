@@ -59,7 +59,8 @@ rucio info 7b4a         # hash prefix also works
 This prints the full detail for one download: its hash, state, size and
 progress (both in bytes and in completed pieces — libp2p chunks for rucio
 downloads, 9.28 MB slices for eMule), the destination path, when it was added
-and last updated, and — for eMule downloads — the original `ed2k://` link.
+and last updated, and the link used to re-add it (a `rucio:` magnet for rucio
+downloads, the original `ed2k://` link for eMule downloads).
 
 ## Download states
 

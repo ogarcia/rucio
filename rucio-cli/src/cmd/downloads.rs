@@ -306,8 +306,13 @@ pub async fn info(client: &ApiClient, target: &str) -> Result<()> {
     if let Some(path) = &d.dest_path {
         println!("  Saved to:   {}", color::value(path));
     }
-    if let Some(link) = &d.ed2k_link {
-        println!("  ed2k link:  {}", color::value(link));
+    if let Some(link) = &d.link {
+        let label = if d.kind == "emule" {
+            "ed2k link"
+        } else {
+            "Magnet"
+        };
+        println!("  {label}:     {}", color::value(link));
     }
     println!("  Added:      {}", human_time_ago(d.added_at));
     println!("  Updated:    {}", human_time_ago(d.updated_at));

@@ -120,10 +120,18 @@ pub async fn get_download(
         let pieces_total = chunks.len() as u64;
         let pieces_done = chunks.iter().filter(|c| c.status == "done").count() as u64;
 
+        let root_hash_hex = hex::encode(&row.root_hash);
+        let magnet = rucio_core::protocol::search::SearchResult::magnet_from_parts(
+            &root_hash_hex,
+            &row.name,
+            row.total_size as u64,
+            None,
+        );
+
         Ok(Json(DownloadDetailResponse {
             id,
             kind: "rucio".to_string(),
-            root_hash: hex::encode(&row.root_hash),
+            root_hash: root_hash_hex,
             name: Some(row.name),
             size: Some(row.total_size as u64),
             bytes_done: row.bytes_done as u64,
@@ -132,7 +140,7 @@ pub async fn get_download(
             dest_path: non_empty(row.dest_path),
             added_at: row.added_at,
             updated_at: row.updated_at,
-            ed2k_link: None,
+            link: Some(magnet),
             pieces_done: Some(pieces_done),
             pieces_total: (pieces_total > 0).then_some(pieces_total),
         }))
@@ -172,7 +180,7 @@ pub async fn get_download(
                 dest_path: non_empty(row.dest_path),
                 added_at: row.added_at,
                 updated_at: row.updated_at,
-                ed2k_link: Some(row.ed2k_link),
+                link: Some(row.ed2k_link),
                 pieces_done: Some(pieces_done),
                 pieces_total: Some(num_slices as u64),
             }))

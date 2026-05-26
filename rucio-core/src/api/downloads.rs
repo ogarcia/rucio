@@ -60,8 +60,9 @@ pub struct DownloadDetailResponse {
     pub added_at: i64,
     /// Unix timestamp (seconds) of the last status/progress update.
     pub updated_at: i64,
-    /// Original `ed2k://` link (eMule downloads only).
-    pub ed2k_link: Option<String>,
+    /// Source link to re-add the download: a `rucio:` magnet for rucio
+    /// downloads, the original `ed2k://` link for eMule downloads.
+    pub link: Option<String>,
     /// Completed pieces — chunks for rucio downloads, 9.28 MB slices for eMule.
     pub pieces_done: Option<u64>,
     /// Total number of pieces.
