@@ -268,22 +268,30 @@ listen_addrs = ["/ip4/0.0.0.0/tcp/4321", "/ip6/::/tcp/4321"]
 
 [api]
 listen = "127.0.0.1:7070"
+# token = "secret"               # enable API auth (disabled by default)
 
 [network]
-listen_port           = 4321
-upnp                  = true
-upload_limit_kbps     = 0
-download_limit_kbps   = 0
+listen_port          = 4321
+upnp                 = true
+upload_limit_kbps    = 0         # 0 = unlimited
+download_limit_kbps  = 0         # 0 = unlimited
 bootstrap_peers = [
   "/ip4/203.0.113.1/tcp/4321/p2p/12D3KooWXXX...",
 ]
 
 [storage]
-download_dir = "/mnt/data/downloads"
-temp_dir     = "/mnt/data/.rucio-tmp"
+# Paths below show Linux defaults; see the sections above for macOS paths.
+# download_dir   = "~/Downloads/rucio"
+# temp_dir       = "~/.cache/rucio/tmp"
+# nodes_dat_path = "~/.local/share/rucio/nodes.dat"  # omit to disable Kad bootstrap
 
 [emule]
-udp_port = 4672
+enabled            = true
+udp_port           = 4672
+tcp_port           = 4662
+max_parallel_peers = 5
+# temp_dir     = "~/.cache/rucio/emule-tmp"  # platform default
+# external_ip  = "1.2.3.4"                   # auto-detected via UPnP or peer responses
 ```
 
 ---
