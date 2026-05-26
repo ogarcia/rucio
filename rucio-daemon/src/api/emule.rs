@@ -1,12 +1,13 @@
 //! GET  /api/v1/emule/status
 //! POST /api/v1/emule/bootstrap
-//! GET  /api/v1/kad/search?q=<keyword>
+//! GET  /api/v1/emule/search?q=<keyword>
 
 use axum::Json;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use rucio_core::api::emule::{EmuleBootstrapRequest, EmuleBootstrapResponse, EmuleStatusResponse};
 use serde::{Deserialize, Serialize};
+use utoipa::IntoParams;
 
 use crate::api::AppState;
 
@@ -138,21 +139,22 @@ pub async fn post_emule_bootstrap(
     }
 }
 
-// ── GET /api/v1/kad/search ────────────────────────────────────────────────────
+// ── GET /api/v1/emule/search ──────────────────────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, IntoParams)]
 pub struct KadSearchQuery {
+    /// Keyword to search for in the Kad network.
     q: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct KadSearchHit {
     pub hash: String,
     pub name: String,
     pub size: u64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct KadSearchResponse {
     pub keyword: String,
     pub hits: Vec<KadSearchHit>,
@@ -162,6 +164,16 @@ pub struct KadSearchResponse {
 ///
 /// Sends a `KADEMLIA2_SEARCH_KEY_REQ` into the Kad network and returns matching
 /// file entries (name, hash, size).  Blocks until the search times out (~60 s).
+#[utoipa::path(
+    get,
+    path = "/api/v1/emule/search",
+    params(KadSearchQuery),
+    responses(
+        (status = 200, description = "Search results.", body = KadSearchResponse),
+        (status = 400, description = "Empty keyword."),
+        (status = 501, description = "emule-compat feature not compiled in.")
+    )
+)]
 pub async fn get_kad_search(
     State(state): State<AppState>,
     Query(params): Query<KadSearchQuery>,

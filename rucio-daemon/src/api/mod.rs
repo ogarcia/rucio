@@ -92,6 +92,7 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         health::get_health,
         emule::get_emule_status,
         emule::post_emule_bootstrap,
+        emule::get_kad_search,
     ),
     components(schemas(
         rucio_core::api::status::StatusResponse,
@@ -124,6 +125,8 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         rucio_core::api::emule::EmuleBootstrapRequest,
         rucio_core::api::emule::EmuleBootstrapResponse,
         rucio_core::api::emule::EmuleStatusResponse,
+        emule::KadSearchHit,
+        emule::KadSearchResponse,
     ))
 )]
 struct ApiDoc;
@@ -274,7 +277,7 @@ fn v1_router() -> Router<AppState> {
             routing::post(emule::post_emule_bootstrap),
         )
         // kad keyword search (emule-compat)
-        .route("/kad/search", routing::get(emule::get_kad_search))
+        .route("/emule/search", routing::get(emule::get_kad_search))
 }
 
 // ---------------------------------------------------------------------------
