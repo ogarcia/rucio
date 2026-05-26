@@ -62,7 +62,7 @@ that arise from sharing a socket with `Arc<UdpSocket>`.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `kad_port` | `u16` | `4672` | UDP port to bind |
+| `udp_port` | `u16` | `4672` | UDP port to bind |
 | `nodes_dat_path` | `PathBuf` | platform data dir | Path to bootstrap seed file |
 | `request_timeout` | `Duration` | `5s` | Per-request timeout |
 | `min_contacts` | `usize` | `4` | Re-bootstrap threshold |
@@ -73,7 +73,7 @@ that arise from sharing a socket with `Arc<UdpSocket>`.
 
 ```
 spawn()
-  └── bind UDP socket on kad_port
+  └── bind UDP socket on udp_port
   └── load nodes.dat → seed list
   └── iterative_bootstrap() → up to 3 rounds, stops at 50 contacts
   └── keepalive loop (periodic):
@@ -239,8 +239,8 @@ be sent outbound but responses are blocked by NAT/firewall.
 | Home router | Port-forward `4672/udp` → local machine IP |
 | WSL2 | Port-forward from Windows + Windows Firewall rule |
 
-The default port `4672` can be changed via `RUCIOD_KAD_PORT` or
-`emule.kad_port` in `config.toml`. Update the port mapping accordingly.
+The default port `4672` can be changed via `RUCIOD_EMULE_UDP_PORT` or
+`emule.udp_port` in `config.toml`. Update the port mapping accordingly.
 
 > **Container note:** `-p 40066:40066` without `/udp` in Podman/Docker maps
 > **both TCP and UDP** on that port. This is intentional and correct.

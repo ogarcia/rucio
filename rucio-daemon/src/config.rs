@@ -44,7 +44,7 @@ pub struct NetworkConfig {
     ///
     /// When enabled, the daemon asks the LAN router to forward:
     ///   - TCP `listen_port` (libp2p)
-    ///   - UDP `emule.kad_port` (Kad2, only with the `emule-compat` feature)
+    ///   - UDP `emule.udp_port` (Kad2, only with the `emule-compat` feature)
     ///
     /// Set to `false` if:
     ///   - You have already configured port forwarding manually on your router.
@@ -96,7 +96,10 @@ pub struct EmuleConfig {
     /// This port must be reachable from the internet for Kad2 bootstrap and
     /// source search to work.  The eMule standard port is 4672.
     /// When running in a container, map this port with `-p 4672:4672/udp`.
-    pub kad_port: u16,
+    ///
+    /// Default: 4672.  Override via `RUCIOD_EMULE_UDP_PORT`.
+    #[serde(alias = "kad_port")]
+    pub udp_port: u16,
 
     /// TCP port for incoming eMule peer connections (High-ID mode).
     ///
@@ -143,7 +146,7 @@ impl EmuleConfig {
 impl Default for EmuleConfig {
     fn default() -> Self {
         Self {
-            kad_port: 4672,
+            udp_port: 4672,
             tcp_port: Self::default_tcp_port(),
             external_ip: None,
             max_parallel_peers: Self::default_max_parallel_peers(),
@@ -363,7 +366,7 @@ impl Config {
     /// | `RUCIOD_DOWNLOAD_LIMIT_KBPS`| `network.download_limit_kbps`| integer KB/s, 0=unlimited |
     /// | `RUCIOD_EMULE_TEMP_DIR`     | `storage.emule_temp_dir`     | path               |
     /// | `RUCIOD_NODES_DAT`          | `storage.nodes_dat_path`     | path               |
-    /// | `RUCIOD_KAD_PORT`           | `emule.kad_port`             | integer 1-65535    |
+    /// | `RUCIOD_EMULE_UDP_PORT`     | `emule.udp_port`             | integer 1-65535    |
     /// | `RUCIOD_EMULE_TCP_PORT`     | `emule.tcp_port`             | integer 1-65535    |
     /// | `RUCIOD_EMULE_MAX_PARALLEL` | `emule.max_parallel_peers`   | integer 1-50       |
     /// | `RUCIOD_UPNP`               | `network.upnp`               | `true`/`false`     |
@@ -420,12 +423,13 @@ impl Config {
         {
             self.storage.nodes_dat_path = Some(PathBuf::from(v));
         }
-        if let Ok(v) = std::env::var("RUCIOD_KAD_PORT")
+        if let Ok(v) = std::env::var("RUCIOD_EMULE_UDP_PORT")
+            .or_else(|_| std::env::var("RUCIOD_KAD_PORT")) // legacy alias
             && !v.is_empty()
             && let Ok(n) = v.parse::<u16>()
             && n > 0
         {
-            self.emule.kad_port = n;
+            self.emule.udp_port = n;
         }
         if let Ok(v) = std::env::var("RUCIOD_EMULE_TCP_PORT")
             && !v.is_empty()

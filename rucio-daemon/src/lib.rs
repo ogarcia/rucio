@@ -194,7 +194,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                         .await
                         .expect("bind fallback UDP socket"),
                 );
-                let port = config.emule.kad_port;
+                let port = config.emule.udp_port;
                 warn!(
                     port,
                     "Falling back to ephemeral Kad2 socket — NAT will block replies"
@@ -229,7 +229,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
         let upnp_cfg = upnp::UpnpConfig {
             tcp_port: config.network.listen_port,
             #[cfg(feature = "emule-compat")]
-            udp_port: Some(config.emule.kad_port),
+            udp_port: Some(config.emule.udp_port),
             #[cfg(feature = "emule-compat")]
             emule_tcp_port: Some(config.emule.tcp_port),
             #[cfg(not(feature = "emule-compat"))]

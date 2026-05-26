@@ -49,7 +49,7 @@ pub async fn start_emule_tcp_listener(config: &Config) -> Result<tokio::net::Tcp
 }
 
 pub async fn start_kad_task(config: &Config) -> Result<KadHandle> {
-    let port = config.emule.kad_port;
+    let port = config.emule.udp_port;
     let socket = UdpSocket::bind(format!("0.0.0.0:{port}"))
         .await
         .with_context(|| format!("bind Kad2 UDP socket on port {port}"))?;

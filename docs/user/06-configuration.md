@@ -90,7 +90,7 @@ Enable or disable automatic UPnP/IGD port mapping. When enabled, the daemon
 asks the LAN router to forward:
 
 - TCP `network.listen_port` (libp2p)
-- UDP `emule.kad_port` (Kad2, only with the `emule-compat` feature)
+- UDP `emule.udp_port` (Kad2, only with the `emule-compat` feature)
 
 Set to `false` if:
 - You have already configured port forwarding manually on your router.
@@ -170,7 +170,7 @@ port 4321).
 
 ---
 
-### `emule.kad_port`
+### `emule.udp_port`
 
 UDP port for the Kad2 socket used to communicate with the eMule network.
 Only meaningful when the daemon is built with the `emule-compat` feature.
@@ -180,7 +180,7 @@ When running in a container, map it with `-p 4672:4672` (Podman/Docker map
 both TCP and UDP when no protocol suffix is given).
 
 ```sh
-rucio config set emule.kad_port 4672
+rucio config set emule.udp_port 4672
 ```
 
 **Default:** `4672` (eMule standard)
@@ -230,7 +230,7 @@ download_dir = "/mnt/data/downloads"
 temp_dir     = "/mnt/data/.rucio-tmp"
 
 [emule]
-kad_port = 4672
+udp_port = 4672
 ```
 
 ---
@@ -258,7 +258,7 @@ the file value untouched.
 | `RUCIOD_UPNP` | `network.upnp` | `true`/`false` (also `1`/`0`, `yes`/`no`, `on`/`off`) |
 | `RUCIOD_NODES_DAT` | `storage.nodes_dat_path` | path |
 | `RUCIOD_EMULE_TEMP_DIR` | `storage.emule_temp_dir` | path |
-| `RUCIOD_KAD_PORT` | `emule.kad_port` | integer 1–65535 |
+| `RUCIOD_EMULE_UDP_PORT` | `emule.udp_port` | integer 1–65535 |
 
 ### Docker / container example
 
@@ -300,7 +300,7 @@ docker run \
   -e RUCIOD_DOWNLOAD_DIR=/data/downloads \
   -e RUCIOD_DB_PATH=/data/rucio.db \
   -e RUCIOD_NODES_DAT=/data/nodes.dat \
-  -e RUCIOD_KAD_PORT=40066 \
+  -e RUCIOD_EMULE_UDP_PORT=40066 \
   -e RUCIOD_UPNP=false \
   -v rucio-data:/data \
   -p 7070:7070 -p 4321:4321 -p 40066:40066 \

@@ -111,7 +111,7 @@ When `network.upnp = true` (the default), the daemon spawns a background
 1. Discovers the LAN router via the IGD (Internet Gateway Device) protocol.
 2. Requests port mappings for:
    - TCP `network.listen_port` (libp2p)
-   - UDP `emule.kad_port` (Kad2, only with the `emule-compat` feature)
+   - UDP `emule.udp_port` (Kad2, only with the `emule-compat` feature)
 3. Renews the leases periodically before they expire.
 4. Writes the discovered external IP address to `AppState.external_ip`, which
    is returned in `GET /api/v1/status` and displayed in `rucio status`.
@@ -142,7 +142,7 @@ receive.
 
 The task:
 
-1. Binds a UDP socket on `emule.kad_port` (default `4672`).
+1. Binds a UDP socket on `emule.udp_port` (default `4672`).
 2. Reads a `nodes.dat` file (`storage.nodes_dat_path`) to obtain bootstrap
    seeds.
 3. Runs iterative bootstrap (up to 3 rounds, stops early at 50 contacts).
