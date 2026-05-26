@@ -58,11 +58,15 @@ use anyhow::{Context, Result, bail};
 use flate2::read::ZlibDecoder;
 use md4::Md4;
 use md5::{Digest, Md5};
+use std::collections::HashMap;
 use std::io::{self, Read as _};
 use std::net::{SocketAddr, SocketAddrV4};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{RwLock, Semaphore, TryAcquireError};
 use tokio::time::timeout;
 use tracing::{debug, info, warn};
 
@@ -89,8 +93,10 @@ const OP_SENDINGPART: u8 = 0x46;
 /// Payload: hash[16] + start_offset[4 LE] + zlib_data[…]
 /// Range end is implicit: start_offset + decompressed.len()
 const OP_COMPRESSEDPART: u8 = 0x40;
+const OP_FILESTATUS: u8 = 0x50;
 const OP_STARTUPLOAD_REQ: u8 = 0x54;
 const OP_ACCEPTUPLOAD_REQ: u8 = 0x55;
+const OP_ENDOFDOWNLOAD: u8 = 0x48;
 const OP_QUEUE_RANK: u8 = 0x5c;
 const OP_QUEUE_FULL: u8 = 0x93;
 
@@ -749,19 +755,54 @@ async fn send_request_parts(
         .context("send REQUESTPARTS")
 }
 
+// ── Upload context ────────────────────────────────────────────────────────────
+
+/// Metadata about a file currently being downloaded, exposed for upload.
+#[derive(Debug, Clone)]
+pub struct UploadInfo {
+    /// Display name (original filename from the ed2k link).
+    pub name: String,
+    /// Total expected file size in bytes.
+    pub total_size: u64,
+    /// Total number of 9.28 MB slices.
+    pub num_slices: usize,
+}
+
+/// Live map of files currently being downloaded, keyed by their MD4 hash.
+///
+/// The download engine inserts an entry when a download starts and removes it
+/// when the download completes, fails, or is cancelled.  The upload handler
+/// only serves hashes present here — this prevents serving stale `.part` files
+/// left over from cancelled downloads.
+pub type ActiveDownloads = Arc<RwLock<HashMap<[u8; 16], UploadInfo>>>;
+
+/// Everything the upload handler needs, shared across all incoming connections.
+pub struct UploadContext {
+    /// Semaphore that caps simultaneous upload connections.
+    pub slots: Arc<Semaphore>,
+    /// Directory where `.part` and `.part.met` files are stored.
+    pub temp_dir: PathBuf,
+    /// Our TCP port to advertise in HELLO packets.
+    pub tcp_port: u16,
+    /// Files currently being downloaded — the upload whitelist.
+    pub downloads: ActiveDownloads,
+}
+
 // ── Incoming TCP server ───────────────────────────────────────────────────────
 
-/// Accept incoming eMule TCP connections forever.
+/// Accept incoming eMule TCP connections and serve partial file uploads.
 ///
-/// Spawn this as a background task after binding the TCP port.  Each connection
-/// receives a HELLOANSWER and FILENOTFOUND for any file requested, which is
-/// enough to present ourselves as a reachable High-ID peer.
-pub async fn serve_incoming(listener: TcpListener, our_tcp_port: u16) {
-    info!(port = our_tcp_port, "eMule TCP listener started");
+/// Spawn as a background task after binding the TCP listener.  Each connection
+/// is handled in its own Tokio task.  Files are only served if they appear in
+/// `ctx.downloads` (i.e. are actively being downloaded by this daemon) and
+/// the corresponding `.part` / `.part.met` files are present on disk.
+pub async fn serve_incoming(listener: TcpListener, ctx: Arc<UploadContext>) {
+    info!(port = ctx.tcp_port, "eMule TCP listener started");
     loop {
         match listener.accept().await {
             Ok((stream, peer)) => {
-                tokio::spawn(handle_incoming(stream, peer, our_tcp_port));
+                let ctx = Arc::clone(&ctx);
+                tokio::spawn(handle_incoming(stream, peer, ctx));
             }
             Err(e) => warn!("eMule TCP accept error: {e}"),
         }
@@ -769,46 +810,119 @@ pub async fn serve_incoming(listener: TcpListener, our_tcp_port: u16) {
 }
 
 /// Handle one incoming eMule TCP connection.
-///
-/// Flow: HELLO → HELLOANSWER, then FILENOTFOUND for any file requests.
-/// We do not serve files but we must respond correctly to stay High-ID.
-async fn handle_incoming(mut stream: TcpStream, peer: SocketAddr, our_tcp_port: u16) {
+async fn handle_incoming(mut stream: TcpStream, peer: SocketAddr, ctx: Arc<UploadContext>) {
     debug!(%peer, "Incoming eMule TCP connection");
     let our_hash = our_client_hash();
     let mut cipher: Option<Rc4> = None;
     const OP_TIMEOUT: Duration = Duration::from_secs(30);
 
     let result: io::Result<()> = async {
-        // Wait for HELLO, skip any unexpected opcodes that arrive before it.
+        // ── HELLO handshake ───────────────────────────────────────────────────
         loop {
             let (_proto, opcode, _payload) =
                 timeout(OP_TIMEOUT, read_frame(&mut stream, &mut cipher))
                     .await
                     .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "hello timeout"))??;
             if opcode == OP_HELLO {
-                let answer = build_hello(&our_hash, our_tcp_port);
+                let answer = build_hello(&our_hash, ctx.tcp_port);
                 write_frame(&mut stream, &mut cipher, OP_HELLOANSWER, &answer).await?;
                 break;
             }
         }
 
-        // Serve the session: respond FILENOTFOUND to every file request.
+        // ── File request loop ─────────────────────────────────────────────────
+        // A peer may request several files in the same connection; serve or
+        // reject each one before the connection is closed.
         loop {
             let (_proto, opcode, payload) =
                 match timeout(OP_TIMEOUT, read_frame(&mut stream, &mut cipher)).await {
                     Ok(Ok(f)) => f,
-                    _ => break, // timeout or peer closed
+                    _ => break,
                 };
-            if opcode == OP_FILEREQUEST {
-                // Echo back the hash so the peer knows which file we rejected.
-                let hash = if payload.len() >= 16 {
-                    &payload[..16]
-                } else {
-                    &payload[..]
-                };
-                write_frame(&mut stream, &mut cipher, OP_FILENOTFOUND, hash).await?;
+
+            if opcode != OP_FILEREQUEST {
+                debug!(%peer, "ignoring opcode 0x{opcode:02x} before FILEREQUEST");
+                continue;
             }
+            if payload.len() < 16 {
+                break;
+            }
+            let mut hash = [0u8; 16];
+            hash.copy_from_slice(&payload[..16]);
+
+            // Look up in the active-download whitelist.
+            let info = ctx.downloads.read().await.get(&hash).cloned();
+            let Some(info) = info else {
+                write_frame(&mut stream, &mut cipher, OP_FILENOTFOUND, &hash).await?;
+                debug!(%peer, hash = %hex::encode(hash), "FILENOTFOUND (not downloading)");
+                continue;
+            };
+
+            // Try to claim an upload slot (non-blocking).
+            let _permit = match ctx.slots.try_acquire() {
+                Ok(p) => p,
+                Err(TryAcquireError::NoPermits) => {
+                    // Tell the peer to try again later — standard eMule behaviour.
+                    let rank = 50u32;
+                    write_frame(&mut stream, &mut cipher, OP_QUEUE_RANK, &rank.to_le_bytes())
+                        .await?;
+                    debug!(%peer, "upload slots full — sent QUEUE_RANK 50");
+                    break;
+                }
+                Err(TryAcquireError::Closed) => break,
+            };
+
+            // Load the chunk completion bitmap from .part.met.
+            let met_path = ctx.temp_dir.join(format!("{}.part.met", hex::encode(hash)));
+            let done = crate::progress::load_progress(&met_path, info.num_slices);
+
+            // ── FILEREQANSWER ─────────────────────────────────────────────────
+            let mut ans = Vec::with_capacity(16 + 2 + info.name.len());
+            ans.extend_from_slice(&hash);
+            ans.extend_from_slice(&(info.name.len() as u16).to_le_bytes());
+            ans.extend_from_slice(info.name.as_bytes());
+            write_frame(&mut stream, &mut cipher, OP_FILEREQUEST_ANSWER, &ans).await?;
+
+            // ── FILESTATUS ────────────────────────────────────────────────────
+            // Bitmap: one bit per 9.28 MB slice, 1 = available.
+            let mut status = Vec::with_capacity(16 + 2 + done.len().div_ceil(8));
+            status.extend_from_slice(&hash);
+            status.extend_from_slice(&(done.len() as u16).to_le_bytes());
+            let mut bits = vec![0u8; done.len().div_ceil(8)];
+            for (i, &d) in done.iter().enumerate() {
+                if d {
+                    bits[i / 8] |= 1 << (i % 8);
+                }
+            }
+            status.extend_from_slice(&bits);
+            write_frame(&mut stream, &mut cipher, OP_FILESTATUS, &status).await?;
+
+            debug!(
+                %peer,
+                hash = %hex::encode(hash),
+                available = done.iter().filter(|&&d| d).count(),
+                total = done.len(),
+                "Offered partial file for upload"
+            );
+
+            // ── Upload session ────────────────────────────────────────────────
+            if let Err(e) = run_upload_session(
+                &mut stream,
+                &mut cipher,
+                &hash,
+                &info,
+                &done,
+                &ctx.temp_dir,
+                OP_TIMEOUT,
+            )
+            .await
+            {
+                debug!(%peer, error = %e, "Upload session ended");
+            }
+            // Permit is released here (drop).
+            break;
         }
+
         Ok(())
     }
     .await;
@@ -816,6 +930,102 @@ async fn handle_incoming(mut stream: TcpStream, peer: SocketAddr, our_tcp_port: 
     if let Err(e) = result {
         debug!(%peer, error = %e, "Incoming eMule TCP connection error");
     }
+}
+
+/// Run the upload phase: STARTUPLOADREQ → ACCEPTUPLOAD → serve REQUESTPARTS.
+async fn run_upload_session(
+    stream: &mut TcpStream,
+    cipher: &mut Option<Rc4>,
+    hash: &[u8; 16],
+    _info: &UploadInfo,
+    done: &[bool],
+    temp_dir: &Path,
+    op_timeout: Duration,
+) -> io::Result<()> {
+    // Wait for STARTUPLOADREQ.
+    loop {
+        let (_proto, opcode, _payload) =
+            timeout(op_timeout, read_frame(stream, cipher))
+                .await
+                .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "STARTUPLOADREQ timeout"))??;
+        match opcode {
+            OP_STARTUPLOAD_REQ => break,
+            OP_ENDOFDOWNLOAD => return Ok(()),
+            _ => debug!("ignoring 0x{opcode:02x} waiting for STARTUPLOADREQ"),
+        }
+    }
+
+    write_frame(stream, cipher, OP_ACCEPTUPLOAD_REQ, &[]).await?;
+
+    let part_path = temp_dir.join(format!("{}.part", hex::encode(hash)));
+
+    // Serve REQUESTPARTS until the peer signals done or disconnects.
+    loop {
+        let (_proto, opcode, payload) = match timeout(op_timeout, read_frame(stream, cipher)).await
+        {
+            Ok(Ok(f)) => f,
+            _ => break,
+        };
+
+        match opcode {
+            OP_ENDOFDOWNLOAD => break,
+            OP_REQUESTPARTS => {
+                if payload.len() < 40 {
+                    break;
+                }
+                // Payload: hash[16] + start[4]*3 + end[4]*3 (all LE u32)
+                for i in 0..3usize {
+                    let start =
+                        u32::from_le_bytes(payload[16 + i * 4..20 + i * 4].try_into().unwrap())
+                            as u64;
+                    let end =
+                        u32::from_le_bytes(payload[28 + i * 4..32 + i * 4].try_into().unwrap())
+                            as u64;
+                    if start >= end {
+                        continue; // empty range — filler slot
+                    }
+
+                    // Ensure the requested range falls within completed slices.
+                    let first_slice = (start / CHUNK_SIZE as u64) as usize;
+                    let last_slice = (end.saturating_sub(1) / CHUNK_SIZE as u64) as usize;
+                    let all_done =
+                        (first_slice..=last_slice).all(|s| done.get(s).copied().unwrap_or(false));
+                    if !all_done {
+                        debug!(
+                            start,
+                            end, "Requested range not yet complete — closing upload"
+                        );
+                        return Ok(());
+                    }
+
+                    // Read and send the range.
+                    let len = (end - start) as usize;
+                    let mut buf = vec![0u8; len];
+                    {
+                        let mut file = tokio::fs::File::open(&part_path).await.map_err(|e| {
+                            io::Error::new(io::ErrorKind::NotFound, format!("open part file: {e}"))
+                        })?;
+                        file.seek(std::io::SeekFrom::Start(start)).await?;
+                        file.read_exact(&mut buf).await?;
+                    }
+
+                    // SENDINGPART payload: hash[16] + start[4] + end[4] + data
+                    let mut sp = Vec::with_capacity(24 + len);
+                    sp.extend_from_slice(hash);
+                    sp.extend_from_slice(&(start as u32).to_le_bytes());
+                    sp.extend_from_slice(&(end as u32).to_le_bytes());
+                    sp.extend_from_slice(&buf);
+                    write_frame(stream, cipher, OP_SENDINGPART, &sp).await?;
+                    debug!(start, end, bytes = len, "Sent SENDINGPART");
+                }
+            }
+            _ => debug!("ignoring 0x{opcode:02x} during upload"),
+        }
+    }
+
+    // Tell the peer we are done.
+    let _ = write_frame(stream, cipher, OP_ENDOFDOWNLOAD, &[]).await;
+    Ok(())
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

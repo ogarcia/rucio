@@ -11,9 +11,9 @@ use rucio_emule::ed2k::CHUNK_SIZE;
 use rucio_emule::kad::packet::KadId;
 use rucio_emule::kad::search::KadSource;
 use rucio_emule::kad::task::{KadHandle, KadTaskConfig};
-use rucio_emule::transfer::{DownloadEvent, DownloadOptions, Session};
+use rucio_emule::progress::{load_progress, save_progress};
+use rucio_emule::transfer::{ActiveDownloads, DownloadEvent, DownloadOptions, Session, UploadInfo};
 use std::collections::VecDeque;
-use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -114,6 +114,7 @@ pub async fn run_ed2k_download(
     db: &Db,
     ws_tx: &broadcast::Sender<WsEvent>,
     kad: &KadHandle,
+    active_downloads: &ActiveDownloads,
 ) -> Result<()> {
     // 1. Parse the link.
     let link = Ed2kLink::parse(link_str).with_context(|| format!("parse ed2k link: {link_str}"))?;
@@ -153,6 +154,18 @@ pub async fn run_ed2k_download(
     // Number of ed2k slices (one per CHUNK_SIZE block).
     let num_slices = link.size.div_ceil(CHUNK_SIZE as u64) as usize;
 
+    // Register this file for partial upload serving so eMule peers can fetch
+    // already-completed slices from us, building credit on the network.
+    let hash_key = *link.hash.as_bytes();
+    active_downloads.write().await.insert(
+        hash_key,
+        UploadInfo {
+            name: link.name.clone(),
+            total_size: link.size,
+            num_slices,
+        },
+    );
+
     // How long to reuse a source cache before querying Kad2 again.
     // eMule's own re-ask interval is 30 minutes; we match it to avoid
     // hammering the network with repeated source requests for the same hash.
@@ -166,6 +179,7 @@ pub async fn run_ed2k_download(
         // Check for user cancellation before doing any work.
         if is_cancelled(db, download_id).await {
             info!(name = %link.name, "eMule download cancelled by user");
+            active_downloads.write().await.remove(&hash_key);
             return Ok(());
         }
 
@@ -547,46 +561,8 @@ pub async fn run_ed2k_download(
         blake3 = %blake3_hex,
         "eMule download complete — file ready in download directory"
     );
+    active_downloads.write().await.remove(&hash_key);
     Ok(())
-}
-
-// ── Progress tracking ─────────────────────────────────────────────────────────
-
-/// Load per-slice completion state from a `.part.met` file.
-///
-/// File format: version(4 LE) + num_slices(4 LE) + bitset (ceil(n/8) bytes).
-/// Returns a `vec![false; num_slices]` if the file is absent or incompatible.
-fn load_progress(path: &Path, num_slices: usize) -> Vec<bool> {
-    let data = std::fs::read(path).unwrap_or_default();
-    if data.len() < 8 {
-        return vec![false; num_slices];
-    }
-    let stored_n = u32::from_le_bytes(data[4..8].try_into().unwrap_or([0; 4])) as usize;
-    if stored_n != num_slices {
-        return vec![false; num_slices];
-    }
-    let bit_bytes = &data[8..];
-    (0..num_slices)
-        .map(|i| {
-            let byte = bit_bytes.get(i / 8).copied().unwrap_or(0);
-            byte & (1 << (i % 8)) != 0
-        })
-        .collect()
-}
-
-/// Persist per-slice completion state to a `.part.met` file.
-fn save_progress(path: &Path, done: &[bool]) {
-    let mut data = Vec::with_capacity(8 + done.len().div_ceil(8));
-    data.extend_from_slice(&1u32.to_le_bytes()); // version
-    data.extend_from_slice(&(done.len() as u32).to_le_bytes());
-    let mut bits = vec![0u8; done.len().div_ceil(8)];
-    for (i, &d) in done.iter().enumerate() {
-        if d {
-            bits[i / 8] |= 1 << (i % 8);
-        }
-    }
-    data.extend_from_slice(&bits);
-    let _ = std::fs::write(path, data);
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

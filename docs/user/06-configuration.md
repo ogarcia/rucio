@@ -240,6 +240,24 @@ rucio config set emule.max_parallel_peers 5
 
 ---
 
+### `emule.max_upload_slots`
+
+Maximum number of simultaneous eMule upload connections.
+
+Rucio serves partially-downloaded eMule files back to other peers on the
+network to build upload credit, which improves its queue priority and results
+in faster download speeds.  This setting caps how many peers can download from
+us at the same time.  When all slots are busy, incoming peers receive a queue
+position message and retry automatically.
+
+```sh
+rucio config set emule.max_upload_slots 4
+```
+
+**Default:** `4`  **Range:** `1–50`
+
+---
+
 ## Configuration file
 
 The configuration is stored as TOML and is loaded at daemon startup.
@@ -290,6 +308,7 @@ enabled            = true
 udp_port           = 4672
 tcp_port           = 4662
 max_parallel_peers = 5
+max_upload_slots   = 4
 # temp_dir     = "~/.cache/rucio/emule-tmp"  # platform default
 # external_ip  = "1.2.3.4"                   # auto-detected via UPnP or peer responses
 ```
@@ -324,6 +343,7 @@ the file value untouched.
 | `RUCIOD_EMULE_TCP_PORT` | `emule.tcp_port` | `4662` | integer 1–65535 |
 | `RUCIOD_EXTERNAL_IP` | `emule.external_ip` | *(auto)* | IPv4 address |
 | `RUCIOD_EMULE_MAX_PARALLEL` | `emule.max_parallel_peers` | `5` | integer 1–50 |
+| `RUCIOD_EMULE_MAX_UPLOAD_SLOTS` | `emule.max_upload_slots` | `4` | integer 1–50 |
 
 ### Docker / container example
 

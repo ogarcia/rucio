@@ -181,6 +181,13 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     // --- API server ---------------------------------------------------------
     let (ws_tx, _) = tokio::sync::broadcast::channel::<WsEvent>(256);
 
+    // In-memory whitelist of files currently being downloaded via eMule, shared
+    // between the download engine (registers entries) and the upload handler
+    // (reads entries to decide what to serve).
+    #[cfg(feature = "emule-compat")]
+    let active_downloads: rucio_emule::transfer::ActiveDownloads =
+        std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
+
     // --- Kad2 background task (emule-compat) --------------------------------
     #[cfg(feature = "emule-compat")]
     let kad_handle = if !config.emule.enabled {
@@ -225,7 +232,15 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
         let tcp_port = config.emule.tcp_port;
         match crate::emule::start_emule_tcp_listener(&config).await {
             Ok(listener) => {
-                tokio::spawn(rucio_emule::transfer::serve_incoming(listener, tcp_port));
+                let upload_ctx = std::sync::Arc::new(rucio_emule::transfer::UploadContext {
+                    slots: std::sync::Arc::new(tokio::sync::Semaphore::new(
+                        config.emule.max_upload_slots.clamp(1, 50),
+                    )),
+                    temp_dir: config.emule.temp_dir.clone(),
+                    tcp_port,
+                    downloads: active_downloads.clone(),
+                });
+                tokio::spawn(rucio_emule::transfer::serve_incoming(listener, upload_ctx));
             }
             Err(e) => {
                 warn!(
@@ -341,6 +356,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                 let db = db.clone();
                 let ws_tx = ws_tx.clone();
                 let kad = kad_handle.clone();
+                let ad = active_downloads.clone();
                 tokio::spawn(async move {
                     if let Err(e) = crate::emule::run_ed2k_download(
                         &row.ed2k_link,
@@ -349,6 +365,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                         &db,
                         &ws_tx,
                         &kad,
+                        &ad,
                     )
                     .await
                     {
@@ -525,9 +542,10 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                                     let db = db.clone();
                                     let ws_tx = ws_tx.clone();
                                     let kad = kad_handle.clone();
+                                    let ad = active_downloads.clone();
                                     tokio::spawn(async move {
                                         if let Err(e) = crate::emule::run_ed2k_download(
-                                            &link, download_id, &config, &db, &ws_tx, &kad,
+                                            &link, download_id, &config, &db, &ws_tx, &kad, &ad,
                                         )
                                         .await
                                         {

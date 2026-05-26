@@ -10,6 +10,7 @@
 
 pub mod ed2k;
 pub mod kad;
+pub mod progress;
 pub mod transfer;
 
 pub use ed2k::{Ed2kHash, Ed2kLink};

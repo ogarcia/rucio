@@ -145,6 +145,16 @@ pub struct EmuleConfig {
     /// Default: 5.  Range: 1–50.  Override via `RUCIOD_EMULE_MAX_PARALLEL`.
     #[serde(default = "EmuleConfig::default_max_parallel_peers")]
     pub max_parallel_peers: usize,
+
+    /// Maximum number of simultaneous eMule upload slots.
+    ///
+    /// Each inbound peer requesting chunks from our in-progress downloads
+    /// occupies one slot.  When all slots are busy, incoming peers receive
+    /// OP_QUEUE_RANK and are told to retry later (standard eMule behaviour).
+    ///
+    /// Default: 4.  Range: 1–50.  Override via `RUCIOD_EMULE_MAX_UPLOAD_SLOTS`.
+    #[serde(default = "EmuleConfig::default_max_upload_slots")]
+    pub max_upload_slots: usize,
 }
 
 impl EmuleConfig {
@@ -159,6 +169,10 @@ impl EmuleConfig {
     fn default_max_parallel_peers() -> usize {
         5
     }
+
+    fn default_max_upload_slots() -> usize {
+        4
+    }
 }
 
 impl Default for EmuleConfig {
@@ -170,6 +184,7 @@ impl Default for EmuleConfig {
             tcp_port: Self::default_tcp_port(),
             external_ip: None,
             max_parallel_peers: Self::default_max_parallel_peers(),
+            max_upload_slots: Self::default_max_upload_slots(),
         }
     }
 }
@@ -385,6 +400,7 @@ impl Config {
     /// | `RUCIOD_EMULE_UDP_PORT`     | `emule.udp_port`             | integer 1-65535    |
     /// | `RUCIOD_EMULE_TCP_PORT`     | `emule.tcp_port`             | integer 1-65535    |
     /// | `RUCIOD_EMULE_MAX_PARALLEL` | `emule.max_parallel_peers`   | integer 1-50       |
+    /// | `RUCIOD_EMULE_MAX_UPLOAD_SLOTS` | `emule.max_upload_slots` | integer 1-50       |
     /// | `RUCIOD_UPNP`               | `network.upnp`               | `true`/`false`     |
     pub fn apply_env_overrides(&mut self) {
         if let Ok(v) = std::env::var("RUCIOD_API_LISTEN")
@@ -470,6 +486,13 @@ impl Config {
             && (1..=50).contains(&n)
         {
             self.emule.max_parallel_peers = n;
+        }
+        if let Ok(v) = std::env::var("RUCIOD_EMULE_MAX_UPLOAD_SLOTS")
+            && !v.is_empty()
+            && let Ok(n) = v.parse::<usize>()
+            && (1..=50).contains(&n)
+        {
+            self.emule.max_upload_slots = n;
         }
         // RUCIOD_UPNP=false / 0 / no disables UPnP; any other non-empty value enables it.
         if let Ok(v) = std::env::var("RUCIOD_UPNP")
