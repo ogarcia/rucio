@@ -179,27 +179,27 @@ pub async fn peers(client: &ApiClient) -> Result<()> {
     let rows: Vec<Row> = resp
         .peers
         .into_iter()
-        .map(|p| Row {
-            peer_id: truncate(&p.peer_id, 24),
-            class: format!("{:?}", p.class),
-            addresses: if p.addresses.is_empty() {
-                "-".to_string()
-            } else {
-                p.addresses.join(", ")
-            },
+        .map(|p| {
+            let public_addrs: Vec<&str> = p
+                .addresses
+                .iter()
+                .map(String::as_str)
+                .filter(|a| !is_loopback_or_unspecified(a))
+                .collect();
+            Row {
+                peer_id: p.peer_id,
+                class: format!("{:?}", p.class),
+                addresses: if public_addrs.is_empty() {
+                    "-".to_string()
+                } else {
+                    public_addrs.join(", ")
+                },
+            }
         })
         .collect();
 
     println!("{}", Table::new(rows));
     Ok(())
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}…", &s[..max])
-    }
 }
 
 fn format_uptime(secs: u64) -> String {
@@ -312,6 +312,16 @@ fn addr_scope_hint(multiaddr: &str) -> &'static str {
         }
     }
     ""
+}
+
+/// Returns `true` for loopback, unspecified, and link-local addresses that are
+/// never useful in a peer table shown to the user.
+fn is_loopback_or_unspecified(multiaddr: &str) -> bool {
+    match extract_ip(multiaddr) {
+        Some("127.0.0.1") | Some("0.0.0.0") | Some("::1") | Some("::") => true,
+        Some(ip) => ip.starts_with("fe80:") || ip.starts_with("fe80::"),
+        None => false,
+    }
 }
 
 /// Extract the raw IP string from a multiaddr like `/ip4/1.2.3.4/tcp/...`
