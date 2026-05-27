@@ -111,7 +111,10 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    rucio_core::logging::init("RUCIO_BOOTSTRAP");
+    rucio_core::logging::init(
+        "RUCIO_BOOTSTRAP",
+        "rucio_bootstrap=info,rucio_net=info,rucio_core=info",
+    );
     let args = Args::parse();
 
     // ── Load / initialise config ──────────────────────────────────────────────

@@ -27,7 +27,10 @@ use rucio_core::protocol::search::{SearchQuery, SearchResult};
 
 /// Entry point for the daemon logic.
 pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
-    rucio_core::logging::init("RUCIOD");
+    rucio_core::logging::init(
+        "RUCIOD",
+        "rucio_daemon=info,rucio_core=info,rucio_emule=info,rucio_net=info",
+    );
 
     let config = Arc::new(config::Config::load(config_path)?);
     info!("Starting Rucio daemon v{}", env!("CARGO_PKG_VERSION"));
