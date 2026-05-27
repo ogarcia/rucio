@@ -800,51 +800,65 @@ enum DialNoise {
 
 /// Classify a `DialError` for log-level selection.
 ///
-/// Each `(addr, err)` pair is checked individually:
-/// * private address → contributes to `Private`
-/// * public address + `ENETUNREACH` → contributes to `Unreachable`
-/// * anything else → `Real` (short-circuits immediately)
+/// * `WrongPeerId` on a private/loopback address → `Private` (DEBUG).
+///   This happens when identify advertises the remote node's own loopback
+///   addresses and Kad later tries to dial them, hitting our local daemon.
 ///
-/// The returned level is the "worst" across all pairs, with
+/// * `Transport` failures are checked per `(addr, err)` pair:
+///   - private address → contributes to `Private`
+///   - public address + `ENETUNREACH` → contributes to `Unreachable`
+///   - anything else → `Real` (short-circuits immediately)
+///
+/// The returned level is the "worst" across all pairs:
 /// `Private < Unreachable < Real`.
 fn classify_dial_error(error: &DialError) -> DialNoise {
     use libp2p::core::transport::TransportError;
     use std::io;
 
-    let DialError::Transport(addrs) = error else {
-        return DialNoise::Real;
-    };
-    if addrs.is_empty() {
-        return DialNoise::Real;
-    }
-
-    let mut has_unreachable = false;
-    for (addr, err) in addrs {
-        let private = addr.iter().any(|p| match p {
-            Protocol::Ip4(ip) => ip.is_private() || ip.is_loopback() || ip.is_link_local(),
-            Protocol::Ip6(ip) => {
-                ip.is_loopback()
-                    || (ip.segments()[0] & 0xfe00) == 0xfc00 // fc00::/7 unique-local
-                    || (ip.segments()[0] & 0xffc0) == 0xfe80 // fe80::/10 link-local
+    match error {
+        // identify propagates every listen address of the remote, including
+        // its own loopback. Dialling 127.0.0.1:4321 on our host hits our
+        // local daemon with a different peer ID — expected, not actionable.
+        DialError::WrongPeerId { address, .. } => {
+            if addr_is_private_or_loopback(address) {
+                DialNoise::Private
+            } else {
+                DialNoise::Real
             }
-            _ => false,
-        });
-        if private {
-            continue;
         }
-        let unreachable = matches!(
-            err,
-            TransportError::Other(e) if e.kind() == io::ErrorKind::NetworkUnreachable
-        );
-        if unreachable {
-            has_unreachable = true;
-        } else {
-            return DialNoise::Real;
+        DialError::Transport(addrs) if !addrs.is_empty() => {
+            let mut has_unreachable = false;
+            for (addr, err) in addrs {
+                if addr_is_private_or_loopback(addr) {
+                    continue;
+                }
+                if matches!(err, TransportError::Other(e) if e.kind() == io::ErrorKind::NetworkUnreachable)
+                {
+                    has_unreachable = true;
+                } else {
+                    return DialNoise::Real;
+                }
+            }
+            if has_unreachable {
+                DialNoise::Unreachable
+            } else {
+                DialNoise::Private
+            }
         }
+        _ => DialNoise::Real,
     }
-    if has_unreachable {
-        DialNoise::Unreachable
-    } else {
-        DialNoise::Private
-    }
+}
+
+/// Return `true` if every IP component of `addr` is private, loopback, or
+/// link-local — i.e. not routable from the public internet.
+fn addr_is_private_or_loopback(addr: &Multiaddr) -> bool {
+    addr.iter().any(|p| match p {
+        Protocol::Ip4(ip) => ip.is_private() || ip.is_loopback() || ip.is_link_local(),
+        Protocol::Ip6(ip) => {
+            ip.is_loopback()
+                || (ip.segments()[0] & 0xfe00) == 0xfc00 // fc00::/7 unique-local
+                || (ip.segments()[0] & 0xffc0) == 0xfe80 // fe80::/10 link-local
+        }
+        _ => false,
+    })
 }
