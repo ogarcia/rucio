@@ -56,21 +56,27 @@ pub enum Commands {
 /// `rucio share …` — manage shared files.
 #[derive(Subcommand, Debug)]
 pub enum ShareAction {
-    /// Share a directory
-    Add {
-        /// Path to the directory to share (individual files are not accepted)
-        path: String,
-    },
     /// List shared files
     List {
         /// Only show files whose name contains this string (case-insensitive)
         #[arg(long)]
         filter: Option<String>,
     },
+    /// Share a directory
+    Add {
+        /// Path to the directory to share (individual files are not accepted)
+        path: String,
+    },
     /// Stop sharing a file or directory
     Remove {
         /// Root hash (hex) of a single file, or filesystem path (file or directory)
         target: String,
+    },
+    /// Show how many files are currently being indexed
+    Indexing {
+        /// Keep watching until indexing finishes
+        #[arg(short, long)]
+        watch: bool,
     },
     /// Get the magnet link for a file — shared or not
     Magnet {
@@ -81,26 +87,11 @@ pub enum ShareAction {
         #[arg(long, value_name = "PATH")]
         file: Option<String>,
     },
-    /// Show how many files are currently being indexed
-    Indexing {
-        /// Keep watching until indexing finishes
-        #[arg(short, long)]
-        watch: bool,
-    },
 }
 
 /// `rucio download …` — manage downloads.
 #[derive(Subcommand, Debug)]
 pub enum DownloadAction {
-    /// Queue a download (by search result index, magnet link, or ed2k link)
-    Add {
-        /// Search result index (e.g. 1), a full magnet link (rucio:<hash>…), or an
-        /// ed2k link (ed2k://|file|…|…|…|/) to download from the eMule network.
-        target: String,
-        /// PeerId of the provider — only needed when target is a rucio: magnet link
-        #[arg(long)]
-        provider: Option<String>,
-    },
     /// List active and completed downloads
     List {
         /// Refresh the table every second until all downloads finish
@@ -117,6 +108,15 @@ pub enum DownloadAction {
     Show {
         /// Row number from `rucio download list` (e.g. 1) or root hash (full or prefix)
         target: String,
+    },
+    /// Queue a download (by search result index, magnet link, or ed2k link)
+    Add {
+        /// Search result index (e.g. 1), a full magnet link (rucio:<hash>…), or an
+        /// ed2k link (ed2k://|file|…|…|…|/) to download from the eMule network.
+        target: String,
+        /// PeerId of the provider — only needed when target is a rucio: magnet link
+        #[arg(long)]
+        provider: Option<String>,
     },
     /// Cancel an in-progress download
     Cancel {
