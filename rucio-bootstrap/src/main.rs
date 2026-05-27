@@ -30,6 +30,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use clap::Parser;
 use libp2p::{Multiaddr, PeerId};
+use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 use rucio_net::{BehaviourConfig, NetConfig, NodeCmd, NodeEvent};
@@ -99,6 +100,13 @@ struct Args {
     #[cfg(feature = "indexer")]
     #[arg(long)]
     no_enrich: bool,
+
+    /// Number of additional Kademlia identities to spawn (beyond the primary).
+    /// Overrides `indexer.identity_count`.  Each extra identity listens on an
+    /// ephemeral port and bootstraps from the same peers as the primary.
+    #[cfg(feature = "indexer")]
+    #[arg(long, env = "RUCIO_BOOTSTRAP_IDENTITY_COUNT")]
+    identity_count: Option<u8>,
 }
 
 #[tokio::main]
@@ -154,6 +162,9 @@ async fn main() -> Result<()> {
         if args.no_enrich {
             cfg.indexer.enrich = false;
         }
+        if let Some(n) = args.identity_count {
+            cfg.indexer.identity_count = n;
+        }
     }
 
     // ── Resolve effective values ──────────────────────────────────────────────
@@ -166,6 +177,12 @@ async fn main() -> Result<()> {
     } else {
         cfg.node.listen
     };
+
+    // Pre-compute extra identity paths before identity_path is moved.
+    #[cfg(feature = "indexer")]
+    let extra_identity_paths: Vec<PathBuf> = (1..=(cfg.indexer.identity_count as usize))
+        .map(|i| config::extra_identity_path(&identity_path, i))
+        .collect();
 
     // Resolve the PeerId up front so we can print dialable addresses (spawn
     // loads the same key again internally — load_or_create is idempotent).
@@ -189,10 +206,11 @@ async fn main() -> Result<()> {
         listen_addrs,
         behaviour,
     };
-    let mut handle = rucio_net::spawn(&net_cfg)
+    let handle = rucio_net::spawn(&net_cfg)
         .await
         .context("starting the bootstrap node")?;
 
+    // ── Indexer ───────────────────────────────────────────────────────────────
     #[cfg(feature = "indexer")]
     let indexer = if cfg.indexer.enabled {
         let db_path = cfg.indexer.db.unwrap_or_else(config::default_index_db_path);
@@ -203,6 +221,7 @@ async fn main() -> Result<()> {
                 token: cfg.indexer.api_token,
                 retention_days: cfg.indexer.retention_days,
                 enrich,
+                // Only the primary swarm carries the manifest protocol.
                 node_cmd: handle.cmd_tx.clone(),
             })
             .await?,
@@ -211,31 +230,83 @@ async fn main() -> Result<()> {
         None
     };
 
-    // Join the DHT through the configured peers, if any.
+    // ── Fan-in: merge events from all swarms into one channel ─────────────────
+    //
+    // Each event is tagged with its swarm index (0 = primary) so the event
+    // loop can apply swarm-specific logic (e.g. suppress bootstrap announcements
+    // for ephemeral extra identities).
+    let (fan_tx, mut fan_rx) = mpsc::channel::<(usize, NodeEvent)>(256);
+    let mut all_cmd_txs: Vec<mpsc::Sender<NodeCmd>> = Vec::new();
+
+    // Primary swarm forwarder.
+    {
+        let tx = fan_tx.clone();
+        let mut rx = handle.event_rx;
+        tokio::spawn(async move {
+            while let Some(ev) = rx.recv().await {
+                if tx.send((0, ev)).await.is_err() {
+                    break;
+                }
+            }
+        });
+    }
+    all_cmd_txs.push(handle.cmd_tx);
+
+    // Extra indexer identities (each on an ephemeral port).
+    #[cfg(feature = "indexer")]
+    if cfg.indexer.enabled {
+        for (i, id_path) in extra_identity_paths.into_iter().enumerate() {
+            let swarm_idx = i + 1;
+            info!(
+                identity = %id_path.display(),
+                swarm = swarm_idx,
+                "Starting extra indexer identity"
+            );
+            let extra_cfg = NetConfig {
+                identity_path: id_path,
+                listen_addrs: vec!["/ip4/0.0.0.0/tcp/0".into(), "/ip6/::/tcp/0".into()],
+                behaviour: BehaviourConfig::indexer(enrich),
+            };
+            let extra_handle = rucio_net::spawn(&extra_cfg)
+                .await
+                .with_context(|| format!("starting indexer identity {swarm_idx}"))?;
+            let tx = fan_tx.clone();
+            let mut rx = extra_handle.event_rx;
+            tokio::spawn(async move {
+                while let Some(ev) = rx.recv().await {
+                    if tx.send((swarm_idx, ev)).await.is_err() {
+                        break;
+                    }
+                }
+            });
+            all_cmd_txs.push(extra_handle.cmd_tx);
+        }
+    }
+    // Drop the original sender so the channel closes when all forwarders finish.
+    drop(fan_tx);
+
+    // ── Bootstrap all swarms from the configured peers ────────────────────────
     let mut joined = false;
     for raw in &cfg.node.bootstrap_peers {
         match raw.parse::<Multiaddr>() {
             Ok(addr) => {
-                handle
-                    .cmd_tx
-                    .send(NodeCmd::AddBootstrapPeer(addr))
-                    .await
-                    .ok();
+                for tx in &all_cmd_txs {
+                    tx.send(NodeCmd::AddBootstrapPeer(addr.clone())).await.ok();
+                }
                 joined = true;
             }
             Err(e) => warn!("Ignoring invalid bootstrap_peer {raw:?}: {e}"),
         }
     }
     if joined {
-        handle
-            .cmd_tx
-            .send(NodeCmd::KadBootstrapPeersReady)
-            .await
-            .ok();
+        for tx in &all_cmd_txs {
+            tx.send(NodeCmd::KadBootstrapPeersReady).await.ok();
+        }
     } else {
         info!("No bootstrap peers configured — running as a seed node (listen only)");
     }
 
+    // ── Main event loop ───────────────────────────────────────────────────────
     let mut connected: usize = 0;
     let mut heartbeat = tokio::time::interval(Duration::from_secs(60));
     heartbeat.tick().await; // consume the immediate first tick
@@ -244,50 +315,58 @@ async fn main() -> Result<()> {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
                 info!("Received Ctrl-C — shutting down");
-                handle.cmd_tx.send(NodeCmd::Shutdown).await.ok();
+                for tx in &all_cmd_txs {
+                    tx.send(NodeCmd::Shutdown).await.ok();
+                }
                 break;
             }
             _ = heartbeat.tick() => {
                 info!(connected_peers = connected, "Bootstrap node alive");
             }
-            ev = handle.event_rx.recv() => {
-                let Some(ev) = ev else {
-                    warn!("Node task ended unexpectedly");
+            ev = fan_rx.recv() => {
+                let Some((swarm_idx, ev)) = ev else {
+                    warn!("All node tasks ended unexpectedly");
                     break;
                 };
                 match ev {
-                    NodeEvent::Ready { peer_id, listen_addrs } => {
-                        info!(%peer_id, "Ready — add one of these to a node's bootstrap_peers:");
-                        for addr in &listen_addrs {
-                            announce(addr, &peer_id);
+                    NodeEvent::Ready { peer_id: ev_peer_id, ref listen_addrs } => {
+                        if swarm_idx == 0 {
+                            info!(%ev_peer_id, "Ready — add one of these to a node's bootstrap_peers:");
+                            for addr in listen_addrs {
+                                announce(addr, &ev_peer_id);
+                            }
+                        } else {
+                            info!(%ev_peer_id, swarm = swarm_idx, "Indexer identity ready");
                         }
                     }
-                    NodeEvent::ListenAddrAdded(addr) => announce(&addr, &peer_id),
-                    NodeEvent::ObservedAddr { addr, .. } => {
+                    NodeEvent::ListenAddrAdded(ref addr) if swarm_idx == 0 => {
+                        announce(addr, &peer_id);
+                    }
+                    NodeEvent::ObservedAddr { ref addr, .. } if swarm_idx == 0 => {
                         info!("Observed public address: {addr}/p2p/{peer_id}");
                     }
                     NodeEvent::PeerConnected { .. } => connected += 1,
                     NodeEvent::PeerDisconnected { .. } => {
                         connected = connected.saturating_sub(1)
                     }
-                    NodeEvent::FatalError(e) => {
-                        warn!("Fatal node error: {e}");
+                    NodeEvent::FatalError(ref e) => {
+                        warn!(swarm = swarm_idx, "Fatal node error: {e}");
                         break;
                     }
                     #[cfg(feature = "indexer")]
-                    NodeEvent::ProviderRecord { key, provider, .. } => {
+                    NodeEvent::ProviderRecord { ref key, ref provider, .. } => {
                         if let Some(ix) = indexer.as_ref() {
-                            ix.record(&key, &provider).await;
+                            ix.record(key, provider).await;
                         }
                     }
                     #[cfg(feature = "indexer")]
                     NodeEvent::ManifestReceived {
                         request_id,
-                        response,
+                        ref response,
                         ..
                     } => {
                         if let Some(ix) = indexer.as_ref() {
-                            ix.on_manifest(request_id, response).await;
+                            ix.on_manifest(request_id, response.clone()).await;
                         }
                     }
                     _ => {}

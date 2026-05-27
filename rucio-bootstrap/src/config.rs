@@ -49,6 +49,12 @@ pub struct IndexerConfig {
     /// Resolve file name/size from announcing peers.
     #[serde(default = "default_enrich")]
     pub enrich: bool,
+    /// Number of additional Kademlia identities to spawn alongside the
+    /// primary, spreading DHT coverage across the keyspace. Extra keys are
+    /// stored as `identity-1.key`, `identity-2.key`, … next to the primary.
+    /// 0 = single identity (default).
+    #[serde(default)]
+    pub identity_count: u8,
 }
 
 // ── serde defaults ────────────────────────────────────────────────────────────
@@ -88,6 +94,7 @@ impl Default for IndexerConfig {
             api_token: None,
             retention_days: default_retention_days(),
             enrich: default_enrich(),
+            identity_count: 0,
         }
     }
 }
@@ -113,6 +120,22 @@ pub fn default_index_db_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
         .join("rucio-bootstrap")
         .join("index.db")
+}
+
+#[cfg(feature = "indexer")]
+/// Path for the i-th extra indexer identity, derived from the primary.
+///
+/// `identity.key` → `identity-1.key`, `identity-2.key`, …
+pub fn extra_identity_path(primary: &Path, i: usize) -> PathBuf {
+    let dir = primary.parent().unwrap_or_else(|| Path::new("."));
+    let stem = primary
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("identity");
+    match primary.extension().and_then(|s| s.to_str()) {
+        Some(ext) => dir.join(format!("{stem}-{i}.{ext}")),
+        None => dir.join(format!("{stem}-{i}")),
+    }
 }
 
 // ── load / init ───────────────────────────────────────────────────────────────
@@ -192,6 +215,12 @@ retention_days = 30
 
 # Resolve file name/size from announcing peers (recommended).
 enrich = true
+
+# Additional Kademlia identities to spread DHT coverage across the keyspace.
+# Each extra identity listens on an ephemeral port and bootstraps from the
+# same peers as the primary.  Keys are stored as identity-1.key, identity-2.key, …
+# next to the primary identity key.  0 = single identity (default).
+identity_count = 0
 "#
     )
 }
