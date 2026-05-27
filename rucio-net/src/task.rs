@@ -6,8 +6,9 @@ use libp2p::{
     Multiaddr, PeerId, SwarmBuilder,
     gossipsub::{self, IdentTopic},
     kad::{self, QueryId},
+    multiaddr::Protocol,
     request_response::{self, ResponseChannel},
-    swarm::SwarmEvent,
+    swarm::{DialError, SwarmEvent},
 };
 use rucio_core::protocol::{
     manifest::{ManifestRequest, ManifestResponse},
@@ -392,7 +393,17 @@ async fn on_swarm_event(
                 .await;
         }
         SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
-            warn!(%error, "Outgoing connection error");
+            // Kad routing tables frequently contain private-IP entries from
+            // peers that advertised their LAN address in the public DHT.
+            // Dialling them fails immediately when we are not on the same
+            // LAN — this is expected noise, not an operator-actionable error.
+            // Downgrade to debug so the log stays quiet under normal operation;
+            // LAN sharing via mDNS is unaffected.
+            if all_addrs_private(&error) {
+                debug!(%error, "Outgoing connection error (private address, expected)");
+            } else {
+                warn!(%error, "Outgoing connection error");
+            }
             // Schedule a retry for known peers so that simultaneous-open
             // handshake collisions (both nodes dial each other at the same
             // instant) are recovered from automatically.
@@ -772,4 +783,29 @@ async fn on_manifest_event(
         }
         request_response::Event::ResponseSent { .. } => {}
     }
+}
+
+/// Return `true` when a dial error is a `Transport` failure where every
+/// attempted address is a private / link-local / loopback address.
+///
+/// These appear regularly because Kad routing tables propagate the listen
+/// addresses of all peers, including private IPs advertised by peers behind
+/// NAT.  When we are not on the same LAN the connection always fails, but
+/// this is expected noise rather than an operator-actionable problem.
+fn all_addrs_private(error: &DialError) -> bool {
+    let DialError::Transport(addrs) = error else {
+        return false;
+    };
+    !addrs.is_empty()
+        && addrs.iter().all(|(addr, _)| {
+            addr.iter().any(|p| match p {
+                Protocol::Ip4(ip) => ip.is_private() || ip.is_loopback() || ip.is_link_local(),
+                Protocol::Ip6(ip) => {
+                    ip.is_loopback()
+                        || (ip.segments()[0] & 0xfe00) == 0xfc00 // fc00::/7 unique-local
+                        || (ip.segments()[0] & 0xffc0) == 0xfe80 // fe80::/10 link-local
+                }
+                _ => false,
+            })
+        })
 }
