@@ -244,10 +244,39 @@ fn print_table(
 /// `target` is:
 ///   - a 1-based integer index into the last search results, or
 ///   - a `rucio:<hash>` magnet link (optionally with name/size/provider params), or
-///   - an `ed2k://|file|…|…|…|/` link to download from the eMule network.
+///   - an `ed2k://|file|…|…|…|/` link to download from the eMule network, or
+///   - a quoted string containing multiple `magnet:` / `ed2k://` links separated by
+///     whitespace (each link is started individually).
 ///
 /// `--provider` is optional — the DHT will find providers automatically.
 pub async fn start(client: &ApiClient, target: &str, provider: Option<&str>) -> Result<()> {
+    let links = split_links(target);
+
+    if links.len() == 1 {
+        return start_single(client, links[0], provider).await;
+    }
+
+    // Multiple links: start each one, collecting errors.
+    let mut ok = 0usize;
+    let mut errors = 0usize;
+    for link in &links {
+        match start_single(client, link, provider).await {
+            Ok(()) => ok += 1,
+            Err(e) => {
+                eprintln!("{}: {e}", color::error("Error"));
+                errors += 1;
+            }
+        }
+    }
+    if errors == 0 {
+        println!("{}", color::success(&format!("Queued {ok} download(s).")));
+    } else {
+        println!("Queued {ok} download(s), {errors} error(s).");
+    }
+    Ok(())
+}
+
+async fn start_single(client: &ApiClient, target: &str, provider: Option<&str>) -> Result<()> {
     // Detect ed2k scheme first.
     if target.trim_start().starts_with("ed2k://") {
         client.start_ed2k_download(target.trim()).await?;
@@ -274,6 +303,44 @@ pub async fn start(client: &ApiClient, target: &str, provider: Option<&str>) -> 
     client.start_download(&magnet, providers).await?;
     println!("{}", color::success("Download queued."));
     Ok(())
+}
+
+/// Split a string into individual `magnet:` / `ed2k://` links.
+///
+/// Finds every occurrence of a known link prefix, sorts them by position, and
+/// returns the substring from each prefix to the start of the next one
+/// (trailing whitespace trimmed).  If no known prefix is found the entire
+/// trimmed input is returned as a single element (handles numeric indices and
+/// bare hashes unchanged).
+fn split_links(input: &str) -> Vec<&str> {
+    const PREFIXES: &[&str] = &["magnet:", "ed2k://"];
+
+    let mut positions: Vec<usize> = PREFIXES
+        .iter()
+        .flat_map(|prefix| {
+            let mut found = vec![];
+            let mut start = 0;
+            while let Some(idx) = input[start..].find(prefix) {
+                found.push(start + idx);
+                start += idx + prefix.len();
+            }
+            found
+        })
+        .collect();
+
+    if positions.is_empty() {
+        return vec![input.trim()];
+    }
+
+    positions.sort_unstable();
+    positions.dedup();
+
+    let last = *positions.last().unwrap();
+    positions
+        .windows(2)
+        .map(|w| input[w[0]..w[1]].trim())
+        .chain(std::iter::once(input[last..].trim()))
+        .collect()
 }
 
 /// Show full details for a single download identified by row number or hash.
