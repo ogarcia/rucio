@@ -86,13 +86,13 @@ few seconds:
 Use the row number from the last search:
 
 ```sh
-rucio download get 1
+rucio download add 1
 ```
 
 Or paste a magnet link directly:
 
 ```sh
-rucio download get "rucio:7b4a...?name=great-expectations.epub&size=1258291"
+rucio download add "rucio:7b4a...?name=great-expectations.epub&size=1258291"
 ```
 
 ## 6. Watch download progress

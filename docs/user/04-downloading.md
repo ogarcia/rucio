@@ -8,13 +8,13 @@ You can start a download from a search result or from a magnet link.
 
 ```sh
 rucio search "moby dick"
-rucio download get 1
+rucio download add 1
 ```
 
 **From a magnet link:**
 
 ```sh
-rucio download get "rucio:7b4a...?name=moby-dick.epub&size=980123"
+rucio download add "rucio:7b4a...?name=moby-dick.epub&size=980123"
 ```
 
 rucio immediately registers the download and begins locating peers that have
@@ -170,10 +170,10 @@ nodes.dat status:    present (150 contacts)
 
 ### Starting an eMule download
 
-Pass any `ed2k://` link to `rucio download get`:
+Pass any `ed2k://` link to `rucio download add`:
 
 ```sh
-rucio download get "ed2k://|file|ubuntu-24.04.2-desktop-amd64.iso|6114656256|a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4|/"
+rucio download add "ed2k://|file|ubuntu-24.04.2-desktop-amd64.iso|6114656256|a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4|/"
 ```
 
 The daemon will:

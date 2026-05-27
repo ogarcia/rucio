@@ -1,4 +1,4 @@
-//! `rucio download list`, `rucio download get <target>`, `rucio download show <X>`,
+//! `rucio download list`, `rucio download add <target>`, `rucio download show <X>`,
 //! `rucio download cancel <idx|hash>`, `rucio download clean`
 
 use anyhow::{Result, bail};

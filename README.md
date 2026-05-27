@@ -76,8 +76,8 @@ rucio search "big buck bunny"
 **Download a result** (by index from the last search, or by magnet link):
 
 ```sh
-rucio download get 1
-rucio download get "rucio:abc123...?name=big_buck_bunny.mkv&size=734003200"
+rucio download add 1
+rucio download add "rucio:abc123...?name=big_buck_bunny.mkv&size=734003200"
 ```
 
 **Watch progress:**

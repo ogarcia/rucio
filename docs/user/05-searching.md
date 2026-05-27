@@ -25,7 +25,7 @@ cycles with no new results — typically 5–10 seconds.
 
 | Column | Meaning |
 |---|---|
-| `#` | Row number, used with `rucio download get` |
+| `#` | Row number, used with `rucio download add` |
 | `Name` | File name as announced by the sharing peer |
 | `Size` | File size in human-readable form |
 | `Peers` | Number of peers known to have this file at query time |
@@ -33,10 +33,10 @@ cycles with no new results — typically 5–10 seconds.
 
 ## Downloading a result
 
-Pass the row number directly to `rucio download get`:
+Pass the row number directly to `rucio download add`:
 
 ```sh
-rucio download get 3
+rucio download add 3
 ```
 
 The row numbers are only valid for the most recent search. If you run another
@@ -59,7 +59,7 @@ download chunks from all of them in parallel.
 **You can download without searching** if you already have a magnet link:
 
 ```sh
-rucio download get "rucio:7b4a...?name=great-expectations.epub&size=1258291"
+rucio download add "rucio:7b4a...?name=great-expectations.epub&size=1258291"
 ```
 
 See [Magnet links](07-magnet-links.md) for more detail.

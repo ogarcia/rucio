@@ -159,7 +159,7 @@ async fn bootstrap(client: &ApiClient, url: Option<String>) -> Result<()> {
         resp.contacts.bold(),
         resp.path.cyan()
     );
-    println!("You can now use `rucio download get ed2k://…` to download eMule files.");
+    println!("You can now use `rucio download add ed2k://…` to download eMule files.");
 
     Ok(())
 }

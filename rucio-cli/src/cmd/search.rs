@@ -323,7 +323,7 @@ fn print_results(results: &[CachedResult]) {
         .collect();
 
     println!("{}", Table::new(rows));
-    println!("Use `rucio download get <#>` to download.");
+    println!("Use `rucio download add <#>` to download.");
 }
 
 fn human_size(bytes: u64) -> String {

@@ -198,7 +198,7 @@ This handles:
 ## ed2k download flow
 
 ```
-rucio download get "ed2k://|file|name.ext|size|md4hash|/"
+rucio download add "ed2k://|file|name.ext|size|md4hash|/"
     │
     ▼
 Parse ed2k link → extract MD4 hash + size

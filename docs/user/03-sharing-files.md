@@ -57,7 +57,7 @@ rucio share magnet 2          # by row number from `rucio share list`
 rucio:cc01...?name=lecture-02.mp4&size=417333248
 ```
 
-You can send this link to anyone. They can paste it directly into `rucio download get`.
+You can send this link to anyone. They can paste it directly into `rucio download add`.
 See [Magnet links](07-magnet-links.md) for more detail.
 
 ## Removing a shared directory

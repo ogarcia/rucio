@@ -42,10 +42,10 @@ running rucio.
 
 ## Using a magnet link to download
 
-Paste the full link as the argument to `rucio download get`:
+Paste the full link as the argument to `rucio download add`:
 
 ```sh
-rucio download get "rucio:7b4a3f9c...?name=great-expectations.epub&size=1258291"
+rucio download add "rucio:7b4a3f9c...?name=great-expectations.epub&size=1258291"
 ```
 
 rucio parses the link, registers the download, and starts locating peers that

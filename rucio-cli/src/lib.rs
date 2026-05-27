@@ -92,8 +92,8 @@ pub enum ShareAction {
 /// `rucio download …` — manage downloads.
 #[derive(Subcommand, Debug)]
 pub enum DownloadAction {
-    /// Download a file (by search result index, magnet link, or ed2k link)
-    Get {
+    /// Queue a download (by search result index, magnet link, or ed2k link)
+    Add {
         /// Search result index (e.g. 1), a full magnet link (rucio:<hash>…), or an
         /// ed2k link (ed2k://|file|…|…|…|/) to download from the eMule network.
         target: String,
@@ -235,7 +235,7 @@ pub async fn run() -> Result<()> {
             ShareAction::Indexing { watch } => cmd::shares::indexing(&client, watch).await,
         },
         Commands::Download { action } => match action {
-            DownloadAction::Get { target, provider } => {
+            DownloadAction::Add { target, provider } => {
                 cmd::downloads::start(&client, &target, provider.as_deref()).await
             }
             DownloadAction::List {
