@@ -70,6 +70,33 @@ Bootstrap multiaddrs are split into two sections:
 The separation is cosmetic (both lists are used equally for dialing) but
 helps the user understand the network topology at a glance.
 
+## Upload prioritisation
+
+When a remote peer requests a chunk, the daemon classifies the requester as
+HighID or LowID using the same address check applied to `PeerDiscovered`
+events: if any of the peer's advertised addresses is a publicly-routable IP,
+it is HighID; otherwise LowID.
+
+This classification drives the **work-conserving upload priority scheduler**
+(`upload_scheduler::UploadScheduler`):
+
+- **HighID requests** acquire the bandwidth throttle immediately, bracketing
+  the acquisition with `enter_highid()` / `leave_highid()`.
+- **LowID requests** call `wait_for_lowid_turn()` first, which parks the
+  task until `highid_active` reaches zero.
+- When the node is idle (no HighID uploads competing), LowID requests proceed
+  without delay and receive full available bandwidth.
+
+The intent is to make leeching (LowID → download-only) less attractive by
+ensuring that peers which contribute to the network get faster uploads in
+return.  It is not a hard block: LowID nodes can still download from Rucio
+peers; they just get lower priority when HighID peers are also requesting
+chunks.
+
+Peers whose class is not yet known (no `PeerDiscovered` event before the
+first chunk request) are treated as HighID to avoid accidentally starving
+early requestors.
+
 ## Why not TURN / hole-punching?
 
 Implementing NAT traversal (hole-punching via STUN/TURN or libp2p's Circuit
