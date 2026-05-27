@@ -64,15 +64,18 @@ impl SearchQuery {
         }
     }
 
-    /// Returns true if `name` contains **all** keywords (case-insensitive substring).
+    /// Returns true if `name` contains **all** keywords.
+    ///
+    /// Comparison is case-insensitive and accent-insensitive so that
+    /// "ultimo" matches "Último" and vice versa.
     pub fn matches(&self, name: &str) -> bool {
         if self.keywords.is_empty() {
             return false;
         }
-        let lower = name.to_lowercase();
+        let norm_name = normalize_search_term(name);
         self.keywords
             .iter()
-            .all(|kw| lower.contains(&kw.to_lowercase()))
+            .all(|kw| norm_name.contains(&normalize_search_term(kw)))
     }
 }
 
@@ -126,6 +129,59 @@ impl SearchResult {
 }
 
 // ---------------------------------------------------------------------------
+// Keyword normalization
+// ---------------------------------------------------------------------------
+
+/// Normalize a search term for case- and accent-insensitive matching.
+///
+/// Lowercases the input and folds Latin diacritics to their ASCII base
+/// characters, mirroring the normalization eMule clients apply before
+/// hashing keywords for the Kad2 DHT.  Used both in Gossipsub result
+/// matching and in Kad2 keyword generation so both paths operate in the
+/// same character space.
+pub fn normalize_search_term(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        let lc = c.to_lowercase().next().unwrap_or(c);
+        match lc {
+            'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ă' | 'ą' => out.push('a'),
+            'è' | 'é' | 'ê' | 'ë' | 'ē' | 'ĕ' | 'ė' | 'ę' | 'ě' => out.push('e'),
+            'ì' | 'í' | 'î' | 'ï' | 'ī' | 'ĭ' | 'į' | 'ĩ' => out.push('i'),
+            'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ø' | 'ō' | 'ŏ' | 'ő' => out.push('o'),
+            'ù' | 'ú' | 'û' | 'ü' | 'ū' | 'ŭ' | 'ů' | 'ű' | 'ų' => out.push('u'),
+            'ç' | 'ć' | 'ĉ' | 'č' => out.push('c'),
+            'ñ' | 'ń' | 'ņ' | 'ň' => out.push('n'),
+            'ý' | 'ÿ' => out.push('y'),
+            'ð' | 'ď' => out.push('d'),
+            'ß' => {
+                out.push('s');
+                out.push('s');
+            }
+            'æ' => {
+                out.push('a');
+                out.push('e');
+            }
+            'ł' => out.push('l'),
+            'þ' => {
+                out.push('t');
+                out.push('h');
+            }
+            'ź' | 'ż' | 'ž' => out.push('z'),
+            'š' | 'ś' | 'ş' | 'ŝ' => out.push('s'),
+            'ř' | 'ŗ' => out.push('r'),
+            'ğ' | 'ĝ' | 'ġ' => out.push('g'),
+            'ħ' => out.push('h'),
+            'ĵ' => out.push('j'),
+            'ķ' => out.push('k'),
+            'ľ' | 'ļ' | 'ĺ' => out.push('l'),
+            'ţ' | 'ť' => out.push('t'),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -159,6 +215,30 @@ mod tests {
 
         let q2 = query(&["rust"]);
         assert!(q2.matches("Rust_Programming.epub"));
+    }
+
+    #[test]
+    fn matches_accent_insensitive() {
+        // Search without accent finds accented filename.
+        let q = query(&["ultimo"]);
+        assert!(q.matches("Último año.avi"));
+
+        // Search with accent finds plain filename.
+        let q2 = query(&["último"]);
+        assert!(q2.matches("ultimo año.avi"));
+
+        // Both directions work for multi-word.
+        let q3 = query(&["ultimo", "ano"]);
+        assert!(q3.matches("Último Año.avi"));
+    }
+
+    #[test]
+    fn normalize_search_term_basic() {
+        use super::normalize_search_term;
+        assert_eq!(normalize_search_term("Último"), "ultimo");
+        assert_eq!(normalize_search_term("ÜBER"), "uber");
+        assert_eq!(normalize_search_term("straße"), "strasse");
+        assert_eq!(normalize_search_term("Ñoño"), "nono");
     }
 
     #[test]

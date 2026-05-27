@@ -15,7 +15,7 @@ use rucio_core::api::searches::{
     ResultSource, SearchDetailResponse, SearchListResponse, SearchResult, SearchStartedResponse,
     SearchState, SearchSummary, StartSearchRequest,
 };
-use rucio_core::protocol::search::SearchQuery;
+use rucio_core::protocol::search::{SearchQuery, normalize_search_term};
 
 use crate::api::{AppState, InternalSource, MAX_SEARCHES, SearchRecord, SearchRegistry};
 use crate::node::messages::NodeCmd;
@@ -371,7 +371,7 @@ fn spawn_kad2_search(state: &AppState, search_id: u64, keywords: Vec<String>) {
     let norm_words: Vec<String> = keywords
         .iter()
         .flat_map(|k| k.split_whitespace())
-        .map(normalize_for_kad)
+        .map(normalize_search_term)
         .filter(|w| !w.is_empty())
         .collect();
 
@@ -381,7 +381,7 @@ fn spawn_kad2_search(state: &AppState, search_id: u64, keywords: Vec<String>) {
         .iter()
         .max_by_key(|w| w.len())
         .cloned()
-        .unwrap_or_else(|| normalize_for_kad(&keywords[0]));
+        .unwrap_or_else(|| normalize_search_term(&keywords[0]));
 
     tokio::spawn(async move {
         tracing::info!(search_id, main_keyword, "Kad2 keyword search started");
@@ -394,7 +394,7 @@ fn spawn_kad2_search(state: &AppState, search_id: u64, keywords: Vec<String>) {
                 for h in &hits {
                     // Client-side filter: all words must appear in the
                     // normalized filename (handles accents + case).
-                    let norm_name = normalize_for_kad(&h.name);
+                    let norm_name = normalize_search_term(&h.name);
                     if !norm_words.iter().all(|w| norm_name.contains(w.as_str())) {
                         continue;
                     }
@@ -429,51 +429,4 @@ fn spawn_kad2_search(state: &AppState, search_id: u64, keywords: Vec<String>) {
             record.kad2_done = true;
         }
     });
-}
-
-/// Normalize a string for Kad2 keyword hashing and client-side filtering.
-///
-/// Mirrors eMule's keyword normalization: lowercase + Latin diacritic folding.
-/// Both the search key sent to the DHT and the client-side filename filter
-/// must use this function so they operate in the same space.
-fn normalize_for_kad(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        let lc = c.to_lowercase().next().unwrap_or(c);
-        match lc {
-            'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ă' | 'ą' => out.push('a'),
-            'è' | 'é' | 'ê' | 'ë' | 'ē' | 'ĕ' | 'ė' | 'ę' | 'ě' => out.push('e'),
-            'ì' | 'í' | 'î' | 'ï' | 'ī' | 'ĭ' | 'į' | 'ĩ' => out.push('i'),
-            'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ø' | 'ō' | 'ŏ' | 'ő' => out.push('o'),
-            'ù' | 'ú' | 'û' | 'ü' | 'ū' | 'ŭ' | 'ů' | 'ű' | 'ų' => out.push('u'),
-            'ç' | 'ć' | 'ĉ' | 'č' => out.push('c'),
-            'ñ' | 'ń' | 'ņ' | 'ň' => out.push('n'),
-            'ý' | 'ÿ' => out.push('y'),
-            'ð' | 'ď' => out.push('d'),
-            'ß' => {
-                out.push('s');
-                out.push('s');
-            }
-            'æ' => {
-                out.push('a');
-                out.push('e');
-            }
-            'ł' => out.push('l'),
-            'þ' => {
-                out.push('t');
-                out.push('h');
-            }
-            'ź' | 'ż' | 'ž' => out.push('z'),
-            'š' | 'ś' | 'ş' | 'ŝ' => out.push('s'),
-            'ř' | 'ŗ' => out.push('r'),
-            'ğ' | 'ĝ' | 'ġ' => out.push('g'),
-            'ħ' => out.push('h'),
-            'ĵ' => out.push('j'),
-            'ķ' => out.push('k'),
-            'ľ' | 'ļ' | 'ĺ' => out.push('l'),
-            'ţ' | 'ť' => out.push('t'),
-            other => out.push(other),
-        }
-    }
-    out
 }
