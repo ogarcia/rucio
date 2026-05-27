@@ -399,8 +399,8 @@ async fn on_swarm_event(
             // LAN — this is expected noise, not an operator-actionable error.
             // Downgrade to debug so the log stays quiet under normal operation;
             // LAN sharing via mDNS is unaffected.
-            if all_addrs_private(&error) {
-                debug!(%error, "Outgoing connection error (private address, expected)");
+            if is_expected_dial_noise(&error) {
+                debug!(%error, "Outgoing connection error (expected)");
             } else {
                 warn!(%error, "Outgoing connection error");
             }
@@ -785,20 +785,25 @@ async fn on_manifest_event(
     }
 }
 
-/// Return `true` when a dial error is a `Transport` failure where every
-/// attempted address is a private / link-local / loopback address.
+/// Return `true` when a `DialError` is expected background noise that does
+/// not require operator attention.  Every `(addr, err)` pair must satisfy at
+/// least one of:
 ///
-/// These appear regularly because Kad routing tables propagate the listen
-/// addresses of all peers, including private IPs advertised by peers behind
-/// NAT.  When we are not on the same LAN the connection always fails, but
-/// this is expected noise rather than an operator-actionable problem.
-fn all_addrs_private(error: &DialError) -> bool {
+/// * The address is private / link-local / loopback — Kad routing tables
+///   routinely contain private IPs from peers behind NAT; failing to reach
+///   them from the internet is normal.
+/// * The error is "network unreachable" — the OS has no route for that
+///   address family (most commonly: IPv6 is not configured on the host).
+fn is_expected_dial_noise(error: &DialError) -> bool {
+    use libp2p::core::transport::TransportError;
+    use std::io;
+
     let DialError::Transport(addrs) = error else {
         return false;
     };
     !addrs.is_empty()
-        && addrs.iter().all(|(addr, _)| {
-            addr.iter().any(|p| match p {
+        && addrs.iter().all(|(addr, err)| {
+            let private = addr.iter().any(|p| match p {
                 Protocol::Ip4(ip) => ip.is_private() || ip.is_loopback() || ip.is_link_local(),
                 Protocol::Ip6(ip) => {
                     ip.is_loopback()
@@ -806,6 +811,11 @@ fn all_addrs_private(error: &DialError) -> bool {
                         || (ip.segments()[0] & 0xffc0) == 0xfe80 // fe80::/10 link-local
                 }
                 _ => false,
-            })
+            });
+            let unreachable = matches!(
+                err,
+                TransportError::Other(e) if e.kind() == io::ErrorKind::NetworkUnreachable
+            );
+            private || unreachable
         })
 }
