@@ -56,10 +56,19 @@ pub async fn spawn(cfg: &NetConfig) -> Result<NodeHandle> {
         .iter()
         .filter_map(|s| {
             s.parse::<Multiaddr>()
-                .map_err(|e| warn!("Invalid listen addr {s}: {e}"))
+                .map_err(|e| warn!("Invalid listen addr {s:?}: {e} — expected multiaddr format, e.g. /ip4/0.0.0.0/tcp/4321"))
                 .ok()
         })
         .collect();
+
+    if listen_addrs.is_empty() {
+        anyhow::bail!(
+            "No valid listen addresses configured. \
+             Addresses must be in multiaddr format, e.g. /ip4/0.0.0.0/tcp/4321 or /ip6/::/tcp/4321. \
+             Got: {:?}",
+            cfg.listen_addrs
+        );
+    }
 
     let behaviour = super::behaviour::RucioBehaviour::new(&keypair, peer_id, cfg.behaviour)?;
     let mut swarm = SwarmBuilder::with_existing_identity(keypair)

@@ -333,7 +333,7 @@ the file value untouched.
 | Variable | Config key | Default | Format |
 |---|---|---|---|
 | `RUCIOD_API_LISTEN` | `api.listen` | `127.0.0.1:7070` | `host:port` |
-| `RUCIOD_P2P_LISTEN` | `node.listen_addrs` | `0.0.0.0:4321, :::4321` | comma-separated multiaddrs |
+| `RUCIOD_P2P_LISTEN` | `node.listen_addrs` | `/ip4/0.0.0.0/tcp/4321,/ip6/::/tcp/4321` | comma-separated multiaddrs |
 | `RUCIOD_DOWNLOAD_DIR` | `storage.download_dir` | platform default | path |
 | `RUCIOD_TEMP_DIR` | `storage.temp_dir` | platform default | path |
 | `RUCIOD_DB_PATH` | `storage.database_path` | platform default | path |
