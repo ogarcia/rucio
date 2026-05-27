@@ -2,6 +2,7 @@
 members = [
     "rucio-core",
     "rucio-net",
+    "rucio-bootstrap",
     "rucio-daemon",
     "rucio-cli",
     "rucio", "rucio-emule",

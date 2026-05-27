@@ -3521,6 +3521,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "rucio-bootstrap"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "dirs",
+ "libp2p",
+ "rucio-core",
+ "rucio-net",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "rucio-cli"
 version = "0.1.0"
 dependencies = [

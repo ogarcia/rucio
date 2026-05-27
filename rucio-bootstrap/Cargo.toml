@@ -1,0 +1,22 @@
+[package]
+name        = "rucio-bootstrap"
+description = "Stable Rucio DHT bootstrap node"
+version.workspace     = true
+edition.workspace     = true
+license.workspace     = true
+authors.workspace     = true
+repository.workspace  = true
+
+[[bin]]
+name = "rucio-bootstrap"
+path = "src/main.rs"
+
+[dependencies]
+rucio-net   = { path = "../rucio-net" }
+rucio-core  = { path = "../rucio-core" }
+libp2p      = { workspace = true }
+tokio       = { workspace = true }
+anyhow      = { workspace = true }
+clap        = { workspace = true }
+tracing     = { workspace = true }
+dirs        = { workspace = true }
