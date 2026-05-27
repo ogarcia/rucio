@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "rucio-core",
+    "rucio-net",
     "rucio-daemon",
     "rucio-cli",
     "rucio", "rucio-emule",

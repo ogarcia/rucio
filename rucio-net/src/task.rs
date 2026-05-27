@@ -18,7 +18,7 @@ use std::collections::{HashMap, HashSet};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
-use crate::config::NodeConfig;
+use crate::NetConfig;
 
 use super::{
     behaviour::{RucioBehaviour, RucioBehaviourEvent, TOPIC_SEARCH, TOPIC_SEARCH_RESULT},
@@ -43,7 +43,7 @@ pub struct NodeHandle {
 // spawn
 // ---------------------------------------------------------------------------
 
-pub async fn spawn(cfg: &NodeConfig) -> Result<NodeHandle> {
+pub async fn spawn(cfg: &NetConfig) -> Result<NodeHandle> {
     let keypair = identity::load_or_create(&cfg.identity_path)?;
     let peer_id = keypair.public().to_peer_id();
 

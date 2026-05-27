@@ -17,6 +17,7 @@ emule-compat = ["dep:rucio-emule", "dep:reqwest"]
 
 [dependencies]
 rucio-core          = { path = "../rucio-core" }
+rucio-net           = { path = "../rucio-net" }
 rucio-emule         = { path = "../rucio-emule", optional = true }
 reqwest             = { version = "0.13", features = ["json"], optional = true }
 tokio               = { workspace = true }

@@ -5,11 +5,15 @@ pub mod db;
 pub mod emule;
 pub mod live_stats;
 pub mod metrics;
-pub mod node;
 pub mod throttle;
 pub mod transfer;
 pub mod upnp;
 pub mod watcher;
+
+// The libp2p networking layer lives in the `rucio-net` crate. Re-export it
+// under the historical `node` name so existing `crate::node::…` paths and the
+// `NodeCmd`/`NodeEvent` channel interface keep resolving unchanged.
+pub use rucio_net as node;
 
 use anyhow::{Context, Result};
 use std::sync::Arc;
@@ -40,7 +44,13 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     let db = db::open(&config.storage.database_path).await?;
 
     // --- Node ---------------------------------------------------------------
-    let mut handle = node::task::spawn(&config.node).await?;
+    // Path conventions stay in the daemon's config; the network layer only
+    // needs the resolved values.
+    let net_cfg = rucio_net::NetConfig {
+        identity_path: config.node.identity_path.clone(),
+        listen_addrs: config.node.listen_addrs.clone(),
+    };
+    let mut handle = node::task::spawn(&net_cfg).await?;
 
     for addr_str in config.effective_bootstrap_peers() {
         match addr_str.parse() {

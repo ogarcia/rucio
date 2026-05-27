@@ -1,0 +1,20 @@
+[package]
+name        = "rucio-net"
+description = "libp2p networking layer for the Rucio P2P network"
+version.workspace     = true
+edition.workspace     = true
+license.workspace     = true
+authors.workspace     = true
+repository.workspace  = true
+
+[dependencies]
+rucio-core  = { path = "../rucio-core" }
+libp2p      = { workspace = true }
+tokio       = { workspace = true }
+anyhow      = { workspace = true }
+async-trait = { workspace = true }
+postcard    = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+tracing     = { workspace = true }
+hex         = { workspace = true }

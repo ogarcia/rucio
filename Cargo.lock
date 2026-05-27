@@ -3547,14 +3547,12 @@ dependencies = [
  "blake3",
  "hex",
  "infer",
- "libp2p",
  "postcard",
  "serde",
  "serde_json",
  "serial_test",
  "tempfile",
  "thiserror 2.0.18",
- "tokio",
  "tracing",
  "tracing-subscriber",
  "urlencoding",
@@ -3582,6 +3580,7 @@ dependencies = [
  "reqwest",
  "rucio-core",
  "rucio-emule",
+ "rucio-net",
  "serde",
  "serde_json",
  "serial_test",
@@ -3614,6 +3613,22 @@ dependencies = [
  "tokio",
  "tracing",
  "urlencoding",
+]
+
+[[package]]
+name = "rucio-net"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "hex",
+ "libp2p",
+ "postcard",
+ "rucio-core",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
