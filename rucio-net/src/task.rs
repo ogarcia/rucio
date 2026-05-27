@@ -60,7 +60,7 @@ pub async fn spawn(cfg: &NetConfig) -> Result<NodeHandle> {
         })
         .collect();
 
-    let behaviour = super::behaviour::RucioBehaviour::new(&keypair, peer_id)?;
+    let behaviour = super::behaviour::RucioBehaviour::new(&keypair, peer_id, cfg.behaviour)?;
     let mut swarm = SwarmBuilder::with_existing_identity(keypair)
         .with_tokio()
         .with_tcp(
@@ -76,11 +76,13 @@ pub async fn spawn(cfg: &NetConfig) -> Result<NodeHandle> {
 
     let topic_query = IdentTopic::new(TOPIC_SEARCH);
     let topic_result = IdentTopic::new(TOPIC_SEARCH_RESULT);
-    if let Err(e) = swarm.behaviour_mut().gossipsub.subscribe(&topic_query) {
-        warn!("Failed to subscribe to search topic: {e}");
-    }
-    if let Err(e) = swarm.behaviour_mut().gossipsub.subscribe(&topic_result) {
-        warn!("Failed to subscribe to search-result topic: {e}");
+    if let Some(gossipsub) = swarm.behaviour_mut().gossipsub.as_mut() {
+        if let Err(e) = gossipsub.subscribe(&topic_query) {
+            warn!("Failed to subscribe to search topic: {e}");
+        }
+        if let Err(e) = gossipsub.subscribe(&topic_result) {
+            warn!("Failed to subscribe to search-result topic: {e}");
+        }
     }
 
     for addr in &listen_addrs {
@@ -237,12 +239,18 @@ async fn run_loop(
                         publish_json(&mut swarm, &topic_result, &result, "search result", &mut state.pending_publishes);
                     }
                     Some(NodeCmd::RequestChunk { peer, request, id_tx }) => {
-                        let request_id = swarm.behaviour_mut().transfer.send_request(&peer, request);
-                        let _ = id_tx.send(request_id);
+                        if let Some(transfer) = swarm.behaviour_mut().transfer.as_mut() {
+                            let request_id = transfer.send_request(&peer, request);
+                            let _ = id_tx.send(request_id);
+                        } else {
+                            warn!("RequestChunk ignored: transfer protocol disabled");
+                        }
                     }
                     Some(NodeCmd::RespondChunk { channel_id, response }) => {
                         if let Some(ch) = state.pending_chunk_channels.remove(&channel_id) {
-                            if let Err(e) = swarm.behaviour_mut().transfer.send_response(ch, response) {
+                            if let Some(transfer) = swarm.behaviour_mut().transfer.as_mut()
+                                && let Err(e) = transfer.send_response(ch, response)
+                            {
                                 warn!("Failed to send chunk response: {e:?}");
                             }
                         } else {
@@ -250,12 +258,18 @@ async fn run_loop(
                         }
                     }
                     Some(NodeCmd::RequestManifest { peer, request, id_tx }) => {
-                        let request_id = swarm.behaviour_mut().manifest.send_request(&peer, request);
-                        let _ = id_tx.send(request_id);
+                        if let Some(manifest) = swarm.behaviour_mut().manifest.as_mut() {
+                            let request_id = manifest.send_request(&peer, request);
+                            let _ = id_tx.send(request_id);
+                        } else {
+                            warn!("RequestManifest ignored: manifest protocol disabled");
+                        }
                     }
                     Some(NodeCmd::RespondManifest { channel_id, response }) => {
                         if let Some(ch) = state.pending_manifest_channels.remove(&channel_id) {
-                            if let Err(e) = swarm.behaviour_mut().manifest.send_response(ch, response) {
+                            if let Some(manifest) = swarm.behaviour_mut().manifest.as_mut()
+                                && let Err(e) = manifest.send_response(ch, response)
+                            {
                                 warn!("Failed to send manifest response: {e:?}");
                             }
                         } else {
@@ -289,11 +303,10 @@ fn publish_json<T: serde::Serialize>(
 ) {
     match serde_json::to_vec(value) {
         Ok(bytes) => {
-            match swarm
-                .behaviour_mut()
-                .gossipsub
-                .publish(topic.clone(), bytes.clone())
-            {
+            let Some(gossipsub) = swarm.behaviour_mut().gossipsub.as_mut() else {
+                return;
+            };
+            match gossipsub.publish(topic.clone(), bytes.clone()) {
                 Ok(_) => debug!("Published {label}"),
                 Err(gossipsub::PublishError::NoPeersSubscribedToTopic) => {
                     debug!("No mesh peers yet for {label} — queued for retry");
@@ -344,7 +357,9 @@ async fn on_swarm_event(
         }
         SwarmEvent::ConnectionEstablished { peer_id: pid, .. } => {
             debug!(%pid, "Connection established");
-            swarm.behaviour_mut().gossipsub.add_explicit_peer(&pid);
+            if let Some(gossipsub) = swarm.behaviour_mut().gossipsub.as_mut() {
+                gossipsub.add_explicit_peer(&pid);
+            }
             // Connection succeeded — no need to retry.
             state.retry_dials.remove(&pid);
             // If bootstrap peers were configured and we haven't bootstrapped
@@ -369,7 +384,9 @@ async fn on_swarm_event(
             ..
         } => {
             debug!(%pid, ?cause, "Connection closed");
-            swarm.behaviour_mut().gossipsub.remove_explicit_peer(&pid);
+            if let Some(gossipsub) = swarm.behaviour_mut().gossipsub.as_mut() {
+                gossipsub.remove_explicit_peer(&pid);
+            }
             let _ = event_tx
                 .send(NodeEvent::PeerDisconnected { peer_id: pid })
                 .await;
@@ -530,11 +547,10 @@ async fn on_swarm_event(
                         pending.len()
                     );
                     for (topic, bytes, label) in pending {
-                        match swarm
-                            .behaviour_mut()
-                            .gossipsub
-                            .publish(topic.clone(), bytes.clone())
-                        {
+                        let Some(gossipsub) = swarm.behaviour_mut().gossipsub.as_mut() else {
+                            break;
+                        };
+                        match gossipsub.publish(topic.clone(), bytes.clone()) {
                             Ok(_) => debug!("Retry published {label}"),
                             Err(gossipsub::PublishError::NoPeersSubscribedToTopic) => {
                                 state.pending_publishes.push((topic, bytes, label));

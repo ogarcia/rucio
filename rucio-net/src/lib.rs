@@ -28,7 +28,11 @@ use std::path::PathBuf;
 pub struct NetConfig {
     pub identity_path: PathBuf,
     pub listen_addrs: Vec<String>,
+    /// Which optional sub-behaviours to mount (identify + kademlia are always
+    /// present). A full node uses [`BehaviourConfig::full`].
+    pub behaviour: BehaviourConfig,
 }
 
+pub use behaviour::BehaviourConfig;
 pub use messages::{NodeCmd, NodeEvent};
 pub use task::{NodeHandle, spawn};

@@ -49,6 +49,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     let net_cfg = rucio_net::NetConfig {
         identity_path: config.node.identity_path.clone(),
         listen_addrs: config.node.listen_addrs.clone(),
+        behaviour: rucio_net::BehaviourConfig::full(),
     };
     let mut handle = node::task::spawn(&net_cfg).await?;
 
