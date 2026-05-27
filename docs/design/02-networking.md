@@ -68,6 +68,50 @@ File transfer uses libp2p's `request_response` behaviour with a custom
 protocol (`/rucio/transfer/2.0.0`). See
 [Transfer protocol](03-transfer-protocol.md) for details.
 
+### Circuit relay server
+
+Every full node mounts `relay::Behaviour` (circuit relay v2 hop server).
+This lets LowID peers make a reservation and advertise the node's address
+as a reachable endpoint via `/p2p-circuit`. Resource limits are applied by
+the libp2p relay implementation to prevent the server from being abused as
+a bandwidth relay.
+
+The relay server is **disabled** on bootstrap-only and indexer nodes to
+keep their protocol surface minimal.
+
+### Circuit relay client
+
+`relay::client::Behaviour` is always mounted (it is wired into the
+transport layer by the SwarmBuilder). When the node is classified as LowID
+and an Identify response reveals that a connected peer supports the relay
+hop protocol, the daemon calls `swarm.listen_on(<relay-circuit-addr>)` to
+initiate a reservation. On success the swarm starts advertising the
+`/p2p-circuit` address so other peers can reach the LowID node through the
+relay.
+
+The relay is only used for the **connection** — see DCUtR below for how
+that connection is typically upgraded to a direct one.
+
+### DCUtR — Direct Connection Upgrade through Relay
+
+When a LowID node is connected to a remote peer via a relay circuit, both
+ends run the DCUtR protocol (`dcutr::Behaviour`). DCUtR coordinates
+simultaneous TCP/QUIC dials (NAT hole punch) through the relay as a
+signaling channel:
+
+1. The two peers exchange their observed addresses through the relay
+   connection.
+2. Both dial each other at the same instant, hoping to punch through their
+   respective NATs.
+3. If the hole punch succeeds, the relay connection is replaced by a direct
+   one and the relay is no longer needed for that peer.
+4. If it fails (e.g. symmetric NAT), the relay connection is kept as a
+   fallback.
+
+For most consumer routers (cone NAT), hole punching succeeds and data flows
+directly. The relay is used only during the hole-punch window and as a
+persistent fallback for the minority of symmetric-NAT cases.
+
 ## Peer lifecycle
 
 ```
@@ -80,16 +124,16 @@ ConnectionClosed       →  PeerDisconnected (decrements peer counter)
 The peer counter reflects currently connected peers, not the total number of
 known peers.
 
-## No trackers, no relays
-
-rucio deliberately has no tracker infrastructure:
+## Design principles
 
 - **No central tracker.** File discovery goes through Kademlia provider
   records only.
-- **No relay nodes for data.** File data is always transferred directly
-  between the downloading and uploading peer. There is no TURN-style relay.
-  LowID nodes can download but cannot serve chunks to peers they cannot
-  reach directly (see [Node classes](05-node-classes.md)).
+- **No TURN-style data relay.** Circuit relay is used only to establish
+  connections and as a short-term fallback when NAT hole punching fails.
+  Once a direct connection is established via DCUtR, data flows between
+  peers without any intermediary. Relay servers are ordinary full nodes
+  with built-in resource limits — there is no dedicated relay
+  infrastructure.
 - **No BitTorrent compatibility.** The protocol is incompatible with
   BitTorrent by design. This allows us to use BLAKE3 instead of SHA1/SHA256
   and to define a simpler, more efficient chunk protocol.

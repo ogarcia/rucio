@@ -21,10 +21,15 @@ The node is behind NAT or a firewall and has no observed public address.
 Other peers on the internet generally cannot dial it directly. A LowID node:
 
 - **Can still download** — it dials out to providers and pulls chunks.
-- **Cannot reliably serve chunks** to arbitrary internet peers (they cannot
-  reach it).
-- May still serve chunks to peers on the same LAN, since mDNS-discovered
-  peers can use the local address.
+- **Becomes reachable via relay reservation.** When the node is classified
+  as LowID and a relay-capable peer has been discovered, it calls
+  `swarm.listen_on(<relay-circuit-addr>)` to make a reservation and starts
+  advertising that address. Other peers can then reach it through the relay.
+- **DCUtR upgrades relay connections to direct ones** — once a peer
+  connects through the relay, both sides attempt a simultaneous NAT hole
+  punch. On success the relay is no longer needed for that peer pair.
+- May also serve chunks to peers on the same LAN via mDNS-discovered
+  local addresses.
 - Appears in `rucio node status` as `LowID`.
 
 ### Unknown
@@ -97,13 +102,34 @@ Peers whose class is not yet known (no `PeerDiscovered` event before the
 first chunk request) are treated as HighID to avoid accidentally starving
 early requestors.
 
-## Why not TURN / hole-punching?
+## NAT traversal
 
-Implementing NAT traversal (hole-punching via STUN/TURN or libp2p's Circuit
-Relay) would allow LowID nodes to serve chunks to arbitrary peers. This is
-on the roadmap but is not implemented yet, because:
+LowID nodes use a two-stage approach to become reachable:
 
-1. It requires infrastructure (relay nodes).
-2. Circuit Relay in libp2p has significant complexity and bandwidth cost.
-3. For the initial release, LowID nodes being download-only is an acceptable
-   limitation — the same constraint existed in early eMule.
+### Stage 1 — Relay reservation
+
+When a LowID node discovers a peer that advertises the circuit relay hop
+protocol (`/libp2p/circuit/relay/0.2.0/hop`), it issues a reservation on
+that peer. After the reservation is accepted the node starts advertising a
+`/p2p-circuit` address, and remote peers can connect to it through the relay.
+
+Any full node can act as a relay server — there is no dedicated relay
+infrastructure. The relay server enforces built-in resource limits
+(maximum reservations, maximum simultaneous circuits) to prevent abuse.
+
+### Stage 2 — DCUtR hole punching
+
+When a remote peer connects to the LowID node through a relay circuit, the
+DCUtR protocol kicks in. Both peers exchange their observed addresses
+through the relay as a signaling channel and then dial each other
+simultaneously, attempting to punch through their respective NATs.
+
+- **Cone NAT (most home routers)** — hole punch succeeds, the relay
+  connection is replaced by a direct one.
+- **Symmetric NAT / strict firewall** — hole punch fails, the relay
+  connection is kept as a fallback. The relay continues to carry traffic
+  for that peer pair.
+
+In practice, DCUtR succeeds for the majority of consumer-grade NAT devices,
+so the relay is only a short-term bridge during hole punching and a
+persistent fallback for the minority of strict-NAT cases.
