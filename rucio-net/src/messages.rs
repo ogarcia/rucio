@@ -104,6 +104,16 @@ pub enum NodeEvent {
         key: Vec<u8>,
         providers: Vec<PeerId>,
     },
+    /// A peer announced (via `ADD_PROVIDER`) that it provides a content hash.
+    /// Only emitted when the behaviour is built with
+    /// `capture_provider_records` (the passive DHT indexer). The record is
+    /// re-stored locally before this event is emitted, so the node keeps
+    /// serving it like a normal DHT server.
+    ProviderRecord {
+        key: Vec<u8>,
+        provider: PeerId,
+        addresses: Vec<Multiaddr>,
+    },
     /// A search result arrived from the gossip network.
     SearchResult(SearchResult),
     /// A search query arrived — daemon should check local shares and reply.

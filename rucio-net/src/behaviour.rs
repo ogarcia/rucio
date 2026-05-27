@@ -36,6 +36,12 @@ pub struct BehaviourConfig {
     pub transfer: bool,
     /// Manifest request-response protocol.
     pub manifest: bool,
+    /// Capture inbound `ADD_PROVIDER` announcements. When enabled, Kademlia
+    /// runs with `StoreInserts::FilterBoth` so each received provider record is
+    /// surfaced as a [`NodeEvent::ProviderRecord`](crate::NodeEvent) (and must
+    /// be re-stored explicitly to keep serving it). This is the basis of the
+    /// passive DHT indexer; a normal node leaves it off.
+    pub capture_provider_records: bool,
 }
 
 impl BehaviourConfig {
@@ -46,6 +52,7 @@ impl BehaviourConfig {
             gossipsub: true,
             transfer: true,
             manifest: true,
+            capture_provider_records: false,
         }
     }
 
@@ -58,6 +65,18 @@ impl BehaviourConfig {
             gossipsub: false,
             transfer: false,
             manifest: false,
+            capture_provider_records: false,
+        }
+    }
+
+    /// A DHT indexer: like [`dht_only`](Self::dht_only) but capturing provider
+    /// announcements, and optionally mounting `manifest` to enrich records with
+    /// the file name and size by querying the announcing peer.
+    pub fn indexer(enrich: bool) -> Self {
+        Self {
+            manifest: enrich,
+            capture_provider_records: true,
+            ..Self::dht_only()
         }
     }
 }
@@ -84,7 +103,12 @@ impl RucioBehaviour {
             keypair.public(),
         ));
 
-        let kademlia_config = kad::Config::new(libp2p::StreamProtocol::new("/rucio/kad/1.0.0"));
+        let mut kademlia_config = kad::Config::new(libp2p::StreamProtocol::new("/rucio/kad/1.0.0"));
+        if cfg.capture_provider_records {
+            // FilterBoth surfaces each received provider record as an event
+            // (InboundRequest::AddProvider) instead of storing it silently.
+            kademlia_config.set_record_filtering(kad::StoreInserts::FilterBoth);
+        }
         let store = kad::store::MemoryStore::new(peer_id);
         let mut kademlia = kad::Behaviour::with_config(peer_id, store, kademlia_config);
         // Run as a full DHT server so provider records are stored and

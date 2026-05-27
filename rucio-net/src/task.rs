@@ -479,6 +479,34 @@ async fn on_swarm_event(
                     Event::RoutingUpdated { peer, .. } => {
                         debug!(%peer, "Kademlia routing table updated");
                     }
+                    Event::InboundRequest {
+                        request:
+                            kad::InboundRequest::AddProvider {
+                                record: Some(record),
+                            },
+                    } => {
+                        use kad::store::RecordStore;
+                        let key = record.key.to_vec();
+                        let provider = record.provider;
+                        let addresses = record.addresses.clone();
+                        // FilterBoth does not auto-store the record; re-store it
+                        // so we keep serving it like a normal DHT server.
+                        if let Err(e) = swarm
+                            .behaviour_mut()
+                            .kademlia
+                            .store_mut()
+                            .add_provider(record)
+                        {
+                            debug!(?e, "Could not store captured provider record");
+                        }
+                        let _ = event_tx
+                            .send(NodeEvent::ProviderRecord {
+                                key,
+                                provider,
+                                addresses,
+                            })
+                            .await;
+                    }
                     _ => {}
                 }
             }
