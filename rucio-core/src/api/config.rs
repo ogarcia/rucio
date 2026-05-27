@@ -49,6 +49,13 @@ pub struct NetworkConfig {
     /// Download bandwidth limit in KB/s.  0 = unlimited.
     #[serde(default)]
     pub download_limit_kbps: u64,
+    /// Maximum number of concurrent chunk-upload tasks.  Default: 64.
+    #[serde(default = "default_max_upload_tasks")]
+    pub max_upload_tasks: usize,
+}
+
+fn default_max_upload_tasks() -> usize {
+    64
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]

@@ -167,6 +167,9 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     let download_throttle = Arc::new(throttle::TokenBucket::new(
         config.network.download_limit_kbps,
     ));
+    let upload_semaphore = Arc::new(tokio::sync::Semaphore::new(
+        config.network.max_upload_tasks.max(1),
+    ));
     let upload_scheduler = Arc::new(upload_scheduler::UploadScheduler::new());
     // Per-download live statistics, shared between the engines, the speed
     // sampler in this loop, and the API handlers.
@@ -178,6 +181,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
         dest_dir,
         temp_dir,
         Arc::clone(&session_metrics),
+        Arc::clone(&upload_semaphore),
         Arc::clone(&upload_scheduler),
         Arc::clone(&upload_throttle),
         Arc::clone(&download_throttle),

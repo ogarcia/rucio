@@ -31,7 +31,7 @@ use anyhow::{Result, anyhow, bail};
 use libp2p::{PeerId, request_response::OutboundRequestId};
 use tokio::fs;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Semaphore, mpsc, oneshot};
 use tracing::{debug, info, warn};
 
 use rucio_core::protocol::{
@@ -209,6 +209,8 @@ pub struct DownloadEngine {
     known_providers: HashMap<[u8; 32], Vec<PeerId>>,
     /// Shared session metrics — updated on every chunk event.
     metrics: Arc<Metrics>,
+    /// Cap on concurrent chunk-upload tasks (semaphore with configurable permits).
+    upload_semaphore: Arc<Semaphore>,
     /// Work-conserving upload priority: HighID requests take precedence.
     upload_scheduler: Arc<UploadScheduler>,
     /// Global upload bandwidth throttle (chunks served to remote peers).
@@ -227,6 +229,7 @@ impl DownloadEngine {
         dest_dir: PathBuf,
         temp_dir: PathBuf,
         metrics: Arc<Metrics>,
+        upload_semaphore: Arc<Semaphore>,
         upload_scheduler: Arc<UploadScheduler>,
         upload_throttle: Arc<TokenBucket>,
         download_throttle: Arc<TokenBucket>,
@@ -241,6 +244,7 @@ impl DownloadEngine {
             active: HashMap::new(),
             known_providers: HashMap::new(),
             metrics,
+            upload_semaphore,
             upload_scheduler,
             upload_throttle,
             download_throttle,
@@ -1188,10 +1192,18 @@ impl DownloadEngine {
         let db = self.db.clone();
         let cmd_tx = self.cmd_tx.clone();
         let metrics = Arc::clone(&self.metrics);
+        let semaphore = Arc::clone(&self.upload_semaphore);
         let scheduler = Arc::clone(&self.upload_scheduler);
         let upload_throttle = Arc::clone(&self.upload_throttle);
 
         tokio::spawn(async move {
+            // Hold the permit for the entire pipeline (DB read → throttle → send)
+            // to bound the number of tasks competing for disk I/O.
+            let _permit = semaphore
+                .acquire_owned()
+                .await
+                .expect("upload semaphore closed");
+
             let response = read_chunk_from_db(&db, &request, pex_peers).await;
             // Apply priority scheduling and throttle before sending.
             if let ChunkResponse::Ok { ref data, .. } = response {
@@ -1416,6 +1428,7 @@ mod tests {
             tmp.path().to_path_buf(),
             tmp.path().to_path_buf(),
             metrics,
+            Arc::new(tokio::sync::Semaphore::new(64)),
             Arc::new(crate::upload_scheduler::UploadScheduler::new()),
             Arc::new(crate::throttle::TokenBucket::new(0)),
             Arc::new(crate::throttle::TokenBucket::new(0)),

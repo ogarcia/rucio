@@ -56,11 +56,24 @@ pub struct NetworkConfig {
     /// Download bandwidth limit in KB/s.  0 = unlimited (default).
     #[serde(default)]
     pub download_limit_kbps: u64,
+    /// Maximum number of concurrent chunk-upload tasks.
+    ///
+    /// Each inbound chunk request spawns an async task that reads from disk
+    /// and waits for the bandwidth throttle.  This cap prevents resource
+    /// exhaustion when many peers request chunks simultaneously.
+    ///
+    /// Default: 64.  Override via `RUCIOD_MAX_UPLOAD_TASKS`.
+    #[serde(default = "NetworkConfig::default_max_upload_tasks")]
+    pub max_upload_tasks: usize,
 }
 
 impl NetworkConfig {
     fn default_upnp() -> bool {
         true
+    }
+
+    fn default_max_upload_tasks() -> usize {
+        64
     }
 }
 
@@ -71,6 +84,7 @@ impl Default for NetworkConfig {
             upnp: Self::default_upnp(),
             upload_limit_kbps: 0,
             download_limit_kbps: 0,
+            max_upload_tasks: Self::default_max_upload_tasks(),
         }
     }
 }
@@ -420,6 +434,7 @@ impl Config {
     /// | `RUCIOD_BOOTSTRAP_PEERS`    | `network.bootstrap_peers`    | comma-separated multiaddrs |
     /// | `RUCIOD_UPLOAD_LIMIT_KBPS`  | `network.upload_limit_kbps`  | integer KB/s, 0=unlimited |
     /// | `RUCIOD_DOWNLOAD_LIMIT_KBPS`| `network.download_limit_kbps`| integer KB/s, 0=unlimited |
+    /// | `RUCIOD_MAX_UPLOAD_TASKS`   | `network.max_upload_tasks`   | integer ≥1, default 64    |
     /// | `RUCIOD_EMULE_ENABLED`      | `emule.enabled`              | `true`/`false`     |
     /// | `RUCIOD_EMULE_TEMP_DIR`     | `emule.temp_dir`             | path               |
     /// | `RUCIOD_NODES_DAT`          | `storage.nodes_dat_path`     | path               |
@@ -471,6 +486,13 @@ impl Config {
             && let Ok(n) = v.parse::<u64>()
         {
             self.network.download_limit_kbps = n;
+        }
+        if let Ok(v) = std::env::var("RUCIOD_MAX_UPLOAD_TASKS")
+            && !v.is_empty()
+            && let Ok(n) = v.parse::<usize>()
+            && n >= 1
+        {
+            self.network.max_upload_tasks = n;
         }
         if let Ok(v) = std::env::var("RUCIOD_EMULE_ENABLED")
             && !v.is_empty()

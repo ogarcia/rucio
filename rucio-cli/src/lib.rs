@@ -189,6 +189,7 @@ pub enum ConfigAction {
     ///   node.listen_addrs               <multiaddr>  (appends to the list)
     ///   network.upload_limit_kbps       <integer>    (0 = unlimited, applied immediately)
     ///   network.download_limit_kbps     <integer>    (0 = unlimited, applied immediately)
+    ///   network.max_upload_tasks        <integer>    (≥1, requires restart)
     ///   emule.enabled                   <bool>
     ///   emule.temp_dir                  <path>
     ///   emule.tcp_port                  <integer>    (1-65535)

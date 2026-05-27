@@ -38,6 +38,7 @@ pub async fn get_config(State(state): State<AppState>) -> Json<ConfigResponse> {
             bootstrap_peers: cfg.network.bootstrap_peers.clone(),
             upload_limit_kbps: cfg.network.upload_limit_kbps,
             download_limit_kbps: cfg.network.download_limit_kbps,
+            max_upload_tasks: cfg.network.max_upload_tasks,
         },
         storage: StorageConfig {
             download_dir: cfg.storage.download_dir.to_string_lossy().into_owned(),
@@ -98,6 +99,7 @@ pub async fn put_config(
     new_cfg.network.bootstrap_peers = req.network.bootstrap_peers;
     new_cfg.network.upload_limit_kbps = req.network.upload_limit_kbps;
     new_cfg.network.download_limit_kbps = req.network.download_limit_kbps;
+    new_cfg.network.max_upload_tasks = req.network.max_upload_tasks.max(1);
     new_cfg.storage.download_dir = req.storage.download_dir.into();
     new_cfg.storage.temp_dir = req.storage.temp_dir.into();
     new_cfg.emule.enabled = req.emule.enabled;

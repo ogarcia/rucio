@@ -72,6 +72,10 @@ pub async fn show(client: &ApiClient) -> Result<()> {
             format!("{dl}")
         })
     );
+    println!(
+        "  max_upload_tasks     = {}",
+        color::value(&cfg.network.max_upload_tasks.to_string())
+    );
 
     println!("\n{}", color::section("[storage]"));
     println!(
@@ -148,6 +152,15 @@ pub async fn set(client: &ApiClient, key: &str, value: &str) -> Result<()> {
                 .parse::<u64>()
                 .map_err(|_| anyhow::anyhow!("'{value}' is not a valid integer"))?;
         }
+        "network.max_upload_tasks" => {
+            let n = value
+                .parse::<usize>()
+                .map_err(|_| anyhow::anyhow!("'{value}' is not a valid integer"))?;
+            if n < 1 {
+                anyhow::bail!("network.max_upload_tasks must be at least 1");
+            }
+            cfg.network.max_upload_tasks = n;
+        }
         "emule.enabled" => cfg.emule.enabled = parse_bool(value)?,
         "emule.temp_dir" => cfg.emule.temp_dir = value.to_string(),
         "emule.udp_port" => cfg.emule.udp_port = parse_port(value)?,
@@ -174,6 +187,7 @@ pub async fn set(client: &ApiClient, key: &str, value: &str) -> Result<()> {
                node.listen_addrs               (appends)\n\
                network.upload_limit_kbps       (KB/s, 0 = unlimited, applied immediately)\n\
                network.download_limit_kbps     (KB/s, 0 = unlimited, applied immediately)\n\
+               network.max_upload_tasks        (integer ≥1, requires restart)\n\
                emule.enabled                   (true/false)\n\
                emule.temp_dir\n\
                emule.udp_port                  (1-65535)\n\
