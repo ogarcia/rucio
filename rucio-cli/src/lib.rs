@@ -38,8 +38,8 @@ pub enum Commands {
     },
     /// Search for files on the network
     Search {
-        /// Keywords to search for
-        keywords: Vec<String>,
+        #[command(subcommand)]
+        action: SearchAction,
     },
     /// Show or update configuration
     Config {
@@ -141,6 +141,41 @@ pub enum NodeAction {
     Metrics,
 }
 
+/// `rucio search …` — search for files on the Rucio and eMule networks.
+#[derive(Subcommand, Debug)]
+pub enum SearchAction {
+    /// Start a search and wait for results
+    Start {
+        /// Keywords to search for
+        keywords: Vec<String>,
+        /// Return immediately after firing the search (prints the search ID)
+        #[arg(short, long)]
+        background: bool,
+    },
+    /// List all searches currently held in daemon memory
+    List,
+    /// Show results for a search, waiting if it is still running
+    Show {
+        /// Search ID returned by `rucio search start`
+        id: u64,
+    },
+    /// Cancel a running search
+    Cancel {
+        /// Search ID
+        id: u64,
+    },
+    /// Remove done or cancelled searches from daemon memory
+    Clean {
+        /// Search ID to remove (omit to remove all done/cancelled searches)
+        id: Option<u64>,
+    },
+    /// Relaunch a search, keeping the same ID and preserving existing results
+    Relaunch {
+        /// Search ID
+        id: u64,
+    },
+}
+
 #[derive(Subcommand, Debug)]
 pub enum ConfigAction {
     /// Show current configuration
@@ -217,7 +252,17 @@ pub async fn run() -> Result<()> {
             NodeAction::Peers => cmd::status::peers(&client).await,
             NodeAction::Metrics => cmd::status::metrics_cmd(&client).await,
         },
-        Commands::Search { keywords } => cmd::search::search(&client, keywords).await,
+        Commands::Search { action } => match action {
+            SearchAction::Start {
+                keywords,
+                background,
+            } => cmd::search::start(&client, keywords, background).await,
+            SearchAction::List => cmd::search::list(&client).await,
+            SearchAction::Show { id } => cmd::search::show(&client, id).await,
+            SearchAction::Cancel { id } => cmd::search::cancel(&client, id).await,
+            SearchAction::Clean { id } => cmd::search::clean(&client, id).await,
+            SearchAction::Relaunch { id } => cmd::search::relaunch(&client, id).await,
+        },
         Commands::Config { action } => match action {
             ConfigAction::Show => cmd::config::show(&client).await,
             ConfigAction::Set { key, value } => cmd::config::set(&client, &key, &value).await,

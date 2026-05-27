@@ -1,17 +1,16 @@
-//! `rucio search <keywords...>`
+//! `rucio search` subcommands.
 //!
-//! Starts a unified search (Gossipsub + Kad2), then polls every second until:
-//!   - the daemon reports the search as Done or Cancelled, or
-//!   - the global timeout is reached (65 seconds — a bit beyond KAD2_TIMEOUT).
-//!
-//! Results are deduplicated by download link.  All entries are saved in
-//! `~/.local/share/rucio/last_search.json` so that `rucio download get <N>` can
-//! start a download automatically.
+//! start <keywords...>  — start a search and wait for results (--background to skip waiting)
+//! list                 — list all searches in memory
+//! show <id>            — show results (waits if still running)
+//! cancel <id>          — cancel a running search
+//! clean [<id>]         — remove done/cancelled searches from daemon memory
+//! relaunch <id>        — relaunch a search (same ID, preserves results)
 
 use std::collections::HashMap;
 
 use anyhow::Result;
-use rucio_core::api::searches::{ResultSource, SearchState};
+use rucio_core::api::searches::{ResultSource, SearchResult, SearchState};
 use tabled::{Table, Tabled};
 use tokio::time::{Duration, sleep};
 
@@ -20,28 +19,186 @@ use crate::color;
 use crate::state::{CachedResult, LastSearch};
 
 const POLL_INTERVAL_MS: u64 = 1_000;
-/// Hard timeout in seconds — slightly beyond Kad2's 60 s window.
 const MAX_POLLS: u32 = 65;
 
-pub async fn search(client: &ApiClient, keywords: Vec<String>) -> Result<()> {
+// ---------------------------------------------------------------------------
+// start
+// ---------------------------------------------------------------------------
+
+pub async fn start(client: &ApiClient, keywords: Vec<String>, background: bool) -> Result<()> {
     if keywords.is_empty() {
         anyhow::bail!("Provide at least one keyword.");
     }
 
+    let started = client.start_search(keywords.clone()).await?;
+    let id = started.id;
+
+    if background {
+        println!("{id}");
+        return Ok(());
+    }
+
     println!("Searching for: {}", color::value(&keywords.join(" ")));
+    println!("Search ID: {}", color::value(&id.to_string()));
 
-    let started = client.start_search(keywords).await?;
-    let search_id = started.id;
-    println!("Search ID: {}", color::value(&search_id.to_string()));
+    poll_until_done(client, id).await
+}
 
-    // Track accumulated results by download_link to deduplicate.
+// ---------------------------------------------------------------------------
+// list
+// ---------------------------------------------------------------------------
+
+pub async fn list(client: &ApiClient) -> Result<()> {
+    let resp = client.list_searches().await?;
+
+    if resp.searches.is_empty() {
+        println!("No searches in memory.");
+        return Ok(());
+    }
+
+    #[derive(Tabled)]
+    struct Row {
+        #[tabled(rename = "ID")]
+        id: u64,
+        #[tabled(rename = "Keywords")]
+        keywords: String,
+        #[tabled(rename = "State")]
+        state: String,
+        #[tabled(rename = "Results")]
+        results: usize,
+    }
+
+    let rows: Vec<Row> = resp
+        .searches
+        .iter()
+        .map(|s| Row {
+            id: s.id,
+            keywords: s.keywords.join(" "),
+            state: state_label(s.state.clone()),
+            results: s.result_count,
+        })
+        .collect();
+
+    println!("{}", Table::new(rows));
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// show
+// ---------------------------------------------------------------------------
+
+pub async fn show(client: &ApiClient, id: u64) -> Result<()> {
+    let resp = client.get_search(id).await.map_err(|e| {
+        if e.to_string().contains("404") {
+            anyhow::anyhow!("Search #{id} not found.")
+        } else {
+            e
+        }
+    })?;
+
+    if matches!(resp.state, SearchState::Running) {
+        println!(
+            "Search #{id} is still running ({} result(s) so far)…",
+            resp.results.len()
+        );
+        poll_until_done(client, id).await
+    } else {
+        let cached = build_cached(&resp.results);
+        save_and_print(&cached);
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// cancel
+// ---------------------------------------------------------------------------
+
+pub async fn cancel(client: &ApiClient, id: u64) -> Result<()> {
+    client.delete_search(id).await.map_err(|e| {
+        if e.to_string().contains("404") {
+            anyhow::anyhow!("Search #{id} not found.")
+        } else {
+            e
+        }
+    })?;
+    println!("Search #{id} cancelled.");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// clean
+// ---------------------------------------------------------------------------
+
+pub async fn clean(client: &ApiClient, id: Option<u64>) -> Result<()> {
+    if let Some(id) = id {
+        let resp = client.get_search(id).await.map_err(|e| {
+            if e.to_string().contains("404") {
+                anyhow::anyhow!("Search #{id} not found.")
+            } else {
+                e
+            }
+        })?;
+        if matches!(resp.state, SearchState::Running) {
+            anyhow::bail!(
+                "Search #{id} is still running. \
+                 Use `rucio search cancel {id}` to stop it first."
+            );
+        }
+        client.delete_search(id).await?;
+        println!("Search #{id} removed.");
+    } else {
+        let resp = client.list_searches().await?;
+        let removable: Vec<u64> = resp
+            .searches
+            .iter()
+            .filter(|s| !matches!(s.state, SearchState::Running))
+            .map(|s| s.id)
+            .collect();
+
+        if removable.is_empty() {
+            println!("Nothing to clean.");
+            return Ok(());
+        }
+
+        for id in &removable {
+            client.delete_search(*id).await?;
+        }
+        println!("Removed {} search(es).", removable.len());
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// relaunch
+// ---------------------------------------------------------------------------
+
+pub async fn relaunch(client: &ApiClient, id: u64) -> Result<()> {
+    client.relaunch_search(id).await.map_err(|e| {
+        if e.to_string().contains("404") {
+            anyhow::anyhow!("Search #{id} not found.")
+        } else {
+            e
+        }
+    })?;
+    println!(
+        "Search #{id} relaunched. \
+         Use `rucio search show {id}` to follow results."
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+async fn poll_until_done(client: &ApiClient, id: u64) -> Result<()> {
     let mut cached: Vec<CachedResult> = Vec::new();
     let mut link_to_idx: HashMap<String, usize> = HashMap::new();
 
     for attempt in 0..MAX_POLLS {
         sleep(Duration::from_millis(POLL_INTERVAL_MS)).await;
 
-        let resp = match client.get_search(search_id).await {
+        let resp = match client.get_search(id).await {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("Poll error: {e}");
@@ -49,32 +206,7 @@ pub async fn search(client: &ApiClient, keywords: Vec<String>) -> Result<()> {
             }
         };
 
-        // Merge new results.
-        for r in &resp.results {
-            let link = r.download_link.clone().unwrap_or_default();
-            if let Some(&idx) = link_to_idx.get(&link) {
-                // Already have this entry — add provider if present and new.
-                if let Some(p) = &r.provider
-                    && !cached[idx].providers.contains(p)
-                {
-                    cached[idx].providers.push(p.clone());
-                }
-            } else {
-                let source_str = match r.source {
-                    ResultSource::Rucio => "rucio",
-                    ResultSource::Emule => "emule",
-                };
-                let idx = cached.len();
-                link_to_idx.insert(link.clone(), idx);
-                cached.push(CachedResult {
-                    name: r.name.clone(),
-                    size: r.size,
-                    download_link: link,
-                    providers: r.provider.clone().into_iter().collect(),
-                    source: source_str.to_string(),
-                });
-            }
-        }
+        merge_results(&resp.results, &mut cached, &mut link_to_idx);
 
         if attempt % 5 == 4 && matches!(resp.state, SearchState::Running) {
             println!(
@@ -85,14 +217,8 @@ pub async fn search(client: &ApiClient, keywords: Vec<String>) -> Result<()> {
             );
         }
 
-        // Exit when the daemon reports the search is finished.
         if !matches!(resp.state, SearchState::Running) {
-            let reason = match resp.state {
-                SearchState::Done => "done",
-                SearchState::Cancelled => "cancelled",
-                SearchState::Running => unreachable!(),
-            };
-            save_and_print(&cached, reason);
+            save_and_print(&cached);
             return Ok(());
         }
     }
@@ -100,16 +226,63 @@ pub async fn search(client: &ApiClient, keywords: Vec<String>) -> Result<()> {
     if cached.is_empty() {
         println!("Search timed out with no results.");
     } else {
-        save_and_print(&cached, "timeout");
+        save_and_print(&cached);
     }
     Ok(())
 }
 
-fn save_and_print(results: &[CachedResult], _reason: &str) {
-    let state = LastSearch {
+fn build_cached(results: &[SearchResult]) -> Vec<CachedResult> {
+    let mut cached: Vec<CachedResult> = Vec::new();
+    let mut link_to_idx: HashMap<String, usize> = HashMap::new();
+    merge_results(results, &mut cached, &mut link_to_idx);
+    cached
+}
+
+fn merge_results(
+    results: &[SearchResult],
+    cached: &mut Vec<CachedResult>,
+    link_to_idx: &mut HashMap<String, usize>,
+) {
+    for r in results {
+        let link = r.download_link.clone().unwrap_or_default();
+        if let Some(&idx) = link_to_idx.get(&link) {
+            if let Some(p) = &r.provider
+                && !cached[idx].providers.contains(p)
+            {
+                cached[idx].providers.push(p.clone());
+            }
+        } else {
+            let source_str = match r.source {
+                ResultSource::Rucio => "rucio",
+                ResultSource::Emule => "emule",
+            };
+            let idx = cached.len();
+            link_to_idx.insert(link.clone(), idx);
+            cached.push(CachedResult {
+                name: r.name.clone(),
+                size: r.size,
+                download_link: link,
+                providers: r.provider.clone().into_iter().collect(),
+                source: source_str.to_string(),
+            });
+        }
+    }
+}
+
+fn state_label(state: SearchState) -> String {
+    match state {
+        SearchState::Running => "running".to_string(),
+        SearchState::Done => "done".to_string(),
+        SearchState::Cancelled => "cancelled".to_string(),
+    }
+}
+
+fn save_and_print(results: &[CachedResult]) {
+    if let Err(e) = (LastSearch {
         results: results.to_vec(),
-    };
-    if let Err(e) = state.save() {
+    })
+    .save()
+    {
         eprintln!("Warning: could not save search state: {e}");
     }
     print_results(results);
