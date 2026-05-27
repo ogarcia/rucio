@@ -581,7 +581,7 @@ pub async fn run_ed2k_download(
             let _ = crate::db::emule_downloads::set_status(db, download_id, status, None).await;
             let delay = retry_delay_secs(retry_count);
             retry_count += 1;
-            warn!(
+            info!(
                 name = %link.name,
                 hash = %link.hash,
                 new_slices,
