@@ -124,6 +124,60 @@ rucio config set network.download_limit_kbps 0      # unlimited
 
 ---
 
+### Bandwidth recommendations
+
+Setting limits is recommended for anyone who does not want rucio to saturate
+their connection while running in the background. The table below shows the
+**80 % rule**: leave 20 % free for other traffic (web browsing, gaming, video
+calls). Values are in KB/s.
+
+> **Rule of thumb:** multiply your line speed in Mbps by 100 to get the 80 %
+> upload and download limits in KB/s.  Example: 300 Mbps → `30000`.
+
+| Line speed | `upload_limit_kbps` | `download_limit_kbps` |
+|---:|---:|---:|
+| 100 Mbps | `10000` | `10000` |
+| 200 Mbps | `20000` | `20000` |
+| 300 Mbps | `30000` | `30000` |
+| 400 Mbps | `40000` | `40000` |
+| 500 Mbps | `50000` | `50000` |
+| 600 Mbps | `60000` | `60000` |
+| 700 Mbps | `70000` | `70000` |
+| 800 Mbps | `80000` | `80000` |
+| 900 Mbps | `90000` | `90000` |
+| 1000 Mbps | `100000` | `100000` |
+
+**Asymmetric connections (ADSL, VDSL, cable):** apply the upload percentage to
+your *actual upload speed*, not the download speed.  Example: a 600/30 Mbps
+connection should use `upload_limit_kbps 24000` (80 % of 30 Mbps) and
+`download_limit_kbps 60000` (80 % of 600 Mbps).
+
+**Servers and VPS:** these have dedicated bandwidth and no other users sharing
+the line, so you can safely use 90–95 % or leave the limit at `0` (unlimited).
+
+---
+
+### `network.max_upload_tasks`
+
+Maximum number of concurrent chunk-upload tasks.  Each inbound chunk request
+spawns an async task that reads the chunk from disk and waits for the bandwidth
+throttle before sending.  This cap prevents excessive disk I/O contention when
+many peers request chunks simultaneously.
+
+Reducing this value on spinning-disk systems or low-RAM servers can smooth out
+disk latency under heavy upload load.
+
+```sh
+rucio config set network.max_upload_tasks 32   # quieter disk, lower peak I/O
+rucio config set network.max_upload_tasks 128  # more parallelism for fast NVMe
+```
+
+**Default:** `64`  **Minimum:** `1`
+
+> Requires a daemon restart to take effect.
+
+---
+
 ### `network.bootstrap_peers`
 
 List of multiaddrs used to bootstrap into the DHT when no local peers are
@@ -297,6 +351,7 @@ listen = "127.0.0.1:7070"
 upnp                 = true
 upload_limit_kbps    = 0         # 0 = unlimited
 download_limit_kbps  = 0         # 0 = unlimited
+max_upload_tasks     = 64        # concurrent chunk-upload tasks
 bootstrap_peers = [
   "/ip4/203.0.113.1/tcp/4321/p2p/12D3KooWXXX...",
 ]
@@ -340,6 +395,7 @@ the file value untouched.
 | `RUCIOD_BOOTSTRAP_PEERS` | `network.bootstrap_peers` | *(empty)* | comma-separated multiaddrs |
 | `RUCIOD_UPLOAD_LIMIT_KBPS` | `network.upload_limit_kbps` | `0` (unlimited) | integer KB/s |
 | `RUCIOD_DOWNLOAD_LIMIT_KBPS` | `network.download_limit_kbps` | `0` (unlimited) | integer KB/s |
+| `RUCIOD_MAX_UPLOAD_TASKS` | `network.max_upload_tasks` | `64` | integer ≥1 |
 | `RUCIOD_UPNP` | `network.upnp` | `true` | `true`/`false` (also `1`/`0`, `yes`/`no`, `on`/`off`) |
 | `RUCIOD_NODES_DAT` | `storage.nodes_dat_path` | *(unset)* | path |
 | `RUCIOD_EMULE_ENABLED` | `emule.enabled` | `true` | `true`/`false` (also `1`/`0`, `yes`/`no`, `on`/`off`) |

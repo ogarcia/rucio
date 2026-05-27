@@ -98,6 +98,7 @@ rucio share magnet --file /path/to/file.mkv   # offline, no daemon needed
 | Guide | Description |
 |---|---|
 | [User guide](docs/user/README.md) | Installation, configuration and everyday usage |
+| [Admin guide](docs/admin/README.md) | Running bootstrap nodes and the DHT indexer |
 | [Design docs](docs/design/README.md) | Architecture, protocols and implementation decisions |
 
 ## License

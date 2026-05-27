@@ -111,7 +111,7 @@ rucio download clean 7b4a     # removes a specific entry by hash prefix
 
 ## Next steps
 
-| | |
+| Next step | Description |
 |---|---|
 | [Sharing files](03-sharing-files.md) | Managing shared directories in detail |
 | [Downloading](04-downloading.md) | Resuming, cancelling and monitoring downloads |
