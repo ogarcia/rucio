@@ -3525,13 +3525,20 @@ name = "rucio-bootstrap"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
  "clap",
  "dirs",
+ "hex",
  "libp2p",
  "rucio-core",
  "rucio-net",
+ "serde",
+ "serde_json",
+ "sqlx",
  "tokio",
  "tracing",
+ "utoipa",
+ "utoipa-scalar",
 ]
 
 [[package]]

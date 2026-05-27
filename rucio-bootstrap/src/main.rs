@@ -10,9 +10,12 @@
 //! from; this binary exists to be a *dedicated, stable* entry point without the
 //! overhead of serving content.
 //!
-//! This is role 1 of SPEC phase 5. The passive DHT indexer (role 2) is not yet
-//! built — it will be a small extension of `rucio-net` (kad record filtering +
-//! a provider-record event), not a fork of this binary.
+//! This is role 1 of SPEC phase 5. Role 2 (the passive DHT indexer) is an
+//! opt-in extension compiled in with the `indexer` feature and enabled at
+//! runtime with `--index`; see the [`indexer`] module.
+
+#[cfg(feature = "indexer")]
+mod indexer;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -50,6 +53,37 @@ struct Args {
         value_delimiter = ','
     )]
     bootstrap_peer: Vec<String>,
+
+    /// Enable the passive DHT indexer role: record provider announcements and
+    /// expose a search/admin REST API. Requires the `indexer` build feature.
+    #[cfg(feature = "indexer")]
+    #[arg(long)]
+    index: bool,
+
+    /// SQLite path for the indexer database.
+    #[cfg(feature = "indexer")]
+    #[arg(long, env = "RUCIO_BOOTSTRAP_INDEX_DB")]
+    index_db: Option<PathBuf>,
+
+    /// Address the indexer REST API binds to.
+    #[cfg(feature = "indexer")]
+    #[arg(
+        long,
+        env = "RUCIO_BOOTSTRAP_API_LISTEN",
+        default_value = "127.0.0.1:8090"
+    )]
+    api_listen: std::net::SocketAddr,
+
+    /// Bearer token guarding the indexer admin endpoints. When unset, the admin
+    /// endpoints are disabled.
+    #[cfg(feature = "indexer")]
+    #[arg(long, env = "RUCIO_BOOTSTRAP_API_TOKEN")]
+    api_token: Option<String>,
+
+    /// Drop indexed announcements not refreshed within this many days.
+    #[cfg(feature = "indexer")]
+    #[arg(long, env = "RUCIO_BOOTSTRAP_RETENTION_DAYS", default_value_t = 30)]
+    retention_days: i64,
 }
 
 #[tokio::main]
@@ -70,14 +104,39 @@ async fn main() -> Result<()> {
     let peer_id = keypair.public().to_peer_id();
     info!(%peer_id, identity = %identity_path.display(), "Starting rucio-bootstrap");
 
+    #[cfg(feature = "indexer")]
+    let behaviour = if args.index {
+        BehaviourConfig::indexer(false)
+    } else {
+        BehaviourConfig::dht_only()
+    };
+    #[cfg(not(feature = "indexer"))]
+    let behaviour = BehaviourConfig::dht_only();
+
     let net_cfg = NetConfig {
         identity_path,
         listen_addrs,
-        behaviour: BehaviourConfig::dht_only(),
+        behaviour,
     };
     let mut handle = rucio_net::spawn(&net_cfg)
         .await
         .context("starting the bootstrap node")?;
+
+    #[cfg(feature = "indexer")]
+    let indexer = if args.index {
+        let db_path = args.index_db.clone().unwrap_or_else(default_index_db_path);
+        Some(
+            indexer::Indexer::start(indexer::IndexerOpts {
+                db_path,
+                api_listen: args.api_listen,
+                token: args.api_token.clone(),
+                retention_days: args.retention_days,
+            })
+            .await?,
+        )
+    } else {
+        None
+    };
 
     // Join the DHT through the configured peers, if any.
     let mut joined = false;
@@ -142,6 +201,12 @@ async fn main() -> Result<()> {
                         warn!("Fatal node error: {e}");
                         break;
                     }
+                    #[cfg(feature = "indexer")]
+                    NodeEvent::ProviderRecord { key, provider, .. } => {
+                        if let Some(ix) = indexer.as_ref() {
+                            ix.record(&key, &provider).await;
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -184,4 +249,12 @@ fn default_listen_addrs() -> Vec<String> {
         "/ip4/0.0.0.0/tcp/4321".to_string(),
         "/ip6/::/tcp/4321".to_string(),
     ]
+}
+
+#[cfg(feature = "indexer")]
+fn default_index_db_path() -> PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("rucio-bootstrap")
+        .join("index.db")
 }

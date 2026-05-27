@@ -11,6 +11,20 @@ repository.workspace  = true
 name = "rucio-bootstrap"
 path = "src/main.rs"
 
+[features]
+# Compile in the passive DHT indexer role (provider-record store + REST search
+# API). Off by default: a plain bootstrap node does not need it. Enable at
+# runtime with `--index` once compiled in.
+indexer = [
+    "dep:sqlx",
+    "dep:axum",
+    "dep:utoipa",
+    "dep:utoipa-scalar",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:hex",
+]
+
 [dependencies]
 rucio-net   = { path = "../rucio-net" }
 rucio-core  = { path = "../rucio-core" }
@@ -20,3 +34,12 @@ anyhow      = { workspace = true }
 clap        = { workspace = true }
 tracing     = { workspace = true }
 dirs        = { workspace = true }
+
+# indexer role only
+sqlx          = { workspace = true, optional = true }
+axum          = { workspace = true, optional = true }
+utoipa        = { workspace = true, optional = true }
+utoipa-scalar = { workspace = true, optional = true }
+serde         = { workspace = true, optional = true }
+serde_json    = { workspace = true, optional = true }
+hex           = { workspace = true, optional = true }
