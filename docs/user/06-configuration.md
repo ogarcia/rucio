@@ -153,8 +153,9 @@ rucio config unset network.bootstrap_peers \
   "/ip4/203.0.113.1/tcp/4321/p2p/12D3KooW..."
 ```
 
-**Default:** built-in list of public bootstrap nodes (empty until infrastructure
-is available — LAN discovery via mDNS still works without this).
+**Default:** the built-in public bootstrap node at `208.85.21.46:4321` (both
+IPv4 and IPv6). You rarely need to change this; LAN discovery via mDNS also
+works independently.
 
 ---
 

@@ -368,7 +368,8 @@ fn default_emule_temp_dir() -> PathBuf {
 //   "/ip6/2001:db8:cafe::1/tcp/4321/p2p/12D3KooWXXXXXXXX...",
 //
 const BUILTIN_BOOTSTRAP_PEERS: &[&str] = &[
-    // (none yet — add here when infrastructure is available)
+    "/ip4/208.85.21.46/tcp/4321/p2p/12D3KooWHXm58uGjv3fta4v8mYHS5jwbaSgw6LBqVVY9rcguaCko",
+    "/ip6/2a05:f480:2800:2731:5400:6ff:fe31:8080/tcp/4321/p2p/12D3KooWHXm58uGjv3fta4v8mYHS5jwbaSgw6LBqVVY9rcguaCko",
 ];
 
 // --- Loading -----------------------------------------------------------------
