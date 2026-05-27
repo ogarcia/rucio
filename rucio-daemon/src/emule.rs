@@ -181,12 +181,28 @@ pub async fn run_ed2k_download(
     // parks here in the `queued` state until a running download finishes,
     // capping the total number of open peer connections across all downloads.
     let _slot = match download_slots.clone().try_acquire_owned() {
-        Ok(permit) => permit,
+        Ok(permit) => {
+            info!(
+                name = %link.name,
+                max_concurrent = config.emule.max_concurrent_downloads,
+                slots_free = download_slots.available_permits(),
+                "eMule download slot acquired"
+            );
+            permit
+        }
         Err(_) => {
             info!(name = %link.name, "All download slots busy — queued");
             let _ = crate::db::emule_downloads::set_status(db, download_id, "queued", None).await;
             match download_slots.clone().acquire_owned().await {
-                Ok(permit) => permit,
+                Ok(permit) => {
+                    info!(
+                        name = %link.name,
+                        max_concurrent = config.emule.max_concurrent_downloads,
+                        slots_free = download_slots.available_permits(),
+                        "eMule download slot acquired after queuing"
+                    );
+                    permit
+                }
                 Err(_) => {
                     // Semaphore closed — daemon shutting down.
                     active_downloads.write().await.remove(&hash_key);
