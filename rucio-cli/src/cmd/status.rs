@@ -6,6 +6,7 @@ use tabled::{Table, Tabled};
 
 use crate::client::ApiClient;
 use crate::color;
+use crate::table_util::{fit_column, term_width};
 
 pub async fn status(client: &ApiClient) -> Result<()> {
     let s = client.status().await?;
@@ -198,7 +199,14 @@ pub async fn peers(client: &ApiClient) -> Result<()> {
         })
         .collect();
 
-    println!("{}", Table::new(rows));
+    let max_addr = rows
+        .iter()
+        .map(|r| r.addresses.chars().count())
+        .max()
+        .unwrap_or(0);
+    let mut table = Table::new(rows);
+    fit_column(&mut table, 2, max_addr, term_width());
+    println!("{table}");
     Ok(())
 }
 

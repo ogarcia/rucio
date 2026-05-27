@@ -17,6 +17,7 @@ use tokio::time::{Duration, sleep};
 use crate::client::ApiClient;
 use crate::color;
 use crate::state::{CachedResult, LastSearch};
+use crate::table_util::{fit_column, term_width};
 
 const POLL_INTERVAL_MS: u64 = 1_000;
 const MAX_POLLS: u32 = 65;
@@ -77,7 +78,14 @@ pub async fn list(client: &ApiClient) -> Result<()> {
         })
         .collect();
 
-    println!("{}", Table::new(rows));
+    let max_kw = rows
+        .iter()
+        .map(|r| r.keywords.chars().count())
+        .max()
+        .unwrap_or(0);
+    let mut table = Table::new(rows);
+    fit_column(&mut table, 1, max_kw, term_width());
+    println!("{table}");
     Ok(())
 }
 
@@ -338,7 +346,14 @@ fn print_results(results: &[CachedResult]) {
         })
         .collect();
 
-    println!("{}", Table::new(rows));
+    let max_name = rows
+        .iter()
+        .map(|r| r.name.chars().count())
+        .max()
+        .unwrap_or(0);
+    let mut table = Table::new(rows);
+    fit_column(&mut table, 1, max_name, term_width());
+    println!("{table}");
     println!("Use `rucio download add <#>` to download.");
 }
 

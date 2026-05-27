@@ -10,6 +10,7 @@ use tabled::{Table, Tabled};
 use crate::client::ApiClient;
 use crate::color;
 use crate::state::LastSearch;
+use crate::table_util::{fit_column, term_width};
 
 // ANSI escape sequences for terminal control.
 const CLEAR_SCREEN: &str = "\x1b[2J\x1b[H";
@@ -220,7 +221,7 @@ fn print_table(
             Row {
                 idx: i + 1,
                 hash: truncate(&d.root_hash, 16),
-                name: truncate(&d.name.unwrap_or_else(|| "-".to_string()), 32),
+                name: d.name.unwrap_or_else(|| "-".to_string()),
                 size: d.size.map(human_size).unwrap_or_else(|| "-".to_string()),
                 progress: color::progress_bar(d.bytes_done, total),
                 state: color::download_state(&d.state),
@@ -228,7 +229,14 @@ fn print_table(
         })
         .collect();
 
-    println!("{}", Table::new(rows));
+    let max_name = rows
+        .iter()
+        .map(|r| r.name.chars().count())
+        .max()
+        .unwrap_or(0);
+    let mut table = Table::new(rows);
+    fit_column(&mut table, 2, max_name, term_width());
+    println!("{table}");
 }
 
 /// Start a download.

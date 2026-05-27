@@ -9,6 +9,7 @@ use tabled::{Table, Tabled};
 
 use crate::client::ApiClient;
 use crate::color;
+use crate::table_util::{fit_column, term_width};
 
 // ANSI escape sequences for terminal control.
 const CLEAR_LINE: &str = "\x1b[2K\r";
@@ -67,7 +68,21 @@ pub async fn list(client: &ApiClient, filter: Option<&str>) -> Result<()> {
         })
         .collect();
 
-    println!("{}", Table::new(rows));
+    let tw = term_width();
+    let max_name = rows
+        .iter()
+        .map(|r| r.name.chars().count())
+        .max()
+        .unwrap_or(0);
+    let max_path = rows
+        .iter()
+        .map(|r| r.path.chars().count())
+        .max()
+        .unwrap_or(0);
+    let mut table = Table::new(rows);
+    fit_column(&mut table, 2, max_name, tw);
+    fit_column(&mut table, 5, max_path, tw);
+    println!("{table}");
     Ok(())
 }
 

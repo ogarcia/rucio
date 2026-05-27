@@ -21,6 +21,7 @@ serde_json          = { workspace = true }
 anyhow              = { workspace = true }
 tracing             = { workspace = true }
 tabled              = { workspace = true }
+terminal_size       = { workspace = true }
 urlencoding         = { workspace = true }
 tokio-tungstenite   = { workspace = true }
 futures-util        = { workspace = true }

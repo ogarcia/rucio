@@ -2,6 +2,7 @@ pub mod client;
 pub mod cmd;
 pub mod color;
 pub mod state;
+pub mod table_util;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
