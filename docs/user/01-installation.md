@@ -58,7 +58,7 @@ ln -s /usr/local/bin/rucio /usr/local/bin/ruciod
 To check at runtime whether the running daemon was compiled with this feature:
 
 ```sh
-rucio emule status
+rucio node emule status
 ```
 
 The field `eMule compatibility` will show `enabled` or `disabled`.

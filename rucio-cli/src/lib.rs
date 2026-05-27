@@ -21,35 +21,30 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Manage shared files
-    Share {
-        #[command(subcommand)]
-        action: ShareAction,
-    },
     /// Manage downloads
     Download {
         #[command(subcommand)]
         action: DownloadAction,
-    },
-    /// Node and daemon information
-    Node {
-        #[command(subcommand)]
-        action: NodeAction,
     },
     /// Search for files on the network
     Search {
         #[command(subcommand)]
         action: SearchAction,
     },
+    /// Manage shared files
+    Share {
+        #[command(subcommand)]
+        action: ShareAction,
+    },
+    /// Node and daemon information
+    Node {
+        #[command(subcommand)]
+        action: NodeAction,
+    },
     /// Show or update configuration
     Config {
         #[command(subcommand)]
         action: ConfigAction,
-    },
-    /// eMule Kad compatibility commands
-    Emule {
-        #[command(subcommand)]
-        action: cmd::emule::EmuleCmd,
     },
 }
 
@@ -139,6 +134,11 @@ pub enum NodeAction {
     Peers,
     /// Show transfer metrics (session and lifetime totals)
     Metrics,
+    /// eMule / Kad2 compatibility subsystem
+    Emule {
+        #[command(subcommand)]
+        action: cmd::emule::EmuleCmd,
+    },
 }
 
 /// `rucio search …` — search for files on the Rucio and eMule networks.
@@ -251,6 +251,7 @@ pub async fn run() -> Result<()> {
             NodeAction::Status => cmd::status::status(&client).await,
             NodeAction::Peers => cmd::status::peers(&client).await,
             NodeAction::Metrics => cmd::status::metrics_cmd(&client).await,
+            NodeAction::Emule { action } => cmd::emule::run(&client, action).await,
         },
         Commands::Search { action } => match action {
             SearchAction::Add { keywords, wait } => cmd::search::add(&client, keywords, wait).await,
@@ -267,6 +268,5 @@ pub async fn run() -> Result<()> {
                 cmd::config::unset(&client, &key, value.as_deref()).await
             }
         },
-        Commands::Emule { action } => cmd::emule::run(&client, action).await,
     }
 }

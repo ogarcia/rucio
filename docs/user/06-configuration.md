@@ -83,7 +83,7 @@ Set to `false` if:
 - UPnP is disabled or unavailable on your network.
 
 When `false`, the `external_ip` field in `rucio node status` will always be empty,
-and `rucio emule status` will report `Connectivity: unknown` unless
+and `rucio node emule status` will report `Connectivity: unknown` unless
 `emule.external_ip` is configured manually (or a peer has already connected
 to us, in which case it reports `open`).
 

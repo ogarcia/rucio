@@ -1,4 +1,4 @@
-//! `rucio emule` subcommand — eMule Kad compatibility.
+//! `rucio node emule` subcommand — eMule Kad compatibility.
 
 use anyhow::Result;
 use clap::Subcommand;
@@ -104,7 +104,7 @@ async fn status(client: &ApiClient) -> Result<()> {
                 );
             } else {
                 println!(
-                    "nodes.dat status:    {} — run `rucio emule bootstrap` to download it",
+                    "nodes.dat status:    {} — run `rucio node emule bootstrap` to download it",
                     "missing".yellow()
                 );
             }

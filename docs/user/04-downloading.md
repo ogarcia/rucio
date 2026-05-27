@@ -140,7 +140,7 @@ bootstrap into the Kad2 network you need a `nodes.dat` file containing a list
 of known Kad2 nodes.  Download one automatically with:
 
 ```sh
-rucio emule bootstrap
+rucio node emule bootstrap
 ```
 
 This downloads a fresh `nodes.dat` from `http://upd.emule-security.org/nodes.dat`,
@@ -153,13 +153,13 @@ after a long period of inactivity (node lists go stale over time).
 To use a different source:
 
 ```sh
-rucio emule bootstrap --url http://kademlia.ru/download/nodes.dat
+rucio node emule bootstrap --url http://kademlia.ru/download/nodes.dat
 ```
 
 ### Check status
 
 ```sh
-rucio emule status
+rucio node emule status
 ```
 
 ```

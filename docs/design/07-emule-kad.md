@@ -36,7 +36,7 @@ The feature pulls in:
 To check at runtime whether the feature is compiled in:
 
 ```sh
-rucio emule status
+rucio node emule status
 # eMule compatibility: enabled
 ```
 
@@ -156,7 +156,7 @@ The official source is `http://upd.emule-security.org/nodes.dat`
 (~200 contacts, refreshed regularly). Fetch it with:
 
 ```sh
-rucio emule bootstrap
+rucio node emule bootstrap
 ```
 
 ### Iterative bootstrap

@@ -178,7 +178,7 @@ integers. The decoder reads them with `read_u32_le()` and reconstructs the
 
 The bootstrap file (`nodes.dat`) is the standard eMule format (version 2).
 It is fetched from `http://upd.emule-security.org/nodes.dat` via
-`rucio emule bootstrap`. The file contains up to ~200 bootstrap contacts;
+`rucio node emule bootstrap`. The file contains up to ~200 bootstrap contacts;
 some entries may have private or multicast IPs — those are invalid entries
 in the file itself and are silently skipped.
 
