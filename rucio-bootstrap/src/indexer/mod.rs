@@ -4,17 +4,28 @@
 //! [`NodeEvent::ProviderRecord`](rucio_net::NodeEvent)) into SQLite and exposes
 //! a search/admin REST API. Compiled in only with the `indexer` feature and
 //! activated at runtime with `--index`.
+//!
+//! When enrichment is enabled, each newly seen hash is resolved to a file name
+//! and size by requesting the manifest from the announcing peer, so the search
+//! API can match on names rather than just hashes.
 
 mod api;
 mod db;
 
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use libp2p::PeerId;
+use libp2p::request_response::OutboundRequestId;
+use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
+
+use rucio_core::protocol::manifest::{ManifestRequest, ManifestResponse};
+use rucio_net::NodeCmd;
 
 /// Runtime options for the indexer role.
 pub struct IndexerOpts {
@@ -23,11 +34,23 @@ pub struct IndexerOpts {
     /// Bearer token for the admin endpoints; `None` disables them.
     pub token: Option<String>,
     pub retention_days: i64,
+    /// Resolve file name/size from each announcing peer's manifest.
+    pub enrich: bool,
+    /// Channel to the node task, used to request manifests for enrichment.
+    pub node_cmd: mpsc::Sender<NodeCmd>,
 }
 
 /// A running indexer: owns the DB pool and drives the API + retention tasks.
 pub struct Indexer {
     db: db::Db,
+    enrich: bool,
+    node_cmd: mpsc::Sender<NodeCmd>,
+    /// Outstanding manifest requests, mapping the request id back to the hash
+    /// being enriched.
+    pending: Mutex<HashMap<OutboundRequestId, String>>,
+    /// Hashes currently being enriched, to avoid duplicate in-flight requests
+    /// when many providers announce the same hash.
+    inflight: Mutex<HashSet<String>>,
 }
 
 impl Indexer {
@@ -39,6 +62,7 @@ impl Indexer {
         info!(
             db = %opts.db_path.display(),
             retention_days = opts.retention_days,
+            enrich = opts.enrich,
             "Indexer enabled"
         );
 
@@ -75,14 +99,86 @@ impl Indexer {
             }
         });
 
-        Ok(Self { db })
+        Ok(Self {
+            db,
+            enrich: opts.enrich,
+            node_cmd: opts.node_cmd,
+            pending: Mutex::new(HashMap::new()),
+            inflight: Mutex::new(HashSet::new()),
+        })
     }
 
-    /// Record an observed provider announcement.
+    /// Record an observed provider announcement, then (if enabled) kick off
+    /// enrichment of the hash.
     pub async fn record(&self, hash: &[u8], provider: &PeerId) {
         let hash_hex = hex::encode(hash);
         if let Err(e) = db::upsert(&self.db, &hash_hex, &provider.to_string()).await {
             warn!("Indexer upsert failed: {e}");
+            return;
+        }
+        if self.enrich {
+            self.maybe_enrich(hash, &hash_hex, *provider).await;
+        }
+    }
+
+    /// Request the manifest from `provider` to learn the file's name and size,
+    /// unless the hash is already enriched or a request is already in flight.
+    async fn maybe_enrich(&self, hash: &[u8], hash_hex: &str, provider: PeerId) {
+        let root_hash: [u8; 32] = match hash.try_into() {
+            Ok(h) => h,
+            Err(_) => return, // not a 32-byte rucio root hash
+        };
+        match db::has_file(&self.db, hash_hex).await {
+            Ok(true) => return,
+            Ok(false) => {}
+            Err(e) => {
+                warn!("has_file failed: {e}");
+                return;
+            }
+        }
+        // Claim the hash; bail if another provider already triggered it.
+        if !self.inflight.lock().unwrap().insert(hash_hex.to_string()) {
+            return;
+        }
+
+        let (id_tx, id_rx) = oneshot::channel();
+        let cmd = NodeCmd::RequestManifest {
+            peer: provider,
+            request: ManifestRequest { root_hash },
+            id_tx,
+        };
+        if self.node_cmd.send(cmd).await.is_err() {
+            self.inflight.lock().unwrap().remove(hash_hex);
+            return;
+        }
+        match id_rx.await {
+            Ok(req_id) => {
+                self.pending
+                    .lock()
+                    .unwrap()
+                    .insert(req_id, hash_hex.to_string());
+            }
+            Err(_) => {
+                // Node task dropped the sender (manifest protocol unavailable).
+                self.inflight.lock().unwrap().remove(hash_hex);
+            }
+        }
+    }
+
+    /// Handle a manifest response correlated to an enrichment request.
+    pub async fn on_manifest(&self, request_id: OutboundRequestId, response: ManifestResponse) {
+        let Some(hash_hex) = self.pending.lock().unwrap().remove(&request_id) else {
+            return;
+        };
+        self.inflight.lock().unwrap().remove(&hash_hex);
+        if let ManifestResponse::Ok {
+            name, total_size, ..
+        } = response
+        {
+            match db::upsert_file(&self.db, &hash_hex, &name, total_size as i64).await {
+                Ok(()) => info!(hash = %hash_hex, %name, size = total_size, "Enriched hash"),
+                Err(e) => warn!("file upsert failed: {e}"),
+            }
         }
     }
 }

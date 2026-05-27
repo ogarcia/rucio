@@ -84,6 +84,13 @@ struct Args {
     #[cfg(feature = "indexer")]
     #[arg(long, env = "RUCIO_BOOTSTRAP_RETENTION_DAYS", default_value_t = 30)]
     retention_days: i64,
+
+    /// Do not resolve file name/size from announcing peers (index hashes only).
+    /// By default the indexer enriches each hash via the manifest protocol so
+    /// the search API can match on names.
+    #[cfg(feature = "indexer")]
+    #[arg(long)]
+    no_enrich: bool,
 }
 
 #[tokio::main]
@@ -105,8 +112,10 @@ async fn main() -> Result<()> {
     info!(%peer_id, identity = %identity_path.display(), "Starting rucio-bootstrap");
 
     #[cfg(feature = "indexer")]
+    let enrich = !args.no_enrich;
+    #[cfg(feature = "indexer")]
     let behaviour = if args.index {
-        BehaviourConfig::indexer(false)
+        BehaviourConfig::indexer(enrich)
     } else {
         BehaviourConfig::dht_only()
     };
@@ -131,6 +140,8 @@ async fn main() -> Result<()> {
                 api_listen: args.api_listen,
                 token: args.api_token.clone(),
                 retention_days: args.retention_days,
+                enrich,
+                node_cmd: handle.cmd_tx.clone(),
             })
             .await?,
         )
@@ -205,6 +216,16 @@ async fn main() -> Result<()> {
                     NodeEvent::ProviderRecord { key, provider, .. } => {
                         if let Some(ix) = indexer.as_ref() {
                             ix.record(&key, &provider).await;
+                        }
+                    }
+                    #[cfg(feature = "indexer")]
+                    NodeEvent::ManifestReceived {
+                        request_id,
+                        response,
+                        ..
+                    } => {
+                        if let Some(ix) = indexer.as_ref() {
+                            ix.on_manifest(request_id, response).await;
                         }
                     }
                     _ => {}

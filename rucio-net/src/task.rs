@@ -489,6 +489,15 @@ async fn on_swarm_event(
                         let key = record.key.to_vec();
                         let provider = record.provider;
                         let addresses = record.addresses.clone();
+                        // Teach the routing table how to reach the announcer so
+                        // it can be dialed later (e.g. to fetch its manifest for
+                        // enrichment).
+                        for addr in &addresses {
+                            swarm
+                                .behaviour_mut()
+                                .kademlia
+                                .add_address(&provider, addr.clone());
+                        }
                         // FilterBoth does not auto-store the record; re-store it
                         // so we keep serving it like a normal DHT server.
                         if let Err(e) = swarm
