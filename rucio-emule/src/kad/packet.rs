@@ -881,6 +881,11 @@ pub fn kad_id_from_hash(hash: &[u8; 16]) -> KadId {
 }
 
 /// Compute the Kad target for a keyword search: `MD4(keyword_utf8)`.
+///
+/// **The caller is responsible for normalizing `keyword` first** (lowercase +
+/// Latin diacritic folding via `rucio_core::protocol::search::normalize_search_term`).
+/// eMule clients normalize before publishing, so the DHT only contains entries
+/// under normalized keys; querying with a non-normalized string will miss them.
 pub fn keyword_target(keyword: &str) -> KadId {
     use md4::{Digest, Md4};
     let mut h = Md4::new();
