@@ -134,13 +134,16 @@ pub async fn list(db: &Db) -> Result<Vec<EmuleDownloadRow>> {
 
 /// Return downloads that should be resumed on daemon startup.
 ///
-/// These are rows whose status is `finding_providers` or `downloading`.
+/// Includes all non-terminal states: `finding_providers`, `downloading`,
+/// `queued` (was waiting for a concurrency slot), and `stalled` (no sources
+/// found, will retry).  Terminal states (`completed`, `cancelled`, `error`)
+/// are intentionally excluded.
 pub async fn list_resumable(db: &Db) -> Result<Vec<EmuleDownloadRow>> {
     let rows = sqlx::query(
         "SELECT id, ed2k_hash, name, total_size, ed2k_link, status,
                 bytes_done, dest_path, error_msg, added_at, updated_at
          FROM emule_downloads
-         WHERE status IN ('finding_providers', 'downloading')
+         WHERE status IN ('finding_providers', 'downloading', 'queued', 'stalled')
          ORDER BY added_at ASC",
     )
     .fetch_all(db)
