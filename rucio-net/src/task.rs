@@ -402,7 +402,7 @@ async fn on_swarm_event(
                 // at INFO so a legitimate routing change stays visible without
                 // producing alarm-level noise on hosts without IPv6.
                 DialNoise::Unreachable => {
-                    info!(%error, "Outgoing connection error (network unreachable)")
+                    info!(%error, "Outgoing connection error (network unreachable — expected if this address family is not available on this host)")
                 }
                 DialNoise::Real => warn!(%error, "Outgoing connection error"),
             }
