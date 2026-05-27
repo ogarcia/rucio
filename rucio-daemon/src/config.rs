@@ -106,15 +106,6 @@ pub struct EmuleConfig {
     #[serde(default = "default_emule_temp_dir")]
     pub temp_dir: PathBuf,
 
-    /// UDP port for the persistent Kad2 socket.
-    ///
-    /// This port must be reachable from the internet for Kad2 bootstrap and
-    /// source search to work.  The eMule standard port is 4672.
-    /// When running in a container, map this port with `-p 4672:4672/udp`.
-    ///
-    /// Default: 4672.  Override via `RUCIOD_EMULE_UDP_PORT`.
-    pub udp_port: u16,
-
     /// TCP port for incoming eMule peer connections (High-ID mode).
     ///
     /// ruciod listens on this port so that other eMule clients can connect
@@ -126,6 +117,15 @@ pub struct EmuleConfig {
     /// Default: 4662.  Override via `RUCIOD_EMULE_TCP_PORT`.
     #[serde(default = "EmuleConfig::default_tcp_port")]
     pub tcp_port: u16,
+
+    /// UDP port for the persistent Kad2 socket.
+    ///
+    /// This port must be reachable from the internet for Kad2 bootstrap and
+    /// source search to work.  The eMule standard port is 4672.
+    /// When running in a container, map this port with `-p 4672:4672/udp`.
+    ///
+    /// Default: 4672.  Override via `RUCIOD_EMULE_UDP_PORT`.
+    pub udp_port: u16,
 
     /// Our external IPv4 address as seen by peers on the internet.
     ///
@@ -195,8 +195,8 @@ impl Default for EmuleConfig {
         Self {
             enabled: true,
             temp_dir: default_emule_temp_dir(),
-            udp_port: 4672,
             tcp_port: Self::default_tcp_port(),
+            udp_port: 4672,
             external_ip: None,
             download_slots_per_file: Self::default_download_slots_per_file(),
             max_upload_slots: Self::default_max_upload_slots(),
@@ -414,8 +414,8 @@ impl Config {
     /// | `RUCIOD_EMULE_ENABLED`      | `emule.enabled`              | `true`/`false`     |
     /// | `RUCIOD_EMULE_TEMP_DIR`     | `emule.temp_dir`             | path               |
     /// | `RUCIOD_NODES_DAT`          | `storage.nodes_dat_path`     | path               |
-    /// | `RUCIOD_EMULE_UDP_PORT`     | `emule.udp_port`             | integer 1-65535    |
     /// | `RUCIOD_EMULE_TCP_PORT`     | `emule.tcp_port`             | integer 1-65535    |
+    /// | `RUCIOD_EMULE_UDP_PORT`     | `emule.udp_port`             | integer 1-65535    |
     /// | `RUCIOD_EMULE_DOWNLOAD_SLOTS_PER_FILE` | `emule.download_slots_per_file` | integer 1-50 |
     /// | `RUCIOD_EMULE_MAX_UPLOAD_SLOTS` | `emule.max_upload_slots` | integer 1-50       |
     /// | `RUCIOD_EMULE_MAX_CONCURRENT_DOWNLOADS` | `emule.max_concurrent_downloads` | integer 1-50 |

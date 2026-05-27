@@ -66,6 +66,67 @@ The field `eMule compatibility` will show `enabled` or `disabled`.
 The build produces a single binary. The `ruciod` symlink is what triggers
 daemon mode — see [Architecture](../design/01-architecture.md) for details.
 
+## Option C — Container image
+
+Pre-built images are published to `ghcr.io/anomalyco/rucio`.
+
+| Tag | Contents | Typical use |
+|---|---|---|
+| `latest` / `0.1.x` | `ruciod` daemon only | Production nodes, VPS |
+| `latest-full` / `0.1.x-full` | `ruciod` + `rucio` CLI | Development / debugging |
+| `latest-bootstrap` / `0.1.x-bootstrap` | `rucio-bootstrap` with indexer | Dedicated DHT bootstrap node |
+
+### Quick start
+
+```sh
+docker run -d --name ruciod \
+  -v rucio-data:/var/lib/rucio \
+  -p 4321:4321/tcp \
+  ghcr.io/anomalyco/rucio:latest
+```
+
+### With eMule / Kad2 support
+
+```sh
+docker run -d --name ruciod \
+  -e RUCIOD_API_LISTEN=0.0.0.0:7070 \
+  -e RUCIOD_UPNP=false \
+  -v rucio-data:/var/lib/rucio \
+  -p 4321:4321/tcp \
+  -p 7070:7070/tcp \
+  -p 4662:4662/tcp \
+  -p 4672:4672/udp \
+  ghcr.io/anomalyco/rucio:latest-full
+```
+
+### Volume ownership (UID / GID)
+
+The container process runs as **UID 10001 / GID 10001** (user `rucio`).
+
+**Named volumes** (created with `docker volume create`) are managed by the
+container engine and work without any extra steps.
+
+**Bind mounts** require the host directory to be owned by that UID before the
+container starts, otherwise the daemon cannot write its config or database:
+
+```sh
+mkdir -p /srv/rucio
+chown 10001:10001 /srv/rucio
+docker run ... -v /srv/rucio:/var/lib/rucio ...
+```
+
+Alternatively pass `--user` with the numeric UID of a local user that owns
+the directory — just make sure it matches the mount:
+
+```sh
+docker run --user "$(id -u):$(id -g)" -v /srv/rucio:/var/lib/rucio ...
+```
+
+See [Configuration](06-configuration.md) for the full list of environment
+variables accepted by the container.
+
+---
+
 ## Running as a system service (Linux / systemd)
 
 Create `/etc/systemd/system/ruciod.service`:

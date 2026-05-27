@@ -192,22 +192,6 @@ rucio config set emule.enabled true
 
 ---
 
-### `emule.udp_port`
-
-UDP port for the Kad2 socket used to communicate with the eMule network.
-Only meaningful when the daemon is built with the `emule-compat` feature.
-
-This port must be reachable from the internet for Kad2 bootstrap and source
-search to work.  When running in a container, map it with `-p 4672:4672/udp`.
-
-```sh
-rucio config set emule.udp_port 4672
-```
-
-**Default:** `4672` (eMule standard)
-
----
-
 ### `emule.tcp_port`
 
 TCP port on which ruciod listens for incoming eMule peer connections.
@@ -223,6 +207,22 @@ rucio config set emule.tcp_port 4662
 ```
 
 **Default:** `4662` (eMule standard)
+
+---
+
+### `emule.udp_port`
+
+UDP port for the Kad2 socket used to communicate with the eMule network.
+Only meaningful when the daemon is built with the `emule-compat` feature.
+
+This port must be reachable from the internet for Kad2 bootstrap and source
+search to work.  When running in a container, map it with `-p 4672:4672/udp`.
+
+```sh
+rucio config set emule.udp_port 4672
+```
+
+**Default:** `4672` (eMule standard)
 
 ---
 
@@ -326,8 +326,8 @@ bootstrap_peers = [
 
 [emule]
 enabled            = true
-udp_port           = 4672
 tcp_port           = 4662
+udp_port           = 4672
 download_slots_per_file  = 5
 max_upload_slots         = 4
 max_concurrent_downloads = 3
@@ -361,8 +361,8 @@ the file value untouched.
 | `RUCIOD_NODES_DAT` | `storage.nodes_dat_path` | *(unset)* | path |
 | `RUCIOD_EMULE_ENABLED` | `emule.enabled` | `true` | `true`/`false` (also `1`/`0`, `yes`/`no`, `on`/`off`) |
 | `RUCIOD_EMULE_TEMP_DIR` | `emule.temp_dir` | platform default | path |
-| `RUCIOD_EMULE_UDP_PORT` | `emule.udp_port` | `4672` | integer 1–65535 |
 | `RUCIOD_EMULE_TCP_PORT` | `emule.tcp_port` | `4662` | integer 1–65535 |
+| `RUCIOD_EMULE_UDP_PORT` | `emule.udp_port` | `4672` | integer 1–65535 |
 | `RUCIOD_EXTERNAL_IP` | `emule.external_ip` | *(auto)* | IPv4 address |
 | `RUCIOD_EMULE_DOWNLOAD_SLOTS_PER_FILE` | `emule.download_slots_per_file` | `5` | integer 1–50 |
 | `RUCIOD_EMULE_MAX_UPLOAD_SLOTS` | `emule.max_upload_slots` | `4` | integer 1–50 |
@@ -412,7 +412,7 @@ docker run \
   -e RUCIOD_EMULE_TCP_PORT=40067 \
   -e RUCIOD_UPNP=false \
   -v rucio-data:/data \
-  -p 7070:7070 -p 4321:4321 -p 40066:40066/udp -p 40067:40067/tcp \
+  -p 7070:7070 -p 4321:4321 -p 40067:40067/tcp -p 40066:40066/udp \
   ghcr.io/yourorg/rucio
 ```
 

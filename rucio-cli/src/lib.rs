@@ -156,8 +156,8 @@ pub enum ConfigAction {
     ///   network.download_limit_kbps     <integer>    (0 = unlimited, applied immediately)
     ///   emule.enabled                   <bool>
     ///   emule.temp_dir                  <path>
-    ///   emule.udp_port                  <integer>    (1-65535)
     ///   emule.tcp_port                  <integer>    (1-65535)
+    ///   emule.udp_port                  <integer>    (1-65535)
     ///   emule.external_ip               <ipv4>
     ///   emule.download_slots_per_file   <integer>    (1-50)
     ///   emule.max_upload_slots          <integer>    (1-50)
