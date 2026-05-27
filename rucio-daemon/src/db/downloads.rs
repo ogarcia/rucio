@@ -163,7 +163,7 @@ pub async fn list(db: &Db) -> Result<Vec<DownloadRow>> {
     let rows = sqlx::query(
         "SELECT id, root_hash, name, total_size, dest_path, status,
                 bytes_done, error_msg, added_at, updated_at
-         FROM downloads ORDER BY added_at DESC",
+         FROM downloads ORDER BY added_at ASC",
     )
     .fetch_all(db)
     .await?;
