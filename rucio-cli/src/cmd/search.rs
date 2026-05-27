@@ -1,6 +1,6 @@
 //! `rucio search` subcommands.
 //!
-//! start <keywords...>  — start a search and wait for results (--background to skip waiting)
+//! add <keywords...>    — start a search (prints ID, returns immediately; --wait to block)
 //! list                 — list all searches in memory
 //! show <id>            — show results (waits if still running)
 //! cancel <id>          — cancel a running search
@@ -25,7 +25,7 @@ const MAX_POLLS: u32 = 65;
 // start
 // ---------------------------------------------------------------------------
 
-pub async fn start(client: &ApiClient, keywords: Vec<String>, wait: bool) -> Result<()> {
+pub async fn add(client: &ApiClient, keywords: Vec<String>, wait: bool) -> Result<()> {
     if keywords.is_empty() {
         anyhow::bail!("Provide at least one keyword.");
     }

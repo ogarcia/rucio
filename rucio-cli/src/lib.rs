@@ -144,19 +144,24 @@ pub enum NodeAction {
 /// `rucio search …` — search for files on the Rucio and eMule networks.
 #[derive(Subcommand, Debug)]
 pub enum SearchAction {
-    /// Start a search (prints search ID and returns immediately)
-    Start {
+    /// List all searches currently held in daemon memory
+    List,
+    /// Show results for a search, waiting if it is still running
+    Show {
+        /// Search ID returned by `rucio search add`
+        id: u64,
+    },
+    /// Start a new search (prints search ID and returns immediately)
+    Add {
         /// Keywords to search for
         keywords: Vec<String>,
         /// Poll until the search finishes and print results
         #[arg(short, long)]
         wait: bool,
     },
-    /// List all searches currently held in daemon memory
-    List,
-    /// Show results for a search, waiting if it is still running
-    Show {
-        /// Search ID returned by `rucio search start`
+    /// Relaunch a search, keeping the same ID and preserving existing results
+    Relaunch {
+        /// Search ID
         id: u64,
     },
     /// Cancel a running search
@@ -168,11 +173,6 @@ pub enum SearchAction {
     Clean {
         /// Search ID to remove (omit to remove all done/cancelled searches)
         id: Option<u64>,
-    },
-    /// Relaunch a search, keeping the same ID and preserving existing results
-    Relaunch {
-        /// Search ID
-        id: u64,
     },
 }
 
@@ -253,9 +253,7 @@ pub async fn run() -> Result<()> {
             NodeAction::Metrics => cmd::status::metrics_cmd(&client).await,
         },
         Commands::Search { action } => match action {
-            SearchAction::Start { keywords, wait } => {
-                cmd::search::start(&client, keywords, wait).await
-            }
+            SearchAction::Add { keywords, wait } => cmd::search::add(&client, keywords, wait).await,
             SearchAction::List => cmd::search::list(&client).await,
             SearchAction::Show { id } => cmd::search::show(&client, id).await,
             SearchAction::Cancel { id } => cmd::search::cancel(&client, id).await,
