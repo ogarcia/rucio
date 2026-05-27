@@ -1,26 +1,21 @@
 /// GET /api/v1/config  —  PUT /api/v1/config
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct ConfigResponse {
-    pub node: NodeConfig,
-    pub api: ApiConfig,
-    pub network: NetworkConfig,
-    pub storage: StorageConfig,
-    pub emule: EmuleConfig,
-    /// Present when there are settings saved to disk that require a daemon
-    /// restart to take effect.  Contains the full pending configuration.
-    /// Bandwidth-limit fields in this object show the values on disk, not the
-    /// live throttle values.
+    /// Configuration values currently in effect in the running daemon.
+    /// Bandwidth limits reflect the live throttle, not the on-disk value.
+    pub current: ConfigSnapshot,
+    /// On-disk configuration waiting for a daemon restart to take effect.
+    /// Absent when there are no pending changes.
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub pending: Option<Box<PendingConfig>>,
+    pub pending: Option<Box<ConfigSnapshot>>,
 }
 
-/// On-disk configuration that is waiting for a daemon restart to take effect.
+/// A point-in-time snapshot of the full daemon configuration.
 ///
-/// Returned in `ConfigResponse.pending` when any restart-required field differs
-/// between the running daemon and the current config file.  Identical in
-/// structure to `ConfigResponse` but without a nested `pending` field.
+/// Used for both `current` (values in effect right now) and `pending`
+/// (values saved to disk but not yet applied — requires a restart).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
-pub struct PendingConfig {
+pub struct ConfigSnapshot {
     pub node: NodeConfig,
     pub api: ApiConfig,
     pub network: NetworkConfig,

@@ -121,7 +121,7 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         rucio_core::api::searches::SearchResult,
         rucio_core::api::searches::SearchDetailResponse,
         rucio_core::api::config::ConfigResponse,
-        rucio_core::api::config::PendingConfig,
+        rucio_core::api::config::ConfigSnapshot,
         rucio_core::api::config::NodeConfig,
         rucio_core::api::config::ApiConfig,
         rucio_core::api::config::NetworkConfig,

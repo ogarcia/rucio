@@ -85,32 +85,33 @@ fn print_list_field(label: &str, pad: usize, current: &[String], pending: Option
 
 pub async fn show(client: &ApiClient) -> Result<()> {
     let cfg = client.get_config().await?;
+    let cur = &cfg.current;
     let p = cfg.pending.as_deref();
 
     println!("{}", color::section("[node]"));
     println!(
         "  identity_path = {}",
-        color::value(&cfg.node.identity_path)
+        color::value(&cur.node.identity_path)
     );
     print_list_field(
         "listen",
         13,
-        &cfg.node.listen_addrs,
+        &cur.node.listen_addrs,
         p.map(|p| p.node.listen_addrs.as_slice()),
     );
 
     println!("\n{}", color::section("[api]"));
-    println!("  listen = {}", color::value(&cfg.api.listen));
+    println!("  listen = {}", color::value(&cur.api.listen));
 
     println!("\n{}", color::section("[network]"));
     print_list_field(
         "bootstrap_peers",
         20,
-        &cfg.network.bootstrap_peers,
+        &cur.network.bootstrap_peers,
         p.map(|p| p.network.bootstrap_peers.as_slice()),
     );
-    let ul = cfg.network.upload_limit_kbps;
-    let dl = cfg.network.download_limit_kbps;
+    let ul = cur.network.upload_limit_kbps;
+    let dl = cur.network.download_limit_kbps;
     println!(
         "  upload_limit_kbps    = {}",
         color::value(&if ul == 0 {
@@ -130,7 +131,7 @@ pub async fn show(client: &ApiClient) -> Result<()> {
     println!(
         "  max_upload_tasks     = {}",
         pending_scalar(
-            &cfg.network.max_upload_tasks.to_string(),
+            &cur.network.max_upload_tasks.to_string(),
             p.map(|p| p.network.max_upload_tasks.to_string()).as_deref(),
         )
     );
@@ -139,26 +140,26 @@ pub async fn show(client: &ApiClient) -> Result<()> {
     println!(
         "  download_dir  = {}",
         pending_scalar(
-            &cfg.storage.download_dir,
+            &cur.storage.download_dir,
             p.map(|p| p.storage.download_dir.as_str()),
         )
     );
     println!(
         "  temp_dir      = {}",
         pending_scalar(
-            &cfg.storage.temp_dir,
+            &cur.storage.temp_dir,
             p.map(|p| p.storage.temp_dir.as_str()),
         )
     );
     println!(
         "  database_path = {}",
         pending_scalar(
-            &cfg.storage.database_path,
+            &cur.storage.database_path,
             p.map(|p| p.storage.database_path.as_str()),
         )
     );
 
-    let e = &cfg.emule;
+    let e = &cur.emule;
     let pe = p.map(|p| &p.emule);
     println!("\n{}", color::section("[emule]"));
     println!(
@@ -226,27 +227,28 @@ pub async fn show(client: &ApiClient) -> Result<()> {
 /// Scalar keys replace the current value; list keys append one entry.
 pub async fn set(client: &ApiClient, key: &str, value: &str) -> Result<()> {
     let mut cfg = client.get_config().await?;
+    let c = &mut cfg.current;
 
     match key {
-        "storage.download_dir" => cfg.storage.download_dir = value.to_string(),
-        "storage.temp_dir" => cfg.storage.temp_dir = value.to_string(),
+        "storage.download_dir" => c.storage.download_dir = value.to_string(),
+        "storage.temp_dir" => c.storage.temp_dir = value.to_string(),
         "network.bootstrap_peers" => {
-            if !cfg.network.bootstrap_peers.contains(&value.to_string()) {
-                cfg.network.bootstrap_peers.push(value.to_string());
+            if !c.network.bootstrap_peers.contains(&value.to_string()) {
+                c.network.bootstrap_peers.push(value.to_string());
             }
         }
         "node.listen_addrs" => {
-            if !cfg.node.listen_addrs.contains(&value.to_string()) {
-                cfg.node.listen_addrs.push(value.to_string());
+            if !c.node.listen_addrs.contains(&value.to_string()) {
+                c.node.listen_addrs.push(value.to_string());
             }
         }
         "network.upload_limit_kbps" => {
-            cfg.network.upload_limit_kbps = value
+            c.network.upload_limit_kbps = value
                 .parse::<u64>()
                 .map_err(|_| anyhow::anyhow!("'{value}' is not a valid integer"))?;
         }
         "network.download_limit_kbps" => {
-            cfg.network.download_limit_kbps = value
+            c.network.download_limit_kbps = value
                 .parse::<u64>()
                 .map_err(|_| anyhow::anyhow!("'{value}' is not a valid integer"))?;
         }
@@ -257,24 +259,24 @@ pub async fn set(client: &ApiClient, key: &str, value: &str) -> Result<()> {
             if n < 1 {
                 anyhow::bail!("network.max_upload_tasks must be at least 1");
             }
-            cfg.network.max_upload_tasks = n;
+            c.network.max_upload_tasks = n;
         }
-        "emule.enabled" => cfg.emule.enabled = parse_bool(value)?,
-        "emule.temp_dir" => cfg.emule.temp_dir = value.to_string(),
-        "emule.udp_port" => cfg.emule.udp_port = parse_port(value)?,
-        "emule.tcp_port" => cfg.emule.tcp_port = parse_port(value)?,
+        "emule.enabled" => c.emule.enabled = parse_bool(value)?,
+        "emule.temp_dir" => c.emule.temp_dir = value.to_string(),
+        "emule.udp_port" => c.emule.udp_port = parse_port(value)?,
+        "emule.tcp_port" => c.emule.tcp_port = parse_port(value)?,
         "emule.external_ip" => {
             value
                 .parse::<std::net::Ipv4Addr>()
                 .map_err(|_| anyhow::anyhow!("'{value}' is not a valid IPv4 address"))?;
-            cfg.emule.external_ip = Some(value.to_string());
+            c.emule.external_ip = Some(value.to_string());
         }
         "emule.download_slots_per_file" => {
-            cfg.emule.download_slots_per_file = parse_slots(value)?;
+            c.emule.download_slots_per_file = parse_slots(value)?;
         }
-        "emule.max_upload_slots" => cfg.emule.max_upload_slots = parse_slots(value)?,
+        "emule.max_upload_slots" => c.emule.max_upload_slots = parse_slots(value)?,
         "emule.max_concurrent_downloads" => {
-            cfg.emule.max_concurrent_downloads = parse_slots(value)?;
+            c.emule.max_concurrent_downloads = parse_slots(value)?;
         }
         other => bail!(
             "Unknown or read-only key '{other}'.\n\
@@ -313,6 +315,7 @@ pub async fn set(client: &ApiClient, key: &str, value: &str) -> Result<()> {
 /// List keys remove the given entry; scalar keys revert to their default.
 pub async fn unset(client: &ApiClient, key: &str, value: Option<&str>) -> Result<()> {
     let mut cfg = client.get_config().await?;
+    let c = &mut cfg.current;
 
     // List keys require a value to identify the entry to remove.
     let require_value = || -> Result<&str> {
@@ -322,23 +325,23 @@ pub async fn unset(client: &ApiClient, key: &str, value: Option<&str>) -> Result
     match key {
         "network.bootstrap_peers" => {
             let value = require_value()?;
-            let before = cfg.network.bootstrap_peers.len();
-            cfg.network.bootstrap_peers.retain(|v| v != value);
-            if cfg.network.bootstrap_peers.len() == before {
+            let before = c.network.bootstrap_peers.len();
+            c.network.bootstrap_peers.retain(|v| v != value);
+            if c.network.bootstrap_peers.len() == before {
                 bail!("Value '{value}' not found in network.bootstrap_peers");
             }
         }
         "node.listen_addrs" => {
             let value = require_value()?;
-            let before = cfg.node.listen_addrs.len();
-            cfg.node.listen_addrs.retain(|v| v != value);
-            if cfg.node.listen_addrs.len() == before {
+            let before = c.node.listen_addrs.len();
+            c.node.listen_addrs.retain(|v| v != value);
+            if c.node.listen_addrs.len() == before {
                 bail!("Value '{value}' not found in node.listen_addrs");
             }
         }
         "emule.external_ip" => {
             // Clears the manual override so the daemon auto-detects again.
-            cfg.emule.external_ip = None;
+            c.emule.external_ip = None;
         }
         other => bail!(
             "'{other}' is not a list key or does not support unset.\n\
