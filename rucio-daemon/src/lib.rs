@@ -289,7 +289,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     // --- UPnP port mapping --------------------------------------------------
     let external_ip = if config.network.upnp {
         let upnp_cfg = upnp::UpnpConfig {
-            tcp_port: config.network.listen_port,
+            tcp_port: config.p2p_tcp_port().unwrap_or(4321),
             #[cfg(feature = "emule-compat")]
             udp_port: if config.emule.enabled {
                 Some(config.emule.udp_port)

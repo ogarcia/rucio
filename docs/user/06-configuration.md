@@ -68,28 +68,12 @@ rucio config unset storage.temp_dir
 
 ---
 
-### `network.listen_port`
-
-The TCP port the daemon listens on for incoming libp2p connections. This port
-must be reachable from the internet for other peers to connect to you (HighID
-operation). When running in a container, map this port with `-p 4321:4321`.
-
-UPnP will attempt to open this port automatically when `network.upnp = true`.
-
-```sh
-rucio config set network.listen_port 4321
-```
-
-**Default:** `4321`
-
----
-
 ### `network.upnp`
 
 Enable or disable automatic UPnP/IGD port mapping. When enabled, the daemon
 asks the LAN router to forward:
 
-- TCP `network.listen_port` (libp2p)
+- TCP port from `node.listen_addrs` (libp2p)
 - UDP `emule.udp_port` (Kad2, only with the `emule-compat` feature)
 
 Set to `false` if:
@@ -310,7 +294,6 @@ listen = "127.0.0.1:7070"
 # token = "secret"               # enable API auth (disabled by default)
 
 [network]
-listen_port          = 4321
 upnp                 = true
 upload_limit_kbps    = 0         # 0 = unlimited
 download_limit_kbps  = 0         # 0 = unlimited

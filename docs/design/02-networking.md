@@ -110,7 +110,7 @@ When `network.upnp = true` (the default), the daemon spawns a background
 
 1. Discovers the LAN router via the IGD (Internet Gateway Device) protocol.
 2. Requests port mappings for:
-   - TCP `network.listen_port` (libp2p)
+   - TCP port from `node.listen_addrs` (libp2p)
    - UDP `emule.udp_port` (Kad2, only with the `emule-compat` feature)
    - TCP `emule.tcp_port` (eMule peer connections, only with the `emule-compat` feature)
 3. Renews the leases periodically before they expire.

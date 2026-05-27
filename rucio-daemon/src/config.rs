@@ -33,17 +33,10 @@ pub struct ApiConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkConfig {
     pub bootstrap_peers: Vec<String>,
-    /// libp2p TCP listen port.  Default: 4321.
-    ///
-    /// Must be reachable from the internet for peers to connect.
-    /// When running in a container, map this port with `-p 4321:4321`.
-    /// UPnP will attempt to open this port automatically when `upnp = true`.
-    #[serde(default = "NetworkConfig::default_listen_port")]
-    pub listen_port: u16,
     /// Enable UPnP/IGD automatic port mapping.  Default: `true`.
     ///
     /// When enabled, the daemon asks the LAN router to forward:
-    ///   - TCP `listen_port` (libp2p)
+    ///   - TCP port from `node.listen_addrs` (libp2p)
     ///   - UDP `emule.udp_port` (Kad2, only with the `emule-compat` feature)
     ///
     /// Set to `false` if:
@@ -66,10 +59,6 @@ pub struct NetworkConfig {
 }
 
 impl NetworkConfig {
-    fn default_listen_port() -> u16 {
-        4321
-    }
-
     fn default_upnp() -> bool {
         true
     }
@@ -79,7 +68,6 @@ impl Default for NetworkConfig {
     fn default() -> Self {
         Self {
             bootstrap_peers: vec![],
-            listen_port: Self::default_listen_port(),
             upnp: Self::default_upnp(),
             upload_limit_kbps: 0,
             download_limit_kbps: 0,
@@ -371,6 +359,27 @@ const BUILTIN_BOOTSTRAP_PEERS: &[&str] = &[
     "/ip4/208.85.21.46/tcp/4321/p2p/12D3KooWHXm58uGjv3fta4v8mYHS5jwbaSgw6LBqVVY9rcguaCko",
     "/ip6/2a05:f480:2800:2731:5400:6ff:fe31:8080/tcp/4321/p2p/12D3KooWHXm58uGjv3fta4v8mYHS5jwbaSgw6LBqVVY9rcguaCko",
 ];
+
+// --- Helpers -----------------------------------------------------------------
+
+impl Config {
+    /// Extract the TCP port number from the first entry in `node.listen_addrs`
+    /// that contains a `/tcp/<port>` component.
+    ///
+    /// Used by UPnP so it knows which port to request from the router without
+    /// duplicating the port as a separate `network.listen_port` setting.
+    /// Returns `None` only when `listen_addrs` is empty or contains no TCP entry.
+    pub fn p2p_tcp_port(&self) -> Option<u16> {
+        use libp2p::multiaddr::Protocol;
+        self.node.listen_addrs.iter().find_map(|s| {
+            let addr: libp2p::Multiaddr = s.parse().ok()?;
+            addr.iter().find_map(|p| match p {
+                Protocol::Tcp(port) => Some(port),
+                _ => None,
+            })
+        })
+    }
+}
 
 // --- Loading -----------------------------------------------------------------
 
