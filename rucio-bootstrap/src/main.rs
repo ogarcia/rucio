@@ -10,9 +10,16 @@
 //! from; this binary exists to be a *dedicated, stable* entry point without the
 //! overhead of serving content.
 //!
+//! On first run a documented `config.toml` is written to the XDG config dir
+//! (and an Ed25519 identity key is generated alongside it) so that subsequent
+//! restarts are fully reproducible without flags.
+//!
 //! This is role 1 of SPEC phase 5. Role 2 (the passive DHT indexer) is an
 //! opt-in extension compiled in with the `indexer` feature and enabled at
-//! runtime with `--index`; see the [`indexer`] module.
+//! runtime with `--index` or `indexer.enabled = true` in the config; see the
+//! [`indexer`] module.
+
+mod config;
 
 #[cfg(feature = "indexer")]
 mod indexer;
@@ -34,19 +41,24 @@ use rucio_net::{BehaviourConfig, NetConfig, NodeCmd, NodeEvent};
     about = "Stable Rucio DHT bootstrap node"
 )]
 struct Args {
-    /// Path to the persistent Ed25519 identity key. A stable key keeps the
-    /// node's PeerId — and therefore its bootstrap multiaddr — constant across
-    /// restarts.
+    /// Path to the configuration file.  Defaults to
+    /// `$XDG_CONFIG_HOME/rucio-bootstrap/config.toml`.  On first run the file
+    /// is created automatically with documented defaults.
+    #[arg(long, env = "RUCIO_BOOTSTRAP_CONFIG")]
+    config: Option<PathBuf>,
+
+    /// Path to the persistent Ed25519 identity key.  Overrides `node.identity`
+    /// in the config file.
     #[arg(long, env = "RUCIO_BOOTSTRAP_IDENTITY")]
     identity: Option<PathBuf>,
 
-    /// Multiaddr to listen on. Repeatable or comma-separated. Defaults to TCP
-    /// 4321 on all IPv4 and IPv6 interfaces (the rucio network port).
+    /// Multiaddr to listen on. Repeatable or comma-separated. Overrides
+    /// `node.listen` in the config file.
     #[arg(long = "listen", env = "RUCIO_BOOTSTRAP_LISTEN", value_delimiter = ',')]
     listen: Vec<String>,
 
     /// Multiaddr of an existing node to bootstrap into the DHT. Repeatable or
-    /// comma-separated. Leave empty to run as a seed node (listen only).
+    /// comma-separated. Overrides `node.bootstrap_peers` in the config file.
     #[arg(
         long = "bootstrap-peer",
         env = "RUCIO_BOOTSTRAP_PEERS",
@@ -54,40 +66,36 @@ struct Args {
     )]
     bootstrap_peer: Vec<String>,
 
-    /// Enable the passive DHT indexer role: record provider announcements and
-    /// expose a search/admin REST API. Requires the `indexer` build feature.
+    /// Enable the passive DHT indexer role. Overrides `indexer.enabled`.
+    /// Requires the `indexer` build feature.
     #[cfg(feature = "indexer")]
     #[arg(long)]
     index: bool,
 
-    /// SQLite path for the indexer database.
+    /// SQLite path for the indexer database. Overrides `indexer.db`.
     #[cfg(feature = "indexer")]
     #[arg(long, env = "RUCIO_BOOTSTRAP_INDEX_DB")]
     index_db: Option<PathBuf>,
 
-    /// Address the indexer REST API binds to.
+    /// Address the indexer REST API binds to. Overrides `indexer.api_listen`.
     #[cfg(feature = "indexer")]
-    #[arg(
-        long,
-        env = "RUCIO_BOOTSTRAP_API_LISTEN",
-        default_value = "127.0.0.1:8090"
-    )]
-    api_listen: std::net::SocketAddr,
+    #[arg(long, env = "RUCIO_BOOTSTRAP_API_LISTEN")]
+    api_listen: Option<std::net::SocketAddr>,
 
-    /// Bearer token guarding the indexer admin endpoints. When unset, the admin
-    /// endpoints are disabled.
+    /// Bearer token guarding the indexer admin endpoints. Overrides
+    /// `indexer.api_token`.
     #[cfg(feature = "indexer")]
     #[arg(long, env = "RUCIO_BOOTSTRAP_API_TOKEN")]
     api_token: Option<String>,
 
     /// Drop indexed announcements not refreshed within this many days.
+    /// Overrides `indexer.retention_days`.
     #[cfg(feature = "indexer")]
-    #[arg(long, env = "RUCIO_BOOTSTRAP_RETENTION_DAYS", default_value_t = 30)]
-    retention_days: i64,
+    #[arg(long, env = "RUCIO_BOOTSTRAP_RETENTION_DAYS")]
+    retention_days: Option<i64>,
 
     /// Do not resolve file name/size from announcing peers (index hashes only).
-    /// By default the indexer enriches each hash via the manifest protocol so
-    /// the search API can match on names.
+    /// When set, overrides `indexer.enrich = true` in the config file.
     #[cfg(feature = "indexer")]
     #[arg(long)]
     no_enrich: bool,
@@ -98,11 +106,65 @@ async fn main() -> Result<()> {
     rucio_core::logging::init("RUCIO_BOOTSTRAP");
     let args = Args::parse();
 
-    let identity_path = args.identity.unwrap_or_else(default_identity_path);
-    let listen_addrs = if args.listen.is_empty() {
-        default_listen_addrs()
+    // ── Load / initialise config ──────────────────────────────────────────────
+    let config_path = args
+        .config
+        .clone()
+        .unwrap_or_else(config::default_config_path);
+    let (mut cfg, first_run) = config::load_or_init(&config_path)
+        .with_context(|| format!("loading config from {}", config_path.display()))?;
+
+    if first_run {
+        info!(
+            path = %config_path.display(),
+            "First run — config file created. Edit it to customise the node."
+        );
     } else {
-        args.listen
+        info!(path = %config_path.display(), "Loaded config");
+    }
+
+    // ── Merge CLI flags (CLI wins over config file) ───────────────────────────
+    if let Some(id) = args.identity {
+        cfg.node.identity = Some(id);
+    }
+    if !args.listen.is_empty() {
+        cfg.node.listen = args.listen;
+    }
+    if !args.bootstrap_peer.is_empty() {
+        cfg.node.bootstrap_peers = args.bootstrap_peer;
+    }
+
+    #[cfg(feature = "indexer")]
+    {
+        if args.index {
+            cfg.indexer.enabled = true;
+        }
+        if let Some(db) = args.index_db {
+            cfg.indexer.db = Some(db);
+        }
+        if let Some(al) = args.api_listen {
+            cfg.indexer.api_listen = al;
+        }
+        if args.api_token.is_some() {
+            cfg.indexer.api_token = args.api_token;
+        }
+        if let Some(days) = args.retention_days {
+            cfg.indexer.retention_days = days;
+        }
+        if args.no_enrich {
+            cfg.indexer.enrich = false;
+        }
+    }
+
+    // ── Resolve effective values ──────────────────────────────────────────────
+    let identity_path = cfg
+        .node
+        .identity
+        .unwrap_or_else(config::default_identity_path);
+    let listen_addrs = if cfg.node.listen.is_empty() {
+        config::NodeConfig::default().listen
+    } else {
+        cfg.node.listen
     };
 
     // Resolve the PeerId up front so we can print dialable addresses (spawn
@@ -112,9 +174,9 @@ async fn main() -> Result<()> {
     info!(%peer_id, identity = %identity_path.display(), "Starting rucio-bootstrap");
 
     #[cfg(feature = "indexer")]
-    let enrich = !args.no_enrich;
+    let enrich = cfg.indexer.enrich;
     #[cfg(feature = "indexer")]
-    let behaviour = if args.index {
+    let behaviour = if cfg.indexer.enabled {
         BehaviourConfig::indexer(enrich)
     } else {
         BehaviourConfig::dht_only()
@@ -132,14 +194,14 @@ async fn main() -> Result<()> {
         .context("starting the bootstrap node")?;
 
     #[cfg(feature = "indexer")]
-    let indexer = if args.index {
-        let db_path = args.index_db.clone().unwrap_or_else(default_index_db_path);
+    let indexer = if cfg.indexer.enabled {
+        let db_path = cfg.indexer.db.unwrap_or_else(config::default_index_db_path);
         Some(
             indexer::Indexer::start(indexer::IndexerOpts {
                 db_path,
-                api_listen: args.api_listen,
-                token: args.api_token.clone(),
-                retention_days: args.retention_days,
+                api_listen: cfg.indexer.api_listen,
+                token: cfg.indexer.api_token,
+                retention_days: cfg.indexer.retention_days,
                 enrich,
                 node_cmd: handle.cmd_tx.clone(),
             })
@@ -151,7 +213,7 @@ async fn main() -> Result<()> {
 
     // Join the DHT through the configured peers, if any.
     let mut joined = false;
-    for raw in &args.bootstrap_peer {
+    for raw in &cfg.node.bootstrap_peers {
         match raw.parse::<Multiaddr>() {
             Ok(addr) => {
                 handle
@@ -161,7 +223,7 @@ async fn main() -> Result<()> {
                     .ok();
                 joined = true;
             }
-            Err(e) => warn!("Ignoring invalid --bootstrap-peer {raw:?}: {e}"),
+            Err(e) => warn!("Ignoring invalid bootstrap_peer {raw:?}: {e}"),
         }
     }
     if joined {
@@ -247,8 +309,7 @@ fn announce(addr: &Multiaddr, peer_id: &PeerId) {
     }
 }
 
-/// Whether the multiaddr contains an unspecified (`0.0.0.0` / `::`) IP, which a
-/// remote peer cannot dial — the operator must substitute the public IP.
+/// Whether the multiaddr contains an unspecified (`0.0.0.0` / `::`) IP.
 fn is_unspecified(addr: &Multiaddr) -> bool {
     use libp2p::multiaddr::Protocol;
     addr.iter().any(|p| match p {
@@ -256,26 +317,4 @@ fn is_unspecified(addr: &Multiaddr) -> bool {
         Protocol::Ip6(ip) => ip.is_unspecified(),
         _ => false,
     })
-}
-
-fn default_identity_path() -> PathBuf {
-    dirs::data_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("rucio-bootstrap")
-        .join("identity.key")
-}
-
-fn default_listen_addrs() -> Vec<String> {
-    vec![
-        "/ip4/0.0.0.0/tcp/4321".to_string(),
-        "/ip6/::/tcp/4321".to_string(),
-    ]
-}
-
-#[cfg(feature = "indexer")]
-fn default_index_db_path() -> PathBuf {
-    dirs::data_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("rucio-bootstrap")
-        .join("index.db")
 }

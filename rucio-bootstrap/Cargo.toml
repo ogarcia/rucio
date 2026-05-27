@@ -20,7 +20,6 @@ indexer = [
     "dep:axum",
     "dep:utoipa",
     "dep:utoipa-scalar",
-    "dep:serde",
     "dep:serde_json",
     "dep:hex",
 ]
@@ -34,12 +33,13 @@ anyhow      = { workspace = true }
 clap        = { workspace = true }
 tracing     = { workspace = true }
 dirs        = { workspace = true }
+serde       = { workspace = true }
+toml        = { workspace = true }
 
 # indexer role only
 sqlx          = { workspace = true, optional = true }
 axum          = { workspace = true, optional = true }
 utoipa        = { workspace = true, optional = true }
 utoipa-scalar = { workspace = true, optional = true }
-serde         = { workspace = true, optional = true }
 serde_json    = { workspace = true, optional = true }
 hex           = { workspace = true, optional = true }
