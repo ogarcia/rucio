@@ -393,16 +393,18 @@ async fn on_swarm_event(
                 .await;
         }
         SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
-            // Kad routing tables frequently contain private-IP entries from
-            // peers that advertised their LAN address in the public DHT.
-            // Dialling them fails immediately when we are not on the same
-            // LAN — this is expected noise, not an operator-actionable error.
-            // Downgrade to debug so the log stays quiet under normal operation;
-            // LAN sharing via mDNS is unaffected.
-            if is_expected_dial_noise(&error) {
-                debug!(%error, "Outgoing connection error (expected)");
-            } else {
-                warn!(%error, "Outgoing connection error");
+            match classify_dial_error(&error) {
+                // Private-IP failures: Kad routing table noise from peers
+                // behind NAT that advertised their LAN address. Not actionable.
+                DialNoise::Private => debug!(%error, "Outgoing connection error (private address)"),
+                // ENETUNREACH on a public address: the OS has no route for
+                // that address family (typically IPv6 not configured). Logged
+                // at INFO so a legitimate routing change stays visible without
+                // producing alarm-level noise on hosts without IPv6.
+                DialNoise::Unreachable => {
+                    info!(%error, "Outgoing connection error (network unreachable)")
+                }
+                DialNoise::Real => warn!(%error, "Outgoing connection error"),
             }
             // Schedule a retry for known peers so that simultaneous-open
             // handshake collisions (both nodes dial each other at the same
@@ -785,37 +787,64 @@ async fn on_manifest_event(
     }
 }
 
-/// Return `true` when a `DialError` is expected background noise that does
-/// not require operator attention.  Every `(addr, err)` pair must satisfy at
-/// least one of:
+enum DialNoise {
+    /// All failed addresses are private/link-local/loopback. → DEBUG
+    Private,
+    /// All failed addresses are public but the OS has no route (ENETUNREACH).
+    /// Typically means IPv6 is not configured on this host. → INFO so a
+    /// legitimate routing change stays visible without producing WARN noise.
+    Unreachable,
+    /// Any other failure — genuinely unexpected. → WARN
+    Real,
+}
+
+/// Classify a `DialError` for log-level selection.
 ///
-/// * The address is private / link-local / loopback — Kad routing tables
-///   routinely contain private IPs from peers behind NAT; failing to reach
-///   them from the internet is normal.
-/// * The error is "network unreachable" — the OS has no route for that
-///   address family (most commonly: IPv6 is not configured on the host).
-fn is_expected_dial_noise(error: &DialError) -> bool {
+/// Each `(addr, err)` pair is checked individually:
+/// * private address → contributes to `Private`
+/// * public address + `ENETUNREACH` → contributes to `Unreachable`
+/// * anything else → `Real` (short-circuits immediately)
+///
+/// The returned level is the "worst" across all pairs, with
+/// `Private < Unreachable < Real`.
+fn classify_dial_error(error: &DialError) -> DialNoise {
     use libp2p::core::transport::TransportError;
     use std::io;
 
     let DialError::Transport(addrs) = error else {
-        return false;
+        return DialNoise::Real;
     };
-    !addrs.is_empty()
-        && addrs.iter().all(|(addr, err)| {
-            let private = addr.iter().any(|p| match p {
-                Protocol::Ip4(ip) => ip.is_private() || ip.is_loopback() || ip.is_link_local(),
-                Protocol::Ip6(ip) => {
-                    ip.is_loopback()
-                        || (ip.segments()[0] & 0xfe00) == 0xfc00 // fc00::/7 unique-local
-                        || (ip.segments()[0] & 0xffc0) == 0xfe80 // fe80::/10 link-local
-                }
-                _ => false,
-            });
-            let unreachable = matches!(
-                err,
-                TransportError::Other(e) if e.kind() == io::ErrorKind::NetworkUnreachable
-            );
-            private || unreachable
-        })
+    if addrs.is_empty() {
+        return DialNoise::Real;
+    }
+
+    let mut has_unreachable = false;
+    for (addr, err) in addrs {
+        let private = addr.iter().any(|p| match p {
+            Protocol::Ip4(ip) => ip.is_private() || ip.is_loopback() || ip.is_link_local(),
+            Protocol::Ip6(ip) => {
+                ip.is_loopback()
+                    || (ip.segments()[0] & 0xfe00) == 0xfc00 // fc00::/7 unique-local
+                    || (ip.segments()[0] & 0xffc0) == 0xfe80 // fe80::/10 link-local
+            }
+            _ => false,
+        });
+        if private {
+            continue;
+        }
+        let unreachable = matches!(
+            err,
+            TransportError::Other(e) if e.kind() == io::ErrorKind::NetworkUnreachable
+        );
+        if unreachable {
+            has_unreachable = true;
+        } else {
+            return DialNoise::Real;
+        }
+    }
+    if has_unreachable {
+        DialNoise::Unreachable
+    } else {
+        DialNoise::Private
+    }
 }
