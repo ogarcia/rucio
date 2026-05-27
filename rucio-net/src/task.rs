@@ -572,13 +572,20 @@ async fn on_swarm_event(
                                 .await;
                         }
 
-                        // Add the peer's listen addresses to the Kademlia
-                        // routing table so DHT queries can reach them.
+                        // Add the peer's routable listen addresses to the
+                        // Kademlia routing table. Skip loopback and link-local
+                        // addresses: they refer to the *remote* peer's own
+                        // localhost and would hit our local daemon if dialled,
+                        // producing spurious WrongPeerId errors. Private LAN
+                        // addresses (192.168.x.x, 10.x.x.x) are kept because
+                        // they are valid within the local network.
                         for addr in &info.listen_addrs {
-                            swarm
-                                .behaviour_mut()
-                                .kademlia
-                                .add_address(&pid, addr.clone());
+                            if !addr_is_loopback_or_link_local(addr) {
+                                swarm
+                                    .behaviour_mut()
+                                    .kademlia
+                                    .add_address(&pid, addr.clone());
+                            }
                         }
 
                         // Persist the peer with its addresses so that
@@ -850,6 +857,25 @@ fn classify_dial_error(error: &DialError) -> DialNoise {
         }
         _ => DialNoise::Real,
     }
+}
+
+/// Return `true` if the IP component of `addr` is loopback or link-local —
+/// addresses that only make sense on the *originating* host and must never be
+/// stored in the routing table as addresses for a *remote* peer.
+///
+/// Private LAN ranges (192.168.x.x, 10.x.x.x, 172.16-31.x.x) are **not**
+/// excluded here because they are valid targets on a local-area network.
+fn addr_is_loopback_or_link_local(addr: &Multiaddr) -> bool {
+    addr.iter().any(|p| match p {
+        Protocol::Ip4(ip) => ip.is_loopback() || ip.is_link_local() || ip.is_unspecified(),
+        Protocol::Ip6(ip) => {
+            ip.is_loopback()
+                || ip.is_unspecified()
+                // fe80::/10 — link local
+                || (ip.segments()[0] & 0xffc0) == 0xfe80
+        }
+        _ => false,
+    })
 }
 
 /// Return `true` if every IP component of `addr` is private, loopback, or
