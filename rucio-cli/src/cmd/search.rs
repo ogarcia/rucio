@@ -36,7 +36,7 @@ pub async fn add(client: &ApiClient, keywords: Vec<String>, wait: bool) -> Resul
 
     if wait {
         println!("Searching for: {}", color::value(&keywords.join(" ")));
-        poll_until_done(client, id).await
+        poll_until_done(client, id, Vec::new()).await
     } else {
         Ok(())
     }
@@ -95,11 +95,19 @@ pub async fn show(client: &ApiClient, id: u64) -> Result<()> {
     })?;
 
     if matches!(resp.state, SearchState::Running) {
-        println!(
-            "Search #{id} is still running ({} result(s) so far)…",
-            resp.results.len()
-        );
-        poll_until_done(client, id).await
+        let initial = build_cached(&resp.results);
+        if initial.is_empty() {
+            poll_until_done(client, id, Vec::new()).await
+        } else {
+            save_and_print(&initial);
+            println!(
+                "{}",
+                color::limited(&format!(
+                    "Search #{id} still running — run `rucio search show {id}` again to refresh."
+                ))
+            );
+            Ok(())
+        }
     } else {
         let cached = build_cached(&resp.results);
         save_and_print(&cached);
@@ -189,9 +197,13 @@ pub async fn relaunch(client: &ApiClient, id: u64) -> Result<()> {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-async fn poll_until_done(client: &ApiClient, id: u64) -> Result<()> {
-    let mut cached: Vec<CachedResult> = Vec::new();
-    let mut link_to_idx: HashMap<String, usize> = HashMap::new();
+async fn poll_until_done(client: &ApiClient, id: u64, initial: Vec<CachedResult>) -> Result<()> {
+    let mut cached = initial;
+    let mut link_to_idx: HashMap<String, usize> = cached
+        .iter()
+        .enumerate()
+        .map(|(i, r)| (r.download_link.clone(), i))
+        .collect();
 
     for attempt in 0..MAX_POLLS {
         sleep(Duration::from_millis(POLL_INTERVAL_MS)).await;
@@ -216,7 +228,11 @@ async fn poll_until_done(client: &ApiClient, id: u64) -> Result<()> {
         }
 
         if !matches!(resp.state, SearchState::Running) {
-            save_and_print(&cached);
+            if cached.is_empty() {
+                println!("No results found.");
+            } else {
+                save_and_print(&cached);
+            }
             return Ok(());
         }
     }
