@@ -352,23 +352,53 @@ fn purge_old_searches(reg: &mut SearchRegistry) {
 }
 
 /// Spawn a background Kad2 keyword search task.
+///
+/// eMule Kad2 indexes files by individual words, not by full phrases.
+/// We pick the longest normalized word as the main search key (which lands
+/// in the right place in the DHT) and then filter results client-side so
+/// that ALL words must appear in the filename.  Both the search key and
+/// the filter are accent-folded and lowercased to match how eMule clients
+/// normalize keywords before hashing.
 #[cfg(feature = "emule-compat")]
 fn spawn_kad2_search(state: &AppState, search_id: u64, keywords: Vec<String>) {
     use std::sync::Arc;
 
     let kad = state.kad_handle.clone();
     let reg_clone = Arc::clone(&state.search_registry);
-    let keyword = keywords.join(" ");
+
+    // Build the normalized word list used both for the main key selection
+    // and for the client-side all-words filter.
+    let norm_words: Vec<String> = keywords
+        .iter()
+        .flat_map(|k| k.split_whitespace())
+        .map(normalize_for_kad)
+        .filter(|w| !w.is_empty())
+        .collect();
+
+    // Main keyword = longest normalized word (eMule picks the most
+    // "selective" word; longest is a good proxy).
+    let main_keyword = norm_words
+        .iter()
+        .max_by_key(|w| w.len())
+        .cloned()
+        .unwrap_or_else(|| normalize_for_kad(&keywords[0]));
 
     tokio::spawn(async move {
-        tracing::info!(search_id, keyword, "Kad2 keyword search started");
-        let hits = kad.search_keyword(keyword).await;
+        tracing::info!(search_id, main_keyword, "Kad2 keyword search started");
+        let hits = kad.search_keyword(main_keyword.clone()).await;
         tracing::info!(search_id, hits = hits.len(), "Kad2 keyword search finished");
 
         let mut reg = reg_clone.write().await;
         if let Some(record) = reg.records.get_mut(&search_id) {
             if !record.cancelled {
                 for h in &hits {
+                    // Client-side filter: all words must appear in the
+                    // normalized filename (handles accents + case).
+                    let norm_name = normalize_for_kad(&h.name);
+                    if !norm_words.iter().all(|w| norm_name.contains(w.as_str())) {
+                        continue;
+                    }
+
                     let hash_hex = hex::encode(h.hash);
                     let ed2k_link = format!(
                         "ed2k://|file|{}|{}|{}|/",
@@ -399,4 +429,51 @@ fn spawn_kad2_search(state: &AppState, search_id: u64, keywords: Vec<String>) {
             record.kad2_done = true;
         }
     });
+}
+
+/// Normalize a string for Kad2 keyword hashing and client-side filtering.
+///
+/// Mirrors eMule's keyword normalization: lowercase + Latin diacritic folding.
+/// Both the search key sent to the DHT and the client-side filename filter
+/// must use this function so they operate in the same space.
+fn normalize_for_kad(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        let lc = c.to_lowercase().next().unwrap_or(c);
+        match lc {
+            'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ă' | 'ą' => out.push('a'),
+            'è' | 'é' | 'ê' | 'ë' | 'ē' | 'ĕ' | 'ė' | 'ę' | 'ě' => out.push('e'),
+            'ì' | 'í' | 'î' | 'ï' | 'ī' | 'ĭ' | 'į' | 'ĩ' => out.push('i'),
+            'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ø' | 'ō' | 'ŏ' | 'ő' => out.push('o'),
+            'ù' | 'ú' | 'û' | 'ü' | 'ū' | 'ŭ' | 'ů' | 'ű' | 'ų' => out.push('u'),
+            'ç' | 'ć' | 'ĉ' | 'č' => out.push('c'),
+            'ñ' | 'ń' | 'ņ' | 'ň' => out.push('n'),
+            'ý' | 'ÿ' => out.push('y'),
+            'ð' | 'ď' => out.push('d'),
+            'ß' => {
+                out.push('s');
+                out.push('s');
+            }
+            'æ' => {
+                out.push('a');
+                out.push('e');
+            }
+            'ł' => out.push('l'),
+            'þ' => {
+                out.push('t');
+                out.push('h');
+            }
+            'ź' | 'ż' | 'ž' => out.push('z'),
+            'š' | 'ś' | 'ş' | 'ŝ' => out.push('s'),
+            'ř' | 'ŗ' => out.push('r'),
+            'ğ' | 'ĝ' | 'ġ' => out.push('g'),
+            'ħ' => out.push('h'),
+            'ĵ' => out.push('j'),
+            'ķ' => out.push('k'),
+            'ľ' | 'ļ' | 'ĺ' => out.push('l'),
+            'ţ' | 'ť' => out.push('t'),
+            other => out.push(other),
+        }
+    }
+    out
 }

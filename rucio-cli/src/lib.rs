@@ -144,13 +144,13 @@ pub enum NodeAction {
 /// `rucio search …` — search for files on the Rucio and eMule networks.
 #[derive(Subcommand, Debug)]
 pub enum SearchAction {
-    /// Start a search and wait for results
+    /// Start a search (prints search ID and returns immediately)
     Start {
         /// Keywords to search for
         keywords: Vec<String>,
-        /// Return immediately after firing the search (prints the search ID)
+        /// Poll until the search finishes and print results
         #[arg(short, long)]
-        background: bool,
+        wait: bool,
     },
     /// List all searches currently held in daemon memory
     List,
@@ -253,10 +253,9 @@ pub async fn run() -> Result<()> {
             NodeAction::Metrics => cmd::status::metrics_cmd(&client).await,
         },
         Commands::Search { action } => match action {
-            SearchAction::Start {
-                keywords,
-                background,
-            } => cmd::search::start(&client, keywords, background).await,
+            SearchAction::Start { keywords, wait } => {
+                cmd::search::start(&client, keywords, wait).await
+            }
             SearchAction::List => cmd::search::list(&client).await,
             SearchAction::Show { id } => cmd::search::show(&client, id).await,
             SearchAction::Cancel { id } => cmd::search::cancel(&client, id).await,

@@ -25,23 +25,21 @@ const MAX_POLLS: u32 = 65;
 // start
 // ---------------------------------------------------------------------------
 
-pub async fn start(client: &ApiClient, keywords: Vec<String>, background: bool) -> Result<()> {
+pub async fn start(client: &ApiClient, keywords: Vec<String>, wait: bool) -> Result<()> {
     if keywords.is_empty() {
         anyhow::bail!("Provide at least one keyword.");
     }
 
     let started = client.start_search(keywords.clone()).await?;
     let id = started.id;
+    println!("{id}");
 
-    if background {
-        println!("{id}");
-        return Ok(());
+    if wait {
+        println!("Searching for: {}", color::value(&keywords.join(" ")));
+        poll_until_done(client, id).await
+    } else {
+        Ok(())
     }
-
-    println!("Searching for: {}", color::value(&keywords.join(" ")));
-    println!("Search ID: {}", color::value(&id.to_string()));
-
-    poll_until_done(client, id).await
 }
 
 // ---------------------------------------------------------------------------

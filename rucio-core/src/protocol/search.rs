@@ -64,12 +64,15 @@ impl SearchQuery {
         }
     }
 
-    /// Returns true if `name` matches any keyword (case-insensitive).
+    /// Returns true if `name` contains **all** keywords (case-insensitive substring).
     pub fn matches(&self, name: &str) -> bool {
+        if self.keywords.is_empty() {
+            return false;
+        }
         let lower = name.to_lowercase();
         self.keywords
             .iter()
-            .any(|kw| lower.contains(&kw.to_lowercase()))
+            .all(|kw| lower.contains(&kw.to_lowercase()))
     }
 }
 
@@ -159,10 +162,11 @@ mod tests {
     }
 
     #[test]
-    fn matches_any_keyword() {
+    fn requires_all_keywords() {
         let q = query(&["foo", "bar"]);
-        assert!(q.matches("foofile.zip")); // first keyword
-        assert!(q.matches("barfile.zip")); // second keyword
+        assert!(q.matches("foo_bar_file.zip")); // both present
+        assert!(!q.matches("foofile.zip")); // only first
+        assert!(!q.matches("barfile.zip")); // only second
     }
 
     #[test]
