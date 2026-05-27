@@ -7,6 +7,7 @@ pub mod live_stats;
 pub mod metrics;
 pub mod throttle;
 pub mod transfer;
+pub mod upload_scheduler;
 pub mod upnp;
 pub mod watcher;
 
@@ -166,6 +167,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     let download_throttle = Arc::new(throttle::TokenBucket::new(
         config.network.download_limit_kbps,
     ));
+    let upload_scheduler = Arc::new(upload_scheduler::UploadScheduler::new());
     // Per-download live statistics, shared between the engines, the speed
     // sampler in this loop, and the API handlers.
     let live_stats: live_stats::LiveStatsMap =
@@ -176,6 +178,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
         dest_dir,
         temp_dir,
         Arc::clone(&session_metrics),
+        Arc::clone(&upload_scheduler),
         Arc::clone(&upload_throttle),
         Arc::clone(&download_throttle),
         Arc::clone(&live_stats),
@@ -447,6 +450,10 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     // Per-download download-speed sampler state: id → (rolling window, last bytes_done).
     let mut speed_samples: std::collections::HashMap<i64, (metrics::SpeedWindow, u64)> =
         std::collections::HashMap::new();
+    // Peer classification: true = HighID (globally reachable), false = LowID.
+    // Populated from PeerDiscovered events; used to prioritise chunk uploads.
+    let mut peer_classes: std::collections::HashMap<libp2p::PeerId, bool> =
+        std::collections::HashMap::new();
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
@@ -650,6 +657,8 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                         });
                     }
                     Some(node::messages::NodeEvent::PeerDiscovered { peer_id, addrs }) => {
+                        let is_high_id = peer_has_public_addr(&addrs);
+                        peer_classes.insert(peer_id, is_high_id);
                         let addrs_json = serde_json::to_string(
                             &addrs.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
                         )
@@ -659,7 +668,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                             &peer_id.to_string(),
                             &addrs_json,
                             now_secs(),
-                            true,
+                            is_high_id,
                         )
                         .await;
                     }
@@ -712,7 +721,9 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                         engine.on_chunk_received(request_id, peer, response).await;
                     }
                     Some(node::messages::NodeEvent::ChunkRequested { peer, request, channel_id }) => {
-                        engine.serve_chunk(peer, request, channel_id).await;
+                        // Unknown peers default to HighID to avoid accidentally starving them.
+                        let is_high_id = peer_classes.get(&peer).copied().unwrap_or(true);
+                        engine.serve_chunk(peer, request, channel_id, is_high_id).await;
                     }
                     Some(node::messages::NodeEvent::ManifestReceived { request_id, peer, response }) => {
                         engine.on_manifest_received(request_id, peer, response, now_secs()).await;
@@ -915,4 +926,37 @@ async fn reannounce_shares(
         announced += 1;
     }
     announced
+}
+
+/// Return `true` if any of the peer's advertised addresses is publicly routable.
+/// Mirrors `classify::is_public_addr` but operates on a slice of addresses
+/// and is used for classifying *remote* peers (not our own node).
+fn peer_has_public_addr(addrs: &[libp2p::Multiaddr]) -> bool {
+    use libp2p::multiaddr::Protocol;
+    use std::net::IpAddr;
+
+    for addr in addrs {
+        for proto in addr.iter() {
+            let ip: IpAddr = match proto {
+                Protocol::Ip4(a) => IpAddr::V4(a),
+                Protocol::Ip6(a) => IpAddr::V6(a),
+                _ => continue,
+            };
+            let is_public = match ip {
+                IpAddr::V4(a) => {
+                    !a.is_loopback() && !a.is_private() && !a.is_link_local() && !a.is_unspecified()
+                }
+                IpAddr::V6(a) => {
+                    !a.is_loopback()
+                        && !a.is_unspecified()
+                        && (a.segments()[0] & 0xfe00) != 0xfc00 // fc00::/7 unique-local
+                        && (a.segments()[0] & 0xffc0) != 0xfe80 // fe80::/10 link-local
+                }
+            };
+            if is_public {
+                return true;
+            }
+        }
+    }
+    false
 }

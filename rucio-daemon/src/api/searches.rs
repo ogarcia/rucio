@@ -15,7 +15,9 @@ use rucio_core::api::searches::{
     ResultSource, SearchDetailResponse, SearchListResponse, SearchResult, SearchStartedResponse,
     SearchState, SearchSummary, StartSearchRequest,
 };
-use rucio_core::protocol::search::{SearchQuery, normalize_search_term};
+use rucio_core::protocol::search::SearchQuery;
+#[cfg(feature = "emule-compat")]
+use rucio_core::protocol::search::normalize_search_term;
 
 use crate::api::{AppState, InternalSource, MAX_SEARCHES, SearchRecord, SearchRegistry};
 use crate::node::messages::NodeCmd;

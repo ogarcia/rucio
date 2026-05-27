@@ -43,6 +43,7 @@ use crate::db::{self, Db};
 use crate::metrics::Metrics;
 use crate::node::messages::NodeCmd;
 use crate::throttle::TokenBucket;
+use crate::upload_scheduler::UploadScheduler;
 
 // ---------------------------------------------------------------------------
 // Tuning
@@ -208,6 +209,8 @@ pub struct DownloadEngine {
     known_providers: HashMap<[u8; 32], Vec<PeerId>>,
     /// Shared session metrics — updated on every chunk event.
     metrics: Arc<Metrics>,
+    /// Work-conserving upload priority: HighID requests take precedence.
+    upload_scheduler: Arc<UploadScheduler>,
     /// Global upload bandwidth throttle (chunks served to remote peers).
     upload_throttle: Arc<TokenBucket>,
     /// Global download bandwidth throttle (chunks received from remote peers).
@@ -224,6 +227,7 @@ impl DownloadEngine {
         dest_dir: PathBuf,
         temp_dir: PathBuf,
         metrics: Arc<Metrics>,
+        upload_scheduler: Arc<UploadScheduler>,
         upload_throttle: Arc<TokenBucket>,
         download_throttle: Arc<TokenBucket>,
         live_stats: crate::live_stats::LiveStatsMap,
@@ -237,6 +241,7 @@ impl DownloadEngine {
             active: HashMap::new(),
             known_providers: HashMap::new(),
             metrics,
+            upload_scheduler,
             upload_throttle,
             download_throttle,
             live_stats,
@@ -1158,7 +1163,13 @@ impl DownloadEngine {
     // Serve an inbound chunk request
     // -----------------------------------------------------------------------
 
-    pub async fn serve_chunk(&self, _peer: PeerId, request: ChunkRequest, channel_id: u64) {
+    pub async fn serve_chunk(
+        &self,
+        _peer: PeerId,
+        request: ChunkRequest,
+        channel_id: u64,
+        is_high_id: bool,
+    ) {
         const MAX_PEX_PEERS: usize = 8;
 
         // Collect PEX peers before spawning — known_providers is not Send.
@@ -1177,14 +1188,23 @@ impl DownloadEngine {
         let db = self.db.clone();
         let cmd_tx = self.cmd_tx.clone();
         let metrics = Arc::clone(&self.metrics);
+        let scheduler = Arc::clone(&self.upload_scheduler);
         let upload_throttle = Arc::clone(&self.upload_throttle);
 
         tokio::spawn(async move {
             let response = read_chunk_from_db(&db, &request, pex_peers).await;
-            // Throttle and record upload bytes before sending the response.
+            // Apply priority scheduling and throttle before sending.
             if let ChunkResponse::Ok { ref data, .. } = response {
-                upload_throttle.acquire(data.len() as u64).await;
-                metrics.record_upload(data.len() as u64);
+                let bytes = data.len() as u64;
+                if is_high_id {
+                    scheduler.enter_highid();
+                    upload_throttle.acquire(bytes).await;
+                    scheduler.leave_highid();
+                } else {
+                    scheduler.wait_for_lowid_turn().await;
+                    upload_throttle.acquire(bytes).await;
+                }
+                metrics.record_upload(bytes);
             }
             let _ = cmd_tx
                 .send(NodeCmd::RespondChunk {
@@ -1396,6 +1416,7 @@ mod tests {
             tmp.path().to_path_buf(),
             tmp.path().to_path_buf(),
             metrics,
+            Arc::new(crate::upload_scheduler::UploadScheduler::new()),
             Arc::new(crate::throttle::TokenBucket::new(0)),
             Arc::new(crate::throttle::TokenBucket::new(0)),
             Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
