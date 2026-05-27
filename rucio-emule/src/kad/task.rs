@@ -159,8 +159,10 @@ pub struct KadTaskConfig {
     pub request_timeout: Duration,
     /// Maximum wall-clock time for a full source search.
     pub search_timeout: Duration,
-    /// Maximum sources to collect per search.
+    /// Maximum sources to collect per source search.
     pub max_sources: usize,
+    /// Maximum file hits to collect per keyword search.
+    pub max_keyword_results: usize,
     /// Number of parallel lookup queries (alpha).
     pub alpha: usize,
     /// Number of node-lookup iterations before switching to source search.
@@ -181,6 +183,7 @@ impl Default for KadTaskConfig {
             request_timeout: Duration::from_secs(5),
             search_timeout: Duration::from_secs(60),
             max_sources: 50,
+            max_keyword_results: 300,
             alpha: 20,
             lookup_iterations: 5,
             min_contacts: 4,
@@ -370,7 +373,7 @@ async fn run_task(
                         }
                         let deadline = Instant::now() + cfg.search_timeout;
                         let (search, pkts) = ActiveSearch::new_keyword_search(
-                            target, deadline, 50,
+                            target, deadline, cfg.max_keyword_results,
                             &initial_candidates, cfg.alpha, reply,
                         );
                         info!(keyword, %target, sent = pkts.len(), "Started Kad2 keyword search");

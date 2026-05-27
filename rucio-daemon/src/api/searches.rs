@@ -195,8 +195,9 @@ pub async fn delete_search(State(state): State<AppState>, Path(id): Path<u64>) -
 
 /// Relaunch a search
 ///
-/// Creates a new search with the same keywords as the given search ID.
-/// Returns the new search ID.
+/// Re-runs the search query on both networks and appends any new results to
+/// the **same** search record.  Existing results are kept.  The same search
+/// ID is returned so the client can keep polling `GET /api/v1/searches/{id}`.
 #[utoipa::path(
     post,
     path = "/api/v1/searches/{id}/relaunch",
@@ -204,7 +205,7 @@ pub async fn delete_search(State(state): State<AppState>, Path(id): Path<u64>) -
         ("id" = u64, Path, description = "Search ID to relaunch.")
     ),
     responses(
-        (status = 202, description = "New search started.", body = SearchStartedResponse),
+        (status = 202, description = "Search relaunched; same ID.", body = SearchStartedResponse),
         (status = 404, description = "Unknown search ID.")
     )
 )]
@@ -212,6 +213,9 @@ pub async fn relaunch_search(
     State(state): State<AppState>,
     Path(id): Path<u64>,
 ) -> Result<(StatusCode, Json<SearchStartedResponse>), StatusCode> {
+    let peer_id = state.node_status.read().await.peer_id.clone();
+
+    // Build a fresh gossip query (new UUID, same keywords).
     let keywords = {
         let reg = state.search_registry.read().await;
         reg.records
@@ -219,12 +223,51 @@ pub async fn relaunch_search(
             .map(|r| r.keywords.clone())
             .ok_or(StatusCode::NOT_FOUND)?
     };
+    let query = SearchQuery::new(keywords.clone(), peer_id);
+    let new_gossip_id = query.id.0.clone();
 
-    let new_id = start_search_internal(&state, keywords).await?;
-    Ok((
-        StatusCode::ACCEPTED,
-        Json(SearchStartedResponse { id: new_id }),
-    ))
+    // Reset the existing record in place so existing results are preserved
+    // and new results will be appended to the same record.
+    {
+        let mut reg = state.search_registry.write().await;
+
+        let old_gossip_id = reg
+            .records
+            .get(&id)
+            .map(|r| r.gossip_query_id.clone())
+            .ok_or(StatusCode::NOT_FOUND)?;
+
+        // Swap the gossip→id mapping for the new query UUID.
+        reg.gossip_to_id.remove(&old_gossip_id);
+        reg.gossip_to_id.insert(new_gossip_id.clone(), id);
+
+        if let Some(record) = reg.records.get_mut(&id) {
+            record.cancelled = false;
+            record.started_at = std::time::Instant::now();
+            record.gossip_query_id = new_gossip_id;
+            #[cfg(not(feature = "emule-compat"))]
+            {
+                record.kad2_done = true;
+            }
+            #[cfg(feature = "emule-compat")]
+            {
+                record.kad2_done = false;
+            }
+        }
+    }
+
+    // Re-fire the Gossipsub query.
+    if state.node_cmd.send(NodeCmd::Search(query)).await.is_err() {
+        tracing::warn!("Node cmd channel closed; search published locally only");
+    }
+
+    tracing::info!(search_id = id, keywords = ?keywords, "Search relaunched (Gossipsub)");
+
+    // Re-fire Kad2 keyword search if compiled in.
+    #[cfg(feature = "emule-compat")]
+    spawn_kad2_search(&state, id, keywords);
+
+    Ok((StatusCode::ACCEPTED, Json(SearchStartedResponse { id })))
 }
 
 // ---------------------------------------------------------------------------
