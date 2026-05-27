@@ -122,6 +122,7 @@ pub async fn run_ed2k_download(
     kad: &KadHandle,
     active_downloads: &ActiveDownloads,
     download_slots: &Arc<Semaphore>,
+    live_stats: &crate::live_stats::LiveStatsMap,
 ) -> Result<()> {
     // 1. Parse the link.
     let link = Ed2kLink::parse(link_str).with_context(|| format!("parse ed2k link: {link_str}"))?;
@@ -161,6 +162,9 @@ pub async fn run_ed2k_download(
     // Number of ed2k slices (one per CHUNK_SIZE block).
     let num_slices = link.size.div_ceil(CHUNK_SIZE as u64) as usize;
 
+    // Live-stats map key: eMule downloads use negative ids (see the API).
+    let live_key = -download_id;
+
     // Register this file for partial upload serving so eMule peers can fetch
     // already-completed slices from us, building credit on the network.
     let hash_key = *link.hash.as_bytes();
@@ -186,6 +190,7 @@ pub async fn run_ed2k_download(
                 Err(_) => {
                     // Semaphore closed — daemon shutting down.
                     active_downloads.write().await.remove(&hash_key);
+                    live_stats.write().await.remove(&live_key);
                     return Ok(());
                 }
             }
@@ -206,6 +211,7 @@ pub async fn run_ed2k_download(
         if is_cancelled(db, download_id).await {
             info!(name = %link.name, "eMule download cancelled by user");
             active_downloads.write().await.remove(&hash_key);
+            live_stats.write().await.remove(&live_key);
             return Ok(());
         }
 
@@ -265,6 +271,13 @@ pub async fn run_ed2k_download(
                 "finding_providers"
             };
             let _ = crate::db::emule_downloads::set_status(db, download_id, status, None).await;
+            {
+                let mut s = live_stats.write().await;
+                let e = s.entry(live_key).or_default();
+                e.sources_total = cached_sources.len() as u32;
+                e.sources_active = 0;
+                e.pieces_in_flight = 0;
+            }
             let delay = retry_delay_secs(retry_count);
             retry_count += 1;
             info!(
@@ -330,6 +343,16 @@ pub async fn run_ed2k_download(
             sources = valid_sources.len(),
             "Starting parallel eMule download"
         );
+
+        // Publish live stats for this round: each worker pulls one slice at a
+        // time, so active sources ≈ pieces in flight ≈ worker count.
+        {
+            let mut s = live_stats.write().await;
+            let e = s.entry(live_key).or_default();
+            e.sources_total = valid_sources.len() as u32;
+            e.sources_active = max_workers as u32;
+            e.pieces_in_flight = max_workers as u32;
+        }
 
         let mut join_set: JoinSet<()> = JoinSet::new();
 
@@ -606,6 +629,7 @@ pub async fn run_ed2k_download(
         "eMule download complete — file ready in download directory"
     );
     active_downloads.write().await.remove(&hash_key);
+    live_stats.write().await.remove(&live_key);
     Ok(())
 }
 

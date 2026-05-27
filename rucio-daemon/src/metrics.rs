@@ -27,7 +27,7 @@ use rucio_core::api::metrics::SessionMetrics;
 const WINDOW: usize = 5;
 
 /// Rolling 5-second byte counter used for speed estimation.
-struct SpeedWindow {
+pub(crate) struct SpeedWindow {
     buckets: [u64; WINDOW],
     head: usize,
     /// Bytes accumulated in the current (not-yet-sealed) bucket.
@@ -35,7 +35,7 @@ struct SpeedWindow {
 }
 
 impl SpeedWindow {
-    const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             buckets: [0; WINDOW],
             head: 0,
@@ -44,12 +44,12 @@ impl SpeedWindow {
     }
 
     /// Record `bytes` transferred now (call on every chunk event).
-    fn add(&mut self, bytes: u64) {
+    pub(crate) fn add(&mut self, bytes: u64) {
         self.current += bytes;
     }
 
     /// Seal the current bucket, advance the ring, return bytes/s average.
-    fn tick(&mut self) -> u64 {
+    pub(crate) fn tick(&mut self) -> u64 {
         // Seal current second into the ring.
         self.buckets[self.head % WINDOW] = self.current;
         self.head += 1;

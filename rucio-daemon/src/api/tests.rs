@@ -87,6 +87,7 @@ async fn test_state() -> (
         #[cfg(feature = "emule-compat")]
         emule_inbound_connections: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         external_ip: Arc::new(tokio::sync::RwLock::new(None)),
+        live_stats: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
     };
     (state, cmd_rx, download_rx, dir)
 }

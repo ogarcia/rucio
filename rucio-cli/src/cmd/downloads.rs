@@ -304,6 +304,20 @@ pub async fn show(client: &ApiClient, target: &str) -> Result<()> {
         };
         println!("  {label}:     {done} / {total}");
     }
+    // Live stats — present only while the download is active.
+    if let Some(total) = d.sources_total {
+        let active = d.sources_active.unwrap_or(0);
+        println!("  Sources:    {active} active / {total} known");
+    }
+    if let Some(n) = d.pieces_in_flight {
+        println!("  In flight:  {n}");
+    }
+    if let Some(bps) = d.speed_bps.filter(|&b| b > 0) {
+        println!("  Speed:      {}/s", human_size(bps));
+    }
+    if let Some(eta) = d.eta_secs {
+        println!("  ETA:        {}", human_duration(eta));
+    }
     if let Some(path) = &d.dest_path {
         println!("  Saved to:   {}", color::value(path));
     }
@@ -408,6 +422,19 @@ fn human_size(bytes: u64) -> String {
         format!("{val:.1} {unit}")
     } else {
         format!("{val:.0} {unit}")
+    }
+}
+
+/// Format a duration in seconds as a coarse human string (e.g. "3m 20s").
+fn human_duration(secs: u64) -> String {
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m {}s", secs / 60, secs % 60)
+    } else if secs < 86400 {
+        format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
+    } else {
+        format!("{}d {}h", secs / 86400, (secs % 86400) / 3600)
     }
 }
 

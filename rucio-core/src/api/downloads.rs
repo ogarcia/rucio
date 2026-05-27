@@ -71,6 +71,22 @@ pub struct DownloadDetailResponse {
     pub pieces_done: Option<u64>,
     /// Total number of pieces.
     pub pieces_total: Option<u64>,
+    /// Live: sources/providers currently known.  Present only while active.
+    #[serde(default)]
+    pub sources_total: Option<u32>,
+    /// Live: sources/providers we are actively transferring from.
+    #[serde(default)]
+    pub sources_active: Option<u32>,
+    /// Live: chunks/slices being fetched right now.
+    #[serde(default)]
+    pub pieces_in_flight: Option<u32>,
+    /// Live: smoothed download speed in bytes per second.
+    #[serde(default)]
+    pub speed_bps: Option<u64>,
+    /// Live: estimated seconds to completion, derived from speed and remaining
+    /// bytes.  Absent when speed is zero or the size is unknown.
+    #[serde(default)]
+    pub eta_secs: Option<u64>,
 }
 
 /// POST /api/v1/downloads/ed2k

@@ -3,6 +3,7 @@ pub mod config;
 pub mod db;
 
 pub mod emule;
+pub mod live_stats;
 pub mod metrics;
 pub mod node;
 pub mod throttle;
@@ -151,6 +152,10 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     let download_throttle = Arc::new(throttle::TokenBucket::new(
         config.network.download_limit_kbps,
     ));
+    // Per-download live statistics, shared between the engines, the speed
+    // sampler in this loop, and the API handlers.
+    let live_stats: live_stats::LiveStatsMap =
+        Arc::new(RwLock::new(std::collections::HashMap::new()));
     let mut engine = transfer::DownloadEngine::new(
         db.clone(),
         handle.cmd_tx.clone(),
@@ -159,6 +164,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
         Arc::clone(&session_metrics),
         Arc::clone(&upload_throttle),
         Arc::clone(&download_throttle),
+        Arc::clone(&live_stats),
     );
 
     // Resume any downloads that were interrupted by a previous crash or restart.
@@ -316,6 +322,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
         #[cfg(feature = "emule-compat")]
         emule_inbound_connections: emule_inbound_connections.clone(),
         external_ip,
+        live_stats: Arc::clone(&live_stats),
     };
 
     let listen_addr = config.api.listen.clone();
@@ -380,6 +387,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                 let kad = kad_handle.clone();
                 let ad = active_downloads.clone();
                 let slots = emule_download_slots.clone();
+                let ls = live_stats.clone();
                 tokio::spawn(async move {
                     if let Err(e) = crate::emule::run_ed2k_download(
                         &row.ed2k_link,
@@ -390,6 +398,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                         &kad,
                         &ad,
                         &slots,
+                        &ls,
                     )
                     .await
                     {
@@ -421,6 +430,9 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     let mut metrics_tick = tokio::time::interval(tokio::time::Duration::from_secs(1));
     // Persist metric deltas to DB every 30 seconds.
     let mut metrics_flush_tick = tokio::time::interval(tokio::time::Duration::from_secs(30));
+    // Per-download download-speed sampler state: id → (rolling window, last bytes_done).
+    let mut speed_samples: std::collections::HashMap<i64, (metrics::SpeedWindow, u64)> =
+        std::collections::HashMap::new();
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
@@ -441,6 +453,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
             }
             _ = metrics_tick.tick() => {
                 session_metrics.tick();
+                sample_download_speeds(&db, &live_stats, &mut speed_samples).await;
             }
             _ = metrics_flush_tick.tick() => {
                 let delta = session_metrics.take_delta();
@@ -450,6 +463,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
             }
             _ = manifest_tick.tick() => {
                 engine.tick_manifest_timeouts().await;
+                engine.publish_live_stats().await;
             }
             _ = provider_refresh_tick.tick() => {
                 engine.tick_provider_refresh().await;
@@ -571,10 +585,11 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                                     let kad = kad_handle.clone();
                                     let ad = active_downloads.clone();
                                     let slots = emule_download_slots.clone();
+                                    let ls = live_stats.clone();
                                     tokio::spawn(async move {
                                         if let Err(e) = crate::emule::run_ed2k_download(
                                             &link, download_id, &config, &db, &ws_tx, &kad, &ad,
-                                            &slots,
+                                            &slots, &ls,
                                         )
                                         .await
                                         {
@@ -796,6 +811,56 @@ fn now_secs() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+/// Sample each active download's `bytes_done` from the DB and update its
+/// smoothed download speed in the shared live-stats map.  Called once a second
+/// from the main loop; the engines own the source/piece counts, this owns the
+/// `speed_bps` field.
+async fn sample_download_speeds(
+    db: &db::Db,
+    live_stats: &live_stats::LiveStatsMap,
+    samples: &mut std::collections::HashMap<i64, (metrics::SpeedWindow, u64)>,
+) {
+    let active_ids: Vec<i64> = live_stats.read().await.keys().copied().collect();
+    if active_ids.is_empty() {
+        samples.clear();
+        return;
+    }
+    for &id in &active_ids {
+        let bytes = if id < 0 {
+            #[cfg(feature = "emule-compat")]
+            {
+                db::emule_downloads::get(db, -id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|r| r.bytes_done as u64)
+            }
+            #[cfg(not(feature = "emule-compat"))]
+            {
+                None
+            }
+        } else {
+            db::downloads::get(db, id)
+                .await
+                .ok()
+                .flatten()
+                .map(|r| r.bytes_done as u64)
+        };
+        let Some(bytes) = bytes else { continue };
+        let entry = samples
+            .entry(id)
+            .or_insert_with(|| (metrics::SpeedWindow::new(), bytes));
+        let delta = bytes.saturating_sub(entry.1);
+        entry.1 = bytes;
+        entry.0.add(delta);
+        let speed = entry.0.tick();
+        if let Some(s) = live_stats.write().await.get_mut(&id) {
+            s.speed_bps = speed;
+        }
+    }
+    samples.retain(|id, _| active_ids.contains(id));
 }
 
 /// Re-announce all shared files that still exist on disk to Kademlia.

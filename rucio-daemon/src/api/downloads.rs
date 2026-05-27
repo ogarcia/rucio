@@ -86,9 +86,12 @@ pub async fn list_downloads(State(state): State<AppState>) -> Json<DownloadsResp
 /// Download detail
 ///
 /// Returns the full state of a single download: identity, progress (bytes and
-/// completed pieces), destination path, timestamps, and — for eMule downloads
-/// — the original `ed2k://` link.  Pieces are libp2p chunks for rucio
-/// downloads and 9.28 MB slices for eMule downloads.
+/// completed pieces), destination path, timestamps, and the source link.
+/// Pieces are libp2p chunks for rucio downloads and 9.28 MB slices for eMule.
+///
+/// While the download is active it also includes live stats: sources known and
+/// active, pieces in flight, download speed (bytes/s) and an ETA in seconds.
+/// These fields are absent for finished downloads.
 ///
 /// Use **negative IDs** (e.g. `-3`) for eMule downloads, as returned by
 /// `GET /api/v1/downloads`.
@@ -107,6 +110,8 @@ pub async fn get_download(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> Result<Json<DownloadDetailResponse>, StatusCode> {
+    // Live stats are keyed by the same signed id as the public API.
+    let live = state.live_stats.read().await.get(&id).cloned();
     if id >= 0 {
         // libp2p download
         let row = crate::db::downloads::get(&state.db, id)
@@ -147,6 +152,15 @@ pub async fn get_download(
             link: Some(magnet),
             pieces_done: Some(pieces_done),
             pieces_total: (pieces_total > 0).then_some(pieces_total),
+            sources_total: live.as_ref().map(|l| l.sources_total),
+            sources_active: live.as_ref().map(|l| l.sources_active),
+            pieces_in_flight: live.as_ref().map(|l| l.pieces_in_flight),
+            speed_bps: live.as_ref().map(|l| l.speed_bps),
+            eta_secs: eta_secs(
+                row.total_size as u64,
+                row.bytes_done as u64,
+                live.as_ref().map(|l| l.speed_bps).unwrap_or(0),
+            ),
         }))
     } else {
         // eMule download
@@ -187,6 +201,15 @@ pub async fn get_download(
                 link: Some(row.ed2k_link),
                 pieces_done: Some(pieces_done),
                 pieces_total: Some(num_slices as u64),
+                sources_total: live.as_ref().map(|l| l.sources_total),
+                sources_active: live.as_ref().map(|l| l.sources_active),
+                pieces_in_flight: live.as_ref().map(|l| l.pieces_in_flight),
+                speed_bps: live.as_ref().map(|l| l.speed_bps),
+                eta_secs: eta_secs(
+                    row.total_size as u64,
+                    row.bytes_done as u64,
+                    live.as_ref().map(|l| l.speed_bps).unwrap_or(0),
+                ),
             }))
         }
         #[cfg(not(feature = "emule-compat"))]
@@ -200,6 +223,15 @@ pub async fn get_download(
 /// Map an empty path string (the "not yet known" sentinel in the DB) to `None`.
 fn non_empty(s: String) -> Option<String> {
     (!s.is_empty()).then_some(s)
+}
+
+/// Estimate seconds to completion from current speed and remaining bytes.
+/// `None` when the speed is zero or the download is already complete.
+fn eta_secs(size: u64, bytes_done: u64, speed_bps: u64) -> Option<u64> {
+    if speed_bps == 0 || size <= bytes_done {
+        return None;
+    }
+    Some((size - bytes_done) / speed_bps)
 }
 
 /// Start a download

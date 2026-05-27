@@ -62,6 +62,10 @@ downloads, 9.28 MB slices for eMule), the destination path, when it was added
 and last updated, and the link used to re-add it (a `rucio:` magnet for rucio
 downloads, the original `ed2k://` link for eMule downloads).
 
+While a download is active it also shows live stats: how many sources are
+known and how many are actively transferring, how many pieces are in flight,
+the current download speed and an ETA.
+
 ## Download states
 
 | State | Meaning |

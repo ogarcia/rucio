@@ -295,6 +295,8 @@ pub struct AppState {
     pub emule_inbound_connections: Arc<std::sync::atomic::AtomicU64>,
     /// External IP address as reported by UPnP gateway.  `None` when no gateway found.
     pub external_ip: crate::upnp::ExternalIp,
+    /// Per-download live statistics (sources, pieces in flight, speed).
+    pub live_stats: crate::live_stats::LiveStatsMap,
 }
 
 /// Live node status kept in memory and updated by the event loop.

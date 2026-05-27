@@ -212,9 +212,12 @@ pub struct DownloadEngine {
     upload_throttle: Arc<TokenBucket>,
     /// Global download bandwidth throttle (chunks received from remote peers).
     download_throttle: Arc<TokenBucket>,
+    /// Per-download live statistics, shared with the API handlers.
+    live_stats: crate::live_stats::LiveStatsMap,
 }
 
 impl DownloadEngine {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         db: Db,
         cmd_tx: mpsc::Sender<NodeCmd>,
@@ -223,6 +226,7 @@ impl DownloadEngine {
         metrics: Arc<Metrics>,
         upload_throttle: Arc<TokenBucket>,
         download_throttle: Arc<TokenBucket>,
+        live_stats: crate::live_stats::LiveStatsMap,
     ) -> Self {
         Self {
             db,
@@ -235,6 +239,34 @@ impl DownloadEngine {
             metrics,
             upload_throttle,
             download_throttle,
+            live_stats,
+        }
+    }
+
+    /// Recompute and publish live stats for every active download.  Called
+    /// periodically from the main loop; cheap (a few in-memory reads).
+    pub async fn publish_live_stats(&self) {
+        let mut map = self.live_stats.write().await;
+        for dl in self.active.values() {
+            let active_peers = dl
+                .peer_state
+                .values()
+                .filter(|ps| !ps.in_flight.is_empty())
+                .count() as u32;
+            let e = map.entry(dl.download_id).or_default();
+            e.sources_total = dl.providers.len() as u32;
+            e.sources_active = active_peers;
+            e.pieces_in_flight = dl.in_flight.len() as u32;
+        }
+        // Also surface pending manifests (no transfer yet) so `show` reports
+        // how many providers we have lined up before the manifest arrives.
+        for pm in self.pending_manifests.values() {
+            if pm.db_id > 0 {
+                let e = map.entry(pm.db_id).or_default();
+                e.sources_total = pm.providers.len() as u32;
+                e.sources_active = 0;
+                e.pieces_in_flight = 0;
+            }
         }
     }
 
@@ -665,6 +697,7 @@ impl DownloadEngine {
     /// In-flight chunk/manifest responses that arrive afterwards are silently
     /// discarded by the existing "unknown request" guards.
     pub async fn cancel(&mut self, download_id: i64, root_hash: Vec<u8>) {
+        self.live_stats.write().await.remove(&download_id);
         // Remove a pending manifest (keyed by hash — download_id may be None
         // at this stage if the manifest hasn't arrived yet).
         let hash_arr: Option<[u8; 32]> = root_hash.try_into().ok();
@@ -1077,6 +1110,7 @@ impl DownloadEngine {
                         warn!("set_status completed error: {e}");
                     }
                     info!(root_hash = hex::encode(root_hash), "Download completed");
+                    self.live_stats.write().await.remove(&dl_id);
                     self.active.remove(&root_hash);
                 } else {
                     self.dispatch_requests(root_hash).await;
@@ -1364,6 +1398,7 @@ mod tests {
             metrics,
             Arc::new(crate::throttle::TokenBucket::new(0)),
             Arc::new(crate::throttle::TokenBucket::new(0)),
+            Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         );
         (engine, cmd_rx, db_dir)
     }
