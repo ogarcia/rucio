@@ -190,20 +190,16 @@ pub async fn show(client: &ApiClient) -> Result<()> {
         "  external_ip              = {}",
         pending_scalar(
             e.external_ip.as_deref().unwrap_or("(auto)"),
-            pe.map(|pe| {
-                pe.external_ip
-                    .as_deref()
-                    .unwrap_or("(auto)")
-                    .to_string()
-            })
-            .as_deref(),
+            pe.map(|pe| { pe.external_ip.as_deref().unwrap_or("(auto)").to_string() })
+                .as_deref(),
         )
     );
     println!(
         "  download_slots_per_file  = {}",
         pending_scalar(
             &e.download_slots_per_file.to_string(),
-            pe.map(|pe| pe.download_slots_per_file.to_string()).as_deref(),
+            pe.map(|pe| pe.download_slots_per_file.to_string())
+                .as_deref(),
         )
     );
     println!(
@@ -217,7 +213,8 @@ pub async fn show(client: &ApiClient) -> Result<()> {
         "  max_concurrent_downloads = {}",
         pending_scalar(
             &e.max_concurrent_downloads.to_string(),
-            pe.map(|pe| pe.max_concurrent_downloads.to_string()).as_deref(),
+            pe.map(|pe| pe.max_concurrent_downloads.to_string())
+                .as_deref(),
         )
     );
 

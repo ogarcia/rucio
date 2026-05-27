@@ -52,7 +52,11 @@ pub async fn get_config(State(state): State<AppState>) -> Json<ConfigResponse> {
             || disk.emule != cfg.emule;
 
         if restart_required_changed {
-            let r = build_response(&disk, disk.network.upload_limit_kbps, disk.network.download_limit_kbps);
+            let r = build_response(
+                &disk,
+                disk.network.upload_limit_kbps,
+                disk.network.download_limit_kbps,
+            );
             resp.pending = Some(Box::new(PendingConfig {
                 node: r.node,
                 api: r.api,
@@ -66,7 +70,11 @@ pub async fn get_config(State(state): State<AppState>) -> Json<ConfigResponse> {
     Json(resp)
 }
 
-fn build_response(cfg: &Config, upload_limit_kbps: u64, download_limit_kbps: u64) -> ConfigResponse {
+fn build_response(
+    cfg: &Config,
+    upload_limit_kbps: u64,
+    download_limit_kbps: u64,
+) -> ConfigResponse {
     ConfigResponse {
         node: NodeConfig {
             identity_path: cfg.node.identity_path.to_string_lossy().into_owned(),
