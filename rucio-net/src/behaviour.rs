@@ -8,7 +8,9 @@
 //! DHT (e.g. a bootstrap node) carries no inert protocol surface.
 
 use libp2p::swarm::behaviour::toggle::Toggle;
-use libp2p::{gossipsub, identify, kad, mdns, request_response, swarm::NetworkBehaviour};
+use libp2p::{
+    dcutr, gossipsub, identify, kad, mdns, relay, request_response, swarm::NetworkBehaviour,
+};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
@@ -20,6 +22,9 @@ use rucio_core::protocol::transfer::{ChunkRequest, ChunkResponse};
 
 pub const TOPIC_SEARCH: &str = "/rucio/search/1.0.0";
 pub const TOPIC_SEARCH_RESULT: &str = "/rucio/search/result/1.0.0";
+
+/// Protocol ID advertised by peers that can serve as a circuit relay (hop).
+pub const RELAY_HOP_PROTOCOL: &str = "/libp2p/circuit/relay/0.2.0/hop";
 
 pub type TransferBehaviour = request_response::Behaviour<TransferCodec>;
 pub type ManifestBehaviour = request_response::Behaviour<ManifestCodec>;
@@ -42,6 +47,14 @@ pub struct BehaviourConfig {
     /// be re-stored explicitly to keep serving it). This is the basis of the
     /// passive DHT indexer; a normal node leaves it off.
     pub capture_provider_records: bool,
+    /// Act as a circuit relay server (hop).  HighID nodes enable this so that
+    /// LowID nodes behind NAT can make reservations and be reachable via
+    /// `/p2p-circuit` addresses.  The built-in resource limits prevent abuse.
+    pub relay_server: bool,
+    /// Enable DCUtR hole punching.  When a LowID node connects to a peer
+    /// through a relay, DCUtR attempts to upgrade to a direct connection by
+    /// coordinating simultaneous TCP/QUIC dials (NAT hole punch).
+    pub dcutr: bool,
 }
 
 impl BehaviourConfig {
@@ -53,6 +66,8 @@ impl BehaviourConfig {
             transfer: true,
             manifest: true,
             capture_provider_records: false,
+            relay_server: true,
+            dcutr: true,
         }
     }
 
@@ -66,6 +81,8 @@ impl BehaviourConfig {
             transfer: false,
             manifest: false,
             capture_provider_records: false,
+            relay_server: false,
+            dcutr: false,
         }
     }
 
@@ -90,12 +107,22 @@ pub struct RucioBehaviour {
     pub gossipsub: Toggle<gossipsub::Behaviour>,
     pub transfer: Toggle<TransferBehaviour>,
     pub manifest: Toggle<ManifestBehaviour>,
+    /// Circuit relay server: lets other (LowID) peers make reservations so
+    /// they become reachable via `/p2p-circuit` addresses.
+    pub relay: Toggle<relay::Behaviour>,
+    /// Circuit relay client: allows this node to connect through a relay and
+    /// also required for DCUtR (the relay transport is wired in at the
+    /// SwarmBuilder level).
+    pub relay_client: relay::client::Behaviour,
+    /// DCUtR hole-punching: upgrades relay-mediated connections to direct ones.
+    pub dcutr: Toggle<dcutr::Behaviour>,
 }
 
 impl RucioBehaviour {
     pub fn new(
         keypair: &libp2p::identity::Keypair,
         peer_id: libp2p::PeerId,
+        relay_client: relay::client::Behaviour,
         cfg: BehaviourConfig,
     ) -> anyhow::Result<Self> {
         let identify = identify::Behaviour::new(identify::Config::new(
@@ -140,6 +167,12 @@ impl RucioBehaviour {
             )
         });
 
+        let relay = cfg
+            .relay_server
+            .then(|| relay::Behaviour::new(peer_id, relay::Config::default()));
+
+        let dcutr = cfg.dcutr.then(|| dcutr::Behaviour::new(peer_id));
+
         Ok(Self {
             identify,
             kademlia,
@@ -147,6 +180,9 @@ impl RucioBehaviour {
             gossipsub: Toggle::from(gossipsub),
             transfer: Toggle::from(transfer),
             manifest: Toggle::from(manifest),
+            relay: Toggle::from(relay),
+            relay_client,
+            dcutr: Toggle::from(dcutr),
         })
     }
 }

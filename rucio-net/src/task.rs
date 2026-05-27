@@ -7,11 +7,13 @@ use libp2p::{
     gossipsub::{self, IdentTopic},
     kad::{self, QueryId},
     multiaddr::Protocol,
+    relay,
     request_response::{self, ResponseChannel},
     swarm::{DialError, SwarmEvent},
 };
 use rucio_core::protocol::{
     manifest::{ManifestRequest, ManifestResponse},
+    node::NodeClass,
     search::{SearchQuery, SearchResult},
     transfer::{ChunkRequest, ChunkResponse},
 };
@@ -22,7 +24,9 @@ use tracing::{debug, info, warn};
 use crate::NetConfig;
 
 use super::{
-    behaviour::{RucioBehaviour, RucioBehaviourEvent, TOPIC_SEARCH, TOPIC_SEARCH_RESULT},
+    behaviour::{
+        RELAY_HOP_PROTOCOL, RucioBehaviour, RucioBehaviourEvent, TOPIC_SEARCH, TOPIC_SEARCH_RESULT,
+    },
     classify::{ClassificationState, is_stable_external_addr},
     identity,
     messages::{NodeCmd, NodeEvent},
@@ -70,7 +74,8 @@ pub async fn spawn(cfg: &NetConfig) -> Result<NodeHandle> {
         );
     }
 
-    let behaviour = super::behaviour::RucioBehaviour::new(&keypair, peer_id, cfg.behaviour)?;
+    let peer_id_copy = peer_id;
+    let behaviour_cfg = cfg.behaviour;
     let mut swarm = SwarmBuilder::with_existing_identity(keypair)
         .with_tokio()
         .with_tcp(
@@ -80,7 +85,17 @@ pub async fn spawn(cfg: &NetConfig) -> Result<NodeHandle> {
         )
         .context("building TCP transport")?
         .with_quic()
-        .with_behaviour(|_| behaviour)
+        .with_relay_client(libp2p::noise::Config::new, libp2p::yamux::Config::default)
+        .context("building relay transport")?
+        .with_behaviour(|keypair, relay_client| {
+            super::behaviour::RucioBehaviour::new(
+                keypair,
+                peer_id_copy,
+                relay_client,
+                behaviour_cfg,
+            )
+            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync + 'static> { e.into() })
+        })
         .context("attaching behaviour")?
         .build();
 
@@ -133,6 +148,10 @@ struct LoopState {
     /// Set to true after we have fired `Kademlia::bootstrap()` at least once
     /// so we don't repeat it on every subsequent connection.
     kad_bootstrapped: bool,
+    /// Relay-capable peers discovered via Identify: (peer_id, public listen addrs).
+    relay_candidates: Vec<(PeerId, Vec<Multiaddr>)>,
+    /// True once `listen_on` for a relay circuit reservation has been issued.
+    relay_reserved: bool,
 }
 
 impl LoopState {
@@ -149,6 +168,8 @@ impl LoopState {
             retry_dials: HashMap::new(),
             has_bootstrap_peers: false,
             kad_bootstrapped: false,
+            relay_candidates: Vec::new(),
+            relay_reserved: false,
         }
     }
 
@@ -565,6 +586,17 @@ async fn on_swarm_event(
                                 .record_observation(observed.clone(), pid, &listen_vec)
                         {
                             info!(?new_class, "Node class determined");
+                            // LowId nodes use a relay reservation so they become reachable.
+                            if matches!(new_class, NodeClass::LowId)
+                                && !state.relay_reserved
+                                && !state.relay_candidates.is_empty()
+                            {
+                                try_relay_reservation(
+                                    swarm,
+                                    &state.relay_candidates,
+                                    &mut state.relay_reserved,
+                                );
+                            }
                             let _ = event_tx.send(NodeEvent::ClassChanged(new_class)).await;
                         }
 
@@ -597,6 +629,21 @@ async fn on_swarm_event(
                             }
                         }
 
+                        // Detect relay-capable peers before listen_addrs is consumed.
+                        let relay_addrs: Vec<Multiaddr> = if info
+                            .protocols
+                            .iter()
+                            .any(|p| p.as_ref() == RELAY_HOP_PROTOCOL)
+                        {
+                            info.listen_addrs
+                                .iter()
+                                .filter(|a| !addr_is_loopback_or_link_local(a))
+                                .cloned()
+                                .collect()
+                        } else {
+                            vec![]
+                        };
+
                         // Persist the peer with its addresses so that
                         // `rucio peers` shows multiaddrs for all connected
                         // peers, not just those found via mDNS.
@@ -606,6 +653,20 @@ async fn on_swarm_event(
                                 addrs: info.listen_addrs,
                             })
                             .await;
+
+                        if !relay_addrs.is_empty() {
+                            debug!(%pid, "Peer supports relay hop");
+                            state.relay_candidates.push((pid, relay_addrs));
+                            if matches!(state.classifier.current(), NodeClass::LowId)
+                                && !state.relay_reserved
+                            {
+                                try_relay_reservation(
+                                    swarm,
+                                    &state.relay_candidates,
+                                    &mut state.relay_reserved,
+                                );
+                            }
+                        }
                     }
                     Event::Sent { .. } | Event::Error { .. } => {}
                     _ => {}
@@ -644,6 +705,49 @@ async fn on_swarm_event(
 
             RucioBehaviourEvent::Manifest(mn_event) => {
                 on_manifest_event(mn_event, event_tx, state).await;
+            }
+
+            RucioBehaviourEvent::Relay(relay_event) => {
+                use relay::Event;
+                match relay_event {
+                    Event::ReservationReqAccepted {
+                        src_peer_id,
+                        renewed,
+                    } => {
+                        debug!(%src_peer_id, %renewed, "Relay: accepted reservation from peer");
+                    }
+                    Event::CircuitReqAccepted {
+                        src_peer_id,
+                        dst_peer_id,
+                    } => {
+                        debug!(%src_peer_id, %dst_peer_id, "Relay: circuit established");
+                    }
+                    _ => {}
+                }
+            }
+
+            RucioBehaviourEvent::RelayClient(relay_client_event) => {
+                use relay::client::Event;
+                match relay_client_event {
+                    Event::ReservationReqAccepted { relay_peer_id, .. } => {
+                        info!(%relay_peer_id, "Relay reservation established");
+                        state.relay_reserved = true;
+                    }
+                    Event::OutboundCircuitEstablished { relay_peer_id, .. } => {
+                        debug!(%relay_peer_id, "Outbound circuit via relay established");
+                    }
+                    Event::InboundCircuitEstablished { src_peer_id, .. } => {
+                        debug!(%src_peer_id, "Inbound circuit via relay established");
+                    }
+                }
+            }
+
+            RucioBehaviourEvent::Dcutr(dcutr_event) => {
+                if dcutr_event.result.is_ok() {
+                    info!(peer = %dcutr_event.remote_peer_id, "DCUtR hole punch succeeded — direct connection established");
+                } else {
+                    debug!(peer = %dcutr_event.remote_peer_id, "DCUtR hole punch failed — relay connection maintained");
+                }
             }
         },
 
@@ -803,6 +907,41 @@ async fn on_manifest_event(
             warn!(%peer, %error, "Inbound manifest request failed");
         }
         request_response::Event::ResponseSent { .. } => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Relay reservation
+// ---------------------------------------------------------------------------
+
+/// Pick the first relay candidate with a public address and issue a
+/// `listen_on` for a `/p2p-circuit` address.  The relay client behaviour
+/// turns that into a reservation request; on success it emits
+/// `RelayClient::ReservationReqAccepted` and the swarm starts advertising
+/// the circuit address.
+fn try_relay_reservation(
+    swarm: &mut libp2p::Swarm<RucioBehaviour>,
+    candidates: &[(PeerId, Vec<Multiaddr>)],
+    reserved: &mut bool,
+) {
+    if *reserved {
+        return;
+    }
+    for (relay_peer, addrs) in candidates {
+        if let Some(relay_addr) = addrs.iter().find(|a| !addr_is_private_or_loopback(a)) {
+            let circuit_addr = relay_addr
+                .clone()
+                .with(Protocol::P2p(*relay_peer))
+                .with(Protocol::P2pCircuit);
+            match swarm.listen_on(circuit_addr.clone()) {
+                Ok(_) => {
+                    info!(%circuit_addr, "Relay reservation initiated (LowId node)");
+                    *reserved = true;
+                    return;
+                }
+                Err(e) => warn!(%circuit_addr, "Failed to initiate relay reservation: {e}"),
+            }
+        }
     }
 }
 
