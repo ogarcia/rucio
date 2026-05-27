@@ -334,11 +334,16 @@ async fn run_task(
                             continue;
                         }
                         let target = kad_id_from_hash(hash.as_bytes());
-                        let deadline = Instant::now() + cfg.search_timeout;
                         let initial_candidates: Vec<_> = {
                             let rt = routing_table.read().await;
                             rt.closest_to(&target, cfg.alpha)
                         };
+                        if initial_candidates.is_empty() {
+                            debug!(%target, "Kad2 not bootstrapped, cannot search for sources");
+                            let _ = reply.send(vec![]);
+                            continue;
+                        }
+                        let deadline = Instant::now() + cfg.search_timeout;
                         let (search, pkts) = ActiveSearch::new_source_search(
                             target, file_size, deadline, cfg.max_sources,
                             &initial_candidates, cfg.alpha, reply,
@@ -354,11 +359,16 @@ async fn run_task(
                             continue;
                         }
                         let target = packet::keyword_target(&keyword);
-                        let deadline = Instant::now() + cfg.search_timeout;
                         let initial_candidates: Vec<_> = {
                             let rt = routing_table.read().await;
                             rt.closest_to(&target, cfg.alpha)
                         };
+                        if initial_candidates.is_empty() {
+                            debug!(keyword, "Kad2 not bootstrapped, skipping keyword search");
+                            let _ = reply.send(vec![]);
+                            continue;
+                        }
+                        let deadline = Instant::now() + cfg.search_timeout;
                         let (search, pkts) = ActiveSearch::new_keyword_search(
                             target, deadline, 50,
                             &initial_candidates, cfg.alpha, reply,

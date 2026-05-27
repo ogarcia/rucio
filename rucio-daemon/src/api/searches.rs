@@ -17,7 +17,7 @@ use rucio_core::api::searches::{
 };
 use rucio_core::protocol::search::SearchQuery;
 
-use crate::api::{AppState, InternalSource, SearchRecord};
+use crate::api::{AppState, InternalSource, MAX_SEARCHES, SearchRecord, SearchRegistry};
 use crate::node::messages::NodeCmd;
 
 // ---------------------------------------------------------------------------
@@ -249,6 +249,13 @@ async fn start_search_internal(state: &AppState, keywords: Vec<String>) -> Resul
             id,
             keywords: keywords.clone(),
             cancelled: false,
+            // When emule-compat is not compiled there is no Kad2 search,
+            // so mark kad2_done immediately so the search closes after the
+            // shorter Gossipsub window (GOSSIP_WINDOW_SECS) rather than
+            // waiting the full KAD2_TIMEOUT_SECS.
+            #[cfg(not(feature = "emule-compat"))]
+            kad2_done: true,
+            #[cfg(feature = "emule-compat")]
             kad2_done: false,
             results: Vec::new(),
             started_at: std::time::Instant::now(),
@@ -256,6 +263,12 @@ async fn start_search_internal(state: &AppState, keywords: Vec<String>) -> Resul
         };
         reg.records.insert(id, record);
         reg.gossip_to_id.insert(gossip_query_id, id);
+
+        // Auto-purge oldest finished searches if the registry is full.
+        if reg.records.len() > MAX_SEARCHES {
+            purge_old_searches(&mut reg);
+        }
+
         id
     };
 
@@ -271,6 +284,28 @@ async fn start_search_internal(state: &AppState, keywords: Vec<String>) -> Resul
     spawn_kad2_search(state, search_id, keywords);
 
     Ok(search_id)
+}
+
+/// Remove the oldest Done or Cancelled search records until the registry is
+/// at or below `MAX_SEARCHES`.  Running searches are never removed.
+fn purge_old_searches(reg: &mut SearchRegistry) {
+    // Collect IDs of purgeable searches, sorted oldest first (lowest ID).
+    let mut purgeable: Vec<u64> = reg
+        .records
+        .values()
+        .filter(|r| !matches!(r.effective_state(), SearchState::Running))
+        .map(|r| r.id)
+        .collect();
+    purgeable.sort_unstable();
+
+    for id in purgeable {
+        if reg.records.len() <= MAX_SEARCHES {
+            break;
+        }
+        if let Some(record) = reg.records.remove(&id) {
+            reg.gossip_to_id.remove(&record.gossip_query_id);
+        }
+    }
 }
 
 /// Spawn a background Kad2 keyword search task.

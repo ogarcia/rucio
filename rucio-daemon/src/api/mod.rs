@@ -147,6 +147,9 @@ struct ApiDoc;
 
 pub const GOSSIP_WINDOW_SECS: u64 = 30;
 pub const KAD2_TIMEOUT_SECS: u64 = 60;
+/// Maximum number of search records kept in memory. Oldest Done/Cancelled
+/// records are purged when this limit is exceeded.
+pub const MAX_SEARCHES: usize = 100;
 
 /// Internal (non-serialised) representation of a single search result.
 pub struct InternalResult {
