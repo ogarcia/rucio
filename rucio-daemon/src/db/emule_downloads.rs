@@ -124,7 +124,7 @@ pub async fn list(db: &Db) -> Result<Vec<EmuleDownloadRow>> {
     let rows = sqlx::query(
         "SELECT id, ed2k_hash, name, total_size, ed2k_link, status,
                 bytes_done, dest_path, error_msg, added_at, updated_at
-         FROM emule_downloads ORDER BY added_at DESC",
+         FROM emule_downloads ORDER BY added_at ASC",
     )
     .fetch_all(db)
     .await?;

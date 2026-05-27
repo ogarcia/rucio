@@ -46,20 +46,25 @@ use crate::transfer::parse_magnet;
     )
 )]
 pub async fn list_downloads(State(state): State<AppState>) -> Json<DownloadsResponse> {
-    let mut downloads: Vec<DownloadResponse> = Vec::new();
+    // Collect (added_at, DownloadResponse) from both sources so we can merge
+    // them into a single chronological list regardless of origin.
+    let mut with_ts: Vec<(i64, DownloadResponse)> = Vec::new();
 
     // libp2p downloads (positive IDs)
     if let Ok(rows) = crate::db::downloads::list(&state.db).await {
         for r in rows {
-            downloads.push(DownloadResponse {
-                id: r.id,
-                root_hash: hex::encode(&r.root_hash),
-                name: Some(r.name),
-                size: Some(r.total_size as u64),
-                bytes_done: r.bytes_done as u64,
-                state: db_status_to_state(&r.status),
-                error: r.error_msg,
-            });
+            with_ts.push((
+                r.added_at,
+                DownloadResponse {
+                    id: r.id,
+                    root_hash: hex::encode(&r.root_hash),
+                    name: Some(r.name),
+                    size: Some(r.total_size as u64),
+                    bytes_done: r.bytes_done as u64,
+                    state: db_status_to_state(&r.status),
+                    error: r.error_msg,
+                },
+            ));
         }
     }
 
@@ -67,19 +72,23 @@ pub async fn list_downloads(State(state): State<AppState>) -> Json<DownloadsResp
     #[cfg(feature = "emule-compat")]
     if let Ok(rows) = crate::db::emule_downloads::list(&state.db).await {
         for r in rows {
-            downloads.push(DownloadResponse {
-                id: -(r.id),
-                root_hash: hex::encode(&r.ed2k_hash),
-                name: Some(r.name),
-                size: Some(r.total_size as u64),
-                bytes_done: r.bytes_done as u64,
-                state: db_status_to_state(&r.status),
-                error: r.error_msg,
-            });
+            with_ts.push((
+                r.added_at,
+                DownloadResponse {
+                    id: -(r.id),
+                    root_hash: hex::encode(&r.ed2k_hash),
+                    name: Some(r.name),
+                    size: Some(r.total_size as u64),
+                    bytes_done: r.bytes_done as u64,
+                    state: db_status_to_state(&r.status),
+                    error: r.error_msg,
+                },
+            ));
         }
     }
 
-    // Sort newest first (libp2p rows already come newest-first; eMule too; merge keeps order)
+    with_ts.sort_by_key(|(ts, _)| *ts);
+    let downloads = with_ts.into_iter().map(|(_, d)| d).collect();
     Json(DownloadsResponse { downloads })
 }
 
