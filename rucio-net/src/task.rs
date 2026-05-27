@@ -372,7 +372,10 @@ async fn on_swarm_event(
                         info!(?qid, "Kademlia bootstrap started");
                         state.kad_bootstrapped = true;
                     }
-                    Err(e) => warn!("Kademlia bootstrap error: {e:?}"),
+                    // NoKnownPeers is expected on the first ConnectionEstablished:
+                    // identify hasn't run yet so the routing table is still empty.
+                    // kad_bootstrapped stays false and we retry on the next connection.
+                    Err(e) => debug!("Kademlia bootstrap deferred: {e} (identify pending)"),
                 }
             }
             let _ = event_tx
