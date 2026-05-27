@@ -45,12 +45,14 @@ fn build_filter(prefix: &str) -> EnvFilter {
     {
         // Apply the level to all rucio crates and as the global default.
         return EnvFilter::new(format!(
-            "{v},rucio_daemon={v},rucio_core={v},rucio_emule={v}"
+            "{v},rucio_bootstrap={v},rucio_daemon={v},rucio_core={v},rucio_emule={v},rucio_net={v}"
         ));
     }
 
-    // 4. Built-in defaults
-    EnvFilter::new("rucio_daemon=info,rucio_core=info,rucio_emule=info")
+    // 4. Built-in defaults: info for all rucio_* crates.
+    EnvFilter::new(
+        "rucio_bootstrap=info,rucio_daemon=info,rucio_core=info,rucio_emule=info,rucio_net=info",
+    )
 }
 
 #[cfg(test)]
