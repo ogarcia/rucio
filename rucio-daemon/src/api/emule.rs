@@ -1,15 +1,12 @@
 //! GET  /api/v1/emule/status
 //! POST /api/v1/emule/bootstrap
-//! GET  /api/v1/emule/search?q=<keyword>
 
 use axum::Json;
-use axum::extract::{Query, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use rucio_core::api::emule::{
     EmuleBootstrapRequest, EmuleBootstrapResponse, EmuleConnectivity, EmuleStatusResponse,
 };
-use serde::{Deserialize, Serialize};
-use utoipa::IntoParams;
 
 use crate::api::AppState;
 
@@ -258,76 +255,6 @@ pub async fn post_emule_bootstrap(
             contacts,
             path: save_path.display().to_string(),
             url,
-        }))
-    }
-}
-
-// ── GET /api/v1/emule/search ──────────────────────────────────────────────────
-
-#[derive(Deserialize, IntoParams)]
-pub struct KadSearchQuery {
-    /// Keyword to search for in the Kad network.
-    q: String,
-}
-
-#[derive(Serialize, utoipa::ToSchema)]
-pub struct KadSearchHit {
-    pub hash: String,
-    pub name: String,
-    pub size: u64,
-}
-
-#[derive(Serialize, utoipa::ToSchema)]
-pub struct KadSearchResponse {
-    pub keyword: String,
-    pub hits: Vec<KadSearchHit>,
-}
-
-/// Kad2 keyword search
-///
-/// Sends a `KADEMLIA2_SEARCH_KEY_REQ` into the Kad network and returns matching
-/// file entries (name, hash, size).  Blocks until the search times out (~60 s).
-#[utoipa::path(
-    get,
-    path = "/api/v1/emule/search",
-    params(KadSearchQuery),
-    responses(
-        (status = 200, description = "Search results.", body = KadSearchResponse),
-        (status = 400, description = "Empty keyword."),
-        (status = 501, description = "emule-compat feature not compiled in.")
-    )
-)]
-pub async fn get_kad_search(
-    State(state): State<AppState>,
-    Query(params): Query<KadSearchQuery>,
-) -> Result<Json<KadSearchResponse>, StatusCode> {
-    #[cfg(not(feature = "emule-compat"))]
-    {
-        let _ = (state, params.q);
-        Err(StatusCode::NOT_IMPLEMENTED)
-    }
-
-    #[cfg(feature = "emule-compat")]
-    {
-        if !state.config.emule.enabled {
-            return Err(StatusCode::SERVICE_UNAVAILABLE);
-        }
-
-        let keyword = params.q.trim().to_string();
-        if keyword.is_empty() {
-            return Err(StatusCode::BAD_REQUEST);
-        }
-        let hits = state.kad_handle.search_keyword(keyword.clone()).await;
-        Ok(Json(KadSearchResponse {
-            keyword,
-            hits: hits
-                .into_iter()
-                .map(|h| KadSearchHit {
-                    hash: hex::encode(h.hash),
-                    name: h.name,
-                    size: h.size,
-                })
-                .collect(),
         }))
     }
 }
