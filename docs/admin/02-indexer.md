@@ -1,0 +1,323 @@
+# DHT indexer
+
+The **DHT indexer** is an optional role built into `rucio-bootstrap` (requires
+the `indexer` build feature, included in the `latest-bootstrap` container image).
+
+When enabled, the node captures every `ADD_PROVIDER` announcement it receives
+from the Kademlia DHT — i.e. every time a peer publishes a file to the network —
+and records the hash and the announcing peer in a local SQLite database.  It
+then contacts the announcing peer to fetch the file's name and size via the
+manifest protocol (**enrichment**), so the search API can match on human-readable
+names rather than raw hashes.
+
+The indexer does not download, store, or serve any file content.
+
+---
+
+## Enabling the indexer
+
+### Via config file
+
+Set `indexer.enabled = true` in `~/.config/rucio-bootstrap/config.toml`:
+
+```toml
+[indexer]
+enabled = true
+```
+
+Restart the node.  On first run the SQLite database is created automatically
+at `~/.local/share/rucio-bootstrap/index.db`.
+
+### Via CLI flag
+
+```sh
+rucio-bootstrap --index
+```
+
+The `--index` flag overrides `indexer.enabled` for that invocation only; the
+config file is not modified.
+
+> **Note:** running `rucio-bootstrap --index` without the `indexer` build
+> feature compiled in will produce an "unrecognised flag" error.  Use the
+> `latest-bootstrap` container image or compile with `--features indexer`.
+
+---
+
+## Configuration
+
+### `[indexer]` section
+
+| Key | Default | Description |
+|---|---|---|
+| `enabled` | `false` | Enable the indexer at startup. Equivalent to `--index`. |
+| `db` | `~/.local/share/rucio-bootstrap/index.db` | SQLite database path. Created automatically. |
+| `api_listen` | `127.0.0.1:8090` | Bind address for the REST search API. Change to `0.0.0.0:8090` to expose it on the network. |
+| `api_token` | *(unset)* | Bearer token protecting the `/api/v1/admin/*` endpoints. **Admin endpoints are disabled when this is unset.** |
+| `retention_days` | `30` | Delete records not refreshed within this many days. 0 = keep forever. |
+| `enrich` | `true` | Contact announcing peers to resolve file name and size. Disable with `false` or `--no-enrich` to index hashes only. |
+| `identity_count` | `0` | Number of **additional** Kademlia identities to spawn. See [Multi-identity](#multi-identity). |
+
+### Full example
+
+```toml
+[node]
+identity = "/var/lib/rucio-bootstrap/identity.key"
+listen   = ["/ip4/0.0.0.0/tcp/4321", "/ip6/::/tcp/4321"]
+
+[indexer]
+enabled        = true
+db             = "/var/lib/rucio-bootstrap/index.db"
+api_listen     = "0.0.0.0:8090"
+api_token      = "change-me"
+retention_days = 30
+enrich         = true
+identity_count = 3
+```
+
+### CLI flags (indexer)
+
+| Flag | Env variable | Overrides |
+|---|---|---|
+| `--index` | — | `indexer.enabled` |
+| `--index-db <PATH>` | `RUCIO_BOOTSTRAP_INDEX_DB` | `indexer.db` |
+| `--api-listen <ADDR>` | `RUCIO_BOOTSTRAP_API_LISTEN` | `indexer.api_listen` |
+| `--api-token <TOKEN>` | `RUCIO_BOOTSTRAP_API_TOKEN` | `indexer.api_token` |
+| `--retention-days <N>` | `RUCIO_BOOTSTRAP_RETENTION_DAYS` | `indexer.retention_days` |
+| `--no-enrich` | — | forces `indexer.enrich = false` |
+| `--identity-count <N>` | `RUCIO_BOOTSTRAP_IDENTITY_COUNT` | `indexer.identity_count` |
+
+---
+
+## REST API
+
+The indexer exposes a REST API when running.  Interactive API documentation
+is available at `http://<api_listen>/api/docs`.
+
+### `GET /health`
+
+Public endpoint.  Returns HTTP 200 with basic status information.
+
+```json
+{
+  "status": "ok",
+  "uptime_secs": 3600
+}
+```
+
+### `GET /api/v1/search`
+
+Public endpoint.  Search the index by hash hex prefix **or** file name
+substring (case-insensitive).  Returns the most recently announced results first.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `q` | string | `""` | Search query. Empty string returns all records. |
+| `limit` | integer | `20` | Maximum results per page. |
+| `offset` | integer | `0` | Pagination offset. |
+
+```sh
+# Search by name
+curl "http://localhost:8090/api/v1/search?q=ubuntu"
+
+# Search by hash prefix
+curl "http://localhost:8090/api/v1/search?q=aabbccdd"
+
+# Paginate
+curl "http://localhost:8090/api/v1/search?q=&limit=50&offset=100"
+```
+
+**Response:**
+
+```json
+[
+  {
+    "hash": "aabbccdd...",
+    "name": "ubuntu-24.04-desktop.iso",
+    "size": 5368709120,
+    "providers": 3,
+    "first_seen": 1716800000,
+    "last_seen": 1716886400
+  }
+]
+```
+
+`name` and `size` are `null` for hashes that have not been enriched yet.
+
+### `GET /api/v1/records`
+
+Public endpoint.  Returns all records in the index (most recent first),
+paginated.  Same parameters and response shape as `/api/v1/search` without
+the `q` filter.
+
+### `GET /api/v1/admin/stats`
+
+**Requires `Authorization: Bearer <token>` header.**  Returns aggregate
+counters over the whole index.
+
+```sh
+curl -H "Authorization: Bearer change-me" \
+     http://localhost:8090/api/v1/admin/stats
+```
+
+```json
+{
+  "total_records": 42150,
+  "distinct_hashes": 18920,
+  "distinct_providers": 3140,
+  "enriched_files": 12080,
+  "oldest": 1714000000,
+  "newest": 1716886400
+}
+```
+
+### `POST /api/v1/admin/prune`
+
+**Requires `Authorization: Bearer <token>` header.**  Immediately deletes
+all records whose `last_seen` timestamp is older than `retention_days` days
+(as configured).  Returns the number of rows deleted.
+
+```sh
+curl -X POST -H "Authorization: Bearer change-me" \
+     http://localhost:8090/api/v1/admin/prune
+```
+
+```json
+{ "deleted": 512 }
+```
+
+> **Note:** pruning also runs automatically once at startup and then once
+> every 24 hours.  The manual endpoint is for on-demand cleanup.
+
+---
+
+## Enrichment
+
+When `enrich = true` (the default), each time a new hash is seen the indexer
+dials the announcing peer and requests its **manifest** — a small metadata
+record containing the file name, total size, and chunk layout.  The name and
+size are stored in the `files` table and returned by the search API.
+
+Enrichment is **best-effort**: if the announcing peer is unreachable or does
+not respond, only the hash and provider are recorded.  The indexer does not
+retry failed enrichments.
+
+To index hashes only (faster, no outgoing connections to peers):
+
+```toml
+[indexer]
+enrich = false
+```
+
+or pass `--no-enrich` at startup.
+
+---
+
+## Multi-identity
+
+In Kademlia, a node only receives `ADD_PROVIDER` announcements for hashes
+that are *close* to its own Peer ID in the 256-bit keyspace.  A single
+identity therefore only indexes a fraction of the network's content.
+
+Setting `identity_count = N` spawns **N additional identities** alongside
+the primary, each with a different Peer ID and therefore a different position
+in the keyspace.  Together they cover a larger fraction of the DHT.
+
+```toml
+[indexer]
+identity_count = 3   # primary + 3 extra = 4 identities total
+```
+
+Each extra identity:
+- Gets its own key file next to the primary: `identity-1.key`, `identity-2.key`, …
+- Listens on an **ephemeral TCP port** (assigned by the OS at startup; no
+  static port needed beyond 4321 for the primary).
+- Bootstraps from the same `node.bootstrap_peers` as the primary.
+- Sends captured provider records to the same shared database.
+
+Key files are generated automatically on first use and reused on subsequent
+restarts, so the extra Peer IDs are stable across restarts.
+
+### Choosing `identity_count`
+
+| Value | Coverage (approximate) | Notes |
+|---|---|---|
+| 0 (default) | 1/N of the DHT (N = total DHT size) | Suitable for small networks |
+| 3 | ~4× more than a single identity | Good starting point for a public indexer |
+| 7 | ~8× | Higher coverage; each identity adds RAM and a Kademlia routing table |
+
+There is no hard limit, but each additional identity consumes a small amount
+of memory (one libp2p swarm per identity).  Values above 15–20 are unlikely
+to be useful in practice.
+
+---
+
+## Container deployment with the indexer
+
+```sh
+podman run -d \
+  --name rucio-bootstrap \
+  --restart unless-stopped \
+  -p 4321:4321 \
+  -p 8090:8090 \
+  -e RUCIO_BOOTSTRAP_API_LISTEN=0.0.0.0:8090 \
+  -e RUCIO_BOOTSTRAP_API_TOKEN=changeme \
+  -v rucio-bootstrap-data:/var/lib/rucio \
+  ghcr.io/YOUR_ORG/rucio:latest-bootstrap \
+  --index
+```
+
+The `--index` flag activates the indexer for this run.  To make it permanent
+instead, set `indexer.enabled = true` in the config file inside the volume
+(no flag needed on the next start).
+
+> Port 8090 is the indexer REST API.  If you only want it accessible from
+> localhost, omit `-p 8090:8090` and use `docker exec` or an SSH tunnel to
+> reach it.
+
+### Systemd with the indexer
+
+Add to the `[Service]` section of the unit file from
+[01 — Bootstrap node](01-bootstrap-node.md):
+
+```ini
+ExecStart=/usr/local/bin/rucio-bootstrap --index
+Environment=RUCIO_BOOTSTRAP_API_LISTEN=127.0.0.1:8090
+Environment=RUCIO_BOOTSTRAP_API_TOKEN=changeme
+Environment=RUCIO_BOOTSTRAP_INDEX_DB=/var/lib/rucio-bootstrap/index.db
+```
+
+Or set the keys in `/etc/rucio-bootstrap/config.toml` and keep the
+`ExecStart` without flags.
+
+---
+
+## Database
+
+The index is stored in a single SQLite file in WAL journal mode.
+
+| Table | Description |
+|---|---|
+| `provider_records` | One row per `(hash, provider)` pair with first/last-seen timestamps |
+| `files` | One row per enriched hash with name and size |
+
+### Manual inspection
+
+```sh
+sqlite3 ~/.local/share/rucio-bootstrap/index.db \
+  "SELECT hash, name, providers, datetime(last_seen,'unixepoch')
+   FROM (
+     SELECT pr.hash, f.name, COUNT(*) AS providers, MAX(pr.last_seen) AS last_seen
+     FROM provider_records pr LEFT JOIN files f ON f.hash = pr.hash
+     GROUP BY pr.hash
+   )
+   ORDER BY last_seen DESC
+   LIMIT 20;"
+```
+
+### Backup
+
+```sh
+# Online backup (safe while the indexer is running)
+sqlite3 ~/.local/share/rucio-bootstrap/index.db \
+  ".backup /path/to/index-backup.db"
+```
