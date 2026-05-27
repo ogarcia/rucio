@@ -58,6 +58,7 @@ async fn test_state() -> (
     let state = AppState {
         db,
         config: Arc::new(Config::default()),
+        config_path: None,
         node_cmd: cmd_tx,
         watcher_cmd: watcher_tx,
         started_at: Instant::now(),

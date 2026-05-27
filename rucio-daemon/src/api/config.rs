@@ -5,15 +5,21 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use rucio_core::api::config::{
-    ApiConfig, ConfigResponse, EmuleConfig, NetworkConfig, NodeConfig, StorageConfig,
+    ApiConfig, ConfigResponse, EmuleConfig, NetworkConfig, NodeConfig, PendingConfig, StorageConfig,
 };
 
 use crate::api::AppState;
+use crate::config::Config;
 
 /// Get configuration
 ///
-/// Returns the daemon's current effective configuration — the values actually in use,
-/// after applying environment variable overrides on top of the config file.
+/// Returns the daemon's current effective configuration.
+///
+/// - Bandwidth limits (`network.upload_limit_kbps`, `network.download_limit_kbps`) reflect
+///   the live values in use — they update immediately when changed via PUT.
+/// - All other fields show the values from startup.
+/// - If any restart-required field was changed on disk since startup, the response includes
+///   a `pending` object with the full on-disk configuration.
 ///
 /// Read-only fields (`identity_path`, `api.listen`) are included for information but
 /// cannot be changed via `PUT /api/v1/config`.
@@ -25,8 +31,43 @@ use crate::api::AppState;
     )
 )]
 pub async fn get_config(State(state): State<AppState>) -> Json<ConfigResponse> {
-    let cfg = &state.config;
-    Json(ConfigResponse {
+    let cfg = &*state.config;
+
+    // Bandwidth limits are live — read them from the throttle, not from the
+    // startup config snapshot, so they reflect any PUT made since startup.
+    let live_upload = state.upload_throttle.rate_kbps();
+    let live_download = state.download_throttle.rate_kbps();
+
+    let mut resp = build_response(cfg, live_upload, live_download);
+
+    // Compare startup config with the current on-disk file.  Any restart-required
+    // field that differs is surfaced as a `pending` object.
+    if let Some(path) = state.config_path.as_deref()
+        && let Ok(disk) = Config::load(Some(path))
+    {
+        let restart_required_changed = disk.node != cfg.node
+            || disk.network.bootstrap_peers != cfg.network.bootstrap_peers
+            || disk.network.max_upload_tasks != cfg.network.max_upload_tasks
+            || disk.storage != cfg.storage
+            || disk.emule != cfg.emule;
+
+        if restart_required_changed {
+            let r = build_response(&disk, disk.network.upload_limit_kbps, disk.network.download_limit_kbps);
+            resp.pending = Some(Box::new(PendingConfig {
+                node: r.node,
+                api: r.api,
+                network: r.network,
+                storage: r.storage,
+                emule: r.emule,
+            }));
+        }
+    }
+
+    Json(resp)
+}
+
+fn build_response(cfg: &Config, upload_limit_kbps: u64, download_limit_kbps: u64) -> ConfigResponse {
+    ConfigResponse {
         node: NodeConfig {
             identity_path: cfg.node.identity_path.to_string_lossy().into_owned(),
             listen_addrs: cfg.node.listen_addrs.clone(),
@@ -36,8 +77,8 @@ pub async fn get_config(State(state): State<AppState>) -> Json<ConfigResponse> {
         },
         network: NetworkConfig {
             bootstrap_peers: cfg.network.bootstrap_peers.clone(),
-            upload_limit_kbps: cfg.network.upload_limit_kbps,
-            download_limit_kbps: cfg.network.download_limit_kbps,
+            upload_limit_kbps,
+            download_limit_kbps,
             max_upload_tasks: cfg.network.max_upload_tasks,
         },
         storage: StorageConfig {
@@ -55,7 +96,8 @@ pub async fn get_config(State(state): State<AppState>) -> Json<ConfigResponse> {
             max_upload_slots: cfg.emule.max_upload_slots,
             max_concurrent_downloads: cfg.emule.max_concurrent_downloads,
         },
-    })
+        pending: None,
+    }
 }
 
 /// Update configuration
@@ -67,7 +109,8 @@ pub async fn get_config(State(state): State<AppState>) -> Json<ConfigResponse> {
 /// - `network.download_limit_kbps` — download bandwidth cap (0 = unlimited).
 ///
 /// **Changes that require a daemon restart**
-/// - `node.listen_addrs`, `network.bootstrap_peers`, `storage.*`, `emule.*`
+/// - `node.listen_addrs`, `network.bootstrap_peers`, `network.max_upload_tasks`,
+///   `storage.*`, `emule.*`
 ///
 /// Read-only fields (`node.identity_path`, `api.listen`) are silently ignored.
 #[utoipa::path(
@@ -93,7 +136,7 @@ pub async fn put_config(
 
     // Build a new Config from the request and persist it.
     // Fields not exposed in the API (e.g. api.token) are preserved from
-    // the running config.
+    // the startup config snapshot.
     let mut new_cfg = (*state.config).clone();
     new_cfg.node.listen_addrs = req.node.listen_addrs;
     new_cfg.network.bootstrap_peers = req.network.bootstrap_peers;

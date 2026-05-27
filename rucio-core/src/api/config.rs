@@ -6,6 +6,26 @@ pub struct ConfigResponse {
     pub network: NetworkConfig,
     pub storage: StorageConfig,
     pub emule: EmuleConfig,
+    /// Present when there are settings saved to disk that require a daemon
+    /// restart to take effect.  Contains the full pending configuration.
+    /// Bandwidth-limit fields in this object show the values on disk, not the
+    /// live throttle values.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub pending: Option<Box<PendingConfig>>,
+}
+
+/// On-disk configuration that is waiting for a daemon restart to take effect.
+///
+/// Returned in `ConfigResponse.pending` when any restart-required field differs
+/// between the running daemon and the current config file.  Identical in
+/// structure to `ConfigResponse` but without a nested `pending` field.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+pub struct PendingConfig {
+    pub node: NodeConfig,
+    pub api: ApiConfig,
+    pub network: NetworkConfig,
+    pub storage: StorageConfig,
+    pub emule: EmuleConfig,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]

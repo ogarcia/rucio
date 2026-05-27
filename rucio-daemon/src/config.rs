@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 /// Full daemon configuration.
 /// All fields have defaults — the user can run without a config file.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct Config {
     #[serde(default)]
     pub node: NodeConfig,
@@ -18,19 +18,19 @@ pub struct Config {
     pub emule: EmuleConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NodeConfig {
     pub identity_path: PathBuf,
     pub listen_addrs: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ApiConfig {
     pub listen: String,
     pub token: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NetworkConfig {
     pub bootstrap_peers: Vec<String>,
     /// Enable UPnP/IGD automatic port mapping.  Default: `true`.
@@ -91,7 +91,7 @@ impl Default for NetworkConfig {
 
 /// eMule / Kad2 compatibility settings.
 /// Only meaningful when the `emule-compat` feature is compiled in.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EmuleConfig {
     /// Enable the eMule / Kad2 subsystem at runtime.
     ///
@@ -207,7 +207,7 @@ impl Default for EmuleConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StorageConfig {
     /// Directory where completed downloads are stored and automatically shared.
     /// This directory is always shared and cannot be removed from the share list.

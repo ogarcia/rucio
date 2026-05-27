@@ -34,6 +34,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     );
 
     let config = Arc::new(config::Config::load(config_path)?);
+    let stored_config_path = config_path.map(|p| p.to_path_buf());
     info!("Starting Rucio daemon v{}", env!("CARGO_PKG_VERSION"));
 
     // --- Storage directories ------------------------------------------------
@@ -323,6 +324,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     let app_state = api::AppState {
         db: db.clone(),
         config: Arc::clone(&config),
+        config_path: stored_config_path,
         node_cmd: handle.cmd_tx.clone(),
         watcher_cmd: watcher.cmd_tx.clone(),
         started_at: Instant::now(),

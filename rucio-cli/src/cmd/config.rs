@@ -31,29 +31,84 @@ fn parse_slots(value: &str) -> Result<usize> {
     }
 }
 
+/// Format a scalar field, appending `→ new  (restart required)` when the
+/// on-disk value differs from the running value.
+fn pending_scalar(current: &str, pending: Option<&str>) -> String {
+    match pending {
+        Some(p) if p != current => format!(
+            "{}  →  {}  {}",
+            color::value(current),
+            color::limited(p),
+            color::limited("(restart required)"),
+        ),
+        _ => color::value(current),
+    }
+}
+
+/// Format a list field.  Shows each current entry on its own line; if the
+/// pending list differs, appends an annotation line below the last entry.
+fn print_list_field(label: &str, pad: usize, current: &[String], pending: Option<&[String]>) {
+    if current.is_empty() {
+        let base = format!("  {label:pad$} = (none)");
+        if let Some(pl) = pending
+            && !pl.is_empty()
+        {
+            println!(
+                "{}  →  {}  {}",
+                base,
+                color::limited(&pl.join(", ")),
+                color::limited("(restart required)"),
+            );
+            return;
+        }
+        println!("{base}");
+    } else {
+        for (i, item) in current.iter().enumerate() {
+            if i == 0 {
+                println!("  {label:pad$} = {}", color::value(item));
+            } else {
+                println!("  {:pad$}   {}", "", color::value(item));
+            }
+        }
+        if let Some(pl) = pending
+            && pl != current
+        {
+            println!(
+                "  {:pad$}   →  {}  {}",
+                "",
+                color::limited(&pl.join(", ")),
+                color::limited("(restart required)"),
+            );
+        }
+    }
+}
+
 pub async fn show(client: &ApiClient) -> Result<()> {
     let cfg = client.get_config().await?;
+    let p = cfg.pending.as_deref();
 
     println!("{}", color::section("[node]"));
     println!(
         "  identity_path = {}",
         color::value(&cfg.node.identity_path)
     );
-    for addr in &cfg.node.listen_addrs {
-        println!("  listen        = {}", color::value(addr));
-    }
+    print_list_field(
+        "listen",
+        13,
+        &cfg.node.listen_addrs,
+        p.map(|p| p.node.listen_addrs.as_slice()),
+    );
 
     println!("\n{}", color::section("[api]"));
     println!("  listen = {}", color::value(&cfg.api.listen));
 
     println!("\n{}", color::section("[network]"));
-    if cfg.network.bootstrap_peers.is_empty() {
-        println!("  bootstrap_peers      = (none)");
-    } else {
-        for peer in &cfg.network.bootstrap_peers {
-            println!("  bootstrap_peers      = {}", color::value(peer));
-        }
-    }
+    print_list_field(
+        "bootstrap_peers",
+        20,
+        &cfg.network.bootstrap_peers,
+        p.map(|p| p.network.bootstrap_peers.as_slice()),
+    );
     let ul = cfg.network.upload_limit_kbps;
     let dl = cfg.network.download_limit_kbps;
     println!(
@@ -74,50 +129,96 @@ pub async fn show(client: &ApiClient) -> Result<()> {
     );
     println!(
         "  max_upload_tasks     = {}",
-        color::value(&cfg.network.max_upload_tasks.to_string())
+        pending_scalar(
+            &cfg.network.max_upload_tasks.to_string(),
+            p.map(|p| p.network.max_upload_tasks.to_string()).as_deref(),
+        )
     );
 
     println!("\n{}", color::section("[storage]"));
     println!(
         "  download_dir  = {}",
-        color::value(&cfg.storage.download_dir)
+        pending_scalar(
+            &cfg.storage.download_dir,
+            p.map(|p| p.storage.download_dir.as_str()),
+        )
     );
-    println!("  temp_dir      = {}", color::value(&cfg.storage.temp_dir));
+    println!(
+        "  temp_dir      = {}",
+        pending_scalar(
+            &cfg.storage.temp_dir,
+            p.map(|p| p.storage.temp_dir.as_str()),
+        )
+    );
     println!(
         "  database_path = {}",
-        color::value(&cfg.storage.database_path)
+        pending_scalar(
+            &cfg.storage.database_path,
+            p.map(|p| p.storage.database_path.as_str()),
+        )
     );
 
     let e = &cfg.emule;
+    let pe = p.map(|p| &p.emule);
     println!("\n{}", color::section("[emule]"));
     println!(
         "  enabled                  = {}",
-        color::value(&e.enabled.to_string())
+        pending_scalar(
+            &e.enabled.to_string(),
+            pe.map(|pe| pe.enabled.to_string()).as_deref(),
+        )
     );
-    println!("  temp_dir                 = {}", color::value(&e.temp_dir));
+    println!(
+        "  temp_dir                 = {}",
+        pending_scalar(&e.temp_dir, pe.map(|pe| pe.temp_dir.as_str()))
+    );
     println!(
         "  udp_port                 = {}",
-        color::value(&e.udp_port.to_string())
+        pending_scalar(
+            &e.udp_port.to_string(),
+            pe.map(|pe| pe.udp_port.to_string()).as_deref(),
+        )
     );
     println!(
         "  tcp_port                 = {}",
-        color::value(&e.tcp_port.to_string())
+        pending_scalar(
+            &e.tcp_port.to_string(),
+            pe.map(|pe| pe.tcp_port.to_string()).as_deref(),
+        )
     );
     println!(
         "  external_ip              = {}",
-        color::value(e.external_ip.as_deref().unwrap_or("(auto)"))
+        pending_scalar(
+            e.external_ip.as_deref().unwrap_or("(auto)"),
+            pe.map(|pe| {
+                pe.external_ip
+                    .as_deref()
+                    .unwrap_or("(auto)")
+                    .to_string()
+            })
+            .as_deref(),
+        )
     );
     println!(
         "  download_slots_per_file  = {}",
-        color::value(&e.download_slots_per_file.to_string())
+        pending_scalar(
+            &e.download_slots_per_file.to_string(),
+            pe.map(|pe| pe.download_slots_per_file.to_string()).as_deref(),
+        )
     );
     println!(
         "  max_upload_slots         = {}",
-        color::value(&e.max_upload_slots.to_string())
+        pending_scalar(
+            &e.max_upload_slots.to_string(),
+            pe.map(|pe| pe.max_upload_slots.to_string()).as_deref(),
+        )
     );
     println!(
         "  max_concurrent_downloads = {}",
-        color::value(&e.max_concurrent_downloads.to_string())
+        pending_scalar(
+            &e.max_concurrent_downloads.to_string(),
+            pe.map(|pe| pe.max_concurrent_downloads.to_string()).as_deref(),
+        )
     );
 
     Ok(())

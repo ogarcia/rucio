@@ -121,6 +121,7 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         rucio_core::api::searches::SearchResult,
         rucio_core::api::searches::SearchDetailResponse,
         rucio_core::api::config::ConfigResponse,
+        rucio_core::api::config::PendingConfig,
         rucio_core::api::config::NodeConfig,
         rucio_core::api::config::ApiConfig,
         rucio_core::api::config::NetworkConfig,
@@ -259,7 +260,12 @@ pub enum DownloadRequest {
 #[derive(Clone)]
 pub struct AppState {
     pub db: Db,
+    /// Snapshot of the configuration at daemon startup.  Live-adjustable fields
+    /// (bandwidth limits) are read from the token buckets instead; this value
+    /// never changes after startup.
     pub config: Arc<Config>,
+    /// Path of the config file on disk, used to detect pending changes in GET.
+    pub config_path: Option<std::path::PathBuf>,
     pub node_cmd: mpsc::Sender<NodeCmd>,
     /// Direct channel to the filesystem watcher service.
     pub watcher_cmd: mpsc::Sender<WatcherCmd>,
