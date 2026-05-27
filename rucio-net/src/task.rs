@@ -22,7 +22,7 @@ use crate::NetConfig;
 
 use super::{
     behaviour::{RucioBehaviour, RucioBehaviourEvent, TOPIC_SEARCH, TOPIC_SEARCH_RESULT},
-    classify::ClassificationState,
+    classify::{ClassificationState, is_stable_external_addr},
     identity,
     messages::{NodeCmd, NodeEvent},
 };
@@ -532,20 +532,28 @@ async fn on_swarm_event(
                         let listen_vec: Vec<Multiaddr> =
                             state.confirmed_addrs.iter().cloned().collect();
 
-                        let _ = event_tx
-                            .send(NodeEvent::ObservedAddr {
-                                addr: observed.clone(),
-                                reported_by: pid,
-                            })
-                            .await;
-
+                        // Always feed the classifier — it needs all observations
+                        // (including ephemeral NAT ports) to determine HighId/LowId.
                         if let Some(new_class) =
                             state
                                 .classifier
-                                .record_observation(observed, pid, &listen_vec)
+                                .record_observation(observed.clone(), pid, &listen_vec)
                         {
                             info!(?new_class, "Node class determined");
                             let _ = event_tx.send(NodeEvent::ClassChanged(new_class)).await;
+                        }
+
+                        // Only surface addresses that are reachable from the internet
+                        // on one of our listen ports. Ephemeral source ports from
+                        // outgoing connections are echoed back by identify but are
+                        // not stable inbound addresses.
+                        if is_stable_external_addr(&observed, &listen_vec) {
+                            let _ = event_tx
+                                .send(NodeEvent::ObservedAddr {
+                                    addr: observed,
+                                    reported_by: pid,
+                                })
+                                .await;
                         }
 
                         // Add the peer's listen addresses to the Kademlia

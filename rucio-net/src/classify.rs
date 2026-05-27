@@ -90,6 +90,18 @@ impl ClassificationState {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Return `true` if `addr` is a publicly reachable address on one of the
+/// node's listen ports.
+///
+/// Used by the network task to decide whether to surface an observed address
+/// as a confirmed external address.  Ephemeral NAT source ports (e.g. the
+/// source port of an outgoing connection as echoed back by `identify`) are
+/// public IPs but on random high ports — this function correctly rejects them.
+pub fn is_stable_external_addr(addr: &Multiaddr, listen_addrs: &[Multiaddr]) -> bool {
+    let listen_ports: Vec<u16> = listen_addrs.iter().filter_map(port_of).collect();
+    is_public_addr(addr) && observed_on_listen_port(addr, &listen_ports)
+}
+
 /// Extract the TCP or UDP port from a multiaddr.
 fn port_of(addr: &Multiaddr) -> Option<u16> {
     for proto in addr.iter() {
@@ -209,6 +221,30 @@ mod tests {
             &listen("/ip4/0.0.0.0/tcp/4321"),
         );
         assert_eq!(result, Some(NodeClass::LowId));
+    }
+
+    #[test]
+    fn is_stable_external_addr_accepts_public_listen_port() {
+        assert!(is_stable_external_addr(
+            &addr("/ip4/1.2.3.4/tcp/4321"),
+            &listen("/ip4/0.0.0.0/tcp/4321"),
+        ));
+    }
+
+    #[test]
+    fn is_stable_external_addr_rejects_ephemeral_port() {
+        assert!(!is_stable_external_addr(
+            &addr("/ip4/1.2.3.4/tcp/51958"),
+            &listen("/ip4/0.0.0.0/tcp/4321"),
+        ));
+    }
+
+    #[test]
+    fn is_stable_external_addr_rejects_private_ip() {
+        assert!(!is_stable_external_addr(
+            &addr("/ip4/192.168.1.10/tcp/4321"),
+            &listen("/ip4/0.0.0.0/tcp/4321"),
+        ));
     }
 
     #[test]
