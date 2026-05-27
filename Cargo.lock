@@ -3536,6 +3536,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "tokio",
+ "toml",
  "tracing",
  "utoipa",
  "utoipa-scalar",
