@@ -5,7 +5,19 @@ members = [
     "rucio-bootstrap",
     "rucio-daemon",
     "rucio-cli",
-    "rucio", "rucio-emule",
+    "rucio",
+    "rucio-emule",
+    "rucio-web",
+]
+# rucio-web compiles to wasm32; exclude it from the default host-target build
+default-members = [
+    "rucio-core",
+    "rucio-net",
+    "rucio-bootstrap",
+    "rucio-daemon",
+    "rucio-cli",
+    "rucio",
+    "rucio-emule",
 ]
 resolver = "2"
 
@@ -96,6 +108,9 @@ owo-colors  = { version = "4.3", features = ["supports-colors"] }
 
 # UPnP / IGD port mapping
 igd-next    = { version = "0.17", features = ["aio_tokio"] }
+
+# web UI embedding
+rust-embed  = "8"
 
 # test utilities
 tempfile = "3"

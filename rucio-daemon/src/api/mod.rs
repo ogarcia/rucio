@@ -11,6 +11,8 @@ pub mod metrics;
 pub mod search;
 pub mod searches;
 pub mod shares;
+#[cfg(feature = "web-ui")]
+mod static_files;
 pub mod status;
 #[cfg(test)]
 mod tests;
@@ -323,12 +325,16 @@ pub struct NodeStatus {
 
 /// Build the full API router.
 pub fn router(state: AppState) -> Router {
-    Router::new()
+    let r = Router::new()
         .route("/api/ws", routing::get(ws::ws_handler))
         .route("/health", routing::get(health::get_health))
         .merge(Scalar::with_url("/api/docs", ApiDoc::openapi()).custom_html(SCALAR_HTML))
-        .nest("/api/v1", v1_router())
-        .with_state(state)
+        .nest("/api/v1", v1_router());
+
+    #[cfg(feature = "web-ui")]
+    let r = r.fallback(static_files::serve);
+
+    r.with_state(state)
 }
 
 fn v1_router() -> Router<AppState> {

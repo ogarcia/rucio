@@ -1,0 +1,17 @@
+[package]
+name        = "rucio-web"
+description = "Rucio web control panel (Leptos CSR, compiled to WASM by trunk)"
+version.workspace    = true
+edition.workspace    = true
+license.workspace    = true
+authors.workspace    = true
+repository.workspace = true
+
+[[bin]]
+name = "rucio-web"
+path = "src/main.rs"
+
+[dependencies]
+leptos   = { version = "0.8", features = ["csr"] }
+gloo-net = { version = "0.6", features = ["http"] }
+serde    = { version = "1", features = ["derive"] }

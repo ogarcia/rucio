@@ -14,12 +14,14 @@ path = "src/main.rs"
 [features]
 default = []
 emule-compat = ["dep:rucio-emule", "dep:reqwest"]
+web-ui       = ["dep:rust-embed"]
 
 [dependencies]
 rucio-core          = { path = "../rucio-core" }
 rucio-net           = { path = "../rucio-net" }
 rucio-emule         = { path = "../rucio-emule", optional = true }
 reqwest             = { version = "0.13", features = ["json"], optional = true }
+rust-embed          = { workspace = true, optional = true }
 tokio               = { workspace = true }
 axum                = { workspace = true }
 sqlx                = { workspace = true }
