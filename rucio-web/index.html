@@ -96,7 +96,8 @@
         }
         .overlay {
             position: fixed; top: 56px; right: 1rem;
-            width: 400px; max-height: calc(100vh - 72px); overflow-y: auto;
+            width: min(400px, calc(100vw - 2rem));
+            max-height: calc(100vh - 72px); overflow-y: auto;
             background: #1a1a2e; border: 1px solid #2d2d4e;
             border-radius: 0.5rem; box-shadow: 0 12px 36px rgba(0,0,0,.6);
             z-index: 201;
@@ -199,7 +200,7 @@
 
         /* ── Wide overlay (info panel) ───────────────────────────────────── */
 
-        .overlay-wide { width: 480px; }
+        .overlay-wide { width: min(480px, calc(100vw - 2rem)); }
 
         /* ── Downloads ───────────────────────────────────────────────────── */
 
