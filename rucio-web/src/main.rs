@@ -75,7 +75,12 @@ fn start_ws_loop(
         let mut backoff_ms = 1_000u64;
 
         loop {
-            ws_connected.set(false);
+            // Guard: only notify subscribers when the value actually changes.
+            // Leptos always marks the signal dirty on set(), even with the
+            // same value, so every iteration would re-render the icon otherwise.
+            if ws_connected.get_untracked() {
+                ws_connected.set(false);
+            }
 
             match WebSocket::open(&ws_url()) {
                 Err(_) => {
@@ -84,11 +89,17 @@ fn start_ws_loop(
                     continue;
                 }
                 Ok(ws) => {
-                    ws_connected.set(true);
+                    // Do NOT set connected here. WebSocket::open() only creates
+                    // the JS object — the TCP handshake hasn't happened yet.
+                    // We flip the icon green only on the first actual message,
+                    // so it never shows green when the server is unreachable.
                     backoff_ms = 1_000;
 
                     let mut stream = ws;
                     while let Some(msg) = stream.next().await {
+                        if !ws_connected.get_untracked() {
+                            ws_connected.set(true);
+                        }
                         if let Ok(Message::Text(text)) = msg {
                             if let Ok(event) = serde_json::from_str::<WsEvent>(&text) {
                                 handle_event(
@@ -103,7 +114,10 @@ fn start_ws_loop(
                         }
                     }
 
-                    ws_connected.set(false);
+                    // Stream ended: server closed the connection or stopped.
+                    if ws_connected.get_untracked() {
+                        ws_connected.set(false);
+                    }
                 }
             }
 
@@ -123,27 +137,36 @@ fn handle_event(
 ) {
     match event {
         WsEvent::DownloadProgress(list) => {
-            // The daemon only streams *active* downloads. Merge them into the
-            // existing list rather than replacing it, so completed / paused /
-            // cancelled rows (which the WS omits) don't disappear.
+            // The daemon only streams *active* downloads. Merge into the existing
+            // list so completed/paused/cancelled rows don't disappear.
             let incoming: HashSet<i64> = list.iter().map(|d| d.id).collect();
 
-            // A download we were tracking as active that is no longer in the
-            // stream finished into a terminal state the WS doesn't report.
+            // Detect a previously-active download that left the stream, which
+            // means it reached a terminal state the WS doesn't report.
             let some_finished = downloads.with_untracked(|cur| {
                 cur.iter()
                     .any(|d| is_streamed_state(&d.state) && !incoming.contains(&d.id))
             });
 
-            downloads.update(|cur| {
+            // Compute the merged list without mutating the signal yet.
+            let new_list = downloads.with_untracked(|cur| {
+                let mut merged = cur.clone();
                 for item in list {
-                    if let Some(slot) = cur.iter_mut().find(|d| d.id == item.id) {
+                    if let Some(slot) = merged.iter_mut().find(|d| d.id == item.id) {
                         *slot = item;
                     } else {
-                        cur.push(item);
+                        merged.push(item);
                     }
                 }
+                merged
             });
+
+            // Only notify the reactive graph when something actually changed.
+            // downloads.update() always marks the signal dirty even with identical
+            // data, causing every Memo in <For> to re-evaluate every WS tick.
+            if downloads.with_untracked(|cur| cur != &new_list) {
+                downloads.set(new_list);
+            }
 
             if some_finished {
                 spawn_local(async move {
