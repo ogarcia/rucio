@@ -51,7 +51,7 @@ config file is not modified.
 |---|---|---|
 | `enabled` | `false` | Enable the indexer at startup. Equivalent to `--index`. |
 | `db` | `~/.local/share/rucio-bootstrap/index.db` | SQLite database path. Created automatically. |
-| `api_listen` | `127.0.0.1:8090` | Bind address for the REST search API. Change to `0.0.0.0:8090` to expose it on the network. |
+| `api_listen` | `127.0.0.1:3003` | Bind address for the REST search API. Change to `0.0.0.0:3003` to expose it on the network. |
 | `api_token` | *(unset)* | Bearer token protecting the `/api/v1/admin/*` endpoints. **Admin endpoints are disabled when this is unset.** |
 | `retention_days` | `30` | Delete records not refreshed within this many days. 0 = keep forever. |
 | `enrich` | `true` | Contact announcing peers to resolve file name and size. Disable with `false` or `--no-enrich` to index hashes only. |
@@ -67,7 +67,7 @@ listen   = ["/ip4/0.0.0.0/tcp/4321", "/ip6/::/tcp/4321"]
 [indexer]
 enabled        = true
 db             = "/var/lib/rucio-bootstrap/index.db"
-api_listen     = "0.0.0.0:8090"
+api_listen     = "0.0.0.0:3003"
 api_token      = "change-me"
 retention_days = 30
 enrich         = true
@@ -117,13 +117,13 @@ substring (case-insensitive).  Returns the most recently announced results first
 
 ```sh
 # Search by name
-curl "http://localhost:8090/api/v1/search?q=ubuntu"
+curl "http://localhost:3003/api/v1/search?q=ubuntu"
 
 # Search by hash prefix
-curl "http://localhost:8090/api/v1/search?q=aabbccdd"
+curl "http://localhost:3003/api/v1/search?q=aabbccdd"
 
 # Paginate
-curl "http://localhost:8090/api/v1/search?q=&limit=50&offset=100"
+curl "http://localhost:3003/api/v1/search?q=&limit=50&offset=100"
 ```
 
 **Response:**
@@ -156,7 +156,7 @@ counters over the whole index.
 
 ```sh
 curl -H "Authorization: Bearer change-me" \
-     http://localhost:8090/api/v1/admin/stats
+     http://localhost:3003/api/v1/admin/stats
 ```
 
 ```json
@@ -178,7 +178,7 @@ all records whose `last_seen` timestamp is older than `retention_days` days
 
 ```sh
 curl -X POST -H "Authorization: Bearer change-me" \
-     http://localhost:8090/api/v1/admin/prune
+     http://localhost:3003/api/v1/admin/prune
 ```
 
 ```json
@@ -258,8 +258,8 @@ podman run -d \
   --name rucio-bootstrap \
   --restart unless-stopped \
   -p 4321:4321 \
-  -p 8090:8090 \
-  -e RUCIO_BOOTSTRAP_API_LISTEN=0.0.0.0:8090 \
+  -p 3003:3003 \
+  -e RUCIO_BOOTSTRAP_API_LISTEN=0.0.0.0:3003 \
   -e RUCIO_BOOTSTRAP_API_TOKEN=changeme \
   -v rucio-bootstrap-data:/var/lib/rucio \
   ghcr.io/YOUR_ORG/rucio:latest-bootstrap \
@@ -270,8 +270,8 @@ The `--index` flag activates the indexer for this run.  To make it permanent
 instead, set `indexer.enabled = true` in the config file inside the volume
 (no flag needed on the next start).
 
-> Port 8090 is the indexer REST API.  If you only want it accessible from
-> localhost, omit `-p 8090:8090` and use `docker exec` or an SSH tunnel to
+> Port 3003 is the indexer REST API.  If you only want it accessible from
+> localhost, omit `-p 3003:3003` and use `docker exec` or an SSH tunnel to
 > reach it.
 
 ### Systemd with the indexer
@@ -281,7 +281,7 @@ Add to the `[Service]` section of the unit file from
 
 ```ini
 ExecStart=/usr/local/bin/rucio-bootstrap --index
-Environment=RUCIO_BOOTSTRAP_API_LISTEN=127.0.0.1:8090
+Environment=RUCIO_BOOTSTRAP_API_LISTEN=127.0.0.1:3003
 Environment=RUCIO_BOOTSTRAP_API_TOKEN=changeme
 Environment=RUCIO_BOOTSTRAP_INDEX_DB=/var/lib/rucio-bootstrap/index.db
 ```

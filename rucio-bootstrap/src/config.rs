@@ -64,7 +64,7 @@ fn default_listen() -> Vec<String> {
 }
 
 fn default_api_listen() -> SocketAddr {
-    "127.0.0.1:8090".parse().expect("hardcoded addr is valid")
+    "127.0.0.1:3003".parse().expect("hardcoded addr is valid")
 }
 
 fn default_retention_days() -> i64 {
@@ -205,7 +205,7 @@ enabled = false
 db = "{db}"
 
 # REST API bind address (env: RUCIO_BOOTSTRAP_API_LISTEN).
-api_listen = "127.0.0.1:8090"
+api_listen = "127.0.0.1:3003"
 
 # Bearer token for /api/v1/admin/* endpoints. Unset = admin disabled.
 # api_token = "change-me"

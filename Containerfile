@@ -45,7 +45,7 @@
 #                              Must be mapped on the host: -p 4672:4672/udp
 #   RUCIO_BOOTSTRAP_CONFIG     Path to the bootstrap config file — optional, defaults to
 #                              /var/lib/rucio/.config/rucio-bootstrap/config.toml
-#   RUCIO_BOOTSTRAP_API_LISTEN Indexer REST API bind address (default: 127.0.0.1:8090)
+#   RUCIO_BOOTSTRAP_API_LISTEN Indexer REST API bind address (default: 0.0.0.0:3003)
 #   RUCIO_BOOTSTRAP_LOG        Log filter for rucio-bootstrap (default: info)
 
 # ── Stage 1a: compile from source (default local path) ──────────────────────
@@ -121,7 +121,10 @@ COPY --from=bins /usr/bin/ruciod /usr/bin/ruciod
 USER rucio
 WORKDIR /var/lib/rucio
 
+ENV RUCIOD_API_LISTEN=0.0.0.0:3003
+
 EXPOSE 4321/tcp
+EXPOSE 3003/tcp
 # Kad2 UDP port for eMule network (emule-compat builds).
 # Map with: -p 4672:4672/udp
 EXPOSE 4672/udp
@@ -142,6 +145,8 @@ COPY --from=bins /usr/bin/ruciod-web /usr/bin/ruciod
 
 USER rucio
 WORKDIR /var/lib/rucio
+
+ENV RUCIOD_API_LISTEN=0.0.0.0:3003
 
 EXPOSE 4321/tcp
 # REST API and web control panel — http://<host>:3003/
@@ -168,6 +173,8 @@ RUN ln -s /usr/bin/rucio /usr/bin/ruciod
 USER rucio
 WORKDIR /var/lib/rucio
 
+ENV RUCIOD_API_LISTEN=0.0.0.0:3003
+
 EXPOSE 4321/tcp
 # REST API and web control panel — http://<host>:3003/
 EXPOSE 3003/tcp
@@ -192,10 +199,12 @@ COPY --from=bins /usr/bin/rucio-bootstrap /usr/bin/rucio-bootstrap
 USER rucio
 WORKDIR /var/lib/rucio
 
+ENV RUCIO_BOOTSTRAP_API_LISTEN=0.0.0.0:3003
+
 # DHT port (primary Kademlia identity).
 EXPOSE 4321/tcp
 # Indexer REST API (active when indexer.enabled = true in the config).
-# Map with: -p 8090:8090/tcp
-EXPOSE 8090/tcp
+# Map with: -p 3003:3003/tcp
+EXPOSE 3003/tcp
 
 ENTRYPOINT ["/usr/bin/rucio-bootstrap"]
