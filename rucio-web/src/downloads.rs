@@ -58,7 +58,15 @@ pub async fn refresh_downloads(downloads: RwSignal<Vec<DownloadResponse>>) {
         .await
     {
         if let Ok(body) = resp.json::<crate::types::DownloadsResponse>().await {
-            downloads.set(body.downloads);
+            // Defensive dedupe by id so the list never carries duplicate keys
+            // into <For>. Avoid spurious notifications when the payload is
+            // identical to the current state.
+            let mut list = body.downloads;
+            let mut seen = std::collections::HashSet::new();
+            list.retain(|d| seen.insert(d.id));
+            if downloads.with_untracked(|cur| cur != &list) {
+                downloads.set(list);
+            }
         }
     }
 }

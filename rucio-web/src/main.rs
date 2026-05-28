@@ -165,12 +165,22 @@ fn handle_event(
             });
 
             // Compute the merged list without mutating the signal yet.
+            // The merge dedupes both cur and incoming by id so <For> never sees
+            // duplicate keys — keys repeated across re-renders make Leptos mount
+            // two rows with the same id, which appeared as a row "ghosting" at
+            // the bottom of the list on every progress tick.
             let new_list = downloads.with_untracked(|cur| {
-                let mut merged = cur.clone();
+                let mut merged: Vec<DownloadResponse> = Vec::with_capacity(cur.len() + list.len());
+                let mut seen: HashSet<i64> = HashSet::new();
+                for d in cur {
+                    if seen.insert(d.id) {
+                        merged.push(d.clone());
+                    }
+                }
                 for item in list {
                     if let Some(slot) = merged.iter_mut().find(|d| d.id == item.id) {
                         *slot = item;
-                    } else {
+                    } else if seen.insert(item.id) {
                         merged.push(item);
                     }
                 }
