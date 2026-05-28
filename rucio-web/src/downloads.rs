@@ -161,12 +161,17 @@ pub fn DownloadsTab(downloads: RwSignal<Vec<DownloadResponse>>) -> impl IntoView
             // ── Toolbar ───────────────────────────────────────────────────
             <div class="tab-toolbar">
             <div class="dl-toolbar">
-                <button class="toolbar-btn" on:click=move |_| add_open.set(true)>
+                <button
+                    class="toolbar-btn"
+                    title="Add downloads"
+                    on:click=move |_| add_open.set(true)
+                >
                     <Icon paths=icons::PLUS/>
                     <span class="btn-label">"Add"</span>
                 </button>
                 <button
                     class="toolbar-btn"
+                    title="Show download details"
                     disabled=move || !can_info()
                     on:click=move |_| {
                         if let Some(id) = selected_id.get() {
@@ -183,6 +188,7 @@ pub fn DownloadsTab(downloads: RwSignal<Vec<DownloadResponse>>) -> impl IntoView
                 </button>
                 <button
                     class="toolbar-btn"
+                    title=move || if is_paused() { "Resume download" } else { "Pause download" }
                     disabled=move || !can_pause_toggle()
                     on:click=move |_| {
                         if let Some(d) = selected_dl() {
@@ -208,6 +214,7 @@ pub fn DownloadsTab(downloads: RwSignal<Vec<DownloadResponse>>) -> impl IntoView
                 </button>
                 <button
                     class="toolbar-btn toolbar-btn-danger"
+                    title="Cancel download"
                     disabled=move || !can_cancel()
                     on:click=move |_| {
                         if let Some(id) = selected_id.get() {
@@ -224,6 +231,7 @@ pub fn DownloadsTab(downloads: RwSignal<Vec<DownloadResponse>>) -> impl IntoView
                 </button>
                 <button
                     class="toolbar-btn"
+                    title="Remove from history"
                     disabled=move || !can_remove()
                     on:click=move |_| {
                         if let Some(id) = selected_id.get() {
