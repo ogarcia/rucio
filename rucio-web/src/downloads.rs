@@ -257,23 +257,20 @@ pub fn DownloadsTab(downloads: RwSignal<Vec<DownloadResponse>>) -> impl IntoView
                 >
                     <ul class="dl-list">
                         // Iterate IDs only so <For> never sees key changes on progress
-                        // updates. Each row gets a Memo that only fires when *its* data
-                        // changes (PartialEq on DownloadResponse), keeping all other
-                        // rows completely stable.
+                        // updates. DownloadRow reads the row's fields reactively
+                        // so progress updates patch text/style nodes in place
+                        // instead of re-instantiating the whole row.
                         <For
                             each=move || {
                                 downloads.with(|v| v.iter().map(|d| d.id).collect::<Vec<i64>>())
                             }
                             key=|id| *id
-                            children=move |id| {
-                                let dl = Memo::new(move |_| {
-                                    downloads.with(|v| v.iter().find(|d| d.id == id).cloned())
-                                });
-                                view! {
-                                    {move || dl.get().map(|d| view! {
-                                        <DownloadRow dl=d selected_id=selected_id/>
-                                    })}
-                                }
+                            children=move |id| view! {
+                                <DownloadRow
+                                    id=id
+                                    downloads=downloads
+                                    selected_id=selected_id
+                                />
                             }
                         />
                     </ul>
@@ -301,34 +298,78 @@ pub fn DownloadsTab(downloads: RwSignal<Vec<DownloadResponse>>) -> impl IntoView
 
 // ── Download row ──────────────────────────────────────────────────────────────
 
-#[component]
-fn DownloadRow(dl: DownloadResponse, selected_id: RwSignal<Option<i64>>) -> impl IntoView {
-    let id = dl.id;
-    let name = dl
-        .name
-        .clone()
-        .unwrap_or_else(|| format!("{}…", &dl.root_hash[..16]));
-
-    let pct = dl.size.map(|total| {
+/// Compute the progress percentage [0, 100] for a download, or None when the
+/// total size is unknown.
+fn pct_for(dl: &DownloadResponse) -> Option<f64> {
+    dl.size.map(|total| {
         if total == 0 {
             0.0_f64
         } else {
             (dl.bytes_done as f64 / total as f64 * 100.0).min(100.0)
         }
-    });
+    })
+}
 
-    let size_label = match (dl.size, pct) {
-        (Some(total), Some(p)) if p < 100.0 => format!(
-            "{} / {} — {:.1}%",
-            format_size(dl.bytes_done),
-            format_size(total),
-            p
-        ),
-        (Some(total), _) => format_size(total),
-        _ => format_size(dl.bytes_done),
+#[component]
+fn DownloadRow(
+    id: i64,
+    downloads: RwSignal<Vec<DownloadResponse>>,
+    selected_id: RwSignal<Option<i64>>,
+) -> impl IntoView {
+    // One memo per row backed by PartialEq, so closures below only re-run when
+    // *this* row's data actually changes — not on every WS tick for the list.
+    let dl = Memo::new(move |_| downloads.with(|v| v.iter().find(|d| d.id == id).cloned()));
+
+    let name = move || {
+        dl.with(|opt| {
+            opt.as_ref()
+                .map(|d| {
+                    d.name
+                        .clone()
+                        .unwrap_or_else(|| format!("{}…", &d.root_hash[..16]))
+                })
+                .unwrap_or_default()
+        })
     };
 
-    let terminal = is_terminal(&dl.state);
+    let size_label = move || {
+        dl.with(|opt| {
+            opt.as_ref()
+                .map(|d| {
+                    let p = pct_for(d);
+                    match (d.size, p) {
+                        (Some(total), Some(p)) if p < 100.0 => format!(
+                            "{} / {} — {:.1}%",
+                            format_size(d.bytes_done),
+                            format_size(total),
+                            p
+                        ),
+                        (Some(total), _) => format_size(total),
+                        _ => format_size(d.bytes_done),
+                    }
+                })
+                .unwrap_or_default()
+        })
+    };
+
+    let show_bar = move || {
+        dl.with(|opt| {
+            opt.as_ref()
+                .map(|d| !is_terminal(&d.state) && pct_for(d).is_some())
+                .unwrap_or(false)
+        })
+    };
+    let bar_width = move || {
+        let p = dl.with(|opt| opt.as_ref().and_then(pct_for).unwrap_or(0.0));
+        format!("width:{p:.1}%")
+    };
+
+    let state_class =
+        move || dl.with(|opt| opt.as_ref().map(|d| state_css(&d.state)).unwrap_or(""));
+    let state_text =
+        move || dl.with(|opt| opt.as_ref().map(|d| state_label(&d.state)).unwrap_or(""));
+    let has_error = move || dl.with(|opt| opt.as_ref().map(|d| d.error.is_some()).unwrap_or(false));
+    let error_text = move || dl.with(|opt| opt.as_ref().and_then(|d| d.error.clone()));
 
     view! {
         <li
@@ -348,15 +389,17 @@ fn DownloadRow(dl: DownloadResponse, selected_id: RwSignal<Option<i64>>) -> impl
                 <span class="dl-size">{size_label}</span>
             </div>
 
-            {pct.filter(|_| !terminal).map(|p| view! {
+            <Show when=show_bar fallback=|| ()>
                 <div class="dl-bar-track">
-                    <div class="dl-bar-fill" style=format!("width:{p:.1}%")/>
+                    <div class="dl-bar-fill" style=bar_width/>
                 </div>
-            })}
+            </Show>
 
             <div class="dl-bottom">
-                <span class=state_css(&dl.state)>{state_label(&dl.state)}</span>
-                {dl.error.map(|e| view! { <span class="dl-error">{e}</span> })}
+                <span class=state_class>{state_text}</span>
+                <Show when=has_error fallback=|| ()>
+                    <span class="dl-error">{error_text}</span>
+                </Show>
             </div>
         </li>
     }

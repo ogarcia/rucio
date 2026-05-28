@@ -4,6 +4,7 @@ mod overlays;
 mod searches;
 mod types;
 
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::time::Duration;
 
@@ -32,6 +33,18 @@ fn is_streamed_state(s: &DownloadState) -> bool {
             | DownloadState::Downloading
             | DownloadState::Stalled
     )
+}
+
+// Throttling for the post-WS refresh that catches terminal transitions the
+// stream doesn't carry. WASM is single-threaded so a plain Cell/RefCell is fine.
+//
+// REFRESH_IN_FLIGHT prevents stacking refreshes when the GET round-trip outlasts
+// the 1 s WS tick.  REFRESHED_IDS keeps a per-id "already refreshed" mark so a
+// single download cannot trigger the refresh more than once: by the time a
+// refreshed id matters again it would already be in a non-streamed state.
+thread_local! {
+    static REFRESH_IN_FLIGHT: Cell<bool> = const { Cell::new(false) };
+    static REFRESHED_IDS: RefCell<HashSet<i64>> = RefCell::new(HashSet::new());
 }
 
 // ── Tab / Panel enums ─────────────────────────────────────────────────────────
@@ -141,11 +154,14 @@ fn handle_event(
             // list so completed/paused/cancelled rows don't disappear.
             let incoming: HashSet<i64> = list.iter().map(|d| d.id).collect();
 
-            // Detect a previously-active download that left the stream, which
-            // means it reached a terminal state the WS doesn't report.
-            let some_finished = downloads.with_untracked(|cur| {
+            // Find downloads we still track as active but the stream omitted,
+            // skipping any id we've already refreshed once.
+            let missing: Vec<i64> = downloads.with_untracked(|cur| {
                 cur.iter()
-                    .any(|d| is_streamed_state(&d.state) && !incoming.contains(&d.id))
+                    .filter(|d| is_streamed_state(&d.state) && !incoming.contains(&d.id))
+                    .map(|d| d.id)
+                    .filter(|id| REFRESHED_IDS.with(|s| !s.borrow().contains(id)))
+                    .collect()
             });
 
             // Compute the merged list without mutating the signal yet.
@@ -168,9 +184,16 @@ fn handle_event(
                 downloads.set(new_list);
             }
 
-            if some_finished {
+            // Refresh once per "lost" download, never more than one GET in flight.
+            // Without these guards, a slow REST round-trip causes the next WS
+            // tick to spawn another refresh while the previous is still pending,
+            // and refreshes pile up indefinitely.
+            if !missing.is_empty() && !REFRESH_IN_FLIGHT.with(|f| f.get()) {
+                REFRESH_IN_FLIGHT.with(|f| f.set(true));
+                REFRESHED_IDS.with(|s| s.borrow_mut().extend(missing));
                 spawn_local(async move {
                     refresh_downloads(downloads).await;
+                    REFRESH_IN_FLIGHT.with(|f| f.set(false));
                 });
             }
         }
