@@ -1,8 +1,25 @@
+mod downloads;
+mod overlays;
+mod searches;
+mod types;
+
+use std::time::Duration;
+
+use futures_util::StreamExt;
+use gloo_net::websocket::{Message, futures::WebSocket};
+use gloo_timers::future::sleep;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use serde::Deserialize;
 
-// ── Types ────────────────────────────────────────────────────────────────────
+use downloads::{DownloadsTab, refresh_downloads};
+use overlays::{AddressesPanel, NodeStatusPanel};
+use searches::SearchesTab;
+use types::{
+    DownloadResponse, ResultSource, SearchResult, SearchState, StatusResponse, WsEvent,
+    WsSearchResult,
+};
+
+// ── Tab / Panel enums ─────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, PartialEq)]
 enum Tab {
@@ -11,183 +28,176 @@ enum Tab {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum Panel {
+pub enum Panel {
     NodeStatus,
     Addresses,
 }
 
-#[derive(Deserialize, Clone, Debug)]
-struct StatusResponse {
-    peer_id: String,
-    class: String,
-    connected_peers: usize,
-    listen_addrs: Vec<String>,
-    observed_addrs: Vec<String>,
-    uptime_secs: u64,
-    version: String,
-    #[serde(default)]
-    external_ip: Option<String>,
+// ── WebSocket ────────────────────────────────────────────────────────────────
+
+fn ws_url() -> String {
+    let window = web_sys::window().expect("no window");
+    let location = window.location();
+    let proto = location.protocol().unwrap_or_default();
+    let host = location.host().unwrap_or_default();
+    let ws_proto = if proto.starts_with("https") {
+        "wss"
+    } else {
+        "ws"
+    };
+    format!("{ws_proto}://{host}/api/ws")
 }
 
-// ── API ──────────────────────────────────────────────────────────────────────
+fn start_ws_loop(
+    ws_connected: RwSignal<bool>,
+    downloads: RwSignal<Vec<DownloadResponse>>,
+    status: RwSignal<Option<StatusResponse>>,
+    search_results: RwSignal<Vec<SearchResult>>,
+    search_id: RwSignal<Option<u64>>,
+    searching: RwSignal<bool>,
+) {
+    spawn_local(async move {
+        let mut backoff_ms = 1_000u64;
 
-async fn fetch_status() -> Result<StatusResponse, String> {
-    gloo_net::http::Request::get("/api/v1/status")
-        .send()
-        .await
-        .map_err(|e| e.to_string())?
-        .json::<StatusResponse>()
-        .await
-        .map_err(|e| e.to_string())
-}
+        loop {
+            ws_connected.set(false);
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+            match WebSocket::open(&ws_url()) {
+                Err(_) => {
+                    sleep(Duration::from_millis(backoff_ms)).await;
+                    backoff_ms = (backoff_ms * 2).min(30_000);
+                    continue;
+                }
+                Ok(ws) => {
+                    ws_connected.set(true);
+                    backoff_ms = 1_000;
 
-fn format_uptime(secs: u64) -> String {
-    let h = secs / 3600;
-    let m = (secs % 3600) / 60;
-    let s = secs % 60;
-    format!("{h:02}:{m:02}:{s:02}")
-}
-
-fn class_badge(class: &str) -> (&'static str, &'static str) {
-    match class {
-        "HighId" => ("HighID", "badge badge-high"),
-        "LowId" => ("LowID", "badge badge-low"),
-        _ => ("Unknown", "badge badge-unknown"),
-    }
-}
-
-// ── Overlay: Node status ─────────────────────────────────────────────────────
-
-#[component]
-fn NodeStatusPanel(
-    status: RwSignal<Option<Result<StatusResponse, String>>>,
-    active_panel: RwSignal<Option<Panel>>,
-) -> impl IntoView {
-    let close = move || active_panel.set(None);
-
-    view! {
-        <div class="overlay-backdrop" on:click=move |_| close()>
-            <div class="overlay" on:click=move |e| e.stop_propagation()>
-                <div class="overlay-header">
-                    <span class="overlay-title">"Node status"</span>
-                    <button class="overlay-close" on:click=move |_| close()>"✕"</button>
-                </div>
-                <div class="overlay-body">
-                    {move || match status.get() {
-                        None => view! { <p class="loading">"Loading..."</p> }.into_any(),
-                        Some(Err(e)) => view! { <p class="error-msg">{e}</p> }.into_any(),
-                        Some(Ok(s)) => {
-                            let (label, css) = class_badge(&s.class);
-                            let uptime = format_uptime(s.uptime_secs);
-                            view! {
-                                <dl class="panel-dl">
-                                    <dt>"Version"</dt>
-                                    <dd>{s.version}</dd>
-                                    <dt>"Class"</dt>
-                                    <dd><span class=css>{label}</span></dd>
-                                    <dt>"Peer ID"</dt>
-                                    <dd class="mono">{s.peer_id}</dd>
-                                    <dt>"Peers"</dt>
-                                    <dd>{s.connected_peers.to_string()}</dd>
-                                    <dt>"Uptime"</dt>
-                                    <dd>{uptime}</dd>
-                                    {s.external_ip.map(|ip| view! {
-                                        <dt>"External IP"</dt>
-                                        <dd class="mono">{ip}</dd>
-                                    })}
-                                </dl>
-                            }.into_any()
+                    let mut stream = ws;
+                    while let Some(msg) = stream.next().await {
+                        if let Ok(Message::Text(text)) = msg {
+                            if let Ok(event) = serde_json::from_str::<WsEvent>(&text) {
+                                handle_event(
+                                    event,
+                                    downloads,
+                                    status,
+                                    search_results,
+                                    search_id,
+                                    searching,
+                                );
+                            }
                         }
-                    }}
-                </div>
-            </div>
-        </div>
+                    }
+
+                    ws_connected.set(false);
+                }
+            }
+
+            sleep(Duration::from_millis(backoff_ms)).await;
+            backoff_ms = (backoff_ms * 2).min(30_000);
+        }
+    });
+}
+
+fn handle_event(
+    event: WsEvent,
+    downloads: RwSignal<Vec<DownloadResponse>>,
+    status: RwSignal<Option<StatusResponse>>,
+    search_results: RwSignal<Vec<SearchResult>>,
+    search_id: RwSignal<Option<u64>>,
+    searching: RwSignal<bool>,
+) {
+    match event {
+        WsEvent::DownloadProgress(list) => {
+            downloads.set(list);
+        }
+
+        WsEvent::SearchResult(r) => {
+            // Only accumulate if a search is active.
+            if searching.get() {
+                let result = ws_result_to_search_result(r);
+                search_results.update(|v| {
+                    // Deduplicate by root_hash.
+                    let hash = result.download_link.clone().unwrap_or_default();
+                    if !v.iter().any(|x| x.download_link.as_deref() == Some(&hash)) {
+                        v.push(result);
+                    }
+                });
+            }
+        }
+
+        WsEvent::NodeClassChanged { class } => {
+            status.update(|s| {
+                if let Some(s) = s {
+                    s.class = class;
+                }
+            });
+        }
+
+        WsEvent::PeerConnected { .. } => {
+            status.update(|s| {
+                if let Some(s) = s {
+                    s.connected_peers += 1;
+                }
+            });
+        }
+
+        WsEvent::PeerDisconnected { .. } => {
+            status.update(|s| {
+                if let Some(s) = s {
+                    s.connected_peers = s.connected_peers.saturating_sub(1);
+                }
+            });
+        }
+
+        WsEvent::IndexingCount { .. } => {}
     }
 }
 
-// ── Overlay: Addresses ───────────────────────────────────────────────────────
-
-#[component]
-fn AddressesPanel(
-    status: RwSignal<Option<Result<StatusResponse, String>>>,
-    active_panel: RwSignal<Option<Panel>>,
-) -> impl IntoView {
-    let close = move || active_panel.set(None);
-
-    view! {
-        <div class="overlay-backdrop" on:click=move |_| close()>
-            <div class="overlay" on:click=move |e| e.stop_propagation()>
-                <div class="overlay-header">
-                    <span class="overlay-title">"Addresses"</span>
-                    <button class="overlay-close" on:click=move |_| close()>"✕"</button>
-                </div>
-                <div class="overlay-body">
-                    {move || match status.get() {
-                        None => view! { <p class="loading">"Loading..."</p> }.into_any(),
-                        Some(Err(e)) => view! { <p class="error-msg">{e}</p> }.into_any(),
-                        Some(Ok(s)) => view! {
-                            <p class="section-label">"Listen"</p>
-                            <ul class="addr-list">
-                                {s.listen_addrs.into_iter()
-                                    .map(|a| view! { <li>{a}</li> })
-                                    .collect_view()}
-                            </ul>
-                            <p class="section-label">"Observed"</p>
-                            <ul class="addr-list">
-                                {if s.observed_addrs.is_empty() {
-                                    view! { <li class="muted">"None yet"</li> }.into_any()
-                                } else {
-                                    s.observed_addrs.into_iter()
-                                        .map(|a| view! { <li>{a}</li> })
-                                        .collect_view()
-                                        .into_any()
-                                }}
-                            </ul>
-                        }.into_any()
-                    }}
-                </div>
-            </div>
-        </div>
+fn ws_result_to_search_result(r: WsSearchResult) -> SearchResult {
+    SearchResult {
+        result_id: 0,
+        name: r.name,
+        size: r.size,
+        source: ResultSource::Rucio,
+        download_link: Some(r.magnet),
+        provider: Some(r.provider),
     }
 }
 
-// ── Tab placeholders ─────────────────────────────────────────────────────────
-
-#[component]
-fn DownloadsTab() -> impl IntoView {
-    view! {
-        <div class="empty-state">
-            <p>"No active downloads"</p>
-        </div>
-    }
-}
-
-#[component]
-fn SearchesTab() -> impl IntoView {
-    view! {
-        <div class="empty-state">
-            <p>"No recent searches"</p>
-        </div>
-    }
-}
-
-// ── App ──────────────────────────────────────────────────────────────────────
+// ── App ───────────────────────────────────────────────────────────────────────
 
 #[component]
 fn App() -> impl IntoView {
     let active_tab: RwSignal<Tab> = RwSignal::new(Tab::Downloads);
     let menu_open: RwSignal<bool> = RwSignal::new(false);
     let active_panel: RwSignal<Option<Panel>> = RwSignal::new(None);
-    let status: RwSignal<Option<Result<StatusResponse, String>>> = RwSignal::new(None);
 
-    let do_fetch = move || {
-        spawn_local(async move {
-            status.set(Some(fetch_status().await));
-        });
-    };
-    do_fetch();
+    let ws_connected: RwSignal<bool> = RwSignal::new(false);
+    let status: RwSignal<Option<StatusResponse>> = RwSignal::new(None);
+    let downloads: RwSignal<Vec<DownloadResponse>> = RwSignal::new(vec![]);
+    let search_results: RwSignal<Vec<SearchResult>> = RwSignal::new(vec![]);
+    let searching: RwSignal<bool> = RwSignal::new(false);
+    let search_id: RwSignal<Option<u64>> = RwSignal::new(None);
+
+    // Initial data fetch.
+    spawn_local(async move {
+        if let Ok(r) = gloo_net::http::Request::get("/api/v1/status").send().await {
+            if let Ok(s) = r.json::<StatusResponse>().await {
+                status.set(Some(s));
+            }
+        }
+        refresh_downloads(downloads).await;
+    });
+
+    // Start the persistent WebSocket loop.
+    start_ws_loop(
+        ws_connected,
+        downloads,
+        status,
+        search_results,
+        search_id,
+        searching,
+    );
 
     view! {
         <div class="layout">
@@ -196,55 +206,51 @@ fn App() -> impl IntoView {
 
                 <nav class="tabs">
                     <button
-                        class=move || if active_tab.get() == Tab::Downloads {
-                            "tab active"
-                        } else {
-                            "tab"
-                        }
+                        class=move || if active_tab.get() == Tab::Downloads { "tab active" } else { "tab" }
                         on:click=move |_| active_tab.set(Tab::Downloads)
-                    >
-                        "Downloads"
-                    </button>
+                    >"Downloads"</button>
                     <button
-                        class=move || if active_tab.get() == Tab::Searches {
-                            "tab active"
-                        } else {
-                            "tab"
-                        }
+                        class=move || if active_tab.get() == Tab::Searches { "tab active" } else { "tab" }
                         on:click=move |_| active_tab.set(Tab::Searches)
-                    >
-                        "Searches"
-                    </button>
+                    >"Searches"</button>
                 </nav>
 
                 <div class="menu-wrap">
+                    // WS connection dot
+                    <span
+                        class=move || if ws_connected.get() { "ws-dot ws-dot-on" } else { "ws-dot ws-dot-off" }
+                        title=move || if ws_connected.get() { "Connected" } else { "Disconnected" }
+                    />
+
                     <button
                         class="menu-btn"
                         on:click=move |_| menu_open.update(|o| *o = !*o)
-                    >
-                        "≡"
-                    </button>
+                    >"≡"</button>
+
                     <Show when=move || menu_open.get()>
                         <div class="dropdown">
                             <button class="dropdown-item" on:click=move |_| {
                                 active_panel.set(Some(Panel::NodeStatus));
                                 menu_open.set(false);
-                            }>
-                                "Node status"
-                            </button>
+                            }>"Node status"</button>
                             <button class="dropdown-item" on:click=move |_| {
                                 active_panel.set(Some(Panel::Addresses));
                                 menu_open.set(false);
-                            }>
-                                "Addresses"
-                            </button>
+                            }>"Addresses"</button>
                             <div class="dropdown-sep"/>
                             <button class="dropdown-item" on:click=move |_| {
                                 menu_open.set(false);
-                                do_fetch();
-                            }>
-                                "Refresh"
-                            </button>
+                                spawn_local(async move {
+                                    if let Ok(r) = gloo_net::http::Request::get("/api/v1/status")
+                                        .send().await
+                                    {
+                                        if let Ok(s) = r.json::<StatusResponse>().await {
+                                            status.set(Some(s));
+                                        }
+                                    }
+                                    refresh_downloads(downloads).await;
+                                });
+                            }>"Refresh"</button>
                         </div>
                     </Show>
                 </div>
@@ -252,8 +258,16 @@ fn App() -> impl IntoView {
 
             <main class="content">
                 {move || match active_tab.get() {
-                    Tab::Downloads => view! { <DownloadsTab/> }.into_any(),
-                    Tab::Searches => view! { <SearchesTab/> }.into_any(),
+                    Tab::Downloads => view! {
+                        <DownloadsTab downloads=downloads/>
+                    }.into_any(),
+                    Tab::Searches => view! {
+                        <SearchesTab
+                            results=search_results
+                            searching=searching
+                            search_id=search_id
+                        />
+                    }.into_any(),
                 }}
             </main>
         </div>

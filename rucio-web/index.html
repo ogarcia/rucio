@@ -15,262 +15,266 @@
             min-height: 100vh;
         }
 
-        /* ── Layout ─────────────────────────────────────────────────────── */
+        /* ── Layout ──────────────────────────────────────────────────────── */
 
-        .layout {
-            display: flex;
-            flex-direction: column;
-            height: 100vh;
-        }
+        .layout { display: flex; flex-direction: column; height: 100vh; }
+        .content { flex: 1; overflow-y: auto; }
+        .tab-content { padding: 1.25rem 1.5rem; }
 
-        /* ── Topbar ─────────────────────────────────────────────────────── */
+        /* ── Topbar ──────────────────────────────────────────────────────── */
 
         .topbar {
-            display: flex;
-            align-items: stretch;
-            height: 48px;
-            background: #1a1a2e;
-            border-bottom: 1px solid #2d2d4e;
+            display: flex; align-items: stretch; height: 48px;
+            background: #1a1a2e; border-bottom: 1px solid #2d2d4e;
             flex-shrink: 0;
         }
 
         .brand {
-            display: flex;
-            align-items: center;
+            display: flex; align-items: center;
             padding: 0 1.25rem 0 1.5rem;
-            font-size: 1.0625rem;
-            font-weight: 700;
-            letter-spacing: 0.05em;
-            color: #7c93f0;
-            white-space: nowrap;
+            font-size: 1.0625rem; font-weight: 700;
+            letter-spacing: 0.05em; color: #7c93f0; white-space: nowrap;
         }
 
-        /* ── Tabs ───────────────────────────────────────────────────────── */
+        /* ── Tabs ────────────────────────────────────────────────────────── */
 
-        .tabs {
-            display: flex;
-            align-items: stretch;
-            flex: 1;
-        }
+        .tabs { display: flex; align-items: stretch; flex: 1; }
 
         .tab {
-            display: flex;
-            align-items: center;
+            display: flex; align-items: center;
             padding: 0 1.125rem;
-            background: transparent;
-            border: none;
+            background: transparent; border: none;
             border-bottom: 2px solid transparent;
-            color: #64748b;
-            cursor: pointer;
-            font-size: 0.8125rem;
-            font-family: inherit;
-            transition: color 0.15s;
-            white-space: nowrap;
+            color: #64748b; cursor: pointer;
+            font-size: 0.8125rem; font-family: inherit;
+            transition: color 0.15s; white-space: nowrap;
         }
-
         .tab:hover { color: #94a3b8; }
+        .tab.active { color: #e2e8f0; border-bottom-color: #7c93f0; }
 
-        .tab.active {
-            color: #e2e8f0;
-            border-bottom-color: #7c93f0;
-        }
-
-        /* ── Menu ───────────────────────────────────────────────────────── */
+        /* ── Menu ────────────────────────────────────────────────────────── */
 
         .menu-wrap {
-            position: relative;
-            display: flex;
-            align-items: center;
-            padding: 0 1rem;
+            position: relative; display: flex; align-items: center;
+            gap: 0.5rem; padding: 0 1rem;
         }
+
+        .ws-dot {
+            width: 7px; height: 7px;
+            border-radius: 50%; flex-shrink: 0;
+        }
+        .ws-dot-on  { background: #22c55e; box-shadow: 0 0 4px #22c55e88; }
+        .ws-dot-off { background: #64748b; }
 
         .menu-btn {
-            background: transparent;
-            border: none;
-            color: #64748b;
-            cursor: pointer;
-            font-size: 1.375rem;
-            line-height: 1;
-            padding: 0.25rem 0.375rem;
-            font-family: inherit;
+            background: transparent; border: none; color: #64748b;
+            cursor: pointer; font-size: 1.375rem; line-height: 1;
+            padding: 0.25rem 0.375rem; font-family: inherit;
             transition: color 0.15s;
         }
-
         .menu-btn:hover { color: #e2e8f0; }
 
         .dropdown {
-            position: absolute;
-            top: calc(100% + 4px);
-            right: 0.75rem;
-            background: #1e2235;
-            border: 1px solid #2d2d4e;
-            border-radius: 0.5rem;
-            min-width: 168px;
-            z-index: 100;
-            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
-            overflow: hidden;
+            position: absolute; top: calc(100% + 4px); right: 0.75rem;
+            background: #1e2235; border: 1px solid #2d2d4e;
+            border-radius: 0.5rem; min-width: 168px; z-index: 100;
+            box-shadow: 0 8px 24px rgba(0,0,0,.5); overflow: hidden;
         }
-
         .dropdown-item {
-            display: block;
-            width: 100%;
-            text-align: left;
-            padding: 0.625rem 1rem;
-            background: transparent;
-            border: none;
-            color: #cbd5e1;
-            cursor: pointer;
-            font-size: 0.8125rem;
-            font-family: inherit;
-            transition: background 0.1s;
+            display: block; width: 100%; text-align: left;
+            padding: 0.625rem 1rem; background: transparent; border: none;
+            color: #cbd5e1; cursor: pointer;
+            font-size: 0.8125rem; font-family: inherit; transition: background 0.1s;
         }
-
         .dropdown-item:hover { background: #2d2d4e; color: #e2e8f0; }
+        .dropdown-sep { height: 1px; background: #2d2d4e; margin: 0.25rem 0; }
 
-        .dropdown-sep {
-            height: 1px;
-            background: #2d2d4e;
-            margin: 0.25rem 0;
-        }
-
-        /* ── Main content ───────────────────────────────────────────────── */
-
-        .content {
-            flex: 1;
-            overflow-y: auto;
-        }
-
-        .empty-state {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            height: 240px;
-            color: #475569;
-            font-size: 0.875rem;
-        }
-
-        /* ── Overlay ────────────────────────────────────────────────────── */
+        /* ── Overlay ─────────────────────────────────────────────────────── */
 
         .overlay-backdrop {
-            position: fixed;
-            inset: 0;
-            background: rgba(0, 0, 0, 0.45);
-            z-index: 200;
+            position: fixed; inset: 0;
+            background: rgba(0,0,0,.45); z-index: 200;
         }
-
         .overlay {
-            position: fixed;
-            top: 56px;
-            right: 1rem;
-            width: 400px;
-            max-height: calc(100vh - 72px);
-            overflow-y: auto;
-            background: #1a1a2e;
-            border: 1px solid #2d2d4e;
-            border-radius: 0.5rem;
-            box-shadow: 0 12px 36px rgba(0, 0, 0, 0.6);
+            position: fixed; top: 56px; right: 1rem;
+            width: 400px; max-height: calc(100vh - 72px); overflow-y: auto;
+            background: #1a1a2e; border: 1px solid #2d2d4e;
+            border-radius: 0.5rem; box-shadow: 0 12px 36px rgba(0,0,0,.6);
             z-index: 201;
         }
-
         .overlay-header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 0.875rem 1.25rem;
-            border-bottom: 1px solid #2d2d4e;
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 0.875rem 1.25rem; border-bottom: 1px solid #2d2d4e;
         }
-
-        .overlay-title {
-            font-size: 0.8125rem;
-            font-weight: 600;
-            color: #e2e8f0;
-        }
-
+        .overlay-title { font-size: 0.8125rem; font-weight: 600; color: #e2e8f0; }
         .overlay-close {
-            background: transparent;
-            border: none;
-            color: #475569;
-            cursor: pointer;
-            font-size: 0.875rem;
-            padding: 0.125rem 0.25rem;
-            font-family: inherit;
-            transition: color 0.15s;
+            background: transparent; border: none; color: #475569;
+            cursor: pointer; font-size: 0.875rem; padding: 0.125rem 0.25rem;
+            font-family: inherit; transition: color 0.15s;
         }
-
         .overlay-close:hover { color: #e2e8f0; }
+        .overlay-body { padding: 1rem 1.25rem; }
 
-        .overlay-body {
-            padding: 1rem 1.25rem;
-        }
-
-        /* ── Panel contents ─────────────────────────────────────────────── */
+        /* ── Panel contents ──────────────────────────────────────────────── */
 
         .panel-dl {
-            display: grid;
-            grid-template-columns: max-content 1fr;
-            gap: 0.5rem 1.25rem;
-            align-items: baseline;
+            display: grid; grid-template-columns: max-content 1fr;
+            gap: 0.5rem 1.25rem; align-items: baseline;
         }
-
         dt { color: #64748b; font-size: 0.8125rem; white-space: nowrap; }
         dd { font-size: 0.8125rem; }
 
         .section-label {
-            font-size: 0.6875rem;
-            text-transform: uppercase;
-            letter-spacing: 0.08em;
-            color: #475569;
+            font-size: 0.6875rem; text-transform: uppercase;
+            letter-spacing: 0.08em; color: #475569;
             margin: 0.875rem 0 0.375rem;
         }
-
         .section-label:first-child { margin-top: 0; }
 
-        .addr-list {
-            list-style: none;
-            display: flex;
-            flex-direction: column;
-            gap: 0.25rem;
-        }
-
+        .addr-list { list-style: none; display: flex; flex-direction: column; gap: 0.25rem; }
         .addr-list li {
-            font-family: monospace;
-            font-size: 0.6875rem;
-            color: #94a3b8;
-            background: #0f0f1a;
-            padding: 0.25rem 0.5rem;
-            border-radius: 0.25rem;
-            word-break: break-all;
+            font-family: monospace; font-size: 0.6875rem; color: #94a3b8;
+            background: #0f0f1a; padding: 0.25rem 0.5rem;
+            border-radius: 0.25rem; word-break: break-all;
         }
 
-        /* ── Shared atoms ───────────────────────────────────────────────── */
+        /* ── Downloads ───────────────────────────────────────────────────── */
+
+        .dl-list { list-style: none; display: flex; flex-direction: column; gap: 0; }
+
+        .dl-row {
+            padding: 0.875rem 0;
+            border-bottom: 1px solid #1e2235;
+        }
+        .dl-row:last-child { border-bottom: none; }
+
+        .dl-top {
+            display: flex; justify-content: space-between;
+            align-items: baseline; gap: 1rem; margin-bottom: 0.375rem;
+        }
+        .dl-name {
+            font-size: 0.875rem; font-weight: 500; color: #e2e8f0;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+            min-width: 0;
+        }
+        .dl-size { font-size: 0.75rem; color: #64748b; white-space: nowrap; }
+
+        .dl-bar-track {
+            height: 4px; background: #2d2d4e; border-radius: 2px;
+            margin-bottom: 0.5rem; overflow: hidden;
+        }
+        .dl-bar-fill {
+            height: 100%; background: #7c93f0;
+            border-radius: 2px; transition: width 0.4s ease;
+        }
+
+        .dl-bottom {
+            display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;
+        }
+        .dl-state {
+            display: inline-block; padding: 0.125rem 0.5rem;
+            border-radius: 9999px; font-size: 0.6875rem; font-weight: 600;
+        }
+        .dl-state-active  { background: #1e3a5f; color: #93c5fd; }
+        .dl-state-done    { background: #14532d; color: #86efac; }
+        .dl-state-failed  { background: #450a0a; color: #fca5a5; }
+        .dl-state-stalled { background: #431407; color: #fdba74; }
+        .dl-state-neutral { background: #1e293b; color: #94a3b8; }
+
+        .dl-error { font-size: 0.75rem; color: #f87171; }
+        .dl-actions { margin-left: auto; display: flex; gap: 0.5rem; }
+
+        /* ── Searches ────────────────────────────────────────────────────── */
+
+        .search-bar {
+            display: flex; gap: 0.75rem; margin-bottom: 1.25rem;
+        }
+        .search-input {
+            flex: 1; padding: 0.5rem 0.875rem;
+            background: #1a1a2e; border: 1px solid #2d2d4e;
+            border-radius: 0.375rem; color: #e2e8f0;
+            font-size: 0.875rem; font-family: inherit; outline: none;
+            transition: border-color 0.15s;
+        }
+        .search-input:focus { border-color: #7c93f0; }
+        .search-input::placeholder { color: #475569; }
+
+        .search-btn {
+            padding: 0.5rem 1.25rem;
+            background: #7c93f0; color: #0f0f1a;
+            border: none; border-radius: 0.375rem;
+            font-size: 0.875rem; font-weight: 600; font-family: inherit;
+            cursor: pointer; white-space: nowrap; transition: background 0.15s;
+        }
+        .search-btn:hover:not(:disabled) { background: #a5b4fc; }
+        .search-btn:disabled { opacity: 0.6; cursor: default; }
+
+        .results-header {
+            margin-bottom: 0.75rem;
+            font-size: 0.75rem; color: #64748b;
+        }
+
+        .results-list { list-style: none; display: flex; flex-direction: column; gap: 0; }
+
+        .result-row {
+            display: grid;
+            grid-template-columns: 1fr auto auto auto;
+            align-items: center; gap: 1rem;
+            padding: 0.625rem 0;
+            border-bottom: 1px solid #1e2235;
+        }
+        .result-row:last-child { border-bottom: none; }
+
+        .result-name {
+            font-size: 0.8125rem; color: #e2e8f0;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+            min-width: 0;
+        }
+        .result-size { font-size: 0.75rem; color: #64748b; white-space: nowrap; }
+
+        .source-badge {
+            display: inline-block; padding: 0.1rem 0.4rem;
+            border-radius: 4px; font-size: 0.625rem; font-weight: 700;
+            letter-spacing: 0.04em; white-space: nowrap;
+        }
+        .source-rucio { background: #1e3a5f; color: #93c5fd; }
+        .source-emule  { background: #431407; color: #fdba74; }
+
+        .result-no-link { font-size: 0.75rem; color: #475569; }
+
+        .searching-indicator { color: #7c93f0; }
+
+        /* ── Shared atoms ────────────────────────────────────────────────── */
+
+        .empty-state {
+            display: flex; align-items: center; justify-content: center;
+            height: 240px; color: #475569; font-size: 0.875rem;
+        }
+
+        .btn-sm {
+            padding: 0.25rem 0.625rem; border-radius: 0.25rem;
+            font-size: 0.75rem; font-family: inherit; cursor: pointer;
+            border: 1px solid #2d2d4e; background: #1e2235; color: #94a3b8;
+            transition: background 0.1s;
+        }
+        .btn-sm:hover { background: #2d2d4e; color: #e2e8f0; }
+        .btn-primary { background: #1e3a5f; border-color: #3b5a8a; color: #93c5fd; }
+        .btn-primary:hover { background: #2a4e7a; }
+        .btn-danger { border-color: #450a0a; color: #fca5a5; }
+        .btn-danger:hover { background: #450a0a; }
 
         .mono {
             font-family: 'Cascadia Code', 'JetBrains Mono', monospace;
-            font-size: 0.6875rem;
-            word-break: break-all;
-            color: #cbd5e1;
+            font-size: 0.6875rem; word-break: break-all; color: #cbd5e1;
         }
 
-        .badge {
-            display: inline-block;
-            padding: 0.15rem 0.5rem;
-            border-radius: 9999px;
-            font-size: 0.6875rem;
-            font-weight: 600;
-        }
-
+        .badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 9999px; font-size: 0.6875rem; font-weight: 600; }
         .badge-high    { background: #14532d; color: #86efac; }
         .badge-low     { background: #7c2d12; color: #fdba74; }
         .badge-unknown { background: #1e293b; color: #94a3b8; }
 
         .muted { color: #475569; font-style: italic; }
-
-        .loading {
-            color: #475569;
-            font-size: 0.8125rem;
-            padding: 1rem 0;
-        }
-
+        .loading { color: #475569; font-size: 0.8125rem; padding: 1rem 0; }
         .error-msg { color: #f87171; font-size: 0.8125rem; }
     </style>
 </head>
