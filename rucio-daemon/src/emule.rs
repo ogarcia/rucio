@@ -496,7 +496,12 @@ pub async fn run_ed2k_download(
                             tracker.store(total_done, Ordering::Relaxed);
                             let _ = ws_c.send(WsEvent::DownloadProgress(vec![
                                 rucio_core::api::downloads::DownloadResponse {
-                                    id: download_id,
+                                    // eMule rows use negative ids on the public
+                                    // API (see api/downloads.rs and the WS tick
+                                    // in lib.rs).  Forgetting the negation here
+                                    // made the client see the same download
+                                    // under two ids — a "ghost" libp2p row.
+                                    id: -download_id,
                                     root_hash: hash_hex_cc.clone(),
                                     name: Some(name_cc.clone()),
                                     size: Some(total),
