@@ -192,7 +192,8 @@ pub async fn run_ed2k_download(
         }
         Err(_) => {
             info!(name = %link.name, "All download slots busy — queued");
-            let _ = crate::db::emule_downloads::set_status(db, download_id, "queued", None).await;
+            let _ =
+                crate::db::emule_downloads::set_status_if_running(db, download_id, "queued").await;
             match download_slots.clone().acquire_owned().await {
                 Ok(permit) => {
                     info!(
@@ -223,9 +224,9 @@ pub async fn run_ed2k_download(
     let mut last_search_at: Option<Instant> = None;
     let mut retry_count: u32 = 0;
     loop {
-        // Check for user cancellation before doing any work.
-        if is_cancelled(db, download_id).await {
-            info!(name = %link.name, "eMule download cancelled by user");
+        // Check for user-requested stop (cancel / pause) before doing any work.
+        if let Some(reason) = stop_reason(db, download_id).await {
+            info!(name = %link.name, status = %reason, "eMule download stopped by user");
             active_downloads.write().await.remove(&hash_key);
             live_stats.write().await.remove(&live_key);
             return Ok(());
@@ -255,9 +256,12 @@ pub async fn run_ed2k_download(
         let needs_search = cached_sources.is_empty() || cache_age_secs >= SOURCE_CACHE_SECS;
 
         if needs_search {
-            let _ =
-                crate::db::emule_downloads::set_status(db, download_id, "finding_providers", None)
-                    .await;
+            let _ = crate::db::emule_downloads::set_status_if_running(
+                db,
+                download_id,
+                "finding_providers",
+            )
+            .await;
             info!("Searching Kad2 for sources");
             let fresh = kad.search_sources(link.hash, link.size).await;
             // Merge new peers into the cache — deduplicate by (IP, tcp_port).
@@ -286,7 +290,8 @@ pub async fn run_ed2k_download(
             } else {
                 "finding_providers"
             };
-            let _ = crate::db::emule_downloads::set_status(db, download_id, status, None).await;
+            let _ =
+                crate::db::emule_downloads::set_status_if_running(db, download_id, status).await;
             {
                 let mut s = live_stats.write().await;
                 let e = s.entry(live_key).or_default();
@@ -314,7 +319,8 @@ pub async fn run_ed2k_download(
         let sources = cached_sources.clone();
 
         // --- Attempt parallel download from discovered sources ---
-        let _ = crate::db::emule_downloads::set_status(db, download_id, "downloading", None).await;
+        let _ =
+            crate::db::emule_downloads::set_status_if_running(db, download_id, "downloading").await;
 
         // All slices complete already (shouldn't happen since the file would
         // have been renamed, but be robust).
@@ -594,7 +600,8 @@ pub async fn run_ed2k_download(
             } else {
                 "finding_providers"
             };
-            let _ = crate::db::emule_downloads::set_status(db, download_id, status, None).await;
+            let _ =
+                crate::db::emule_downloads::set_status_if_running(db, download_id, status).await;
             let delay = retry_delay_secs(retry_count);
             retry_count += 1;
             info!(
@@ -651,11 +658,14 @@ pub async fn run_ed2k_download(
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Returns `true` if the download has been marked as `cancelled` in the DB.
-async fn is_cancelled(db: &Db, download_id: i64) -> bool {
+/// Returns the user-requested stop status (`"cancelled"` or `"paused"`) if the
+/// download has been marked to stop in the DB, or `None` if it should keep
+/// running.  The download loop checks this once per round and exits cleanly,
+/// leaving the status untouched (it was set by the API handler).
+async fn stop_reason(db: &Db, download_id: i64) -> Option<String> {
     match crate::db::emule_downloads::get_status(db, download_id).await {
-        Ok(Some(s)) => s == "cancelled",
-        _ => false,
+        Ok(Some(s)) if s == "cancelled" || s == "paused" => Some(s),
+        _ => None,
     }
 }
 

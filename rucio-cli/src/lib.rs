@@ -119,6 +119,16 @@ pub enum DownloadAction {
         /// Row number from `rucio download list` (e.g. 1) or root hash (full or prefix)
         hash: String,
     },
+    /// Pause an in-progress download (keeps progress; resume later)
+    Pause {
+        /// Row number from `rucio download list` (e.g. 1) or root hash (full or prefix)
+        hash: String,
+    },
+    /// Resume a paused download
+    Resume {
+        /// Row number from `rucio download list` (e.g. 1) or root hash (full or prefix)
+        hash: String,
+    },
     /// Remove completed/failed/cancelled downloads from the history
     Clean {
         /// Row number from `rucio download list` (e.g. 1) or root hash prefix (omit to remove all finished downloads)
@@ -247,6 +257,8 @@ pub async fn run() -> Result<()> {
             } => cmd::downloads::list(&client, watch, active, done).await,
             DownloadAction::Show { target } => cmd::downloads::show(&client, &target).await,
             DownloadAction::Cancel { hash } => cmd::downloads::cancel(&client, &hash).await,
+            DownloadAction::Pause { hash } => cmd::downloads::pause(&client, &hash).await,
+            DownloadAction::Resume { hash } => cmd::downloads::resume(&client, &hash).await,
             DownloadAction::Clean { hash } => cmd::downloads::clean(&client, hash.as_deref()).await,
         },
         Commands::Node { action } => match action {

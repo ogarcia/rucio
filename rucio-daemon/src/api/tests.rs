@@ -464,7 +464,7 @@ async fn post_download_valid_returns_202() {
 }
 
 #[tokio::test]
-async fn cancel_download_unknown_id_returns_404() {
+async fn delete_download_unknown_id_returns_404() {
     let (state, _rx, _dl_rx, _dir) = test_state().await;
     let app = router(state);
 
@@ -473,6 +473,25 @@ async fn cancel_download_unknown_id_returns_404() {
             Request::builder()
                 .method("DELETE")
                 .uri("/api/v1/downloads/99999")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn cancel_download_unknown_id_returns_404() {
+    let (state, _rx, _dl_rx, _dir) = test_state().await;
+    let app = router(state);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/downloads/99999/cancel")
                 .body(Body::empty())
                 .unwrap(),
         )

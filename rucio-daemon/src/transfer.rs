@@ -303,122 +303,135 @@ impl DownloadEngine {
         info!(count = rows.len(), "Resuming interrupted downloads");
 
         for row in rows {
-            if row.root_hash.len() != 32 {
-                warn!(id = row.id, "Skipping download with malformed root_hash");
-                continue;
-            }
-            let mut root_hash = [0u8; 32];
-            root_hash.copy_from_slice(&row.root_hash);
+            self.rehydrate_row(row).await;
+        }
+    }
 
-            // Skip if already active (shouldn't happen at startup but be safe).
-            if self.active.contains_key(&root_hash)
-                || self.pending_manifests.contains_key(&root_hash)
+    /// Reconstruct a single download's in-memory state from its DB row and saved
+    /// chunks, then kick off provider discovery so the transfer continues.
+    ///
+    /// Shared by [`resume_interrupted`](Self::resume_interrupted) (called once at
+    /// startup for every interrupted download) and [`resume`](Self::resume)
+    /// (called on demand when the user un-pauses a single download).
+    async fn rehydrate_row(&mut self, row: db::downloads::DownloadRow) {
+        if row.root_hash.len() != 32 {
+            warn!(id = row.id, "Skipping download with malformed root_hash");
+            return;
+        }
+        let mut root_hash = [0u8; 32];
+        root_hash.copy_from_slice(&row.root_hash);
+
+        // Skip if already active (shouldn't happen but be safe).
+        if self.active.contains_key(&root_hash) || self.pending_manifests.contains_key(&root_hash) {
+            return;
+        }
+
+        let chunk_rows = match db::downloads::chunks_for(&self.db, row.id).await {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(id = row.id, "Could not load chunks for download: {e}");
+                return;
+            }
+        };
+
+        if chunk_rows.is_empty() {
+            // No chunks saved yet — treat as if just queued: request manifest.
+            info!(
+                id = row.id,
+                name = %row.name,
+                "No chunks saved; re-requesting manifest"
+            );
+            if let Err(e) =
+                db::downloads::set_status(&self.db, row.id, "finding_providers", None).await
             {
-                continue;
-            }
-
-            let chunk_rows = match db::downloads::chunks_for(&self.db, row.id).await {
-                Ok(c) => c,
-                Err(e) => {
-                    warn!(id = row.id, "Could not load chunks for download: {e}");
-                    continue;
-                }
-            };
-
-            if chunk_rows.is_empty() {
-                // No chunks saved yet — treat as if just queued: request manifest.
-                info!(
-                    id = row.id,
-                    name = %row.name,
-                    "No chunks saved; re-requesting manifest"
-                );
-                let _ = self
-                    .cmd_tx
-                    .send(NodeCmd::FindProviders(root_hash.to_vec()))
-                    .await;
-                self.pending_manifests.insert(
-                    root_hash,
-                    PendingManifest {
-                        providers: vec![],
-                        attempt: 0,
-                        requested_at: Instant::now(),
-                        last_find_at: Instant::now(),
-                        db_id: row.id,
-                        refind_count: 0,
-                    },
-                );
-                continue;
-            }
-
-            // Derive chunk_size from the first non-last chunk (largest size).
-            let chunk_size = chunk_rows
-                .iter()
-                .map(|c| c.size)
-                .max()
-                .unwrap_or(DEFAULT_CHUNK_SIZE);
-
-            let dest_path = PathBuf::from(&row.dest_path);
-
-            let mut chunk_meta: HashMap<u32, ([u8; 32], u32)> = HashMap::new();
-            let mut queued: VecDeque<u32> = VecDeque::new();
-            let mut done: HashSet<u32> = HashSet::new();
-
-            for c in &chunk_rows {
-                let mut hash = [0u8; 32];
-                if c.hash.len() == 32 {
-                    hash.copy_from_slice(&c.hash);
-                }
-                chunk_meta.insert(c.idx, (hash, c.size));
-                if c.status == "done" {
-                    done.insert(c.idx);
-                } else {
-                    queued.push_back(c.idx);
-                }
-            }
-
-            let total_chunks = chunk_meta.len();
-
-            // Reset any 'downloading' chunks back to 'pending' in the DB so
-            // their state is consistent (they were interrupted mid-flight).
-            if let Err(e) = db::downloads::reset_in_flight_chunks(&self.db, row.id).await {
-                warn!(id = row.id, "Could not reset in-flight chunks: {e}");
-            }
-
-            let done_count = done.len();
-            let dl = ActiveDownload {
-                download_id: row.id,
-                dest_path,
-                chunk_size,
-                queued,
-                in_flight: HashSet::new(),
-                done,
-                total_chunks,
-                chunk_meta,
-                providers: vec![],
-                peer_state: HashMap::new(),
-                inflight_map: HashMap::new(),
-            };
-
-            self.active.insert(root_hash, dl);
-
-            // Update status to 'downloading' and kick off DHT discovery.
-            if let Err(e) = db::downloads::set_status(&self.db, row.id, "downloading", None).await {
                 warn!(id = row.id, "set_status error: {e}");
             }
-
             let _ = self
                 .cmd_tx
                 .send(NodeCmd::FindProviders(root_hash.to_vec()))
                 .await;
-
-            info!(
-                id = row.id,
-                name = %row.name,
-                done = done_count,
-                total = total_chunks,
-                "Download resumed"
+            self.pending_manifests.insert(
+                root_hash,
+                PendingManifest {
+                    providers: vec![],
+                    attempt: 0,
+                    requested_at: Instant::now(),
+                    last_find_at: Instant::now(),
+                    db_id: row.id,
+                    refind_count: 0,
+                },
             );
+            return;
         }
+
+        // Derive chunk_size from the first non-last chunk (largest size).
+        let chunk_size = chunk_rows
+            .iter()
+            .map(|c| c.size)
+            .max()
+            .unwrap_or(DEFAULT_CHUNK_SIZE);
+
+        let dest_path = PathBuf::from(&row.dest_path);
+
+        let mut chunk_meta: HashMap<u32, ([u8; 32], u32)> = HashMap::new();
+        let mut queued: VecDeque<u32> = VecDeque::new();
+        let mut done: HashSet<u32> = HashSet::new();
+
+        for c in &chunk_rows {
+            let mut hash = [0u8; 32];
+            if c.hash.len() == 32 {
+                hash.copy_from_slice(&c.hash);
+            }
+            chunk_meta.insert(c.idx, (hash, c.size));
+            if c.status == "done" {
+                done.insert(c.idx);
+            } else {
+                queued.push_back(c.idx);
+            }
+        }
+
+        let total_chunks = chunk_meta.len();
+
+        // Reset any 'downloading' chunks back to 'pending' in the DB so
+        // their state is consistent (they were interrupted mid-flight).
+        if let Err(e) = db::downloads::reset_in_flight_chunks(&self.db, row.id).await {
+            warn!(id = row.id, "Could not reset in-flight chunks: {e}");
+        }
+
+        let done_count = done.len();
+        let dl = ActiveDownload {
+            download_id: row.id,
+            dest_path,
+            chunk_size,
+            queued,
+            in_flight: HashSet::new(),
+            done,
+            total_chunks,
+            chunk_meta,
+            providers: vec![],
+            peer_state: HashMap::new(),
+            inflight_map: HashMap::new(),
+        };
+
+        self.active.insert(root_hash, dl);
+
+        // Update status to 'downloading' and kick off DHT discovery.
+        if let Err(e) = db::downloads::set_status(&self.db, row.id, "downloading", None).await {
+            warn!(id = row.id, "set_status error: {e}");
+        }
+
+        let _ = self
+            .cmd_tx
+            .send(NodeCmd::FindProviders(root_hash.to_vec()))
+            .await;
+
+        info!(
+            id = row.id,
+            name = %row.name,
+            done = done_count,
+            total = total_chunks,
+            "Download resumed"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -760,6 +773,58 @@ impl DownloadEngine {
                 );
             }
         }
+    }
+
+    /// Suspend a download: drop its in-memory state but keep the partial file
+    /// and the per-chunk progress in the DB so it can be resumed later.
+    ///
+    /// Unlike [`cancel`](Self::cancel) this does **not** delete the `.part`
+    /// file.  The caller is responsible for setting the DB status to `paused`.
+    pub async fn pause(&mut self, download_id: i64, root_hash: Vec<u8>) {
+        self.live_stats.write().await.remove(&download_id);
+
+        let hash_arr: Option<[u8; 32]> = root_hash.try_into().ok();
+        let removed = if let Some(h) = hash_arr {
+            let pending = self.pending_manifests.remove(&h).is_some();
+            let active = self.active.remove(&h).is_some();
+            pending || active
+        } else {
+            // Fallback: search active downloads by download_id.
+            let found = self
+                .active
+                .iter()
+                .find(|(_, dl)| dl.download_id == download_id)
+                .map(|(h, _)| *h);
+            match found {
+                Some(h) => self.active.remove(&h).is_some(),
+                None => false,
+            }
+        };
+
+        if removed {
+            info!(download_id, "Download paused");
+        } else {
+            // Not tracked in memory (e.g. already idle / stalled).  The DB
+            // status change alone is enough to keep it paused.
+            info!(download_id, "Download paused (was not active in engine)");
+        }
+    }
+
+    /// Resume a previously paused download by re-hydrating it from the DB.
+    /// Reuses the same path as startup recovery.
+    pub async fn resume(&mut self, download_id: i64) {
+        let row = match db::downloads::get(&self.db, download_id).await {
+            Ok(Some(r)) => r,
+            Ok(None) => {
+                warn!(download_id, "Resume requested for unknown download");
+                return;
+            }
+            Err(e) => {
+                warn!(download_id, "DB error on resume: {e}");
+                return;
+            }
+        };
+        self.rehydrate_row(row).await;
     }
 
     // -----------------------------------------------------------------------
@@ -2154,6 +2219,79 @@ mod tests {
         assert!(
             matches!(cmd, NodeCmd::FindProviders(ref k) if k == hash.as_slice()),
             "expected FindProviders({hash:?}), got {cmd:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // pause() / resume()
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn pause_then_resume_rehydrates_active_download() {
+        // Pausing drops the in-memory state but keeps the DB row and chunk
+        // progress; resuming re-hydrates it and re-issues provider discovery.
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut engine, mut rx, _db_dir) = make_engine(&tmp).await;
+        let hash = [0xf3u8; 32];
+        let chunk_hash = *blake3::hash(b"data").as_bytes();
+
+        let id = db::downloads::create_pending(&engine.db, &hash, Some("pause.bin"), 1_000, true)
+            .await
+            .unwrap()
+            .id();
+        db::downloads::finalize_pending(
+            &engine.db,
+            id,
+            "pause.bin",
+            4096,
+            tmp.path().join("pause.bin.part").to_str().unwrap(),
+            1_000,
+            &[(0, chunk_hash, 4096)],
+        )
+        .await
+        .unwrap();
+
+        engine.resume_interrupted().await;
+        assert!(engine.active.contains_key(&hash));
+        // Drain the FindProviders issued by resume_interrupted().
+        let _ = rx.try_recv();
+
+        // Pause: the API handler sets the status, the engine drops in-memory state.
+        db::downloads::set_status(&engine.db, id, "paused", None)
+            .await
+            .unwrap();
+        engine.pause(id, hash.to_vec()).await;
+        assert!(
+            !engine.active.contains_key(&hash),
+            "paused download must leave the active set"
+        );
+        // The DB row and its status must survive.
+        assert_eq!(
+            db::downloads::get_status(&engine.db, id)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("paused")
+        );
+
+        // Resume: re-hydrate from the DB.
+        engine.resume(id).await;
+        assert!(
+            engine.active.contains_key(&hash),
+            "resumed download must be active again"
+        );
+        let cmd = rx.try_recv().expect("expected FindProviders after resume");
+        assert!(
+            matches!(cmd, NodeCmd::FindProviders(ref k) if k == hash.as_slice()),
+            "expected FindProviders({hash:?}), got {cmd:?}"
+        );
+        // Status should be back to a running state.
+        assert_eq!(
+            db::downloads::get_status(&engine.db, id)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("downloading")
         );
     }
 }

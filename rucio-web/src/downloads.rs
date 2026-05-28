@@ -13,6 +13,7 @@ fn state_label(s: &DownloadState) -> &'static str {
         DownloadState::Queued => "Queued",
         DownloadState::Downloading => "Downloading",
         DownloadState::Stalled => "Stalled",
+        DownloadState::Paused => "Paused",
         DownloadState::Completed => "Completed",
         DownloadState::Failed => "Failed",
         DownloadState::Cancelled => "Cancelled",
@@ -25,6 +26,7 @@ fn state_css(s: &DownloadState) -> &'static str {
         DownloadState::Completed => "dl-state dl-state-done",
         DownloadState::Failed => "dl-state dl-state-failed",
         DownloadState::Stalled => "dl-state dl-state-stalled",
+        DownloadState::Paused => "dl-state dl-state-paused",
         _ => "dl-state dl-state-neutral",
     }
 }
@@ -33,6 +35,17 @@ fn is_terminal(s: &DownloadState) -> bool {
     matches!(
         s,
         DownloadState::Completed | DownloadState::Failed | DownloadState::Cancelled
+    )
+}
+
+/// States from which a download can be paused (active, non-terminal).
+fn is_pausable(s: &DownloadState) -> bool {
+    matches!(
+        s,
+        DownloadState::FindingProviders
+            | DownloadState::Queued
+            | DownloadState::Downloading
+            | DownloadState::Stalled
     )
 }
 
@@ -50,13 +63,25 @@ pub async fn refresh_downloads(downloads: RwSignal<Vec<DownloadResponse>>) {
 }
 
 async fn api_cancel(id: i64) {
-    let _ = gloo_net::http::Request::delete(&format!("/api/v1/downloads/{id}"))
+    let _ = gloo_net::http::Request::post(&format!("/api/v1/downloads/{id}/cancel"))
         .send()
         .await;
 }
 
 async fn api_remove(id: i64) {
-    let _ = gloo_net::http::Request::delete(&format!("/api/v1/downloads/{id}/history"))
+    let _ = gloo_net::http::Request::delete(&format!("/api/v1/downloads/{id}"))
+        .send()
+        .await;
+}
+
+async fn api_pause(id: i64) {
+    let _ = gloo_net::http::Request::post(&format!("/api/v1/downloads/{id}/pause"))
+        .send()
+        .await;
+}
+
+async fn api_resume(id: i64) {
+    let _ = gloo_net::http::Request::post(&format!("/api/v1/downloads/{id}/resume"))
         .send()
         .await;
 }
@@ -117,6 +142,18 @@ pub fn DownloadsTab(downloads: RwSignal<Vec<DownloadResponse>>) -> impl IntoView
             .unwrap_or(false)
     };
     let can_info = move || selected_id.get().is_some();
+    // The selected download is paused → the toggle offers "Resume".
+    let is_paused = move || {
+        selected_dl()
+            .map(|d| d.state == DownloadState::Paused)
+            .unwrap_or(false)
+    };
+    // The pause/resume toggle is enabled for active *or* paused downloads.
+    let can_pause_toggle = move || {
+        selected_dl()
+            .map(|d| is_pausable(&d.state) || d.state == DownloadState::Paused)
+            .unwrap_or(false)
+    };
 
     view! {
         <div class="tab-content">
@@ -140,9 +177,25 @@ pub fn DownloadsTab(downloads: RwSignal<Vec<DownloadResponse>>) -> impl IntoView
                 >
                     "Info"
                 </button>
-                // Pause — not yet supported by the daemon.
-                <button class="toolbar-btn" disabled=true title="Not yet supported by the daemon">
-                    "Pause"
+                <button
+                    class="toolbar-btn"
+                    disabled=move || !can_pause_toggle()
+                    on:click=move |_| {
+                        if let Some(d) = selected_dl() {
+                            let id = d.id;
+                            let paused = d.state == DownloadState::Paused;
+                            spawn_local(async move {
+                                if paused {
+                                    api_resume(id).await;
+                                } else {
+                                    api_pause(id).await;
+                                }
+                                refresh_downloads(downloads).await;
+                            });
+                        }
+                    }
+                >
+                    {move || if is_paused() { "Resume" } else { "Pause" }}
                 </button>
                 <button
                     class="toolbar-btn toolbar-btn-danger"

@@ -188,6 +188,27 @@ pub async fn set_status(db: &Db, id: i64, status: &str, error_msg: Option<&str>)
     Ok(())
 }
 
+/// Update the status, but only while the download is still running — i.e. not
+/// already in a user-controlled stop state (`paused` / `cancelled`).
+///
+/// The download loop writes its progress status (`finding_providers`,
+/// `downloading`, `stalled`, …) once per round.  Without this guard a `pause`
+/// or `cancel` issued mid-round would be silently overwritten by the next
+/// progress update, so the loop's own stop check would never fire.  Making the
+/// write conditional in a single atomic statement closes that race.
+pub async fn set_status_if_running(db: &Db, id: i64, status: &str) -> Result<()> {
+    sqlx::query(
+        "UPDATE emule_downloads SET status = ?1, error_msg = NULL, updated_at = ?2 \
+         WHERE id = ?3 AND status NOT IN ('paused', 'cancelled')",
+    )
+    .bind(status)
+    .bind(now_secs() as i64)
+    .bind(id)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
 /// Update `bytes_done` and `dest_path` on completion.
 pub async fn set_completed(db: &Db, id: i64, dest_path: &str) -> Result<()> {
     sqlx::query(
@@ -478,6 +499,47 @@ mod tests {
         // id1 (finding_providers) and id2 (downloading) should appear; id3 (completed) should not
         assert_eq!(resumable.len(), 2);
         assert!(resumable.iter().any(|r| r.id == id2));
+    }
+
+    #[tokio::test]
+    async fn set_status_if_running_respects_stop_states() {
+        let (db, _dir) = test_db().await;
+        let id = create(
+            &db,
+            &hash(),
+            "f.bin",
+            512,
+            "ed2k://|file|f.bin|512|abababababababababababababababababab|/",
+            1_000,
+        )
+        .await
+        .unwrap()
+        .id();
+
+        // While running, a progress update goes through.
+        set_status_if_running(&db, id, "downloading").await.unwrap();
+        assert_eq!(
+            get_status(&db, id).await.unwrap().as_deref(),
+            Some("downloading")
+        );
+
+        // Once paused, a progress update from the download loop is ignored.
+        set_status(&db, id, "paused", None).await.unwrap();
+        set_status_if_running(&db, id, "finding_providers")
+            .await
+            .unwrap();
+        assert_eq!(
+            get_status(&db, id).await.unwrap().as_deref(),
+            Some("paused")
+        );
+
+        // Same guard protects the cancelled state.
+        set_status(&db, id, "cancelled", None).await.unwrap();
+        set_status_if_running(&db, id, "downloading").await.unwrap();
+        assert_eq!(
+            get_status(&db, id).await.unwrap().as_deref(),
+            Some("cancelled")
+        );
     }
 
     #[tokio::test]

@@ -428,6 +428,38 @@ pub async fn cancel(client: &ApiClient, hash: &str) -> Result<()> {
     }
 }
 
+pub async fn pause(client: &ApiClient, hash: &str) -> Result<()> {
+    let dl = client.find_download_by_idx_or_hash(hash).await?;
+    match dl {
+        None => bail!("No download found for '{hash}'"),
+        Some(d) => {
+            client.pause_download(d.id).await?;
+            println!(
+                "Paused: {} ({})",
+                d.name.unwrap_or_else(|| "-".to_string()),
+                color::value(&d.root_hash)
+            );
+            Ok(())
+        }
+    }
+}
+
+pub async fn resume(client: &ApiClient, hash: &str) -> Result<()> {
+    let dl = client.find_download_by_idx_or_hash(hash).await?;
+    match dl {
+        None => bail!("No download found for '{hash}'"),
+        Some(d) => {
+            client.resume_download(d.id).await?;
+            println!(
+                "Resumed: {} ({})",
+                d.name.unwrap_or_else(|| "-".to_string()),
+                color::value(&d.root_hash)
+            );
+            Ok(())
+        }
+    }
+}
+
 /// Remove finished downloads from the history.
 ///
 /// If `hash` is given, removes only the matching entry (completed, failed, or

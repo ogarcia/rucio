@@ -147,8 +147,10 @@ The daemon exposes a JSON REST API on `http://127.0.0.1:3003/api/v1/`.
 | `GET` | `/downloads` | List downloads (with optional state filter) |
 | `POST` | `/downloads` | Start a rucio download (magnet or hash) |
 | `POST` | `/downloads/ed2k` | Start an eMule download (ed2k:// link) — emule-compat |
-| `DELETE` | `/downloads/:id` | Cancel an active download |
-| `DELETE` | `/downloads/:id/history` | Remove a completed/cancelled entry from history |
+| `POST` | `/downloads/:id/cancel` | Cancel an active download |
+| `POST` | `/downloads/:id/pause` | Pause an active download (keeps progress) |
+| `POST` | `/downloads/:id/resume` | Resume a paused download |
+| `DELETE` | `/downloads/:id` | Remove a completed/cancelled entry from history |
 | `POST` | `/search` | Start a keyword search, returns a query ID |
 | `GET` | `/search/:query_id` | Poll accumulated search results |
 | `GET` | `/config` | Current configuration |

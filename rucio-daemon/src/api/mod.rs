@@ -86,6 +86,8 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         downloads::start_download,
         downloads::start_ed2k_download,
         downloads::cancel_download,
+        downloads::pause_download,
+        downloads::resume_download,
         downloads::delete_download,
         searches::post_search,
         searches::list_searches,
@@ -252,6 +254,15 @@ pub enum DownloadRequest {
         /// engine even before the manifest has been received.
         root_hash: Vec<u8>,
     },
+    /// Suspend an in-flight download, keeping its partial file and progress.
+    Pause {
+        download_id: i64,
+        /// BLAKE3 root hash — used to locate pending manifest state in the
+        /// engine even before the manifest has been received.
+        root_hash: Vec<u8>,
+    },
+    /// Resume a previously paused download by re-hydrating it from the DB.
+    Resume { download_id: i64 },
 }
 
 // ---------------------------------------------------------------------------
@@ -358,11 +369,19 @@ fn v1_router() -> Router<AppState> {
         )
         .route(
             "/downloads/{id}",
-            routing::get(downloads::get_download).delete(downloads::cancel_download),
+            routing::get(downloads::get_download).delete(downloads::delete_download),
         )
         .route(
-            "/downloads/{id}/history",
-            routing::delete(downloads::delete_download),
+            "/downloads/{id}/cancel",
+            routing::post(downloads::cancel_download),
+        )
+        .route(
+            "/downloads/{id}/pause",
+            routing::post(downloads::pause_download),
+        )
+        .route(
+            "/downloads/{id}/resume",
+            routing::post(downloads::resume_download),
         )
         // unified searches
         .route("/searches", routing::post(searches::post_search))

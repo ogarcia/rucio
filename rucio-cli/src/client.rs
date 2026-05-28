@@ -71,6 +71,25 @@ impl ApiClient {
         }
     }
 
+    /// POST with no request or response body (for action endpoints returning 204).
+    async fn post_empty(&self, path: &str) -> Result<()> {
+        let url = format!("{}{}", self.base, path);
+        let resp = self
+            .inner
+            .post(&url)
+            .send()
+            .await
+            .with_context(|| format!("POST {url}"))?;
+
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            bail!("POST {url} → {status}: {body}");
+        }
+    }
+
     async fn put<B: Serialize>(&self, path: &str, body: &B) -> Result<()> {
         let url = format!("{}{}", self.base, path);
         let resp = self
@@ -285,13 +304,23 @@ impl ApiClient {
     }
 
     pub async fn cancel_download(&self, id: i64) -> Result<()> {
-        self.delete(&format!("/api/v1/downloads/{id}")).await
+        self.post_empty(&format!("/api/v1/downloads/{id}/cancel"))
+            .await
+    }
+
+    pub async fn pause_download(&self, id: i64) -> Result<()> {
+        self.post_empty(&format!("/api/v1/downloads/{id}/pause"))
+            .await
+    }
+
+    pub async fn resume_download(&self, id: i64) -> Result<()> {
+        self.post_empty(&format!("/api/v1/downloads/{id}/resume"))
+            .await
     }
 
     /// Permanently remove a finished download from the history.
     pub async fn delete_download(&self, id: i64) -> Result<()> {
-        self.delete(&format!("/api/v1/downloads/{id}/history"))
-            .await
+        self.delete(&format!("/api/v1/downloads/{id}")).await
     }
 
     // -----------------------------------------------------------------------

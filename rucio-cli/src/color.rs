@@ -59,6 +59,9 @@ pub fn download_state(state: &DownloadState) -> String {
             .if_supports_color(Stdout, |t| t.cyan())
             .to_string(),
         DownloadState::Stalled => "stalled".if_supports_color(Stdout, |t| t.red()).to_string(),
+        DownloadState::Paused => "paused"
+            .if_supports_color(Stdout, |t| t.magenta())
+            .to_string(),
         DownloadState::Completed => "completed"
             .if_supports_color(Stdout, |t| t.green())
             .to_string(),

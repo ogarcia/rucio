@@ -32,12 +32,15 @@ use crate::transfer::parse_magnet;
 /// - `finding_providers` — searching the Kademlia DHT for peers that have the file.
 /// - `queued` — providers found, waiting for a transfer slot.
 /// - `downloading` — actively transferring chunks.
+/// - `stalled` — no sources found after several rounds; keeps retrying in the background.
+/// - `paused` — suspended by the user via `POST /api/v1/downloads/:id/pause`; resume with
+///   `POST /api/v1/downloads/:id/resume`.  Not resumed automatically on daemon restart.
 /// - `completed` — all chunks received and the file has been moved to the download directory.
 /// - `failed` — the transfer encountered an unrecoverable error.
-/// - `cancelled` — cancelled by the user via `DELETE /api/v1/downloads/:id`.
+/// - `cancelled` — cancelled by the user via `POST /api/v1/downloads/:id/cancel`.
 ///
 /// Completed, failed, and cancelled entries remain in the list until explicitly removed with
-/// `DELETE /api/v1/downloads/:id/history`.
+/// `DELETE /api/v1/downloads/:id`.
 #[utoipa::path(
     get,
     path = "/api/v1/downloads",
@@ -313,12 +316,12 @@ pub async fn start_download(
 ///
 /// Any chunks already downloaded are discarded and the `.part` file is removed from the
 /// temp directory. The cancelled entry remains visible in `GET /api/v1/downloads` until
-/// removed with `DELETE /api/v1/downloads/:id/history`.
+/// removed with `DELETE /api/v1/downloads/:id`.
 ///
 /// Use **negative IDs** (e.g. `-3`) for eMule downloads as returned by `GET /api/v1/downloads`.
 #[utoipa::path(
-    delete,
-    path = "/api/v1/downloads/{id}",
+    post,
+    path = "/api/v1/downloads/{id}/cancel",
     params(
         ("id" = i64, Path, description = "Numeric download ID from `GET /api/v1/downloads`. Negative = eMule download.")
     ),
@@ -384,25 +387,195 @@ pub async fn cancel_download(State(state): State<AppState>, Path(id): Path<i64>)
     }
 }
 
+/// Pause a download
+///
+/// Suspends an active download (`finding_providers`, `queued`, `downloading`, or `stalled`)
+/// and marks it as `paused`.  Unlike cancelling, the partial file and per-chunk progress are
+/// kept, so the transfer can be resumed later with `POST /api/v1/downloads/:id/resume`.
+///
+/// A paused download is **not** resumed automatically when the daemon restarts.
+///
+/// Use **negative IDs** (e.g. `-3`) for eMule downloads as returned by `GET /api/v1/downloads`.
+#[utoipa::path(
+    post,
+    path = "/api/v1/downloads/{id}/pause",
+    params(
+        ("id" = i64, Path, description = "Numeric download ID from `GET /api/v1/downloads`. Negative = eMule download.")
+    ),
+    responses(
+        (status = 204, description = "Download paused."),
+        (status = 404, description = "No download with that ID."),
+        (status = 409, description = "Download is not in a pausable state (already finished or paused).")
+    )
+)]
+pub async fn pause_download(State(state): State<AppState>, Path(id): Path<i64>) -> StatusCode {
+    if id < 0 {
+        // eMule download — pause by setting status to 'paused'.  The
+        // run_ed2k_download loop polls and exits on its next iteration.
+        #[cfg(feature = "emule-compat")]
+        {
+            let emule_id = -id;
+            match crate::db::emule_downloads::get_status(&state.db, emule_id).await {
+                Ok(None) => return StatusCode::NOT_FOUND,
+                Ok(Some(s)) if !is_pausable(&s) => return StatusCode::CONFLICT,
+                Err(e) => {
+                    tracing::error!("DB error fetching emule download {emule_id}: {e}");
+                    return StatusCode::INTERNAL_SERVER_ERROR;
+                }
+                Ok(Some(_)) => {}
+            }
+            match crate::db::emule_downloads::set_status(&state.db, emule_id, "paused", None).await
+            {
+                Ok(()) => StatusCode::NO_CONTENT,
+                Err(e) => {
+                    tracing::error!("DB error pausing emule download {emule_id}: {e}");
+                    StatusCode::INTERNAL_SERVER_ERROR
+                }
+            }
+        }
+        #[cfg(not(feature = "emule-compat"))]
+        StatusCode::NOT_FOUND
+    } else {
+        // libp2p download
+        let row = match crate::db::downloads::get(&state.db, id).await {
+            Ok(Some(r)) => r,
+            Ok(None) => return StatusCode::NOT_FOUND,
+            Err(e) => {
+                tracing::error!("DB error fetching download {id}: {e}");
+                return StatusCode::INTERNAL_SERVER_ERROR;
+            }
+        };
+
+        if !is_pausable(&row.status) {
+            return StatusCode::CONFLICT;
+        }
+
+        match crate::db::downloads::set_status(&state.db, id, "paused", None).await {
+            Ok(()) => {
+                let _ = state
+                    .download_tx
+                    .send(DownloadRequest::Pause {
+                        download_id: id,
+                        root_hash: row.root_hash,
+                    })
+                    .await;
+                StatusCode::NO_CONTENT
+            }
+            Err(e) => {
+                tracing::error!("DB error pausing download {id}: {e}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
+        }
+    }
+}
+
+/// Resume a download
+///
+/// Restarts a previously paused download from where it left off, re-using the partial file
+/// and per-chunk progress kept on disk.  Only downloads in the `paused` state can be resumed.
+///
+/// Use **negative IDs** (e.g. `-3`) for eMule downloads as returned by `GET /api/v1/downloads`.
+#[utoipa::path(
+    post,
+    path = "/api/v1/downloads/{id}/resume",
+    params(
+        ("id" = i64, Path, description = "Numeric download ID from `GET /api/v1/downloads`. Negative = eMule download.")
+    ),
+    responses(
+        (status = 204, description = "Download resumed."),
+        (status = 404, description = "No download with that ID."),
+        (status = 409, description = "Download is not paused.")
+    )
+)]
+pub async fn resume_download(State(state): State<AppState>, Path(id): Path<i64>) -> StatusCode {
+    if id < 0 {
+        // eMule download — resume by relaunching the download task.
+        #[cfg(feature = "emule-compat")]
+        {
+            let emule_id = -id;
+            let row = match crate::db::emule_downloads::get(&state.db, emule_id).await {
+                Ok(Some(r)) => r,
+                Ok(None) => return StatusCode::NOT_FOUND,
+                Err(e) => {
+                    tracing::error!("DB error fetching emule download {emule_id}: {e}");
+                    return StatusCode::INTERNAL_SERVER_ERROR;
+                }
+            };
+            if row.status != "paused" {
+                return StatusCode::CONFLICT;
+            }
+            // Move out of 'paused' before relaunching so the download loop's
+            // stop check does not immediately exit again.
+            if let Err(e) = crate::db::emule_downloads::set_status(
+                &state.db,
+                emule_id,
+                "finding_providers",
+                None,
+            )
+            .await
+            {
+                tracing::error!("DB error resuming emule download {emule_id}: {e}");
+                return StatusCode::INTERNAL_SERVER_ERROR;
+            }
+            let dl_req = DownloadRequest::StartEd2k {
+                link: row.ed2k_link,
+                download_id: emule_id,
+            };
+            match state.download_tx.send(dl_req).await {
+                Ok(()) => StatusCode::NO_CONTENT,
+                Err(_) => {
+                    tracing::error!("Download channel closed");
+                    StatusCode::INTERNAL_SERVER_ERROR
+                }
+            }
+        }
+        #[cfg(not(feature = "emule-compat"))]
+        StatusCode::NOT_FOUND
+    } else {
+        // libp2p download
+        match crate::db::downloads::get_status(&state.db, id).await {
+            Ok(None) => return StatusCode::NOT_FOUND,
+            Ok(Some(s)) if s != "paused" => return StatusCode::CONFLICT,
+            Err(e) => {
+                tracing::error!("DB error fetching download {id}: {e}");
+                return StatusCode::INTERNAL_SERVER_ERROR;
+            }
+            Ok(Some(_)) => {}
+        }
+
+        match state
+            .download_tx
+            .send(DownloadRequest::Resume { download_id: id })
+            .await
+        {
+            Ok(()) => StatusCode::NO_CONTENT,
+            Err(_) => {
+                tracing::error!("Download channel closed");
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
+        }
+    }
+}
+
 /// Remove a download from history
 ///
 /// Permanently deletes a finished download record (completed, failed, or cancelled) from the
 /// database.
 ///
 /// Returns `409 Conflict` if the download is still active — cancel it first with
-/// `DELETE /api/v1/downloads/:id`.
+/// `POST /api/v1/downloads/:id/cancel`.
 ///
 /// Use **negative IDs** (e.g. `-3`) for eMule downloads as returned by `GET /api/v1/downloads`.
 #[utoipa::path(
     delete,
-    path = "/api/v1/downloads/{id}/history",
+    path = "/api/v1/downloads/{id}",
     params(
         ("id" = i64, Path, description = "Numeric download ID from `GET /api/v1/downloads`. Negative = eMule download.")
     ),
     responses(
         (status = 204, description = "Download record deleted."),
         (status = 404, description = "No download with that ID."),
-        (status = 409, description = "Download is still active — cancel it first with `DELETE /api/v1/downloads/:id`.")
+        (status = 409, description = "Download is still active — cancel it first with `POST /api/v1/downloads/:id/cancel`.")
     )
 )]
 pub async fn delete_download(State(state): State<AppState>, Path(id): Path<i64>) -> StatusCode {
@@ -595,9 +768,18 @@ pub(crate) fn db_status_to_state(s: &str) -> DownloadState {
         "queued" => DownloadState::Queued,
         "downloading" => DownloadState::Downloading,
         "stalled" => DownloadState::Stalled,
+        "paused" => DownloadState::Paused,
         "completed" => DownloadState::Completed,
         "error" => DownloadState::Failed,
         "cancelled" => DownloadState::Cancelled,
         _ => DownloadState::FindingProviders,
     }
+}
+
+/// Statuses from which a download can be paused: active, non-terminal states.
+fn is_pausable(status: &str) -> bool {
+    matches!(
+        status,
+        "finding_providers" | "queued" | "downloading" | "stalled"
+    )
 }

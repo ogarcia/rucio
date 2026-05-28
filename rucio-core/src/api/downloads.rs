@@ -22,6 +22,10 @@ pub enum DownloadState {
     /// found after several search rounds.  The daemon keeps retrying in the
     /// background — this is not a terminal state.
     Stalled,
+    /// Suspended by the user.  No transfer activity and no provider discovery.
+    /// Progress is preserved on disk; resume with `POST /api/v1/downloads/:id/resume`.
+    /// A paused download is **not** resumed automatically when the daemon restarts.
+    Paused,
     Completed,
     Failed,
     Cancelled,

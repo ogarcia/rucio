@@ -600,6 +600,12 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                         api::DownloadRequest::Cancel { download_id, root_hash } => {
                             engine.cancel(download_id, root_hash).await;
                         }
+                        api::DownloadRequest::Pause { download_id, root_hash } => {
+                            engine.pause(download_id, root_hash).await;
+                        }
+                        api::DownloadRequest::Resume { download_id } => {
+                            engine.resume(download_id).await;
+                        }
                         api::DownloadRequest::StartEd2k { link, download_id } => {
                             #[cfg(feature = "emule-compat")]
                             {
