@@ -9,7 +9,7 @@
 #
 #   web        →  tag "master-web" / "0.1.0-web" / "latest-web"
 #                 Daemon with embedded web control panel (ruciod + web-ui).
-#                 The panel is served at http://<host>:7070/ in addition to
+#                 The panel is served at http://<host>:3003/ in addition to
 #                 the REST API.  Use this for single-host deployments where a
 #                 browser UI is convenient.
 #
@@ -40,7 +40,7 @@
 #   RUCIOD_CONFIG              Path to the daemon config file — optional, defaults to
 #                              $HOME/.config/rucio/config.toml (/var/lib/rucio/.config/…)
 #   RUCIO_API                  Daemon API URL used by the rucio CLI
-#                              (default: http://127.0.0.1:7070)
+#                              (default: http://127.0.0.1:3003)
 #   RUCIOD_KAD_PORT            Kad2 UDP port for eMule network (default: 4672).
 #                              Must be mapped on the host: -p 4672:4672/udp
 #   RUCIO_BOOTSTRAP_CONFIG     Path to the bootstrap config file — optional, defaults to
@@ -144,8 +144,8 @@ USER rucio
 WORKDIR /var/lib/rucio
 
 EXPOSE 4321/tcp
-# REST API and web control panel — http://<host>:7070/
-EXPOSE 7070/tcp
+# REST API and web control panel — http://<host>:3003/
+EXPOSE 3003/tcp
 # Kad2 UDP port for eMule network (emule-compat builds).
 # Map with: -p 4672:4672/udp
 EXPOSE 4672/udp
@@ -169,8 +169,8 @@ USER rucio
 WORKDIR /var/lib/rucio
 
 EXPOSE 4321/tcp
-# REST API and web control panel — http://<host>:7070/
-EXPOSE 7070/tcp
+# REST API and web control panel — http://<host>:3003/
+EXPOSE 3003/tcp
 # Kad2 UDP port for eMule network (emule-compat builds).
 # Map with: -p 4672:4672/udp
 EXPOSE 4672/udp

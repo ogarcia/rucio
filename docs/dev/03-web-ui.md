@@ -30,7 +30,7 @@ from inside `rucio-web/`:
 
 ```sh
 cd rucio-web
-trunk serve --proxy-backend=http://127.0.0.1:7070/api
+trunk serve --proxy-backend=http://127.0.0.1:3003/api
 ```
 
 `--proxy-backend` forwards `/api/*` requests to a running daemon so the UI
@@ -81,7 +81,7 @@ server {
 
     # Proxy API calls to the daemon
     location /api/ {
-        proxy_pass http://127.0.0.1:7070;
+        proxy_pass http://127.0.0.1:3003;
     }
 
     # SPA fallback — unknown paths return index.html

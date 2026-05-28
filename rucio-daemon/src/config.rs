@@ -240,7 +240,7 @@ impl Default for NodeConfig {
 impl Default for ApiConfig {
     fn default() -> Self {
         Self {
-            listen: "127.0.0.1:7070".to_string(),
+            listen: "127.0.0.1:3003".to_string(),
             token: None,
         }
     }

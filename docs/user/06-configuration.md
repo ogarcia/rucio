@@ -344,7 +344,7 @@ RUCIOD_CONFIG=/etc/rucio/config.toml ruciod
 listen_addrs = ["/ip4/0.0.0.0/tcp/4321", "/ip6/::/tcp/4321"]
 
 [api]
-listen = "127.0.0.1:7070"
+listen = "127.0.0.1:3003"
 # token = "secret"               # enable API auth (disabled by default)
 
 [network]
@@ -387,7 +387,7 @@ the file value untouched.
 
 | Variable | Config key | Default | Format |
 |---|---|---|---|
-| `RUCIOD_API_LISTEN` | `api.listen` | `127.0.0.1:7070` | `host:port` |
+| `RUCIOD_API_LISTEN` | `api.listen` | `127.0.0.1:3003` | `host:port` |
 | `RUCIOD_P2P_LISTEN` | `node.listen_addrs` | `/ip4/0.0.0.0/tcp/4321,/ip6/::/tcp/4321` | comma-separated multiaddrs |
 | `RUCIOD_DOWNLOAD_DIR` | `storage.download_dir` | platform default | path |
 | `RUCIOD_TEMP_DIR` | `storage.temp_dir` | platform default | path |
@@ -413,7 +413,7 @@ the file value untouched.
 FROM debian:bookworm-slim
 COPY ruciod /usr/local/bin/ruciod
 
-ENV RUCIOD_API_LISTEN=0.0.0.0:7070
+ENV RUCIOD_API_LISTEN=0.0.0.0:3003
 ENV RUCIOD_P2P_LISTEN=/ip4/0.0.0.0/tcp/4321,/ip6/::/tcp/4321
 ENV RUCIOD_DOWNLOAD_DIR=/data/downloads
 ENV RUCIOD_TEMP_DIR=/data/tmp
@@ -421,7 +421,7 @@ ENV RUCIOD_DB_PATH=/data/rucio.db
 ENV RUCIOD_UPNP=false
 
 VOLUME ["/data"]
-EXPOSE 7070 4321
+EXPOSE 3003 4321
 
 ENTRYPOINT ["ruciod"]
 ```
@@ -430,12 +430,12 @@ Or with `docker run`:
 
 ```sh
 docker run \
-  -e RUCIOD_API_LISTEN=0.0.0.0:7070 \
+  -e RUCIOD_API_LISTEN=0.0.0.0:3003 \
   -e RUCIOD_DOWNLOAD_DIR=/data/downloads \
   -e RUCIOD_DB_PATH=/data/rucio.db \
   -e RUCIOD_UPNP=false \
   -v rucio-data:/data \
-  -p 7070:7070 -p 4321:4321 \
+  -p 3003:3003 -p 4321:4321 \
   ghcr.io/yourorg/rucio
 ```
 
@@ -443,7 +443,7 @@ With eMule/Kad2 support:
 
 ```sh
 docker run \
-  -e RUCIOD_API_LISTEN=0.0.0.0:7070 \
+  -e RUCIOD_API_LISTEN=0.0.0.0:3003 \
   -e RUCIOD_DOWNLOAD_DIR=/data/downloads \
   -e RUCIOD_DB_PATH=/data/rucio.db \
   -e RUCIOD_NODES_DAT=/data/nodes.dat \
@@ -451,7 +451,7 @@ docker run \
   -e RUCIOD_EMULE_TCP_PORT=40067 \
   -e RUCIOD_UPNP=false \
   -v rucio-data:/data \
-  -p 7070:7070 -p 4321:4321 -p 40067:40067/tcp -p 40066:40066/udp \
+  -p 3003:3003 -p 4321:4321 -p 40067:40067/tcp -p 40066:40066/udp \
   ghcr.io/yourorg/rucio
 ```
 

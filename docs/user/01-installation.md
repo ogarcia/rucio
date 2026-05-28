@@ -90,27 +90,27 @@ docker run -d --name ruciod \
 
 ```sh
 docker run -d --name ruciod \
-  -e RUCIOD_API_LISTEN=0.0.0.0:7070 \
+  -e RUCIOD_API_LISTEN=0.0.0.0:3003 \
   -e RUCIOD_UPNP=false \
   -v rucio-data:/var/lib/rucio \
   -p 4321:4321/tcp \
-  -p 7070:7070/tcp \
+  -p 3003:3003/tcp \
   -p 4672:4672/udp \
   ghcr.io/anomalyco/rucio:latest-web
 ```
 
-Open `http://<host>:7070/` in a browser to access the panel.  The REST API
+Open `http://<host>:3003/` in a browser to access the panel.  The REST API
 remains available at the same address under `/api/v1/`.
 
 ### With eMule / Kad2 support and web panel
 
 ```sh
 docker run -d --name ruciod \
-  -e RUCIOD_API_LISTEN=0.0.0.0:7070 \
+  -e RUCIOD_API_LISTEN=0.0.0.0:3003 \
   -e RUCIOD_UPNP=false \
   -v rucio-data:/var/lib/rucio \
   -p 4321:4321/tcp \
-  -p 7070:7070/tcp \
+  -p 3003:3003/tcp \
   -p 4662:4662/tcp \
   -p 4672:4672/udp \
   ghcr.io/anomalyco/rucio:latest-full

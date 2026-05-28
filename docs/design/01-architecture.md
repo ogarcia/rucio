@@ -77,7 +77,7 @@ Runs as a long-lived async process (Tokio runtime). Its responsibilities:
    `.part` files, resumes on restart.
 3. **Watcher service** — monitors shared directories for changes and triggers
    re-indexing.
-4. **REST API** — Axum HTTP server on `127.0.0.1:7070` (default).
+4. **REST API** — Axum HTTP server on `127.0.0.1:3003` (default).
 5. **SQLite database** — persists shares, downloads, peers and configuration.
 6. **UPnP task** — optional background task that maps TCP and UDP ports via
    IGD/UPnP on the LAN router (see `network.upnp`).
@@ -132,7 +132,7 @@ Key design choices:
 
 ## REST API
 
-The daemon exposes a JSON REST API on `http://127.0.0.1:7070/api/v1/`.
+The daemon exposes a JSON REST API on `http://127.0.0.1:3003/api/v1/`.
 
 | Method | Path | Description |
 |---|---|---|
