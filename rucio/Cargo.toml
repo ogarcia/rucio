@@ -11,6 +11,10 @@ repository.workspace  = true
 name = "rucio"
 path = "src/main.rs"
 
+[features]
+emule-compat = ["rucio-daemon/emule-compat"]
+web-ui       = ["rucio-daemon/web-ui"]
+
 [dependencies]
 rucio-daemon    = { path = "../rucio-daemon" }
 rucio-cli       = { path = "../rucio-cli" }

@@ -72,8 +72,9 @@ Pre-built images are published to `ghcr.io/anomalyco/rucio`.
 
 | Tag | Contents | Typical use |
 |---|---|---|
-| `latest` / `0.1.x` | `ruciod` daemon only | Production nodes, VPS |
-| `latest-full` / `0.1.x-full` | `ruciod` + `rucio` CLI | Development / debugging |
+| `latest` / `0.1.x` | `ruciod` daemon only | Production nodes, VPS, minimal footprint |
+| `latest-web` / `0.1.x-web` | `ruciod` + embedded web panel | Single-host deployments with browser UI |
+| `latest-full` / `0.1.x-full` | `ruciod` + `rucio` CLI + web panel | Development / debugging |
 | `latest-bootstrap` / `0.1.x-bootstrap` | `rucio-bootstrap` with indexer | Dedicated DHT bootstrap node |
 
 ### Quick start
@@ -85,7 +86,23 @@ docker run -d --name ruciod \
   ghcr.io/anomalyco/rucio:latest
 ```
 
-### With eMule / Kad2 support
+### With web control panel
+
+```sh
+docker run -d --name ruciod \
+  -e RUCIOD_API_LISTEN=0.0.0.0:7070 \
+  -e RUCIOD_UPNP=false \
+  -v rucio-data:/var/lib/rucio \
+  -p 4321:4321/tcp \
+  -p 7070:7070/tcp \
+  -p 4672:4672/udp \
+  ghcr.io/anomalyco/rucio:latest-web
+```
+
+Open `http://<host>:7070/` in a browser to access the panel.  The REST API
+remains available at the same address under `/api/v1/`.
+
+### With eMule / Kad2 support and web panel
 
 ```sh
 docker run -d --name ruciod \
