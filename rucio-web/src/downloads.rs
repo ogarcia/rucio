@@ -58,29 +58,8 @@ pub async fn refresh_downloads(downloads: RwSignal<Vec<DownloadResponse>>) {
         .await
     {
         if let Ok(body) = resp.json::<crate::types::DownloadsResponse>().await {
-            // Defensive dedupe by id so the list never carries duplicate keys
-            // into <For>. Avoid spurious notifications when the payload is
-            // identical to the current state.
-            let mut list = body.downloads;
-            let mut seen = std::collections::HashSet::new();
-            list.retain(|d| seen.insert(d.id));
-
-            // DEBUG: dump REST payload. Remove once "ghost row" is fixed.
-            let dump: Vec<String> = list
-                .iter()
-                .map(|d| {
-                    format!(
-                        "{}/{}/{}b",
-                        d.id,
-                        d.name.as_deref().unwrap_or(""),
-                        d.bytes_done
-                    )
-                })
-                .collect();
-            web_sys::console::log_1(&format!("[REST refresh] list={:?}", dump).into());
-
-            if downloads.with_untracked(|cur| cur != &list) {
-                downloads.set(list);
+            if downloads.with_untracked(|cur| cur != &body.downloads) {
+                downloads.set(body.downloads);
             }
         }
     }
