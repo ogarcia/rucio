@@ -162,7 +162,8 @@ pub fn DownloadsTab(downloads: RwSignal<Vec<DownloadResponse>>) -> impl IntoView
             <div class="tab-toolbar">
             <div class="dl-toolbar">
                 <button class="toolbar-btn" on:click=move |_| add_open.set(true)>
-                    <Icon paths=icons::PLUS/> "Add"
+                    <Icon paths=icons::PLUS/>
+                    <span class="btn-label">"Add"</span>
                 </button>
                 <button
                     class="toolbar-btn"
@@ -177,7 +178,8 @@ pub fn DownloadsTab(downloads: RwSignal<Vec<DownloadResponse>>) -> impl IntoView
                         }
                     }
                 >
-                    <Icon paths=icons::INFO_CIRCLE/> "Info"
+                    <Icon paths=icons::INFO_CIRCLE/>
+                    <span class="btn-label">"Info"</span>
                 </button>
                 <button
                     class="toolbar-btn"
@@ -200,7 +202,9 @@ pub fn DownloadsTab(downloads: RwSignal<Vec<DownloadResponse>>) -> impl IntoView
                     <Show when=is_paused fallback=|| view! { <Icon paths=icons::PLAYER_PAUSE/> }>
                         <Icon paths=icons::PLAYER_PLAY/>
                     </Show>
-                    {move || if is_paused() { "Resume" } else { "Pause" }}
+                    <span class="btn-label">
+                        {move || if is_paused() { "Resume" } else { "Pause" }}
+                    </span>
                 </button>
                 <button
                     class="toolbar-btn toolbar-btn-danger"
@@ -215,7 +219,8 @@ pub fn DownloadsTab(downloads: RwSignal<Vec<DownloadResponse>>) -> impl IntoView
                         }
                     }
                 >
-                    <Icon paths=icons::CIRCLE_X/> "Cancel"
+                    <Icon paths=icons::CIRCLE_X/>
+                    <span class="btn-label">"Cancel"</span>
                 </button>
                 <button
                     class="toolbar-btn"
@@ -230,7 +235,8 @@ pub fn DownloadsTab(downloads: RwSignal<Vec<DownloadResponse>>) -> impl IntoView
                         }
                     }
                 >
-                    <Icon paths=icons::TRASH/> "Remove"
+                    <Icon paths=icons::TRASH/>
+                    <span class="btn-label">"Remove"</span>
                 </button>
             </div>
             </div>
@@ -242,11 +248,24 @@ pub fn DownloadsTab(downloads: RwSignal<Vec<DownloadResponse>>) -> impl IntoView
                     fallback=|| view! { <div class="empty-state"><p>"No downloads"</p></div> }
                 >
                     <ul class="dl-list">
+                        // Iterate IDs only so <For> never sees key changes on progress
+                        // updates. Each row gets a Memo that only fires when *its* data
+                        // changes (PartialEq on DownloadResponse), keeping all other
+                        // rows completely stable.
                         <For
-                            each=move || downloads.get()
-                            key=|dl| dl.id
-                            children=move |dl| view! {
-                                <DownloadRow dl=dl selected_id=selected_id/>
+                            each=move || {
+                                downloads.with(|v| v.iter().map(|d| d.id).collect::<Vec<i64>>())
+                            }
+                            key=|id| *id
+                            children=move |id| {
+                                let dl = Memo::new(move |_| {
+                                    downloads.with(|v| v.iter().find(|d| d.id == id).cloned())
+                                });
+                                view! {
+                                    {move || dl.get().map(|d| view! {
+                                        <DownloadRow dl=d selected_id=selected_id/>
+                                    })}
+                                }
                             }
                         />
                     </ul>

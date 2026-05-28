@@ -29,7 +29,7 @@ pub enum DownloadState {
     Cancelled,
 }
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Clone, Debug, PartialEq)]
 pub struct DownloadResponse {
     pub id: i64,
     pub root_hash: String,

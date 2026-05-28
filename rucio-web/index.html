@@ -162,6 +162,11 @@
         .toolbar-btn-danger:not(:disabled) { color: #fca5a5; border-color: #450a0a; }
         .toolbar-btn-danger:hover:not(:disabled) { background: #450a0a; }
 
+        @media (max-width: 540px) {
+            .btn-label { display: none; }
+            .toolbar-btn { padding: 0.3125rem 0.5rem; gap: 0; }
+        }
+
         /* ── Modal ───────────────────────────────────────────────────────── */
 
         .modal-backdrop {
