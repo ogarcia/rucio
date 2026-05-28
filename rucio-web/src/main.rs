@@ -1,4 +1,5 @@
 mod downloads;
+mod icons;
 mod overlays;
 mod searches;
 mod types;
@@ -216,16 +217,26 @@ fn App() -> impl IntoView {
                 </nav>
 
                 <div class="menu-wrap">
-                    // WS connection dot
-                    <span
-                        class=move || if ws_connected.get() { "ws-dot ws-dot-on" } else { "ws-dot ws-dot-off" }
-                        title=move || if ws_connected.get() { "Connected" } else { "Disconnected" }
-                    />
+                    // WS connection icon
+                    {move || {
+                        let connected = ws_connected.get();
+                        view! {
+                            <svg
+                                class=if connected { "icon ws-icon ws-icon-on" } else { "icon ws-icon ws-icon-off" }
+                                viewBox="0 0 24 24" stroke="currentColor" fill="none"
+                                stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                                title=if connected { "Connected" } else { "Disconnected" }
+                                inner_html=if connected { icons::WIFI } else { icons::WIFI_OFF }
+                            ></svg>
+                        }
+                    }}
 
                     <button
                         class="menu-btn"
                         on:click=move |_| menu_open.update(|o| *o = !*o)
-                    >"≡"</button>
+                    >
+                        <icons::Icon paths=icons::MENU/>
+                    </button>
 
                     <Show when=move || menu_open.get()>
                         <div class="dropdown">

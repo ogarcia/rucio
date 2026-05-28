@@ -1,6 +1,7 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
+use crate::icons::{self, Icon};
 use crate::types::{
     DownloadDetailResponse, DownloadResponse, DownloadState, format_eta, format_size, format_speed,
 };
@@ -160,7 +161,7 @@ pub fn DownloadsTab(downloads: RwSignal<Vec<DownloadResponse>>) -> impl IntoView
             // ── Toolbar ───────────────────────────────────────────────────
             <div class="dl-toolbar">
                 <button class="toolbar-btn" on:click=move |_| add_open.set(true)>
-                    "Add"
+                    <Icon paths=icons::PLUS/> "Add"
                 </button>
                 <button
                     class="toolbar-btn"
@@ -175,7 +176,7 @@ pub fn DownloadsTab(downloads: RwSignal<Vec<DownloadResponse>>) -> impl IntoView
                         }
                     }
                 >
-                    "Info"
+                    <Icon paths=icons::INFO_CIRCLE/> "Info"
                 </button>
                 <button
                     class="toolbar-btn"
@@ -195,6 +196,9 @@ pub fn DownloadsTab(downloads: RwSignal<Vec<DownloadResponse>>) -> impl IntoView
                         }
                     }
                 >
+                    <Show when=is_paused fallback=|| view! { <Icon paths=icons::PLAYER_PAUSE/> }>
+                        <Icon paths=icons::PLAYER_PLAY/>
+                    </Show>
                     {move || if is_paused() { "Resume" } else { "Pause" }}
                 </button>
                 <button
@@ -210,7 +214,7 @@ pub fn DownloadsTab(downloads: RwSignal<Vec<DownloadResponse>>) -> impl IntoView
                         }
                     }
                 >
-                    "Cancel"
+                    <Icon paths=icons::CIRCLE_X/> "Cancel"
                 </button>
                 <button
                     class="toolbar-btn"
@@ -225,7 +229,7 @@ pub fn DownloadsTab(downloads: RwSignal<Vec<DownloadResponse>>) -> impl IntoView
                         }
                     }
                 >
-                    "Remove"
+                    <Icon paths=icons::TRASH/> "Remove"
                 </button>
             </div>
 
