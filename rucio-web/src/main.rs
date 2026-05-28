@@ -4,6 +4,7 @@ mod overlays;
 mod searches;
 mod types;
 
+use std::collections::HashSet;
 use std::time::Duration;
 
 use futures_util::StreamExt;
@@ -16,9 +17,22 @@ use downloads::{DownloadsTab, refresh_downloads};
 use overlays::{AddressesPanel, NodeStatusPanel};
 use searches::SearchesTab;
 use types::{
-    DownloadResponse, ResultSource, SearchResult, SearchState, StatusResponse, WsEvent,
-    WsSearchResult,
+    DownloadResponse, DownloadState, ResultSource, SearchResult, SearchState, StatusResponse,
+    WsEvent, WsSearchResult,
 };
+
+/// States the daemon streams over `DownloadProgress`. A download that leaves
+/// this set has reached a terminal/paused state the WS does not report, so the
+/// list must be refreshed from REST to pick up its final state.
+fn is_streamed_state(s: &DownloadState) -> bool {
+    matches!(
+        s,
+        DownloadState::FindingProviders
+            | DownloadState::Queued
+            | DownloadState::Downloading
+            | DownloadState::Stalled
+    )
+}
 
 // ── Tab / Panel enums ─────────────────────────────────────────────────────────
 
@@ -109,7 +123,33 @@ fn handle_event(
 ) {
     match event {
         WsEvent::DownloadProgress(list) => {
-            downloads.set(list);
+            // The daemon only streams *active* downloads. Merge them into the
+            // existing list rather than replacing it, so completed / paused /
+            // cancelled rows (which the WS omits) don't disappear.
+            let incoming: HashSet<i64> = list.iter().map(|d| d.id).collect();
+
+            // A download we were tracking as active that is no longer in the
+            // stream finished into a terminal state the WS doesn't report.
+            let some_finished = downloads.with_untracked(|cur| {
+                cur.iter()
+                    .any(|d| is_streamed_state(&d.state) && !incoming.contains(&d.id))
+            });
+
+            downloads.update(|cur| {
+                for item in list {
+                    if let Some(slot) = cur.iter_mut().find(|d| d.id == item.id) {
+                        *slot = item;
+                    } else {
+                        cur.push(item);
+                    }
+                }
+            });
+
+            if some_finished {
+                spawn_local(async move {
+                    refresh_downloads(downloads).await;
+                });
+            }
         }
 
         WsEvent::SearchResult(r) => {
