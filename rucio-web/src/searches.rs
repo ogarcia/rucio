@@ -75,6 +75,7 @@ pub fn SearchesTab(
 
     view! {
         <div class="tab-content">
+            <div class="tab-toolbar">
             <div class="search-bar">
                 <input
                     class="search-input"
@@ -94,7 +95,9 @@ pub fn SearchesTab(
                     {move || if searching.get() { "Searching…" } else { "Search" }}
                 </button>
             </div>
+            </div>
 
+            <div class="tab-scroll">
             <Show
                 when=move || results.get().is_empty()
                 fallback=move || view! {
@@ -119,6 +122,7 @@ pub fn SearchesTab(
                     view! { <div class="empty-state"><p>"No results"</p></div> }.into_any()
                 }}
             </Show>
+            </div>
         </div>
     }
 }

@@ -159,6 +159,7 @@ pub fn DownloadsTab(downloads: RwSignal<Vec<DownloadResponse>>) -> impl IntoView
     view! {
         <div class="tab-content">
             // ── Toolbar ───────────────────────────────────────────────────
+            <div class="tab-toolbar">
             <div class="dl-toolbar">
                 <button class="toolbar-btn" on:click=move |_| add_open.set(true)>
                     <Icon paths=icons::PLUS/> "Add"
@@ -232,22 +233,25 @@ pub fn DownloadsTab(downloads: RwSignal<Vec<DownloadResponse>>) -> impl IntoView
                     <Icon paths=icons::TRASH/> "Remove"
                 </button>
             </div>
+            </div>
 
             // ── Download list ─────────────────────────────────────────────
-            <Show
-                when=move || !downloads.get().is_empty()
-                fallback=|| view! { <div class="empty-state"><p>"No downloads"</p></div> }
-            >
-                <ul class="dl-list">
-                    <For
-                        each=move || downloads.get()
-                        key=|dl| dl.id
-                        children=move |dl| view! {
-                            <DownloadRow dl=dl selected_id=selected_id/>
-                        }
-                    />
-                </ul>
-            </Show>
+            <div class="tab-scroll">
+                <Show
+                    when=move || !downloads.get().is_empty()
+                    fallback=|| view! { <div class="empty-state"><p>"No downloads"</p></div> }
+                >
+                    <ul class="dl-list">
+                        <For
+                            each=move || downloads.get()
+                            key=|dl| dl.id
+                            children=move |dl| view! {
+                                <DownloadRow dl=dl selected_id=selected_id/>
+                            }
+                        />
+                    </ul>
+                </Show>
+            </div>
         </div>
 
         // ── Add modal ─────────────────────────────────────────────────────
