@@ -64,6 +64,21 @@ pub async fn refresh_downloads(downloads: RwSignal<Vec<DownloadResponse>>) {
             let mut list = body.downloads;
             let mut seen = std::collections::HashSet::new();
             list.retain(|d| seen.insert(d.id));
+
+            // DEBUG: dump REST payload. Remove once "ghost row" is fixed.
+            let dump: Vec<String> = list
+                .iter()
+                .map(|d| {
+                    format!(
+                        "{}/{}/{}b",
+                        d.id,
+                        d.name.as_deref().unwrap_or(""),
+                        d.bytes_done
+                    )
+                })
+                .collect();
+            web_sys::console::log_1(&format!("[REST refresh] list={:?}", dump).into());
+
             if downloads.with_untracked(|cur| cur != &list) {
                 downloads.set(list);
             }
@@ -324,60 +339,82 @@ fn DownloadRow(
     downloads: RwSignal<Vec<DownloadResponse>>,
     selected_id: RwSignal<Option<i64>>,
 ) -> impl IntoView {
-    // One memo per row backed by PartialEq, so closures below only re-run when
-    // *this* row's data actually changes — not on every WS tick for the list.
-    let dl = Memo::new(move |_| downloads.with(|v| v.iter().find(|d| d.id == id).cloned()));
+    // Each reactive prop reads the signal directly and locates the row by id.
+    // We deliberately avoid wrapping this in a per-row Memo: Memos inside a
+    // <For> child are easy to mis-dispose when the parent reorders, leaving
+    // orphan DOM nodes that keep showing stale data (the "ghost row" bug).
+    let with_row = move |f: &dyn Fn(&DownloadResponse) -> String| -> String {
+        downloads.with(|v| v.iter().find(|d| d.id == id).map(f).unwrap_or_default())
+    };
 
     let name = move || {
-        dl.with(|opt| {
-            opt.as_ref()
-                .map(|d| {
-                    d.name
-                        .clone()
-                        .unwrap_or_else(|| format!("{}…", &d.root_hash[..16]))
-                })
-                .unwrap_or_default()
+        with_row(&|d| {
+            d.name
+                .clone()
+                .unwrap_or_else(|| format!("{}…", &d.root_hash[..16]))
         })
     };
 
     let size_label = move || {
-        dl.with(|opt| {
-            opt.as_ref()
-                .map(|d| {
-                    let p = pct_for(d);
-                    match (d.size, p) {
-                        (Some(total), Some(p)) if p < 100.0 => format!(
-                            "{} / {} — {:.1}%",
-                            format_size(d.bytes_done),
-                            format_size(total),
-                            p
-                        ),
-                        (Some(total), _) => format_size(total),
-                        _ => format_size(d.bytes_done),
-                    }
-                })
-                .unwrap_or_default()
+        with_row(&|d| {
+            let p = pct_for(d);
+            match (d.size, p) {
+                (Some(total), Some(p)) if p < 100.0 => format!(
+                    "{} / {} — {:.1}%",
+                    format_size(d.bytes_done),
+                    format_size(total),
+                    p
+                ),
+                (Some(total), _) => format_size(total),
+                _ => format_size(d.bytes_done),
+            }
         })
     };
 
     let show_bar = move || {
-        dl.with(|opt| {
-            opt.as_ref()
+        downloads.with(|v| {
+            v.iter()
+                .find(|d| d.id == id)
                 .map(|d| !is_terminal(&d.state) && pct_for(d).is_some())
                 .unwrap_or(false)
         })
     };
     let bar_width = move || {
-        let p = dl.with(|opt| opt.as_ref().and_then(pct_for).unwrap_or(0.0));
+        let p = downloads.with(|v| {
+            v.iter()
+                .find(|d| d.id == id)
+                .and_then(pct_for)
+                .unwrap_or(0.0)
+        });
         format!("width:{p:.1}%")
     };
 
-    let state_class =
-        move || dl.with(|opt| opt.as_ref().map(|d| state_css(&d.state)).unwrap_or(""));
-    let state_text =
-        move || dl.with(|opt| opt.as_ref().map(|d| state_label(&d.state)).unwrap_or(""));
-    let has_error = move || dl.with(|opt| opt.as_ref().map(|d| d.error.is_some()).unwrap_or(false));
-    let error_text = move || dl.with(|opt| opt.as_ref().and_then(|d| d.error.clone()));
+    let state_class = move || {
+        downloads.with(|v| {
+            v.iter()
+                .find(|d| d.id == id)
+                .map(|d| state_css(&d.state))
+                .unwrap_or("")
+        })
+    };
+    let state_text = move || {
+        downloads.with(|v| {
+            v.iter()
+                .find(|d| d.id == id)
+                .map(|d| state_label(&d.state))
+                .unwrap_or("")
+        })
+    };
+    let has_error = move || {
+        downloads.with(|v| {
+            v.iter()
+                .find(|d| d.id == id)
+                .map(|d| d.error.is_some())
+                .unwrap_or(false)
+        })
+    };
+    let error_text =
+        move || downloads.with(|v| v.iter().find(|d| d.id == id).and_then(|d| d.error.clone()));
 
     view! {
         <li

@@ -18,4 +18,4 @@ gloo-timers   = { version = "0.4", features = ["futures"] }
 futures-util  = "0.3"
 serde         = { version = "1", features = ["derive"] }
 serde_json    = "1"
-web-sys       = { version = "0.3", features = ["Window", "Location"] }
+web-sys       = { version = "0.3", features = ["Window", "Location", "console"] }

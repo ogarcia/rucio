@@ -150,6 +150,38 @@ fn handle_event(
 ) {
     match event {
         WsEvent::DownloadProgress(list) => {
+            // DEBUG: dump WS payload and current cur. Remove once "ghost row" is fixed.
+            let cur_dump: Vec<String> = downloads.with_untracked(|cur| {
+                cur.iter()
+                    .map(|d| {
+                        format!(
+                            "{}/{}/{}b",
+                            d.id,
+                            d.name.as_deref().unwrap_or(""),
+                            d.bytes_done
+                        )
+                    })
+                    .collect()
+            });
+            let list_dump: Vec<String> = list
+                .iter()
+                .map(|d| {
+                    format!(
+                        "{}/{}/{}b",
+                        d.id,
+                        d.name.as_deref().unwrap_or(""),
+                        d.bytes_done
+                    )
+                })
+                .collect();
+            web_sys::console::log_1(
+                &format!(
+                    "[WS DownloadProgress] cur={:?} | list={:?}",
+                    cur_dump, list_dump
+                )
+                .into(),
+            );
+
             // The daemon only streams *active* downloads. Merge into the existing
             // list so completed/paused/cancelled rows don't disappear.
             let incoming: HashSet<i64> = list.iter().map(|d| d.id).collect();
