@@ -22,11 +22,14 @@ on:
       - "rucio-emule/**"
       - "rucio-bootstrap/**"
       - "rucio/**"
+      - "rucio-web/**"
       - ".github/workflows/container.yml"
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  # Keep in sync with the TRUNK_VERSION ARG in Containerfile.
+  TRUNK_VERSION: "0.21.14"
 
 jobs:
   # ── Compile binaries once ──────────────────────────────────────────────────
@@ -38,23 +41,43 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-unknown-linux-musl
+          targets: x86_64-unknown-linux-musl,wasm32-unknown-unknown
 
       - uses: Swatinem/rust-cache@v2
 
       - name: Install musl tools
         run: sudo apt-get install -y musl-tools
 
-      - name: Build
-        run: cargo build --release --locked --target x86_64-unknown-linux-musl --features emule-compat,indexer
-
-      - name: Prepare dist/
+      - name: Install trunk
         run: |
+          curl -sSLo trunk.tar.gz \
+            "https://github.com/trunk-rs/trunk/releases/download/v${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz"
+          tar xzf trunk.tar.gz
+          sudo mv trunk /usr/local/bin/
+
+      - name: Build Leptos frontend
+        run: cd rucio-web && trunk build --release
+
+      - name: Build (no web-ui)
+        run: |
+          cargo build --release --locked --target x86_64-unknown-linux-musl \
+            --features emule-compat,indexer
           mkdir dist
-          cp target/x86_64-unknown-linux-musl/release/ruciod          dist/
-          cp target/x86_64-unknown-linux-musl/release/rucio            dist/
-          cp target/x86_64-unknown-linux-musl/release/rucio-bootstrap  dist/
+          cp target/x86_64-unknown-linux-musl/release/ruciod         dist/
+          cp target/x86_64-unknown-linux-musl/release/rucio           dist/
+          cp target/x86_64-unknown-linux-musl/release/rucio-bootstrap dist/
           strip dist/ruciod dist/rucio dist/rucio-bootstrap
+
+      # Incremental: only rucio-daemon and rucio recompile.
+      # Run after copying the non-web binaries — the web-ui build overwrites
+      # target/.../ruciod and target/.../rucio in place.
+      - name: Build (web-ui variants)
+        run: |
+          cargo build --release --locked --target x86_64-unknown-linux-musl \
+            -p rucio-daemon -p rucio --features emule-compat,web-ui
+          cp target/x86_64-unknown-linux-musl/release/ruciod dist/ruciod-web
+          cp target/x86_64-unknown-linux-musl/release/rucio  dist/rucio-fat-web
+          strip dist/ruciod-web dist/rucio-fat-web
 
       - uses: actions/upload-artifact@v7
         with:
@@ -113,6 +136,58 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=ruciod
           cache-to: type=gha,mode=max,scope=ruciod
+
+  # ── web image (tag: master-web / 0.1.0-web / latest-web) ─────────────────
+  image-web:
+    name: Build web image
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: binaries
+          path: dist/
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch,suffix=-web
+            type=ref,event=pr,suffix=-web
+            type=semver,pattern={{version}},suffix=-web
+            type=semver,pattern={{major}}.{{minor}},suffix=-web
+            type=raw,value=latest-web,enable=${{ startsWith(github.ref, 'refs/tags/') }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Containerfile
+          target: web
+          build-args: BUILDER=prebuilt
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web
 
   # ── full image (tag: master-full / 0.1.0-full / latest-full) ─────────────
   image-full:
