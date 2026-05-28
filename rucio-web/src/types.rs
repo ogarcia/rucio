@@ -44,6 +44,34 @@ pub struct DownloadsResponse {
     pub downloads: Vec<DownloadResponse>,
 }
 
+#[derive(Deserialize, Clone, Debug)]
+pub struct DownloadDetailResponse {
+    pub id: i64,
+    pub kind: String,
+    pub root_hash: String,
+    pub name: Option<String>,
+    pub size: Option<u64>,
+    pub bytes_done: u64,
+    pub state: DownloadState,
+    pub error: Option<String>,
+    pub dest_path: Option<String>,
+    pub added_at: i64,
+    pub updated_at: i64,
+    pub link: Option<String>,
+    pub pieces_done: Option<u64>,
+    pub pieces_total: Option<u64>,
+    #[serde(default)]
+    pub sources_total: Option<u32>,
+    #[serde(default)]
+    pub sources_active: Option<u32>,
+    #[serde(default)]
+    pub pieces_in_flight: Option<u32>,
+    #[serde(default)]
+    pub speed_bps: Option<u64>,
+    #[serde(default)]
+    pub eta_secs: Option<u64>,
+}
+
 // ── Searches ─────────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
