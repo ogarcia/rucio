@@ -230,29 +230,20 @@ pub fn DownloadsTab(downloads: RwSignal<Vec<DownloadResponse>>) -> impl IntoView
             </div>
 
             // ── Download list ─────────────────────────────────────────────
-            {move || {
-                let list = downloads.get();
-                if list.is_empty() {
-                    view! {
-                        <div class="empty-state">
-                            <p>"No downloads"</p>
-                        </div>
-                    }
-                    .into_any()
-                } else {
-                    view! {
-                        <ul class="dl-list">
-                            {list
-                                .into_iter()
-                                .map(|dl| view! {
-                                    <DownloadRow dl=dl selected_id=selected_id/>
-                                })
-                                .collect_view()}
-                        </ul>
-                    }
-                    .into_any()
-                }
-            }}
+            <Show
+                when=move || !downloads.get().is_empty()
+                fallback=|| view! { <div class="empty-state"><p>"No downloads"</p></div> }
+            >
+                <ul class="dl-list">
+                    <For
+                        each=move || downloads.get()
+                        key=|dl| dl.id
+                        children=move |dl| view! {
+                            <DownloadRow dl=dl selected_id=selected_id/>
+                        }
+                    />
+                </ul>
+            </Show>
         </div>
 
         // ── Add modal ─────────────────────────────────────────────────────

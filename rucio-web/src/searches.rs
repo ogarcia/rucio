@@ -95,40 +95,30 @@ pub fn SearchesTab(
                 </button>
             </div>
 
-            {move || {
-                let list = results.get();
-                if list.is_empty() {
-                    if searching.get() {
-                        view! {
-                            <div class="empty-state">
-                                <p class="searching-indicator">"Searching…"</p>
-                            </div>
-                        }.into_any()
-                    } else {
-                        view! {
-                            <div class="empty-state">
-                                <p>"No results"</p>
-                            </div>
-                        }.into_any()
-                    }
-                } else {
-                    view! {
-                        <div class="results-header">
-                            <span class="results-count">
-                                {list.len().to_string()} " result(s)"
-                                {move || if searching.get() {
-                                    " — searching…"
-                                } else { "" }}
-                            </span>
-                        </div>
-                        <ul class="results-list">
-                            {list.into_iter().map(|r| view! {
-                                <ResultRow result=r/>
-                            }).collect_view()}
-                        </ul>
-                    }.into_any()
+            <Show
+                when=move || results.get().is_empty()
+                fallback=move || view! {
+                    <div class="results-header">
+                        <span class="results-count">
+                            {move || results.get().len().to_string()} " result(s)"
+                            {move || if searching.get() { " — searching…" } else { "" }}
+                        </span>
+                    </div>
+                    <ul class="results-list">
+                        <For
+                            each=move || results.get()
+                            key=|r| r.result_id
+                            children=|r| view! { <ResultRow result=r/> }
+                        />
+                    </ul>
                 }
-            }}
+            >
+                {move || if searching.get() {
+                    view! { <div class="empty-state"><p class="searching-indicator">"Searching…"</p></div> }.into_any()
+                } else {
+                    view! { <div class="empty-state"><p>"No results"</p></div> }.into_any()
+                }}
+            </Show>
         </div>
     }
 }
