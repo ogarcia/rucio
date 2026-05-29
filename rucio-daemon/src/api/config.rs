@@ -6,7 +6,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use rucio_core::api::config::{
     ApiConfig, ConfigResponse, ConfigSnapshot, EmuleConfig, NetworkConfig, NodeConfig,
-    StorageConfig,
+    StorageConfig, TempLimitRequest, TempLimitStatus,
 };
 
 use crate::api::AppState;
@@ -34,12 +34,17 @@ use crate::config::Config;
 pub async fn get_config(State(state): State<AppState>) -> Json<ConfigResponse> {
     let cfg = &*state.config;
 
-    // Bandwidth limits are live — read them from the throttle, not from the
-    // startup config snapshot, so they reflect any PUT made since startup.
-    let live_upload = state.upload_throttle.rate_kbps();
-    let live_download = state.download_throttle.rate_kbps();
-
-    let current = build_snapshot(cfg, live_upload, live_download);
+    // Bandwidth limits are live — read them from BandwidthState (the source of
+    // truth), not from the startup config snapshot, so they reflect any PUT
+    // made since startup. Report the *base* (normal) caps, not the buckets'
+    // current rate, which may carry a temporary override.
+    let current = build_snapshot(
+        cfg,
+        state.bandwidth.base_upload_kbps(),
+        state.bandwidth.base_download_kbps(),
+        state.bandwidth.temp_upload_kbps(),
+        state.bandwidth.temp_download_kbps(),
+    );
 
     // Compare startup config with the current on-disk file.  Any restart-required
     // field that differs is surfaced as a `pending` snapshot.
@@ -59,6 +64,8 @@ pub async fn get_config(State(state): State<AppState>) -> Json<ConfigResponse> {
                 &disk,
                 disk.network.upload_limit_kbps,
                 disk.network.download_limit_kbps,
+                disk.network.temp_upload_limit_kbps,
+                disk.network.temp_download_limit_kbps,
             ))
         });
 
@@ -69,6 +76,8 @@ fn build_snapshot(
     cfg: &Config,
     upload_limit_kbps: u64,
     download_limit_kbps: u64,
+    temp_upload_limit_kbps: u64,
+    temp_download_limit_kbps: u64,
 ) -> ConfigSnapshot {
     ConfigSnapshot {
         node: NodeConfig {
@@ -82,6 +91,8 @@ fn build_snapshot(
             bootstrap_peers: cfg.network.bootstrap_peers.clone(),
             upload_limit_kbps,
             download_limit_kbps,
+            temp_upload_limit_kbps,
+            temp_download_limit_kbps,
             max_upload_tasks: cfg.network.max_upload_tasks,
         },
         storage: StorageConfig {
@@ -130,11 +141,16 @@ pub async fn put_config(
 ) -> StatusCode {
     let c = req.current;
 
-    // Apply bandwidth limits immediately to the running token buckets.
-    state.upload_throttle.set_rate(c.network.upload_limit_kbps);
+    // Apply bandwidth limits immediately via BandwidthState, which recomputes
+    // the effective rate (honouring the temporary-limit toggle) and pushes it
+    // to the running token buckets.
     state
-        .download_throttle
-        .set_rate(c.network.download_limit_kbps);
+        .bandwidth
+        .set_base(c.network.upload_limit_kbps, c.network.download_limit_kbps);
+    state.bandwidth.set_temp(
+        c.network.temp_upload_limit_kbps,
+        c.network.temp_download_limit_kbps,
+    );
 
     // Build a new Config from the request and persist it.
     // Fields not exposed in the API (e.g. api.token) are preserved from
@@ -144,6 +160,8 @@ pub async fn put_config(
     new_cfg.network.bootstrap_peers = c.network.bootstrap_peers;
     new_cfg.network.upload_limit_kbps = c.network.upload_limit_kbps;
     new_cfg.network.download_limit_kbps = c.network.download_limit_kbps;
+    new_cfg.network.temp_upload_limit_kbps = c.network.temp_upload_limit_kbps;
+    new_cfg.network.temp_download_limit_kbps = c.network.temp_download_limit_kbps;
     new_cfg.network.max_upload_tasks = c.network.max_upload_tasks.max(1);
     new_cfg.storage.download_dir = c.storage.download_dir.into();
     new_cfg.storage.temp_dir = c.storage.temp_dir.into();
@@ -164,4 +182,50 @@ pub async fn put_config(
             StatusCode::INTERNAL_SERVER_ERROR
         }
     }
+}
+
+fn temp_limit_status(state: &AppState) -> TempLimitStatus {
+    TempLimitStatus {
+        active: state.bandwidth.temp_active(),
+        upload_kbps: state.bandwidth.temp_upload_kbps(),
+        download_kbps: state.bandwidth.temp_download_kbps(),
+        effective_upload_kbps: state.bandwidth.effective_upload_kbps(),
+        effective_download_kbps: state.bandwidth.effective_download_kbps(),
+    }
+}
+
+/// Get temporary speed-limit status
+///
+/// Returns whether the temporary speed limit is engaged, its preset caps, and
+/// the upload/download rates actually in force right now.
+#[utoipa::path(
+    get,
+    path = "/api/v1/config/temp-limit",
+    responses(
+        (status = 200, description = "Current temporary speed-limit status.", body = TempLimitStatus)
+    )
+)]
+pub async fn get_temp_limit(State(state): State<AppState>) -> Json<TempLimitStatus> {
+    Json(temp_limit_status(&state))
+}
+
+/// Toggle the temporary speed limit
+///
+/// Engages or releases the temporary speed limit, applying the preset caps
+/// (`network.temp_*_limit_kbps`) to the live throttles immediately. This is
+/// runtime-only state and is not persisted across restarts.
+#[utoipa::path(
+    put,
+    path = "/api/v1/config/temp-limit",
+    request_body = TempLimitRequest,
+    responses(
+        (status = 200, description = "New temporary speed-limit status.", body = TempLimitStatus)
+    )
+)]
+pub async fn put_temp_limit(
+    State(state): State<AppState>,
+    Json(req): Json<TempLimitRequest>,
+) -> Json<TempLimitStatus> {
+    state.bandwidth.set_temp_active(req.active);
+    Json(temp_limit_status(&state))
 }

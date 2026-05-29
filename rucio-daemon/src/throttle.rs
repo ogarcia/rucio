@@ -22,7 +22,9 @@
 //! interrupted — they will overshoot by at most one chunk duration, which is
 //! acceptable for a display-level bandwidth limit.
 
+use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// Burst multiplier: allow up to 2 seconds of accumulated tokens.
@@ -125,6 +127,132 @@ impl TokenBucket {
     /// Return the current rate in KB/s (0 = unlimited).
     pub fn rate_kbps(&self) -> u64 {
         self.inner.lock().unwrap().rate / 1024
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Bandwidth state (base + temporary limit toggle)
+// ---------------------------------------------------------------------------
+
+/// Combine a base (normal) limit with a temporary one, returning the more
+/// restrictive of the two. `0` means unlimited, so it never wins over a real
+/// cap — engaging a temporary limit can only tighten the rate, never relax it.
+pub fn restrictive(base_kbps: u64, temp_kbps: u64) -> u64 {
+    match (base_kbps, temp_kbps) {
+        (0, t) => t,
+        (b, 0) => b,
+        (b, t) => b.min(t),
+    }
+}
+
+/// Source of truth for the bandwidth limits and the temporary-limit toggle.
+///
+/// Holds the user's normal ("base") caps, the temporary caps, and whether the
+/// temporary limit is engaged. On any change it recomputes the effective rate
+/// — the more [`restrictive`] of base/temp while engaged, otherwise the base —
+/// and pushes it to the two token buckets the transfer paths consume. Keeping
+/// the base here, rather than reading it back from the buckets, lets the
+/// buckets carry the temporary override without losing the value to restore
+/// when the toggle is switched off.
+pub struct BandwidthState {
+    upload: Arc<TokenBucket>,
+    download: Arc<TokenBucket>,
+    temp_active: AtomicBool,
+    base_upload_kbps: AtomicU64,
+    base_download_kbps: AtomicU64,
+    temp_upload_kbps: AtomicU64,
+    temp_download_kbps: AtomicU64,
+}
+
+impl BandwidthState {
+    pub fn new(
+        upload: Arc<TokenBucket>,
+        download: Arc<TokenBucket>,
+        base_upload_kbps: u64,
+        base_download_kbps: u64,
+        temp_upload_kbps: u64,
+        temp_download_kbps: u64,
+    ) -> Self {
+        let s = Self {
+            upload,
+            download,
+            temp_active: AtomicBool::new(false),
+            base_upload_kbps: AtomicU64::new(base_upload_kbps),
+            base_download_kbps: AtomicU64::new(base_download_kbps),
+            temp_upload_kbps: AtomicU64::new(temp_upload_kbps),
+            temp_download_kbps: AtomicU64::new(temp_download_kbps),
+        };
+        s.apply();
+        s
+    }
+
+    /// Recompute the effective rate and push it to both buckets.
+    fn apply(&self) {
+        let (u, d) = if self.temp_active.load(Ordering::SeqCst) {
+            (
+                restrictive(
+                    self.base_upload_kbps.load(Ordering::SeqCst),
+                    self.temp_upload_kbps.load(Ordering::SeqCst),
+                ),
+                restrictive(
+                    self.base_download_kbps.load(Ordering::SeqCst),
+                    self.temp_download_kbps.load(Ordering::SeqCst),
+                ),
+            )
+        } else {
+            (
+                self.base_upload_kbps.load(Ordering::SeqCst),
+                self.base_download_kbps.load(Ordering::SeqCst),
+            )
+        };
+        self.upload.set_rate(u);
+        self.download.set_rate(d);
+    }
+
+    pub fn temp_active(&self) -> bool {
+        self.temp_active.load(Ordering::SeqCst)
+    }
+    pub fn base_upload_kbps(&self) -> u64 {
+        self.base_upload_kbps.load(Ordering::SeqCst)
+    }
+    pub fn base_download_kbps(&self) -> u64 {
+        self.base_download_kbps.load(Ordering::SeqCst)
+    }
+    pub fn temp_upload_kbps(&self) -> u64 {
+        self.temp_upload_kbps.load(Ordering::SeqCst)
+    }
+    pub fn temp_download_kbps(&self) -> u64 {
+        self.temp_download_kbps.load(Ordering::SeqCst)
+    }
+    /// Rate currently applied to the upload bucket (KB/s, 0 = unlimited).
+    pub fn effective_upload_kbps(&self) -> u64 {
+        self.upload.rate_kbps()
+    }
+    /// Rate currently applied to the download bucket (KB/s, 0 = unlimited).
+    pub fn effective_download_kbps(&self) -> u64 {
+        self.download.rate_kbps()
+    }
+
+    /// Engage or release the temporary limit.
+    pub fn set_temp_active(&self, on: bool) {
+        self.temp_active.store(on, Ordering::SeqCst);
+        self.apply();
+    }
+
+    /// Update the user's normal caps (e.g. from `PUT /config`) and re-apply.
+    pub fn set_base(&self, upload_kbps: u64, download_kbps: u64) {
+        self.base_upload_kbps.store(upload_kbps, Ordering::SeqCst);
+        self.base_download_kbps
+            .store(download_kbps, Ordering::SeqCst);
+        self.apply();
+    }
+
+    /// Update the temporary caps (e.g. from `PUT /config`) and re-apply.
+    pub fn set_temp(&self, upload_kbps: u64, download_kbps: u64) {
+        self.temp_upload_kbps.store(upload_kbps, Ordering::SeqCst);
+        self.temp_download_kbps
+            .store(download_kbps, Ordering::SeqCst);
+        self.apply();
     }
 }
 

@@ -10,8 +10,22 @@ use gloo_timers::future::sleep;
 use crate::icons::{self, Icon};
 use crate::types::{
     DownloadDetailResponse, DownloadPiecesResponse, DownloadResponse, DownloadState, PieceState,
-    format_eta, format_size, format_speed, is_streamed_state,
+    TempLimitRequest, TempLimitStatus, format_eta, format_size, format_speed, is_streamed_state,
 };
+
+/// Toggle the daemon's temporary speed limit; returns the resulting state.
+async fn api_set_temp_limit(active: bool) -> Option<bool> {
+    gloo_net::http::Request::put("/api/v1/config/temp-limit")
+        .json(&TempLimitRequest { active })
+        .ok()?
+        .send()
+        .await
+        .ok()?
+        .json::<TempLimitStatus>()
+        .await
+        .ok()
+        .map(|s| s.active)
+}
 
 // ── Filter ────────────────────────────────────────────────────────────────────
 
@@ -183,6 +197,7 @@ pub fn DownloadsTab(
     downloads: RwSignal<Vec<DownloadResponse>>,
     dl_speed: RwSignal<u64>,
     ul_speed: RwSignal<u64>,
+    temp_limit: RwSignal<bool>,
 ) -> impl IntoView {
     let selected_id: RwSignal<Option<i64>> = RwSignal::new(None);
     let add_open: RwSignal<bool> = RwSignal::new(false);
@@ -416,6 +431,39 @@ pub fn DownloadsTab(
                         }
                     }}
                 </div>
+                // Temporary speed-limit toggle: caps upload/download to free
+                // bandwidth (e.g. for gaming) until switched off again.
+                <button
+                    class=move || if temp_limit.get() {
+                        "dl-limit-btn dl-limit-on"
+                    } else {
+                        "dl-limit-btn"
+                    }
+                    title=move || if temp_limit.get() {
+                        "Temporary speed limit: on"
+                    } else {
+                        "Temporary speed limit: off"
+                    }
+                    on:click=move |_| {
+                        let next = !temp_limit.get_untracked();
+                        spawn_local(async move {
+                            if let Some(active) = api_set_temp_limit(next).await {
+                                temp_limit.set(active);
+                            }
+                        });
+                    }
+                >
+                    {move || view! {
+                        // Icon shows the action: an un-crossed hourglass when off
+                        // (press to slow down), a crossed one when on (press to
+                        // lift the limit). The highlight conveys the active state.
+                        <Icon paths=if temp_limit.get() {
+                            icons::HOURGLASS_OFF
+                        } else {
+                            icons::HOURGLASS
+                        }/>
+                    }}
+                </button>
             </div>
         </div>
 

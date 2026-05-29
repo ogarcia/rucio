@@ -70,6 +70,14 @@ async fn test_state() -> (
         metrics: Arc::new(crate::metrics::Metrics::default()),
         upload_throttle: Arc::new(crate::throttle::TokenBucket::new(0)),
         download_throttle: Arc::new(crate::throttle::TokenBucket::new(0)),
+        bandwidth: Arc::new(crate::throttle::BandwidthState::new(
+            Arc::new(crate::throttle::TokenBucket::new(0)),
+            Arc::new(crate::throttle::TokenBucket::new(0)),
+            0,
+            0,
+            5000,
+            5000,
+        )),
         #[cfg(feature = "emule-compat")]
         kad_handle: {
             let socket = Arc::new(tokio::net::UdpSocket::bind("0.0.0.0:0").await.unwrap());

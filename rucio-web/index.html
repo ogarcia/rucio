@@ -182,6 +182,16 @@
         }
         .dropdown-item:hover { background: var(--border); }
         .dropdown-sep { height: 1px; background: var(--border); margin: 0.25rem 0; }
+        /* Toggle row: label left, state pill right. */
+        .dropdown-toggle {
+            display: flex; align-items: center; justify-content: space-between; gap: 0.75rem;
+        }
+        .toggle-pill {
+            font-size: 0.7rem; font-weight: 600;
+            padding: 0.05rem 0.45rem; border-radius: 9999px;
+            background: var(--raised); color: var(--text-4);
+        }
+        .toggle-pill.toggle-on { background: var(--sa); color: var(--sa-fg); }
 
         /* ── Theme picker ────────────────────────────────────────────────── */
 
@@ -384,6 +394,20 @@
         .dl-speed-down { color: var(--sa-fg); }
         .dl-speed-up   { color: var(--sd-fg); }
         .dl-speed-idle { font-size: 0.75rem; color: var(--text-4); }
+
+        /* Temporary speed-limit toggle button (right of the speed meters). */
+        .dl-limit-btn {
+            display: inline-flex; align-items: center; justify-content: center;
+            padding: 0.2rem; background: transparent; border: none;
+            color: var(--text-4); cursor: pointer; border-radius: 0.25rem;
+            transition: color 0.1s, background 0.1s;
+        }
+        .dl-limit-btn:hover { background: var(--row-hover); color: var(--text-2); }
+        .dl-limit-btn .icon { width: 1.125rem; height: 1.125rem; }
+        /* Engaged: filled accent badge so the slow mode is unmistakably active. */
+        .dl-limit-on, .dl-limit-on:hover {
+            background: var(--accent); color: var(--accent-fg);
+        }
 
         /* Mobile: two purposeful rows via grid. Row 1 = select + elastic
            input; row 2 = active count (left) and speeds (right), matching

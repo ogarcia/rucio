@@ -1,3 +1,28 @@
+/// GET/PUT /api/v1/config/temp-limit — temporary speed-limit toggle.
+///
+/// The temporary limit is runtime-only state (it does not persist across
+/// restarts); the preset caps it applies live in `network.temp_*_limit_kbps`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+pub struct TempLimitStatus {
+    /// Whether the temporary speed limit is currently engaged.
+    pub active: bool,
+    /// Preset temporary upload cap in KB/s (0 = unlimited).
+    pub upload_kbps: u64,
+    /// Preset temporary download cap in KB/s (0 = unlimited).
+    pub download_kbps: u64,
+    /// Upload rate actually in force right now (KB/s, 0 = unlimited).
+    pub effective_upload_kbps: u64,
+    /// Download rate actually in force right now (KB/s, 0 = unlimited).
+    pub effective_download_kbps: u64,
+}
+
+/// Body of `PUT /api/v1/bandwidth/temp-limit`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+pub struct TempLimitRequest {
+    /// Engage (`true`) or release (`false`) the temporary speed limit.
+    pub active: bool,
+}
+
 /// GET /api/v1/config  —  PUT /api/v1/config
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct ConfigResponse {
@@ -64,6 +89,12 @@ pub struct NetworkConfig {
     /// Download bandwidth limit in KB/s.  0 = unlimited.
     #[serde(default)]
     pub download_limit_kbps: u64,
+    /// Preset upload cap in KB/s used while the temporary speed limit is on.
+    #[serde(default = "default_temp_limit")]
+    pub temp_upload_limit_kbps: u64,
+    /// Preset download cap in KB/s used while the temporary speed limit is on.
+    #[serde(default = "default_temp_limit")]
+    pub temp_download_limit_kbps: u64,
     /// Maximum number of concurrent chunk-upload tasks.  Default: 64.
     #[serde(default = "default_max_upload_tasks")]
     pub max_upload_tasks: usize,
@@ -71,6 +102,10 @@ pub struct NetworkConfig {
 
 fn default_max_upload_tasks() -> usize {
     64
+}
+
+fn default_temp_limit() -> u64 {
+    5000
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]

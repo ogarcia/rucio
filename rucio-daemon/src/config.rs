@@ -56,6 +56,15 @@ pub struct NetworkConfig {
     /// Download bandwidth limit in KB/s.  0 = unlimited (default).
     #[serde(default)]
     pub download_limit_kbps: u64,
+    /// Upload cap in KB/s applied while the temporary speed limit is engaged.
+    /// This is only the preset value; the toggle itself is runtime state and
+    /// does not persist.  Default: 5000.
+    #[serde(default = "NetworkConfig::default_temp_limit")]
+    pub temp_upload_limit_kbps: u64,
+    /// Download cap in KB/s applied while the temporary speed limit is engaged.
+    /// Default: 5000.
+    #[serde(default = "NetworkConfig::default_temp_limit")]
+    pub temp_download_limit_kbps: u64,
     /// Maximum number of concurrent chunk-upload tasks.
     ///
     /// Each inbound chunk request spawns an async task that reads from disk
@@ -75,6 +84,10 @@ impl NetworkConfig {
     fn default_max_upload_tasks() -> usize {
         64
     }
+
+    fn default_temp_limit() -> u64 {
+        5000
+    }
 }
 
 impl Default for NetworkConfig {
@@ -84,6 +97,8 @@ impl Default for NetworkConfig {
             upnp: Self::default_upnp(),
             upload_limit_kbps: 0,
             download_limit_kbps: 0,
+            temp_upload_limit_kbps: Self::default_temp_limit(),
+            temp_download_limit_kbps: Self::default_temp_limit(),
             max_upload_tasks: Self::default_max_upload_tasks(),
         }
     }
@@ -486,6 +501,18 @@ impl Config {
             && let Ok(n) = v.parse::<u64>()
         {
             self.network.download_limit_kbps = n;
+        }
+        if let Ok(v) = std::env::var("RUCIOD_TEMP_UPLOAD_LIMIT_KBPS")
+            && !v.is_empty()
+            && let Ok(n) = v.parse::<u64>()
+        {
+            self.network.temp_upload_limit_kbps = n;
+        }
+        if let Ok(v) = std::env::var("RUCIOD_TEMP_DOWNLOAD_LIMIT_KBPS")
+            && !v.is_empty()
+            && let Ok(n) = v.parse::<u64>()
+        {
+            self.network.temp_download_limit_kbps = n;
         }
         if let Ok(v) = std::env::var("RUCIOD_MAX_UPLOAD_TASKS")
             && !v.is_empty()

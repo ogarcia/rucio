@@ -70,7 +70,7 @@ use overlays::{AddressesPanel, NodeStatusPanel, StatsPanel};
 use searches::SearchesTab;
 use types::{
     DownloadResponse, DownloadState, ResultSource, SearchResult, SearchState, StatusResponse,
-    WsEvent, WsSearchResult, is_streamed_state,
+    TempLimitStatus, WsEvent, WsSearchResult, is_streamed_state,
 };
 
 // Throttling for the post-WS refresh that catches terminal transitions the
@@ -369,6 +369,8 @@ fn App() -> impl IntoView {
     let search_id: RwSignal<Option<u64>> = RwSignal::new(None);
     let dl_speed: RwSignal<u64> = RwSignal::new(0);
     let ul_speed: RwSignal<u64> = RwSignal::new(0);
+    // Whether the temporary speed limit is engaged (runtime-only on the daemon).
+    let temp_limit: RwSignal<bool> = RwSignal::new(false);
 
     // Initial data fetch.
     spawn_local(async move {
@@ -376,6 +378,13 @@ fn App() -> impl IntoView {
             if let Ok(s) = r.json::<StatusResponse>().await {
                 status.set(Some(s));
             }
+        }
+        if let Ok(r) = gloo_net::http::Request::get("/api/v1/config/temp-limit")
+            .send()
+            .await
+            && let Ok(s) = r.json::<TempLimitStatus>().await
+        {
+            temp_limit.set(s.active);
         }
         refresh_downloads(downloads).await;
     });
@@ -502,6 +511,7 @@ fn App() -> impl IntoView {
                             downloads=downloads
                             dl_speed=dl_speed
                             ul_speed=ul_speed
+                            temp_limit=temp_limit
                         />
                     }.into_any(),
                     Tab::Searches => view! {

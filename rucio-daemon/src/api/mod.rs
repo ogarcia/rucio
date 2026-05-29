@@ -97,6 +97,8 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         searches::relaunch_search,
         config::get_config,
         config::put_config,
+        config::get_temp_limit,
+        config::put_temp_limit,
         metrics::get_metrics,
         health::get_health,
         emule::get_emule_status,
@@ -133,6 +135,8 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         rucio_core::api::config::NetworkConfig,
         rucio_core::api::config::StorageConfig,
         rucio_core::api::config::EmuleConfig,
+        rucio_core::api::config::TempLimitStatus,
+        rucio_core::api::config::TempLimitRequest,
         rucio_core::protocol::node::NodeClass,
         rucio_core::api::metrics::MetricsResponse,
         rucio_core::api::metrics::SessionMetrics,
@@ -301,6 +305,9 @@ pub struct AppState {
     pub upload_throttle: Arc<TokenBucket>,
     /// Download bandwidth throttle (global, across all peers).  0 KB/s = unlimited.
     pub download_throttle: Arc<TokenBucket>,
+    /// Source of truth for the base/temporary bandwidth limits and the
+    /// temporary-limit toggle; drives the two throttles above.
+    pub bandwidth: Arc<crate::throttle::BandwidthState>,
     /// Handle to the Kad2 background task (only present with `emule-compat` feature).
     #[cfg(feature = "emule-compat")]
     pub kad_handle: rucio_emule::kad::task::KadHandle,
@@ -401,6 +408,11 @@ fn v1_router() -> Router<AppState> {
         // config
         .route("/config", routing::get(config::get_config))
         .route("/config", routing::put(config::put_config))
+        // temporary speed-limit toggle (grouped under config)
+        .route(
+            "/config/temp-limit",
+            routing::get(config::get_temp_limit).put(config::put_temp_limit),
+        )
         // metrics
         .route("/metrics", routing::get(metrics::get_metrics))
         // emule

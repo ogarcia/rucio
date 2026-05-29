@@ -176,6 +176,22 @@ pub struct TotalMetrics {
     pub chunks_rejected: u64,
 }
 
+// ── Temporary speed limit ─────────────────────────────────────────────────────
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct TempLimitStatus {
+    pub active: bool,
+    pub upload_kbps: u64,
+    pub download_kbps: u64,
+    pub effective_upload_kbps: u64,
+    pub effective_download_kbps: u64,
+}
+
+#[derive(Serialize)]
+pub struct TempLimitRequest {
+    pub active: bool,
+}
+
 // ── Searches ─────────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]

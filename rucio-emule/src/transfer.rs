@@ -59,9 +59,11 @@ use flate2::read::ZlibDecoder;
 use md4::Md4;
 use md5::{Digest, Md5};
 use std::collections::HashMap;
+use std::future::Future;
 use std::io::{self, Read as _};
 use std::net::{SocketAddr, SocketAddrV4};
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -827,6 +829,12 @@ pub struct UploadInfo {
 /// left over from cancelled downloads.
 pub type ActiveDownloads = Arc<RwLock<HashMap<[u8; 16], UploadInfo>>>;
 
+/// Async byte-rate limiter hook. Called with the number of bytes about to be
+/// transferred; the returned future resolves once the caller may proceed. Lets
+/// the daemon's token-bucket throttle gate eMule traffic without `rucio-emule`
+/// depending on the daemon. `None` means no limit.
+pub type ByteLimiter = Arc<dyn Fn(u64) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+
 /// Everything the upload handler needs, shared across all incoming connections.
 pub struct UploadContext {
     /// Semaphore that caps simultaneous upload connections.
@@ -846,6 +854,8 @@ pub struct UploadContext {
     /// Cumulative count of SENDINGPART blocks served, paired with
     /// `uploaded_bytes` for the daemon's metrics reconciliation.
     pub chunks_served: Arc<AtomicU64>,
+    /// Optional upload rate limiter; gated before each SENDINGPART send.
+    pub upload_limiter: Option<ByteLimiter>,
 }
 
 // ── Incoming TCP server ───────────────────────────────────────────────────────
@@ -1076,6 +1086,11 @@ async fn run_upload_session(
                     sp.extend_from_slice(&(start as u32).to_le_bytes());
                     sp.extend_from_slice(&(end as u32).to_le_bytes());
                     sp.extend_from_slice(&buf);
+                    // Gate on the upload rate limiter before sending (no-op
+                    // when no limit is set).
+                    if let Some(limiter) = &ctx.upload_limiter {
+                        limiter(len as u64).await;
+                    }
                     write_frame(stream, cipher, OP_SENDINGPART, &sp).await?;
                     ctx.uploaded_bytes.fetch_add(len as u64, Ordering::Relaxed);
                     ctx.chunks_served.fetch_add(1, Ordering::Relaxed);

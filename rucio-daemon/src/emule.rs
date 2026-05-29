@@ -142,6 +142,7 @@ pub async fn run_ed2k_download(
     download_slots: &Arc<Semaphore>,
     live_stats: &crate::live_stats::LiveStatsMap,
     metrics: &Arc<crate::metrics::Metrics>,
+    download_throttle: &Arc<crate::throttle::TokenBucket>,
 ) -> Result<()> {
     // 1. Parse the link.
     let link = Ed2kLink::parse(link_str).with_context(|| format!("parse ed2k link: {link_str}"))?;
@@ -471,6 +472,7 @@ pub async fn run_ed2k_download(
             let file_size = link.size;
             let metrics_w = metrics.clone();
             let progress_w = progress.clone();
+            let throttle_w = download_throttle.clone();
 
             join_set.spawn(async move {
                 let opts = DownloadOptions {
@@ -605,6 +607,11 @@ pub async fn run_ed2k_download(
                             };
                             metrics_w.record_download_bytes(remainder);
                             metrics_w.record_download_chunk();
+                            // Charge this slice against the download cap. With
+                            // the cap off this is instant; otherwise the worker
+                            // waits here before fetching its next slice, which
+                            // bounds the aggregate download rate.
+                            throttle_w.acquire(slice_end - slice_start).await;
                             save_progress(&met, &snapshot);
                             // Update DB with the true cumulative total so it
                             // never regresses when slices are downloaded out of

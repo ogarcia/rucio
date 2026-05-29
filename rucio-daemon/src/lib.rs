@@ -168,6 +168,16 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     let download_throttle = Arc::new(throttle::TokenBucket::new(
         config.network.download_limit_kbps,
     ));
+    // Source of truth for the base/temporary limits and the toggle. Owns the
+    // effective-rate logic and drives the two buckets above.
+    let bandwidth = Arc::new(throttle::BandwidthState::new(
+        Arc::clone(&upload_throttle),
+        Arc::clone(&download_throttle),
+        config.network.upload_limit_kbps,
+        config.network.download_limit_kbps,
+        config.network.temp_upload_limit_kbps,
+        config.network.temp_download_limit_kbps,
+    ));
     let upload_semaphore = Arc::new(tokio::sync::Semaphore::new(
         config.network.max_upload_tasks.max(1),
     ));
@@ -283,6 +293,13 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
         let tcp_port = config.emule.tcp_port;
         match crate::emule::start_emule_tcp_listener(&config).await {
             Ok(listener) => {
+                // Gate eMule uploads on the same upload throttle as libp2p, so
+                // the temporary speed limit (and any base cap) covers them too.
+                let up = Arc::clone(&upload_throttle);
+                let upload_limiter: rucio_emule::transfer::ByteLimiter = Arc::new(move |bytes| {
+                    let up = Arc::clone(&up);
+                    Box::pin(async move { up.acquire(bytes).await })
+                });
                 let upload_ctx = std::sync::Arc::new(rucio_emule::transfer::UploadContext {
                     slots: emule_upload_slots.clone(),
                     temp_dir: config.emule.temp_dir.clone(),
@@ -291,6 +308,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                     inbound_connections: emule_inbound_connections.clone(),
                     uploaded_bytes: emule_uploaded_bytes.clone(),
                     chunks_served: emule_uploaded_chunks.clone(),
+                    upload_limiter: Some(upload_limiter),
                 });
                 tokio::spawn(rucio_emule::transfer::serve_incoming(listener, upload_ctx));
             }
@@ -344,6 +362,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
         metrics: Arc::clone(&session_metrics),
         upload_throttle: Arc::clone(&upload_throttle),
         download_throttle: Arc::clone(&download_throttle),
+        bandwidth: Arc::clone(&bandwidth),
         #[cfg(feature = "emule-compat")]
         kad_handle: kad_handle.clone(),
         #[cfg(feature = "emule-compat")]
@@ -419,6 +438,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                 let slots = emule_download_slots.clone();
                 let ls = live_stats.clone();
                 let met = Arc::clone(&session_metrics);
+                let dt = Arc::clone(&download_throttle);
                 tokio::spawn(async move {
                     if let Err(e) = crate::emule::run_ed2k_download(
                         &row.ed2k_link,
@@ -430,6 +450,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                         &slots,
                         &ls,
                         &met,
+                        &dt,
                     )
                     .await
                     {
@@ -663,10 +684,11 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                                     let slots = emule_download_slots.clone();
                                     let ls = live_stats.clone();
                                     let met = Arc::clone(&session_metrics);
+                                    let dt = Arc::clone(&download_throttle);
                                     tokio::spawn(async move {
                                         if let Err(e) = crate::emule::run_ed2k_download(
                                             &link, download_id, &config, &db, &kad, &ad,
-                                            &slots, &ls, &met,
+                                            &slots, &ls, &met, &dt,
                                         )
                                         .await
                                         {
