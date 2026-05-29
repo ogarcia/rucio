@@ -411,6 +411,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                 let ad = active_downloads.clone();
                 let slots = emule_download_slots.clone();
                 let ls = live_stats.clone();
+                let met = Arc::clone(&session_metrics);
                 tokio::spawn(async move {
                     if let Err(e) = crate::emule::run_ed2k_download(
                         &row.ed2k_link,
@@ -422,6 +423,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                         &ad,
                         &slots,
                         &ls,
+                        &met,
                     )
                     .await
                     {
@@ -627,10 +629,11 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                                     let ad = active_downloads.clone();
                                     let slots = emule_download_slots.clone();
                                     let ls = live_stats.clone();
+                                    let met = Arc::clone(&session_metrics);
                                     tokio::spawn(async move {
                                         if let Err(e) = crate::emule::run_ed2k_download(
                                             &link, download_id, &config, &db, &ws_tx, &kad, &ad,
-                                            &slots, &ls,
+                                            &slots, &ls, &met,
                                         )
                                         .await
                                         {

@@ -123,6 +123,7 @@ pub async fn run_ed2k_download(
     active_downloads: &ActiveDownloads,
     download_slots: &Arc<Semaphore>,
     live_stats: &crate::live_stats::LiveStatsMap,
+    metrics: &Arc<crate::metrics::Metrics>,
 ) -> Result<()> {
     // 1. Parse the link.
     let link = Ed2kLink::parse(link_str).with_context(|| format!("parse ed2k link: {link_str}"))?;
@@ -428,6 +429,7 @@ pub async fn run_ed2k_download(
             let hash_hex_c = link.hash.to_hex();
             let hash = link.hash;
             let file_size = link.size;
+            let metrics_w = metrics.clone();
 
             join_set.spawn(async move {
                 let opts = DownloadOptions {
@@ -519,6 +521,7 @@ pub async fn run_ed2k_download(
                     let db_c = db_w.clone();
                     let name_cc = name_c.clone();
                     let hash_hex_cc = hash_hex_c.clone();
+                    let metrics_cb = metrics_w.clone();
                     let mut on_progress = move |ev: DownloadEvent| match ev {
                         DownloadEvent::Progress {
                             bytes_received,
@@ -561,6 +564,7 @@ pub async fn run_ed2k_download(
                         }
                         DownloadEvent::ChunkFailed { part_index } => {
                             warn!(part_index, "eMule chunk verification failed");
+                            metrics_cb.record_rejected();
                         }
                         _ => {}
                     };
@@ -571,6 +575,9 @@ pub async fn run_ed2k_download(
                     {
                         Ok(_) => {
                             info!(%peer, slice = slice_idx, "Slice downloaded successfully");
+                            // Feed session metrics: a verified ed2k slice now on
+                            // disk counts as one received chunk plus its bytes.
+                            metrics_w.record_download(slice_end - slice_start);
                             // Mark slice as done and persist progress.
                             let snapshot = {
                                 let mut d = done.lock().unwrap();
