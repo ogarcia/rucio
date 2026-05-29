@@ -408,15 +408,17 @@ fn eta_secs(size: u64, bytes_done: u64, speed_bps: u64) -> Option<u64> {
 /// transfer to start immediately while DHT lookup runs in parallel for additional sources.
 ///
 /// The endpoint returns `202 Accepted` immediately — use `GET /api/v1/downloads` to track
-/// progress. Trying to start a download for a hash that is already active returns `202` again
-/// (the duplicate is silently ignored by the transfer engine).
+/// progress. A hash that is already downloading returns `202` again (idempotent); content that is
+/// already completed, or already on disk as a share, returns `409 Conflict` (remove it first to
+/// re-download).
 #[utoipa::path(
     post,
     path = "/api/v1/downloads",
     request_body = StartDownloadRequest,
     responses(
-        (status = 202, description = "Download queued successfully."),
-        (status = 400, description = "The magnet link is malformed or uses an unsupported scheme.")
+        (status = 202, description = "Download queued successfully (or already in progress)."),
+        (status = 400, description = "The magnet link is malformed or uses an unsupported scheme."),
+        (status = 409, description = "This content is already completed or present on disk as a share.")
     )
 )]
 pub async fn start_download(
@@ -424,8 +426,35 @@ pub async fn start_download(
     Json(req): Json<StartDownloadRequest>,
 ) -> StatusCode {
     // Validate magnet early so we return 400 synchronously.
-    if parse_magnet(&req.magnet).is_err() {
+    let Ok(info) = parse_magnet(&req.magnet) else {
         return StatusCode::BAD_REQUEST;
+    };
+
+    // Already have this content as a share (e.g. a previous download that was
+    // removed from history but is still on disk and being provided)? Then it's
+    // already local — reject instead of re-fetching it over the network.
+    if matches!(
+        crate::db::shares::get_by_hash(&state.db, &info.root_hash).await,
+        Ok(Some(_))
+    ) {
+        tracing::info!("Content already shared (on disk); rejecting re-download");
+        return StatusCode::CONFLICT;
+    }
+
+    // Synchronous dedup feedback. The engine dedups authoritatively (and never
+    // creates a duplicate), but its result is async; surface the common cases
+    // here so the client gets a real answer, like the eMule path does.
+    match crate::db::downloads::status_by_root_hash(&state.db, &info.root_hash).await {
+        Ok(Some(s)) if s == "completed" => {
+            tracing::info!("Download already completed; rejecting re-download");
+            return StatusCode::CONFLICT;
+        }
+        // Already in progress — accept (idempotent) without queuing a duplicate.
+        Ok(Some(s)) if matches!(s.as_str(), "finding_providers" | "queued" | "downloading") => {
+            return StatusCode::ACCEPTED;
+        }
+        // None, or a terminal/reactivable row (cancelled/error/stalled) → proceed.
+        _ => {}
     }
 
     // Parse provider strings; skip any that are not valid PeerIds with a warning.

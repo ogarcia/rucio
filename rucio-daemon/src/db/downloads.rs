@@ -274,6 +274,17 @@ pub async fn get_status(db: &Db, download_id: i64) -> Result<Option<String>> {
     Ok(row.map(|r| r.get("status")))
 }
 
+/// Status of the download with this root hash, if any. Lets the HTTP layer
+/// answer synchronously (the engine's authoritative `create_pending` runs
+/// asynchronously and its "already completed/active" result is otherwise lost).
+pub async fn status_by_root_hash(db: &Db, root_hash: &[u8; 32]) -> Result<Option<String>> {
+    let row = sqlx::query("SELECT status FROM downloads WHERE root_hash = ?1")
+        .bind(root_hash.as_slice())
+        .fetch_optional(db)
+        .await?;
+    Ok(row.map(|r| r.get("status")))
+}
+
 /// Return the root_hash for a single download row, or `None` if not found.
 pub async fn get_root_hash(db: &Db, download_id: i64) -> Result<Option<Vec<u8>>> {
     let row = sqlx::query("SELECT root_hash FROM downloads WHERE id = ?1")
