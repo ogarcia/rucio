@@ -20,6 +20,14 @@ pub enum WsEvent {
     /// download/indexing activity) and periodically thereafter.
     Ping,
 
+    /// Aggregate transfer speeds for the current session (5-second moving
+    /// average).  Emitted every second in the ws_tick so the client can show
+    /// live up/down rates without polling the metrics endpoint.
+    SessionStats {
+        download_speed: u64,
+        upload_speed: u64,
+    },
+
     /// One or more downloads changed state or made progress.
     /// Emitted whenever the download engine ticks and at least one active
     /// download exists.

@@ -125,6 +125,18 @@ impl DownloadPiecesResponse {
     }
 }
 
+/// States the daemon streams in `DownloadProgress`. A download that leaves
+/// this set has reached a terminal or paused state the WS omits.
+pub fn is_streamed_state(s: &DownloadState) -> bool {
+    matches!(
+        s,
+        DownloadState::FindingProviders
+            | DownloadState::Queued
+            | DownloadState::Downloading
+            | DownloadState::Stalled
+    )
+}
+
 // ── Metrics ──────────────────────────────────────────────────────────────────
 
 /// GET /api/v1/metrics — transfer counters for current session and all time.
@@ -219,12 +231,24 @@ pub struct SearchDetailResponse {
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum WsEvent {
     Ping,
+    SessionStats {
+        download_speed: u64,
+        upload_speed: u64,
+    },
     DownloadProgress(Vec<DownloadResponse>),
-    IndexingCount { pending: usize },
+    IndexingCount {
+        pending: usize,
+    },
     SearchResult(WsSearchResult),
-    PeerConnected { peer_id: String },
-    PeerDisconnected { peer_id: String },
-    NodeClassChanged { class: String },
+    PeerConnected {
+        peer_id: String,
+    },
+    PeerDisconnected {
+        peer_id: String,
+    },
+    NodeClassChanged {
+        class: String,
+    },
 }
 
 /// Search result as pushed by the WS bus (Rucio gossip format).

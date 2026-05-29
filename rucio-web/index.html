@@ -339,6 +339,45 @@
         .piece-pending  { background: var(--border); }
         .piece-map-empty { margin-top: 0.375rem; font-size: 0.75rem; color: var(--text-4); }
 
+        /* ── Filter / status bar ────────────────────────────────────────── */
+
+        .dl-statusbar {
+            display: flex; align-items: center; justify-content: space-between;
+            gap: 0.75rem; flex-wrap: wrap;
+            padding: 0.5rem 1.5rem;
+            border-top: 1px solid var(--border);
+            background: var(--surface);
+            flex-shrink: 0;
+        }
+        .dl-statusbar-left  { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+        .dl-statusbar-right { display: flex; align-items: center; gap: 0.75rem; }
+
+        .dl-filter-select {
+            padding: 0.25rem 0.5rem;
+            background: var(--raised); border: 1px solid var(--border);
+            border-radius: 0.25rem; color: var(--text);
+            font-size: 0.75rem; font-family: inherit; cursor: pointer;
+        }
+        .dl-filter-input {
+            padding: 0.25rem 0.5rem;
+            background: var(--raised); border: 1px solid var(--border);
+            border-radius: 0.25rem; color: var(--text);
+            font-size: 0.75rem; font-family: inherit; outline: none;
+            width: 160px; transition: border-color 0.15s;
+        }
+        .dl-filter-input:focus { border-color: var(--accent); }
+        .dl-filter-input::placeholder { color: var(--text-4); }
+
+        .dl-active-count {
+            font-size: 0.75rem; color: var(--sa-fg);
+            background: var(--sa); padding: 0.1rem 0.45rem;
+            border-radius: 9999px; font-weight: 600; white-space: nowrap;
+        }
+        .dl-speed { font-size: 0.75rem; font-weight: 500; white-space: nowrap; }
+        .dl-speed-down { color: var(--sa-fg); }
+        .dl-speed-up   { color: var(--sd-fg); }
+        .dl-speed-idle { font-size: 0.75rem; color: var(--text-4); }
+
         /* ── Downloads ───────────────────────────────────────────────────── */
 
         .dl-list { list-style: none; display: flex; flex-direction: column; gap: 0; }

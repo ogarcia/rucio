@@ -10,8 +10,47 @@ use gloo_timers::future::sleep;
 use crate::icons::{self, Icon};
 use crate::types::{
     DownloadDetailResponse, DownloadPiecesResponse, DownloadResponse, DownloadState, PieceState,
-    format_eta, format_size, format_speed,
+    format_eta, format_size, format_speed, is_streamed_state,
 };
+
+// ── Filter ────────────────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy, PartialEq)]
+enum FilterState {
+    All,
+    Active, // FindingProviders | Queued | Downloading | Stalled
+    Downloading,
+    Paused,
+    Completed,
+    History, // Completed | Failed | Cancelled
+}
+
+impl FilterState {
+    fn label(self) -> &'static str {
+        match self {
+            FilterState::All => "Todas",
+            FilterState::Active => "Activas",
+            FilterState::Downloading => "Descargando",
+            FilterState::Paused => "Pausadas",
+            FilterState::Completed => "Completadas",
+            FilterState::History => "Historial",
+        }
+    }
+
+    fn matches(self, s: &DownloadState) -> bool {
+        match self {
+            FilterState::All => true,
+            FilterState::Active => is_streamed_state(s),
+            FilterState::Downloading => *s == DownloadState::Downloading,
+            FilterState::Paused => *s == DownloadState::Paused,
+            FilterState::Completed => *s == DownloadState::Completed,
+            FilterState::History => matches!(
+                s,
+                DownloadState::Completed | DownloadState::Failed | DownloadState::Cancelled
+            ),
+        }
+    }
+}
 
 // ── State helpers ─────────────────────────────────────────────────────────────
 
@@ -140,10 +179,17 @@ async fn api_add_links(text: String, downloads: RwSignal<Vec<DownloadResponse>>)
 // ── Tab ───────────────────────────────────────────────────────────────────────
 
 #[component]
-pub fn DownloadsTab(downloads: RwSignal<Vec<DownloadResponse>>) -> impl IntoView {
+pub fn DownloadsTab(
+    downloads: RwSignal<Vec<DownloadResponse>>,
+    dl_speed: RwSignal<u64>,
+    ul_speed: RwSignal<u64>,
+) -> impl IntoView {
     let selected_id: RwSignal<Option<i64>> = RwSignal::new(None);
     let add_open: RwSignal<bool> = RwSignal::new(false);
     let detail: RwSignal<Option<DownloadDetailResponse>> = RwSignal::new(None);
+
+    let filter_state: RwSignal<FilterState> = RwSignal::new(FilterState::All);
+    let filter_name: RwSignal<String> = RwSignal::new(String::new());
 
     // The DownloadResponse for the currently selected row.
     let selected_dl = move || {
@@ -275,13 +321,24 @@ pub fn DownloadsTab(downloads: RwSignal<Vec<DownloadResponse>>) -> impl IntoView
                     fallback=|| view! { <div class="empty-state"><p>"No downloads"</p></div> }
                 >
                     <ul class="dl-list">
-                        // Iterate IDs only so <For> never sees key changes on progress
-                        // updates. DownloadRow reads the row's fields reactively
-                        // so progress updates patch text/style nodes in place
-                        // instead of re-instantiating the whole row.
                         <For
                             each=move || {
-                                downloads.with(|v| v.iter().map(|d| d.id).collect::<Vec<i64>>())
+                                let q = filter_name.get().to_lowercase();
+                                let fs = filter_state.get();
+                                downloads.with(|v| {
+                                    v.iter()
+                                        .filter(|d| fs.matches(&d.state))
+                                        .filter(|d| {
+                                            q.is_empty()
+                                                || d.name
+                                                    .as_deref()
+                                                    .unwrap_or("")
+                                                    .to_lowercase()
+                                                    .contains(&q)
+                                        })
+                                        .map(|d| d.id)
+                                        .collect::<Vec<i64>>()
+                                })
                             }
                             key=|id| *id
                             children=move |id| view! {
@@ -294,6 +351,69 @@ pub fn DownloadsTab(downloads: RwSignal<Vec<DownloadResponse>>) -> impl IntoView
                         />
                     </ul>
                 </Show>
+            </div>
+
+            // ── Filter + stats bar ────────────────────────────────────────
+            <div class="dl-statusbar">
+                <div class="dl-statusbar-left">
+                    <select
+                        class="dl-filter-select"
+                        on:change=move |e| {
+                            filter_state.set(match event_target_value(&e).as_str() {
+                                "active"      => FilterState::Active,
+                                "downloading" => FilterState::Downloading,
+                                "paused"      => FilterState::Paused,
+                                "completed"   => FilterState::Completed,
+                                "history"     => FilterState::History,
+                                _             => FilterState::All,
+                            });
+                        }
+                    >
+                        <option value="all">"Todas"</option>
+                        <option value="active">"Activas"</option>
+                        <option value="downloading">"Descargando"</option>
+                        <option value="paused">"Pausadas"</option>
+                        <option value="completed">"Completadas"</option>
+                        <option value="history">"Historial"</option>
+                    </select>
+                    <input
+                        type="text"
+                        class="dl-filter-input"
+                        placeholder="Buscar…"
+                        prop:value=move || filter_name.get()
+                        on:input=move |e| filter_name.set(event_target_value(&e))
+                    />
+                    {move || {
+                        let n = downloads.with(|v| v.iter().filter(|d| is_streamed_state(&d.state)).count());
+                        if n > 0 {
+                            view! {
+                                <span class="dl-active-count">
+                                    {format!("{n} activa{}", if n == 1 { "" } else { "s" })}
+                                </span>
+                            }.into_any()
+                        } else {
+                            ().into_any()
+                        }
+                    }}
+                </div>
+                <div class="dl-statusbar-right">
+                    {move || {
+                        let dl = dl_speed.get();
+                        let ul = ul_speed.get();
+                        if dl > 0 || ul > 0 {
+                            view! {
+                                <span class="dl-speed dl-speed-down">
+                                    "↓ " {format_speed(dl)}
+                                </span>
+                                <span class="dl-speed dl-speed-up">
+                                    "↑ " {format_speed(ul)}
+                                </span>
+                            }.into_any()
+                        } else {
+                            view! { <span class="dl-speed-idle">"Sin transferencia"</span> }.into_any()
+                        }
+                    }}
+                </div>
             </div>
         </div>
 

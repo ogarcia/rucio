@@ -533,6 +533,14 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                 // IndexingCount
                 let pending = app_state.indexing_count.load(std::sync::atomic::Ordering::Relaxed);
                 let _ = ws_tx.send(WsEvent::IndexingCount { pending });
+                // Aggregate session speeds (5-second moving average from the
+                // metrics sampler).  Lets the client show live rates without
+                // a separate polling request.
+                let snap = app_state.metrics.session_snapshot();
+                let _ = ws_tx.send(WsEvent::SessionStats {
+                    download_speed: snap.download_speed,
+                    upload_speed: snap.upload_speed,
+                });
                 // DownloadProgress — only when there are active downloads
                 let mut active: Vec<rucio_core::api::downloads::DownloadResponse> = Vec::new();
                 if let Ok(rows) = db::downloads::list(&db).await {

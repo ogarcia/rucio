@@ -70,21 +70,8 @@ use overlays::{AddressesPanel, NodeStatusPanel, StatsPanel};
 use searches::SearchesTab;
 use types::{
     DownloadResponse, DownloadState, ResultSource, SearchResult, SearchState, StatusResponse,
-    WsEvent, WsSearchResult,
+    WsEvent, WsSearchResult, is_streamed_state,
 };
-
-/// States the daemon streams over `DownloadProgress`. A download that leaves
-/// this set has reached a terminal/paused state the WS does not report, so the
-/// list must be refreshed from REST to pick up its final state.
-fn is_streamed_state(s: &DownloadState) -> bool {
-    matches!(
-        s,
-        DownloadState::FindingProviders
-            | DownloadState::Queued
-            | DownloadState::Downloading
-            | DownloadState::Stalled
-    )
-}
 
 // Throttling for the post-WS refresh that catches terminal transitions the
 // stream doesn't carry. WASM is single-threaded so a plain Cell/RefCell is fine.
@@ -135,6 +122,8 @@ fn start_ws_loop(
     search_results: RwSignal<Vec<SearchResult>>,
     search_id: RwSignal<Option<u64>>,
     searching: RwSignal<bool>,
+    dl_speed: RwSignal<u64>,
+    ul_speed: RwSignal<u64>,
 ) {
     spawn_local(async move {
         let mut backoff_ms = 1_000u64;
@@ -178,6 +167,8 @@ fn start_ws_loop(
                                     search_results,
                                     search_id,
                                     searching,
+                                    dl_speed,
+                                    ul_speed,
                                 );
                             }
                         }
@@ -203,6 +194,8 @@ fn handle_event(
     search_results: RwSignal<Vec<SearchResult>>,
     search_id: RwSignal<Option<u64>>,
     searching: RwSignal<bool>,
+    dl_speed: RwSignal<u64>,
+    ul_speed: RwSignal<u64>,
 ) {
     match event {
         WsEvent::DownloadProgress(list) => {
@@ -304,6 +297,18 @@ fn handle_event(
 
         WsEvent::IndexingCount { .. } => {}
 
+        WsEvent::SessionStats {
+            download_speed,
+            upload_speed,
+        } => {
+            if dl_speed.get_untracked() != download_speed {
+                dl_speed.set(download_speed);
+            }
+            if ul_speed.get_untracked() != upload_speed {
+                ul_speed.set(upload_speed);
+            }
+        }
+
         // Liveness keepalive — receiving it already flipped the connection
         // indicator to connected in the WS loop; nothing else to do.
         WsEvent::Ping => {}
@@ -340,6 +345,8 @@ fn App() -> impl IntoView {
     let search_results: RwSignal<Vec<SearchResult>> = RwSignal::new(vec![]);
     let searching: RwSignal<bool> = RwSignal::new(false);
     let search_id: RwSignal<Option<u64>> = RwSignal::new(None);
+    let dl_speed: RwSignal<u64> = RwSignal::new(0);
+    let ul_speed: RwSignal<u64> = RwSignal::new(0);
 
     // Initial data fetch.
     spawn_local(async move {
@@ -359,6 +366,8 @@ fn App() -> impl IntoView {
         search_results,
         search_id,
         searching,
+        dl_speed,
+        ul_speed,
     );
 
     view! {
@@ -467,7 +476,11 @@ fn App() -> impl IntoView {
             <main class="content">
                 {move || match active_tab.get() {
                     Tab::Downloads => view! {
-                        <DownloadsTab downloads=downloads/>
+                        <DownloadsTab
+                            downloads=downloads
+                            dl_speed=dl_speed
+                            ul_speed=ul_speed
+                        />
                     }.into_any(),
                     Tab::Searches => view! {
                         <SearchesTab
