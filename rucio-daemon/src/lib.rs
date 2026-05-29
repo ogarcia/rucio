@@ -501,6 +501,12 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     // Populated from PeerDiscovered events; used to prioritise chunk uploads.
     let mut peer_classes: std::collections::HashMap<libp2p::PeerId, bool> =
         std::collections::HashMap::new();
+    // Last broadcast lifecycle state per search, to emit SearchStateChanged
+    // only on actual state transitions (results carry their own WS events).
+    let mut last_search_states: std::collections::HashMap<
+        u64,
+        rucio_core::api::searches::SearchState,
+    > = std::collections::HashMap::new();
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
@@ -655,6 +661,27 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                 if !active.is_empty() {
                     let _ = ws_tx.send(WsEvent::DownloadProgress(active));
                 }
+
+                // SearchStateChanged — emit on lifecycle transitions (e.g. a
+                // search window closing → done) so the client's search list
+                // stays live without polling. Result counts ride the per-result
+                // SearchResult events; here we send the authoritative count too.
+                {
+                    let reg = search_registry.read().await;
+                    for (id, record) in reg.records.iter() {
+                        let state = record.effective_state();
+                        let changed = last_search_states.get(id) != Some(&state);
+                        if changed {
+                            last_search_states.insert(*id, state.clone());
+                            let _ = ws_tx.send(WsEvent::SearchStateChanged {
+                                id: *id,
+                                state,
+                                result_count: record.results.len(),
+                            });
+                        }
+                    }
+                    last_search_states.retain(|id, _| reg.records.contains_key(id));
+                }
             }
             dl_req = download_rx.recv() => {
                 if let Some(req) = dl_req {
@@ -781,19 +808,16 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                         });
                     }
                     Some(node::messages::NodeEvent::SearchResult(result)) => {
-                        // Push to WebSocket subscribers before accumulating so
-                        // the WsEvent carries the SearchResultResponse shape.
-                        let ws_result = rucio_core::api::search::SearchResultResponse {
-                            root_hash: result.root_hash.clone(),
-                            name: result.name.clone(),
-                            size: result.size,
-                            chunk_count: result.chunk_count,
-                            mime_type: result.mime_type.clone(),
-                            magnet: result.magnet.clone(),
-                            provider: result.provider.clone(),
-                        };
-                        let _ = ws_tx.send(WsEvent::SearchResult(ws_result));
-                        accumulate_gossip_result(result, &search_registry).await;
+                        // Accumulate, then push the added result (with its
+                        // search_id) to WebSocket subscribers.
+                        if let Some((search_id, api_result)) =
+                            accumulate_gossip_result(result, &search_registry).await
+                        {
+                            let _ = ws_tx.send(WsEvent::SearchResult {
+                                search_id,
+                                result: api_result,
+                            });
+                        }
                     }
                     Some(node::messages::NodeEvent::ProvidersFound { key, providers }) => {
                         if key.len() == 32 {
@@ -884,36 +908,45 @@ async fn respond_to_query(
     }
 }
 
-async fn accumulate_gossip_result(result: SearchResult, registry: &api::SharedSearchRegistry) {
+/// Accumulate a gossip search result into its record. Returns the owning
+/// `search_id` and the newly-added result (in API shape) when it was actually
+/// added, so the caller can push it over the WebSocket; `None` if the search is
+/// unknown/expired/cancelled or the result was a duplicate.
+async fn accumulate_gossip_result(
+    result: SearchResult,
+    registry: &api::SharedSearchRegistry,
+) -> Option<(u64, rucio_core::api::searches::SearchResult)> {
     let mut reg = registry.write().await;
     let query_id = result.query_id.0.clone();
-    if let Some(&search_id) = reg.gossip_to_id.get(&query_id) {
-        if let Some(record) = reg.records.get_mut(&search_id) {
-            // Only add results to non-cancelled searches.
-            if !record.cancelled {
-                let already_have = record.results.iter().any(|r| {
-                    matches!(
-                        &r.source,
-                        api::InternalSource::Rucio { root_hash, .. }
-                        if *root_hash == result.root_hash
-                    )
-                });
-                if !already_have {
-                    record.results.push(api::InternalResult {
-                        name: result.name.clone(),
-                        size: result.size,
-                        source: api::InternalSource::Rucio {
-                            root_hash: result.root_hash.clone(),
-                            magnet: result.magnet.clone(),
-                            provider: result.provider.clone(),
-                        },
-                    });
-                }
-            }
-        }
-    } else {
+    let Some(&search_id) = reg.gossip_to_id.get(&query_id) else {
         debug!(qid = %query_id, "Ignoring Gossip result for unknown/expired search");
+        return None;
+    };
+    let record = reg.records.get_mut(&search_id)?;
+    if record.cancelled {
+        return None;
     }
+    let already_have = record.results.iter().any(|r| {
+        matches!(
+            &r.source,
+            api::InternalSource::Rucio { root_hash, .. }
+            if *root_hash == result.root_hash
+        )
+    });
+    if already_have {
+        return None;
+    }
+    record.results.push(api::InternalResult {
+        name: result.name.clone(),
+        size: result.size,
+        source: api::InternalSource::Rucio {
+            root_hash: result.root_hash.clone(),
+            magnet: result.magnet.clone(),
+            provider: result.provider.clone(),
+        },
+    });
+    let index = record.results.len() - 1;
+    Some((search_id, record.results[index].to_api(index)))
 }
 
 fn now_secs() -> u64 {

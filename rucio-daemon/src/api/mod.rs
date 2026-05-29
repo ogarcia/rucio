@@ -182,6 +182,34 @@ pub enum InternalSource {
     },
 }
 
+impl InternalResult {
+    /// Convert to the serialised API result. `index` is the 0-based position in
+    /// the record's result list; `result_id` is reported as `index + 1`.
+    pub fn to_api(&self, index: usize) -> rucio_core::api::searches::SearchResult {
+        use rucio_core::api::searches::{ResultSource, SearchResult};
+        match &self.source {
+            InternalSource::Rucio {
+                magnet, provider, ..
+            } => SearchResult {
+                result_id: index + 1,
+                name: self.name.clone(),
+                size: self.size,
+                source: ResultSource::Rucio,
+                download_link: Some(magnet.clone()),
+                provider: Some(provider.clone()),
+            },
+            InternalSource::Emule { ed2k_link, .. } => SearchResult {
+                result_id: index + 1,
+                name: self.name.clone(),
+                size: self.size,
+                source: ResultSource::Emule,
+                download_link: Some(ed2k_link.clone()),
+                provider: None,
+            },
+        }
+    }
+}
+
 /// One in-progress or finished unified search.
 pub struct SearchRecord {
     pub id: u64,

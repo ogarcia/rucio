@@ -36,8 +36,21 @@ pub enum WsEvent {
     /// The number of files currently being indexed changed.
     IndexingCount { pending: usize },
 
-    /// A new search result arrived for an open query.
-    SearchResult(crate::api::search::SearchResultResponse),
+    /// A new search result arrived for an open query. Carries the owning
+    /// `search_id` so the client can route it to the right search (several may
+    /// run in parallel), and the unified result shape (Rucio or eMule).
+    SearchResult {
+        search_id: u64,
+        result: crate::api::searches::SearchResult,
+    },
+
+    /// A search's lifecycle state and/or result count changed (e.g. its window
+    /// closed → `done`). Lets the client keep the search list live without polling.
+    SearchStateChanged {
+        id: u64,
+        state: crate::api::searches::SearchState,
+        result_count: usize,
+    },
 
     /// A peer connected to this node.
     PeerConnected { peer_id: String },

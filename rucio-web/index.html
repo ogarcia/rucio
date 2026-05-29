@@ -587,6 +587,29 @@
         .search-btn:hover:not(:disabled) { background: var(--accent-2); }
         .search-btn:disabled { opacity: 0.6; cursor: default; }
 
+        /* Recent-search selector + actions, below the search bar. */
+        .search-history {
+            display: flex; align-items: center; gap: 0.5rem;
+            padding: 0.5rem 1.5rem; border-bottom: 1px solid var(--border);
+            background: var(--surface); flex-shrink: 0;
+        }
+        .search-history-select {
+            flex: 1; min-width: 0;
+            padding: 0.3rem 0.5rem; background: var(--raised);
+            border: 1px solid var(--border); border-radius: 0.25rem;
+            color: var(--text); font-size: 0.8125rem; font-family: inherit; cursor: pointer;
+        }
+        .icon-btn {
+            display: inline-flex; align-items: center; justify-content: center;
+            padding: 0.35rem; background: transparent; border: 1px solid var(--border);
+            border-radius: 0.25rem; color: var(--text-3); cursor: pointer;
+            transition: color 0.1s, background 0.1s;
+        }
+        .icon-btn .icon { width: 1rem; height: 1rem; }
+        .icon-btn:hover:not(:disabled) { background: var(--row-hover); color: var(--text); }
+        .icon-btn:disabled { opacity: 0.4; cursor: default; }
+        .icon-btn-danger:hover:not(:disabled) { color: var(--sf-fg); }
+
         .results-header {
             margin-bottom: 0.75rem;
             font-size: 0.75rem; color: var(--text-3);

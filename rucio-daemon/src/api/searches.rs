@@ -12,14 +12,14 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use rucio_core::api::searches::{
-    ResultSource, SearchDetailResponse, SearchListResponse, SearchResult, SearchStartedResponse,
-    SearchState, SearchSummary, StartSearchRequest,
+    SearchDetailResponse, SearchListResponse, SearchStartedResponse, SearchState, SearchSummary,
+    StartSearchRequest,
 };
 use rucio_core::protocol::search::SearchQuery;
 #[cfg(feature = "emule-compat")]
 use rucio_core::protocol::search::normalize_search_term;
 
-use crate::api::{AppState, InternalSource, MAX_SEARCHES, SearchRecord, SearchRegistry};
+use crate::api::{AppState, MAX_SEARCHES, SearchRecord, SearchRegistry};
 use crate::node::messages::NodeCmd;
 
 // ---------------------------------------------------------------------------
@@ -121,26 +121,7 @@ pub async fn get_search(
         .results
         .iter()
         .enumerate()
-        .map(|(i, r)| match &r.source {
-            InternalSource::Rucio {
-                magnet, provider, ..
-            } => SearchResult {
-                result_id: i + 1,
-                name: r.name.clone(),
-                size: r.size,
-                source: ResultSource::Rucio,
-                download_link: Some(magnet.clone()),
-                provider: Some(provider.clone()),
-            },
-            InternalSource::Emule { ed2k_link, .. } => SearchResult {
-                result_id: i + 1,
-                name: r.name.clone(),
-                size: r.size,
-                source: ResultSource::Emule,
-                download_link: Some(ed2k_link.clone()),
-                provider: None,
-            },
-        })
+        .map(|(i, r)| r.to_api(i))
         .collect();
 
     Ok(Json(SearchDetailResponse {
@@ -367,6 +348,7 @@ fn spawn_kad2_search(state: &AppState, search_id: u64, keywords: Vec<String>) {
 
     let kad = state.kad_handle.clone();
     let reg_clone = Arc::clone(&state.search_registry);
+    let ws_tx = state.ws_tx.clone();
 
     // Build the normalized word list used both for the main key selection
     // and for the client-side all-words filter.
@@ -424,6 +406,12 @@ fn spawn_kad2_search(state: &AppState, search_id: u64, keywords: Vec<String>) {
                                 hash_hex,
                                 ed2k_link,
                             },
+                        });
+                        // Push the new eMule result to WebSocket subscribers.
+                        let index = record.results.len() - 1;
+                        let _ = ws_tx.send(rucio_core::api::ws::WsEvent::SearchResult {
+                            search_id,
+                            result: record.results[index].to_api(index),
                         });
                     }
                 }

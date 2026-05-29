@@ -56,7 +56,7 @@ fn apply_theme(t: Theme) {
 }
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use futures_util::StreamExt;
@@ -69,10 +69,19 @@ use downloads::{DownloadsTab, refresh_downloads};
 use overlays::{AddressesPanel, NodeStatusPanel, StatsPanel};
 use searches::SearchesTab;
 use types::{
-    DownloadResponse, DownloadState, ResultSource, SearchResult, SearchState, SpeedLimits,
-    StatusResponse, TempLimitRequest, TempLimitStatus, WsEvent, WsSearchResult, format_rate_kbps,
-    is_streamed_state,
+    DownloadResponse, SearchResult, SearchSummary, SpeedLimits, StatusResponse, TempLimitRequest,
+    TempLimitStatus, WsEvent, format_rate_kbps, is_streamed_state,
 };
+
+/// Search state shared across the app: the recent-search list, results keyed by
+/// search id, and the currently-selected search. Lives in `App` so the WS keeps
+/// it live even while another tab is open, and survives switching tabs.
+#[derive(Clone, Copy)]
+pub struct SearchStore {
+    pub list: RwSignal<Vec<SearchSummary>>,
+    pub results: RwSignal<HashMap<u64, Vec<SearchResult>>>,
+    pub selected: RwSignal<Option<u64>>,
+}
 
 /// Preset bandwidth caps offered in the menu dropdowns (KB/s; 0 = unlimited).
 const LIMIT_PRESETS: [u64; 9] = [0, 50, 100, 256, 512, 1024, 2048, 5120, 10240];
@@ -144,11 +153,9 @@ fn start_ws_loop(
     ws_connected: RwSignal<bool>,
     downloads: RwSignal<Vec<DownloadResponse>>,
     status: RwSignal<Option<StatusResponse>>,
-    search_results: RwSignal<Vec<SearchResult>>,
-    search_id: RwSignal<Option<u64>>,
-    searching: RwSignal<bool>,
     dl_speed: RwSignal<u64>,
     ul_speed: RwSignal<u64>,
+    search: SearchStore,
 ) {
     spawn_local(async move {
         let mut backoff_ms = 1_000u64;
@@ -203,14 +210,7 @@ fn start_ws_loop(
                                 if let Ok(Message::Text(text)) = msg {
                                     if let Ok(event) = serde_json::from_str::<WsEvent>(&text) {
                                         handle_event(
-                                            event,
-                                            downloads,
-                                            status,
-                                            search_results,
-                                            search_id,
-                                            searching,
-                                            dl_speed,
-                                            ul_speed,
+                                            event, downloads, status, dl_speed, ul_speed, search,
                                         );
                                     }
                                 }
@@ -238,11 +238,9 @@ fn handle_event(
     event: WsEvent,
     downloads: RwSignal<Vec<DownloadResponse>>,
     status: RwSignal<Option<StatusResponse>>,
-    search_results: RwSignal<Vec<SearchResult>>,
-    search_id: RwSignal<Option<u64>>,
-    searching: RwSignal<bool>,
     dl_speed: RwSignal<u64>,
     ul_speed: RwSignal<u64>,
+    search: SearchStore,
 ) {
     match event {
         WsEvent::DownloadProgress(list) => {
@@ -304,18 +302,36 @@ fn handle_event(
             }
         }
 
-        WsEvent::SearchResult(r) => {
-            // Only accumulate if a search is active.
-            if searching.get() {
-                let result = ws_result_to_search_result(r);
-                search_results.update(|v| {
-                    // Deduplicate by root_hash.
-                    let hash = result.download_link.clone().unwrap_or_default();
-                    if !v.iter().any(|x| x.download_link.as_deref() == Some(&hash)) {
-                        v.push(result);
+        // Live search results (Rucio + eMule) carry their owning search_id.
+        WsEvent::SearchResult { search_id, result } => {
+            let mut added = false;
+            search.results.update(|m| {
+                let v = m.entry(search_id).or_default();
+                if !v.iter().any(|r| r.result_id == result.result_id) {
+                    v.push(result);
+                    added = true;
+                }
+            });
+            if added {
+                search.list.update(|list| {
+                    if let Some(s) = list.iter_mut().find(|s| s.id == search_id) {
+                        s.result_count += 1;
                     }
                 });
             }
+        }
+        // Lifecycle transition (e.g. window closed → done) with authoritative count.
+        WsEvent::SearchStateChanged {
+            id,
+            state,
+            result_count,
+        } => {
+            search.list.update(|list| {
+                if let Some(s) = list.iter_mut().find(|s| s.id == id) {
+                    s.state = state;
+                    s.result_count = result_count;
+                }
+            });
         }
 
         WsEvent::NodeClassChanged { class } => {
@@ -362,17 +378,6 @@ fn handle_event(
     }
 }
 
-fn ws_result_to_search_result(r: WsSearchResult) -> SearchResult {
-    SearchResult {
-        result_id: 0,
-        name: r.name,
-        size: r.size,
-        source: ResultSource::Rucio,
-        download_link: Some(r.magnet),
-        provider: Some(r.provider),
-    }
-}
-
 // ── App ───────────────────────────────────────────────────────────────────────
 
 /// Shares section — placeholder until the share management UI lands.
@@ -403,11 +408,13 @@ fn App() -> impl IntoView {
     let ws_connected: RwSignal<bool> = RwSignal::new(false);
     let status: RwSignal<Option<StatusResponse>> = RwSignal::new(None);
     let downloads: RwSignal<Vec<DownloadResponse>> = RwSignal::new(vec![]);
-    let search_results: RwSignal<Vec<SearchResult>> = RwSignal::new(vec![]);
-    let searching: RwSignal<bool> = RwSignal::new(false);
-    let search_id: RwSignal<Option<u64>> = RwSignal::new(None);
     let dl_speed: RwSignal<u64> = RwSignal::new(0);
     let ul_speed: RwSignal<u64> = RwSignal::new(0);
+    let search = SearchStore {
+        list: RwSignal::new(vec![]),
+        results: RwSignal::new(HashMap::new()),
+        selected: RwSignal::new(None),
+    };
     // Whether the temporary speed limit is engaged (runtime-only on the daemon).
     let temp_limit: RwSignal<bool> = RwSignal::new(false);
     // Base (normal) caps shown in the menu dropdowns, KB/s (0 = unlimited).
@@ -445,16 +452,7 @@ fn App() -> impl IntoView {
     });
 
     // Start the persistent WebSocket loop.
-    start_ws_loop(
-        ws_connected,
-        downloads,
-        status,
-        search_results,
-        search_id,
-        searching,
-        dl_speed,
-        ul_speed,
-    );
+    start_ws_loop(ws_connected, downloads, status, dl_speed, ul_speed, search);
 
     view! {
         <div class="layout">
@@ -655,13 +653,7 @@ fn App() -> impl IntoView {
                             temp_limit=temp_limit
                         />
                     }.into_any(),
-                    Tab::Searches => view! {
-                        <SearchesTab
-                            results=search_results
-                            searching=searching
-                            search_id=search_id
-                        />
-                    }.into_any(),
+                    Tab::Searches => view! { <SearchesTab search=search/> }.into_any(),
                     Tab::Shares => view! { <SharesTab/> }.into_any(),
                 }}
             </main>

@@ -302,10 +302,22 @@ pub struct SearchDetailResponse {
     pub results: Vec<SearchResult>,
 }
 
+#[derive(Deserialize, Clone, Debug)]
+pub struct SearchSummary {
+    pub id: u64,
+    pub keywords: Vec<String>,
+    pub state: SearchState,
+    pub result_count: usize,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct SearchListResponse {
+    pub searches: Vec<SearchSummary>,
+}
+
 // ── WebSocket events ─────────────────────────────────────────────────────────
 
 // Mirrors the daemon's WsEvent: { "type": "...", "data": ... }
-// SearchResult here uses the old gossip format (api::search::SearchResultResponse).
 #[derive(Deserialize, Clone, Debug)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum WsEvent {
@@ -318,7 +330,15 @@ pub enum WsEvent {
     IndexingCount {
         pending: usize,
     },
-    SearchResult(WsSearchResult),
+    SearchResult {
+        search_id: u64,
+        result: SearchResult,
+    },
+    SearchStateChanged {
+        id: u64,
+        state: SearchState,
+        result_count: usize,
+    },
     PeerConnected {
         peer_id: String,
     },
@@ -328,18 +348,6 @@ pub enum WsEvent {
     NodeClassChanged {
         class: String,
     },
-}
-
-/// Search result as pushed by the WS bus (Rucio gossip format).
-#[derive(Deserialize, Clone, Debug)]
-pub struct WsSearchResult {
-    pub root_hash: String,
-    pub name: String,
-    pub size: u64,
-    pub magnet: String,
-    pub provider: String,
-    #[serde(default)]
-    pub mime_type: Option<String>,
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
