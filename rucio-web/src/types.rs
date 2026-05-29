@@ -192,6 +192,29 @@ pub struct TempLimitRequest {
     pub active: bool,
 }
 
+#[derive(Serialize, Deserialize, Clone, Copy, Debug)]
+pub struct SpeedLimits {
+    pub upload_kbps: u64,
+    pub download_kbps: u64,
+}
+
+/// Render a KB/s rate as a human-readable cap: `Unlimited` at 0, `KB/s` below
+/// 1 MB/s, `MB/s` above (whole when round, else one decimal).
+pub fn format_rate_kbps(kbps: u64) -> String {
+    if kbps == 0 {
+        "Unlimited".to_string()
+    } else if kbps >= 1024 {
+        let mb = kbps as f64 / 1024.0;
+        if mb.fract().abs() < 0.05 {
+            format!("{mb:.0} MB/s")
+        } else {
+            format!("{mb:.1} MB/s")
+        }
+    } else {
+        format!("{kbps} KB/s")
+    }
+}
+
 // ── Searches ─────────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]

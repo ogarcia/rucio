@@ -99,6 +99,8 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         config::put_config,
         config::get_temp_limit,
         config::put_temp_limit,
+        config::get_limits,
+        config::put_limits,
         metrics::get_metrics,
         health::get_health,
         emule::get_emule_status,
@@ -137,6 +139,7 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         rucio_core::api::config::EmuleConfig,
         rucio_core::api::config::TempLimitStatus,
         rucio_core::api::config::TempLimitRequest,
+        rucio_core::api::config::SpeedLimits,
         rucio_core::protocol::node::NodeClass,
         rucio_core::api::metrics::MetricsResponse,
         rucio_core::api::metrics::SessionMetrics,
@@ -412,6 +415,11 @@ fn v1_router() -> Router<AppState> {
         .route(
             "/config/temp-limit",
             routing::get(config::get_temp_limit).put(config::put_temp_limit),
+        )
+        // base speed limits (grouped under config)
+        .route(
+            "/config/limits",
+            routing::get(config::get_limits).put(config::put_limits),
         )
         // metrics
         .route("/metrics", routing::get(metrics::get_metrics))

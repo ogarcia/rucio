@@ -16,11 +16,20 @@ pub struct TempLimitStatus {
     pub effective_download_kbps: u64,
 }
 
-/// Body of `PUT /api/v1/bandwidth/temp-limit`.
+/// Body of `PUT /api/v1/config/temp-limit`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct TempLimitRequest {
     /// Engage (`true`) or release (`false`) the temporary speed limit.
     pub active: bool,
+}
+
+/// GET/PUT /api/v1/config/limits — the normal (base) bandwidth caps in KB/s
+/// (0 = unlimited). Applied live and persisted; a lightweight alternative to
+/// sending the whole config just to change a limit.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+pub struct SpeedLimits {
+    pub upload_kbps: u64,
+    pub download_kbps: u64,
 }
 
 /// GET /api/v1/config  —  PUT /api/v1/config

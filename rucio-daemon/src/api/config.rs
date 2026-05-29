@@ -5,7 +5,7 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use rucio_core::api::config::{
-    ApiConfig, ConfigResponse, ConfigSnapshot, EmuleConfig, NetworkConfig, NodeConfig,
+    ApiConfig, ConfigResponse, ConfigSnapshot, EmuleConfig, NetworkConfig, NodeConfig, SpeedLimits,
     StorageConfig, TempLimitRequest, TempLimitStatus,
 };
 
@@ -228,4 +228,54 @@ pub async fn put_temp_limit(
 ) -> Json<TempLimitStatus> {
     state.bandwidth.set_temp_active(req.active);
     Json(temp_limit_status(&state))
+}
+
+/// Get the base speed limits
+///
+/// Returns the normal (base) upload/download caps in KB/s (0 = unlimited).
+#[utoipa::path(
+    get,
+    path = "/api/v1/config/limits",
+    responses(
+        (status = 200, description = "Current base speed limits.", body = SpeedLimits)
+    )
+)]
+pub async fn get_limits(State(state): State<AppState>) -> Json<SpeedLimits> {
+    Json(SpeedLimits {
+        upload_kbps: state.bandwidth.base_upload_kbps(),
+        download_kbps: state.bandwidth.base_download_kbps(),
+    })
+}
+
+/// Set the base speed limits
+///
+/// Updates the normal (base) upload/download caps (KB/s, 0 = unlimited),
+/// applying them to the live throttles and persisting them to the config file.
+/// A lightweight alternative to a full `PUT /config` for a quick change.
+#[utoipa::path(
+    put,
+    path = "/api/v1/config/limits",
+    request_body = SpeedLimits,
+    responses(
+        (status = 204, description = "Limits applied and saved."),
+        (status = 500, description = "Failed to write the configuration file.")
+    )
+)]
+pub async fn put_limits(State(state): State<AppState>, Json(req): Json<SpeedLimits>) -> StatusCode {
+    // Apply live (honouring the temporary-limit toggle).
+    state.bandwidth.set_base(req.upload_kbps, req.download_kbps);
+
+    // Persist: load the latest on-disk config so a concurrent change to other
+    // fields isn't clobbered, update only the limits, and save.
+    let mut cfg =
+        Config::load(state.config_path.as_deref()).unwrap_or_else(|_| (*state.config).clone());
+    cfg.network.upload_limit_kbps = req.upload_kbps;
+    cfg.network.download_limit_kbps = req.download_kbps;
+    match cfg.save() {
+        Ok(()) => StatusCode::NO_CONTENT,
+        Err(e) => {
+            tracing::error!("Failed to save config: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    }
 }

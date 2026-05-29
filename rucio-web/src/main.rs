@@ -69,9 +69,25 @@ use downloads::{DownloadsTab, refresh_downloads};
 use overlays::{AddressesPanel, NodeStatusPanel, StatsPanel};
 use searches::SearchesTab;
 use types::{
-    DownloadResponse, DownloadState, ResultSource, SearchResult, SearchState, StatusResponse,
-    TempLimitStatus, WsEvent, WsSearchResult, is_streamed_state,
+    DownloadResponse, DownloadState, ResultSource, SearchResult, SearchState, SpeedLimits,
+    StatusResponse, TempLimitRequest, TempLimitStatus, WsEvent, WsSearchResult, format_rate_kbps,
+    is_streamed_state,
 };
+
+/// Preset bandwidth caps offered in the menu dropdowns (KB/s; 0 = unlimited).
+const LIMIT_PRESETS: [u64; 9] = [0, 50, 100, 256, 512, 1024, 2048, 5120, 10240];
+
+/// PUT the base speed limits to the daemon (fire-and-forget).
+fn put_limits(upload_kbps: u64, download_kbps: u64) {
+    spawn_local(async move {
+        if let Ok(req) = gloo_net::http::Request::put("/api/v1/config/limits").json(&SpeedLimits {
+            upload_kbps,
+            download_kbps,
+        }) {
+            let _ = req.send().await;
+        }
+    });
+}
 
 // Throttling for the post-WS refresh that catches terminal transitions the
 // stream doesn't carry. WASM is single-threaded so a plain Cell/RefCell is fine.
@@ -371,6 +387,12 @@ fn App() -> impl IntoView {
     let ul_speed: RwSignal<u64> = RwSignal::new(0);
     // Whether the temporary speed limit is engaged (runtime-only on the daemon).
     let temp_limit: RwSignal<bool> = RwSignal::new(false);
+    // Base (normal) caps shown in the menu dropdowns, KB/s (0 = unlimited).
+    let base_up: RwSignal<u64> = RwSignal::new(0);
+    let base_down: RwSignal<u64> = RwSignal::new(0);
+    // Preset temporary caps, for the read-only line under the toggle.
+    let temp_up: RwSignal<u64> = RwSignal::new(0);
+    let temp_down: RwSignal<u64> = RwSignal::new(0);
 
     // Initial data fetch.
     spawn_local(async move {
@@ -385,6 +407,16 @@ fn App() -> impl IntoView {
             && let Ok(s) = r.json::<TempLimitStatus>().await
         {
             temp_limit.set(s.active);
+            temp_up.set(s.upload_kbps);
+            temp_down.set(s.download_kbps);
+        }
+        if let Ok(r) = gloo_net::http::Request::get("/api/v1/config/limits")
+            .send()
+            .await
+            && let Ok(s) = r.json::<SpeedLimits>().await
+        {
+            base_up.set(s.upload_kbps);
+            base_down.set(s.download_kbps);
         }
         refresh_downloads(downloads).await;
     });
@@ -485,6 +517,86 @@ fn App() -> impl IntoView {
                                 >
                                     <icons::Icon paths=icons::MOON/>
                                 </button>
+                            </div>
+                            <div class="dropdown-sep"/>
+                            // ── Speed limits ──────────────────────────────
+                            <div class="menu-section">
+                                <div class="menu-section-title">"Speed limits"</div>
+                                <div class="menu-limit-row">
+                                    <span class="menu-limit-label">"Download"</span>
+                                    <select
+                                        class="menu-select"
+                                        prop:value=move || base_down.get().to_string()
+                                        on:change=move |e| {
+                                            let kbps = event_target_value(&e).parse().unwrap_or(0);
+                                            base_down.set(kbps);
+                                            put_limits(base_up.get_untracked(), kbps);
+                                        }
+                                    >
+                                        {move || {
+                                            let cur = base_down.get();
+                                            let mut vals = LIMIT_PRESETS.to_vec();
+                                            if !vals.contains(&cur) { vals.push(cur); vals.sort_unstable(); }
+                                            vals.into_iter().map(|v| view! {
+                                                <option value=v.to_string()>{format_rate_kbps(v)}</option>
+                                            }).collect_view()
+                                        }}
+                                    </select>
+                                </div>
+                                <div class="menu-limit-row">
+                                    <span class="menu-limit-label">"Upload"</span>
+                                    <select
+                                        class="menu-select"
+                                        prop:value=move || base_up.get().to_string()
+                                        on:change=move |e| {
+                                            let kbps = event_target_value(&e).parse().unwrap_or(0);
+                                            base_up.set(kbps);
+                                            put_limits(kbps, base_down.get_untracked());
+                                        }
+                                    >
+                                        {move || {
+                                            let cur = base_up.get();
+                                            let mut vals = LIMIT_PRESETS.to_vec();
+                                            if !vals.contains(&cur) { vals.push(cur); vals.sort_unstable(); }
+                                            vals.into_iter().map(|v| view! {
+                                                <option value=v.to_string()>{format_rate_kbps(v)}</option>
+                                            }).collect_view()
+                                        }}
+                                    </select>
+                                </div>
+                                <button class="dropdown-item dropdown-toggle" on:click=move |_| {
+                                    let next = !temp_limit.get_untracked();
+                                    spawn_local(async move {
+                                        if let Ok(req) = gloo_net::http::Request::put(
+                                            "/api/v1/config/temp-limit",
+                                        )
+                                        .json(&TempLimitRequest { active: next })
+                                            && let Ok(resp) = req.send().await
+                                            && let Ok(s) = resp.json::<TempLimitStatus>().await
+                                        {
+                                            temp_limit.set(s.active);
+                                        }
+                                    });
+                                }>
+                                    <span>"Use temp limits"</span>
+                                    <span class=move || if temp_limit.get() {
+                                        "toggle-pill toggle-on"
+                                    } else {
+                                        "toggle-pill"
+                                    }>
+                                        {move || if temp_limit.get() { "On" } else { "Off" }}
+                                    </span>
+                                </button>
+                                <div class="menu-temp-info">
+                                    <icons::Icon paths=icons::HOURGLASS/>
+                                    <span>
+                                        {move || format!(
+                                            "{} down, {} up",
+                                            format_rate_kbps(temp_down.get()),
+                                            format_rate_kbps(temp_up.get()),
+                                        )}
+                                    </span>
+                                </div>
                             </div>
                             <div class="dropdown-sep"/>
                             <button class="dropdown-item" on:click=move |_| {
