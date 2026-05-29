@@ -141,6 +141,27 @@ impl Metrics {
         self.chunks_rejected.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Add downloaded bytes to the session total and speed window without
+    /// counting a chunk. Used by transports (eMule) that stream one chunk in
+    /// many increments, so the speed stays live instead of spiking only when a
+    /// whole slice completes; the chunk itself is counted once via
+    /// [`Self::record_download_chunk`].
+    pub fn record_download_bytes(&self, bytes: u64) {
+        if bytes == 0 {
+            return;
+        }
+        self.downloaded_bytes.fetch_add(bytes, Ordering::Relaxed);
+        if let Ok(mut w) = self.down_window.lock() {
+            w.add(bytes);
+        }
+    }
+
+    /// Count one received-and-verified chunk (an eMule slice) whose bytes were
+    /// already accounted incrementally via [`Self::record_download_bytes`].
+    pub fn record_download_chunk(&self) {
+        self.chunks_received.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Add an already-aggregated batch of uploaded bytes and served chunks.
     ///
     /// Used to reconcile counters owned by an external subsystem (the eMule

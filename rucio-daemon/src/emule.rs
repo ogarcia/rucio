@@ -16,17 +16,15 @@ use rucio_emule::transfer::{ActiveDownloads, DownloadEvent, DownloadOptions, Ses
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::io::AsyncSeekExt;
 use tokio::net::UdpSocket;
-use tokio::sync::{Semaphore, broadcast};
+use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 
 use crate::config::Config;
 use crate::db::Db;
-use rucio_core::api::ws::WsEvent;
 
 /// Bind the persistent Kad2 UDP socket on the configured port and spawn the
 /// Kad2 background task.
@@ -98,6 +96,20 @@ fn retry_delay_secs(attempt: u32) -> u64 {
     (BASE * (1_u64 << attempt.min(10))).min(MAX)
 }
 
+/// Download progress shared across all workers of a single eMule download.
+///
+/// `per_slice[i]` holds the bytes fetched so far for slice `i` (its full length
+/// once complete, 0 while pending), and `total` is their running sum. Every
+/// worker updates the slice it owns and reads `total`, so the reported byte
+/// count reflects every in-flight slice at once. Without this, each worker
+/// reported only its own slice added to a global baseline captured when it
+/// started — and because workers emit progress events independently and
+/// interleaved, the total jumped up and down as different workers reported.
+struct ProgressState {
+    per_slice: Vec<u64>,
+    total: u64,
+}
+
 /// Run a full eMule download pipeline using the running Kad2 task.
 ///
 /// The `download_id` is the `emule_downloads.id` row that was already created
@@ -118,7 +130,6 @@ pub async fn run_ed2k_download(
     download_id: i64,
     config: &Arc<Config>,
     db: &Db,
-    ws_tx: &broadcast::Sender<WsEvent>,
     kad: &KadHandle,
     active_downloads: &ActiveDownloads,
     download_slots: &Arc<Semaphore>,
@@ -346,6 +357,24 @@ pub async fn run_ed2k_download(
         let work_queue = Arc::new(Mutex::new(remaining));
         let done_vec = Arc::new(Mutex::new(done_slices));
 
+        // Coherent, shared progress across workers (see ProgressState). Seeded
+        // from the slices already on disk so the running total starts correct.
+        let progress = {
+            let mut st = ProgressState {
+                per_slice: vec![0u64; num_slices],
+                total: 0,
+            };
+            for (i, &done_flag) in done_vec.lock().unwrap().iter().enumerate() {
+                if done_flag {
+                    let s = i as u64 * CHUNK_SIZE as u64;
+                    let len = (s + CHUNK_SIZE as u64).min(link.size) - s;
+                    st.per_slice[i] = len;
+                    st.total += len;
+                }
+            }
+            Arc::new(Mutex::new(st))
+        };
+
         // Filter out sources with unusable addresses.
         let valid_sources: Vec<_> = sources
             .iter()
@@ -386,6 +415,7 @@ pub async fn run_ed2k_download(
             let pub_work = work_queue.clone();
             let pub_done = done_vec.clone();
             let pub_ls = live_stats.clone();
+            let pub_progress = progress.clone();
             let pub_key = live_key;
             let total = num_slices;
             tokio::spawn(async move {
@@ -402,9 +432,15 @@ pub async fn run_ed2k_download(
                         .filter(|i| !done.get(*i).copied().unwrap_or(false) && !queued.contains(i))
                         .map(|i| i as u32)
                         .collect();
+                    let live_bytes = pub_progress.lock().unwrap().total;
                     let mut s = pub_ls.write().await;
                     match s.get_mut(&pub_key) {
-                        Some(e) => e.in_flight_pieces = in_flight,
+                        Some(e) => {
+                            e.in_flight_pieces = in_flight;
+                            // Single source of progress for the WS/API, with
+                            // in-flight partials folded in (see DownloadLiveStats).
+                            e.bytes_done = Some(live_bytes);
+                        }
                         // Entry gone — download finished/cancelled, stop.
                         None => break,
                     }
@@ -423,13 +459,11 @@ pub async fn run_ed2k_download(
             let done = done_vec.clone();
             let met = met_path.clone();
             let part = part_path.clone();
-            let ws = ws_tx.clone();
             let db_w = db.clone();
-            let name_c = link.name.clone();
-            let hash_hex_c = link.hash.to_hex();
             let hash = link.hash;
             let file_size = link.size;
             let metrics_w = metrics.clone();
+            let progress_w = progress.clone();
 
             join_set.spawn(async move {
                 let opts = DownloadOptions {
@@ -499,68 +533,36 @@ pub async fn run_ed2k_download(
                         }
                     };
 
-                    // Bytes from all already-completed slices (not counting the
-                    // one we are about to download).  Used to report cumulative
-                    // progress rather than the raw absolute offset of this slice.
-                    let cumulative_before: u64 = {
-                        let d = done.lock().unwrap();
-                        d.iter()
-                            .enumerate()
-                            .filter(|&(_, &done_flag)| done_flag)
-                            .map(|(i, _)| {
-                                let s = i as u64 * CHUNK_SIZE as u64;
-                                (s + CHUNK_SIZE as u64).min(file_size) - s
-                            })
-                            .sum()
-                    };
-
-                    // Download the slice.
-                    let bytes_tracker = Arc::new(AtomicU64::new(cumulative_before));
-                    let tracker = bytes_tracker.clone();
-                    let ws_c = ws.clone();
-                    let db_c = db_w.clone();
-                    let name_cc = name_c.clone();
-                    let hash_hex_cc = hash_hex_c.clone();
+                    // Update the shared ProgressState so every in-flight slice
+                    // is reflected at once. The in-flight publisher mirrors the
+                    // running total into live_stats once a second, and the main
+                    // loop's ws_tick is the sole emitter of DownloadProgress —
+                    // keeping a single, monotonic source of the byte count
+                    // instead of competing with the persisted (DB) figure.
                     let metrics_cb = metrics_w.clone();
+                    let progress_cb = progress_w.clone();
                     let mut on_progress = move |ev: DownloadEvent| match ev {
-                        DownloadEvent::Progress {
-                            bytes_received,
-                            total,
-                        } => {
+                        DownloadEvent::Progress { bytes_received, .. } => {
                             // bytes_received is an absolute file offset; subtract
-                            // slice_start to get bytes downloaded within this slice,
-                            // then add cumulative_before for the running total.
-                            let total_done = cumulative_before + (bytes_received - slice_start);
-                            tracker.store(total_done, Ordering::Relaxed);
-                            let _ = ws_c.send(WsEvent::DownloadProgress(vec![
-                                rucio_core::api::downloads::DownloadResponse {
-                                    // eMule rows use negative ids on the public
-                                    // API (see api/downloads.rs and the WS tick
-                                    // in lib.rs).  Forgetting the negation here
-                                    // made the client see the same download
-                                    // under two ids — a "ghost" libp2p row.
-                                    id: -download_id,
-                                    root_hash: hash_hex_cc.clone(),
-                                    name: Some(name_cc.clone()),
-                                    size: Some(total),
-                                    bytes_done: total_done,
-                                    state: rucio_core::api::downloads::DownloadState::Downloading,
-                                    error: None,
-                                },
-                            ]));
-                        }
-                        DownloadEvent::ChunkVerified { part_index } => {
-                            info!(part_index, "eMule chunk verified");
-                            let bytes = tracker.load(Ordering::Relaxed);
-                            let db = db_c.clone();
-                            tokio::spawn(async move {
-                                let _ = crate::db::emule_downloads::set_bytes_done(
-                                    &db,
-                                    download_id,
-                                    bytes,
-                                )
-                                .await;
-                            });
+                            // slice_start for the bytes fetched within this slice.
+                            let cur = bytes_received.saturating_sub(slice_start);
+                            let delta = {
+                                let mut p = progress_cb.lock().unwrap();
+                                let prev = p.per_slice[slice_idx];
+                                let d = if cur >= prev {
+                                    let d = cur - prev;
+                                    p.total += d;
+                                    d
+                                } else {
+                                    p.total -= prev - cur;
+                                    0
+                                };
+                                p.per_slice[slice_idx] = cur;
+                                d
+                            };
+                            // Feed the speed window incrementally so the session
+                            // rate stays live instead of spiking once per slice.
+                            metrics_cb.record_download_bytes(delta);
                         }
                         DownloadEvent::ChunkFailed { part_index } => {
                             warn!(part_index, "eMule chunk verification failed");
@@ -575,15 +577,27 @@ pub async fn run_ed2k_download(
                     {
                         Ok(_) => {
                             info!(%peer, slice = slice_idx, "Slice downloaded successfully");
-                            // Feed session metrics: a verified ed2k slice now on
-                            // disk counts as one received chunk plus its bytes.
-                            metrics_w.record_download(slice_end - slice_start);
                             // Mark slice as done and persist progress.
                             let snapshot = {
                                 let mut d = done.lock().unwrap();
                                 d[slice_idx] = true;
                                 d.clone()
                             };
+                            // Reconcile the shared total to the exact slice
+                            // length — the last Progress event may have stopped
+                            // short of the slice end — and account that tail in
+                            // the session metrics plus the completed chunk.
+                            let remainder = {
+                                let slice_len = slice_end - slice_start;
+                                let mut p = progress_w.lock().unwrap();
+                                let prev = p.per_slice[slice_idx];
+                                let rem = slice_len - prev;
+                                p.total += rem;
+                                p.per_slice[slice_idx] = slice_len;
+                                rem
+                            };
+                            metrics_w.record_download_bytes(remainder);
+                            metrics_w.record_download_chunk();
                             save_progress(&met, &snapshot);
                             // Update DB with the true cumulative total so it
                             // never regresses when slices are downloaded out of
@@ -610,6 +624,15 @@ pub async fn run_ed2k_download(
                         Err(e) => {
                             debug!(%peer, slice = slice_idx, error = %e,
                                    "Slice download failed — retrying");
+                            // Roll back this slice's partial progress: it will be
+                            // re-fetched from the start, so its bytes must not
+                            // linger in the shared total.
+                            {
+                                let mut p = progress_w.lock().unwrap();
+                                let prev = p.per_slice[slice_idx];
+                                p.total -= prev;
+                                p.per_slice[slice_idx] = 0;
+                            }
                             work.lock()
                                 .unwrap()
                                 .push_front((slice_idx, slice_start, slice_end));

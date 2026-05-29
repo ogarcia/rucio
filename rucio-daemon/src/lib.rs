@@ -414,7 +414,6 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
             for row in emule_rows {
                 let config = config.clone();
                 let db = db.clone();
-                let ws_tx = ws_tx.clone();
                 let kad = kad_handle.clone();
                 let ad = active_downloads.clone();
                 let slots = emule_download_slots.clone();
@@ -426,7 +425,6 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                         row.id,
                         &config,
                         &db,
-                        &ws_tx,
                         &kad,
                         &ad,
                         &slots,
@@ -605,12 +603,21 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                                 | rucio_core::api::downloads::DownloadState::Downloading
                                 | rucio_core::api::downloads::DownloadState::Stalled
                         ) {
+                            // Prefer the live byte count (with in-flight partials)
+                            // over the persisted complete-slices-only figure, so
+                            // the reported progress doesn't oscillate between the
+                            // two sources.
+                            let live_bytes = live_stats
+                                .read()
+                                .await
+                                .get(&(-r.id))
+                                .and_then(|s| s.bytes_done);
                             active.push(rucio_core::api::downloads::DownloadResponse {
                                 id: -(r.id), // negative IDs mark eMule rows in WS events
                                 root_hash: hex::encode(&r.ed2k_hash),
                                 name: Some(r.name),
                                 size: Some(r.total_size as u64),
-                                bytes_done: r.bytes_done as u64,
+                                bytes_done: live_bytes.unwrap_or(r.bytes_done as u64),
                                 state,
                                 error: r.error_msg,
                             });
@@ -651,7 +658,6 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                                 } else {
                                     let config = config.clone();
                                     let db = db.clone();
-                                    let ws_tx = ws_tx.clone();
                                     let kad = kad_handle.clone();
                                     let ad = active_downloads.clone();
                                     let slots = emule_download_slots.clone();
@@ -659,7 +665,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                                     let met = Arc::clone(&session_metrics);
                                     tokio::spawn(async move {
                                         if let Err(e) = crate::emule::run_ed2k_download(
-                                            &link, download_id, &config, &db, &ws_tx, &kad, &ad,
+                                            &link, download_id, &config, &db, &kad, &ad,
                                             &slots, &ls, &met,
                                         )
                                         .await
@@ -897,31 +903,43 @@ async fn sample_download_speeds(
     live_stats: &live_stats::LiveStatsMap,
     samples: &mut std::collections::HashMap<i64, (metrics::SpeedWindow, u64)>,
 ) {
-    let active_ids: Vec<i64> = live_stats.read().await.keys().copied().collect();
-    if active_ids.is_empty() {
+    // Snapshot the active ids together with any live byte count, so the speed
+    // is derived from the same smooth, partial-aware figure the WS/API report
+    // rather than the persisted count, which for eMule only jumps a whole slice
+    // at a time and would make the speed lurch.
+    let snapshot: Vec<(i64, Option<u64>)> = {
+        let g = live_stats.read().await;
+        g.iter().map(|(k, v)| (*k, v.bytes_done)).collect()
+    };
+    if snapshot.is_empty() {
         samples.clear();
         return;
     }
-    for &id in &active_ids {
-        let bytes = if id < 0 {
-            #[cfg(feature = "emule-compat")]
-            {
-                db::emule_downloads::get(db, -id)
-                    .await
-                    .ok()
-                    .flatten()
-                    .map(|r| r.bytes_done as u64)
+    let active_ids: Vec<i64> = snapshot.iter().map(|(id, _)| *id).collect();
+    for (id, live_bytes) in snapshot {
+        let bytes = match live_bytes {
+            Some(b) => Some(b),
+            // No live figure yet (libp2p, or eMule before the first publish):
+            // fall back to the persisted count.
+            None if id < 0 => {
+                #[cfg(feature = "emule-compat")]
+                {
+                    db::emule_downloads::get(db, -id)
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|r| r.bytes_done as u64)
+                }
+                #[cfg(not(feature = "emule-compat"))]
+                {
+                    None
+                }
             }
-            #[cfg(not(feature = "emule-compat"))]
-            {
-                None
-            }
-        } else {
-            db::downloads::get(db, id)
+            None => db::downloads::get(db, id)
                 .await
                 .ok()
                 .flatten()
-                .map(|r| r.bytes_done as u64)
+                .map(|r| r.bytes_done as u64),
         };
         let Some(bytes) = bytes else { continue };
         let entry = samples

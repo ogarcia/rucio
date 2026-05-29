@@ -31,6 +31,12 @@ pub struct DownloadLiveStats {
     pub in_flight_pieces: Vec<u32>,
     /// Smoothed download speed in bytes per second (filled by the sampler).
     pub speed_bps: u64,
+    /// Live byte count including bytes from in-flight (not-yet-complete)
+    /// slices. `None` until the engine publishes one; the WS/API then fall
+    /// back to the persisted (complete-slices-only) count. Reporting this as
+    /// the single source of progress avoids the value oscillating between the
+    /// live (with partials) and persisted (without) figures.
+    pub bytes_done: Option<u64>,
 }
 
 /// Shared map of live stats keyed by signed download id.

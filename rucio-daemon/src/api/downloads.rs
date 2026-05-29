@@ -53,9 +53,19 @@ pub async fn list_downloads(State(state): State<AppState>) -> Json<DownloadsResp
     // them into a single chronological list regardless of origin.
     let mut with_ts: Vec<(i64, DownloadResponse)> = Vec::new();
 
+    // Snapshot of live stats, keyed by signed id. Used to report the live byte
+    // count (with in-flight partials) so the REST list matches what the WS
+    // streams; without it a refresh would clash with the WS value. Falls back
+    // to the persisted figure when there is no live entry.
+    let live = state.live_stats.read().await.clone();
+
     // libp2p downloads (positive IDs)
     if let Ok(rows) = crate::db::downloads::list(&state.db).await {
         for r in rows {
+            let bytes_done = live
+                .get(&r.id)
+                .and_then(|l| l.bytes_done)
+                .unwrap_or(r.bytes_done as u64);
             with_ts.push((
                 r.added_at,
                 DownloadResponse {
@@ -63,7 +73,7 @@ pub async fn list_downloads(State(state): State<AppState>) -> Json<DownloadsResp
                     root_hash: hex::encode(&r.root_hash),
                     name: Some(r.name),
                     size: Some(r.total_size as u64),
-                    bytes_done: r.bytes_done as u64,
+                    bytes_done,
                     state: db_status_to_state(&r.status),
                     error: r.error_msg,
                 },
@@ -75,6 +85,10 @@ pub async fn list_downloads(State(state): State<AppState>) -> Json<DownloadsResp
     #[cfg(feature = "emule-compat")]
     if let Ok(rows) = crate::db::emule_downloads::list(&state.db).await {
         for r in rows {
+            let bytes_done = live
+                .get(&-r.id)
+                .and_then(|l| l.bytes_done)
+                .unwrap_or(r.bytes_done as u64);
             with_ts.push((
                 r.added_at,
                 DownloadResponse {
@@ -82,7 +96,7 @@ pub async fn list_downloads(State(state): State<AppState>) -> Json<DownloadsResp
                     root_hash: hex::encode(&r.ed2k_hash),
                     name: Some(r.name),
                     size: Some(r.total_size as u64),
-                    bytes_done: r.bytes_done as u64,
+                    bytes_done,
                     state: db_status_to_state(&r.status),
                     error: r.error_msg,
                 },
@@ -149,13 +163,20 @@ pub async fn get_download(
         }
         .to_string();
 
+        // Prefer the live byte count (with in-flight partials) so the detail
+        // matches the WS/list; falls back to the persisted figure.
+        let bytes_done = live
+            .as_ref()
+            .and_then(|l| l.bytes_done)
+            .unwrap_or(row.bytes_done as u64);
+
         Ok(Json(DownloadDetailResponse {
             id,
             kind: "rucio".to_string(),
             root_hash: root_hash_hex,
             name: Some(row.name),
             size: Some(row.total_size as u64),
-            bytes_done: row.bytes_done as u64,
+            bytes_done,
             state: db_status_to_state(&row.status),
             error: row.error_msg,
             dest_path: non_empty(row.dest_path),
@@ -170,7 +191,7 @@ pub async fn get_download(
             speed_bps: live.as_ref().map(|l| l.speed_bps),
             eta_secs: eta_secs(
                 row.total_size as u64,
-                row.bytes_done as u64,
+                bytes_done,
                 live.as_ref().map(|l| l.speed_bps).unwrap_or(0),
             ),
         }))
@@ -198,13 +219,20 @@ pub async fn get_download(
             let done = rucio_emule::progress::load_progress(&met_path, num_slices);
             let pieces_done = done.iter().filter(|&&d| d).count() as u64;
 
+            // Prefer the live byte count (with in-flight partials) so the detail
+            // matches the WS/list; falls back to the persisted figure.
+            let bytes_done = live
+                .as_ref()
+                .and_then(|l| l.bytes_done)
+                .unwrap_or(row.bytes_done as u64);
+
             Ok(Json(DownloadDetailResponse {
                 id,
                 kind: "emule".to_string(),
                 root_hash: hex::encode(&row.ed2k_hash),
                 name: Some(row.name),
                 size: Some(row.total_size as u64),
-                bytes_done: row.bytes_done as u64,
+                bytes_done,
                 state: db_status_to_state(&row.status),
                 error: row.error_msg,
                 dest_path: non_empty(row.dest_path),
@@ -219,7 +247,7 @@ pub async fn get_download(
                 speed_bps: live.as_ref().map(|l| l.speed_bps),
                 eta_secs: eta_secs(
                     row.total_size as u64,
-                    row.bytes_done as u64,
+                    bytes_done,
                     live.as_ref().map(|l| l.speed_bps).unwrap_or(0),
                 ),
             }))
