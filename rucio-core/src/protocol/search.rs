@@ -150,7 +150,12 @@ pub fn normalize_search_term(s: &str) -> String {
             'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ø' | 'ō' | 'ŏ' | 'ő' => out.push('o'),
             'ù' | 'ú' | 'û' | 'ü' | 'ū' | 'ŭ' | 'ů' | 'ű' | 'ų' => out.push('u'),
             'ç' | 'ć' | 'ĉ' | 'č' => out.push('c'),
-            'ñ' | 'ń' | 'ņ' | 'ň' => out.push('n'),
+            // NOTE: 'ñ' is intentionally NOT folded. In Spanish it is a distinct
+            // letter, not an accented 'n' (año ≠ ano, caña ≠ cana), and eMule
+            // indexes Kad keywords with the 'ñ' intact — folding it to 'n' made
+            // our keyword hash miss those files. Other languages' n-diacritics
+            // (ń/ņ/ň) are genuine accents, so they still fold to 'n'.
+            'ń' | 'ņ' | 'ň' => out.push('n'),
             'ý' | 'ÿ' => out.push('y'),
             'ð' | 'ď' => out.push('d'),
             'ß' => {
@@ -227,9 +232,16 @@ mod tests {
         let q2 = query(&["último"]);
         assert!(q2.matches("ultimo año.avi"));
 
-        // Both directions work for multi-word.
-        let q3 = query(&["ultimo", "ano"]);
+        // Both directions work for multi-word (accents only).
+        let q3 = query(&["ultimo", "año"]);
         assert!(q3.matches("Último Año.avi"));
+
+        // 'ñ' is a distinct letter: 'ano' must NOT match 'Año'.
+        let q4 = query(&["ano"]);
+        assert!(!q4.matches("Último Año.avi"));
+        // …but 'año' (with ñ) does, ignoring case.
+        let q5 = query(&["año"]);
+        assert!(q5.matches("Último AÑO.avi"));
     }
 
     #[test]
@@ -238,7 +250,11 @@ mod tests {
         assert_eq!(normalize_search_term("Último"), "ultimo");
         assert_eq!(normalize_search_term("ÜBER"), "uber");
         assert_eq!(normalize_search_term("straße"), "strasse");
-        assert_eq!(normalize_search_term("Ñoño"), "nono");
+        // 'ñ' is a distinct letter and must NOT fold to 'n' (only lowercased).
+        assert_eq!(normalize_search_term("Ñoño"), "ñoño");
+        assert_eq!(normalize_search_term("Fariña"), "fariña");
+        // Other-language n-diacritics still fold.
+        assert_eq!(normalize_search_term("Gdańsk"), "gdansk");
     }
 
     #[test]
