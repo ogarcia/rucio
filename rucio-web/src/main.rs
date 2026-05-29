@@ -153,17 +153,20 @@ fn start_ws_loop(
                     continue;
                 }
                 Ok(ws) => {
-                    // Do NOT set connected here. WebSocket::open() only creates
-                    // the JS object — the TCP handshake hasn't happened yet.
-                    // We flip the icon green only on the first actual message,
-                    // so it never shows green when the server is unreachable.
+                    // Mark connected as soon as the socket object is created.
+                    // WebSocket::open() queues the TCP handshake; if the server
+                    // is truly unreachable the stream will yield None almost
+                    // immediately and ws_connected goes back to false before the
+                    // next render frame.  The previous approach (wait for the
+                    // first message) kept the icon grey indefinitely when the
+                    // daemon was running but had no active downloads to stream.
                     backoff_ms = 1_000;
+                    if !ws_connected.get_untracked() {
+                        ws_connected.set(true);
+                    }
 
                     let mut stream = ws;
                     while let Some(msg) = stream.next().await {
-                        if !ws_connected.get_untracked() {
-                            ws_connected.set(true);
-                        }
                         if let Ok(Message::Text(text)) = msg {
                             if let Ok(event) = serde_json::from_str::<WsEvent>(&text) {
                                 handle_event(

@@ -33,9 +33,9 @@ pub const CIRCLE_X: &str = r#"<path stroke="none" d="M0 0h24v24H0z" fill="none"/
 
 pub const TRASH: &str = r#"<path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M4 7l16 0"/><path d="M10 11l0 6"/><path d="M14 11l0 6"/><path d="M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2 -2l1 -12"/><path d="M9 7v-3a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v3"/>"#;
 
-pub const NETWORK: &str = r#"<path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M6 9m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0"/><path d="M18 9m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0"/><path d="M12 19m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0"/><path d="M6 9l6 10"/><path d="M18 9l-6 10"/><path d="M6 9h12"/>"#;
+pub const NETWORK: &str = r#"<path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M6 9a6 6 0 1 0 12 0a6 6 0 0 0 -12 0"/><path d="M12 3c1.333 .333 2 2.333 2 6s-.667 5.667 -2 6"/><path d="M12 3c-1.333 .333 -2 2.333 -2 6s.667 5.667 2 6"/><path d="M6 9h12"/><path d="M3 20h7"/><path d="M14 20h7"/><path d="M10 20a2 2 0 1 0 4 0a2 2 0 0 0 -4 0"/><path d="M12 15v3"/>"#;
 
-pub const NETWORK_OFF: &str = r#"<path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M6 9m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0"/><path d="M18 9m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0"/><path d="M12 19m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0"/><path d="M6 9l6 10"/><path d="M18 9l-6 10"/><path d="M6 9h3"/><path d="M14.5 9h3.5"/><path d="M3 3l18 18"/>"#;
+pub const NETWORK_OFF: &str = r#"<path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M6.528 6.536a6 6 0 0 0 7.942 7.933m2.247 -1.76a6 6 0 0 0 -8.427 -8.425"/><path d="M12 3c1.333 .333 2 2.333 2 6c0 .337 -.006 .66 -.017 .968m-.55 3.473c-.333 .884 -.81 1.403 -1.433 1.559"/><path d="M12 3c-.936 .234 -1.544 1.29 -1.822 3.167m-.16 3.838c.116 3.029 .776 4.695 1.982 4.995"/><path d="M6 9h3m4 0h5"/><path d="M3 20h7"/><path d="M14 20h7"/><path d="M10 20a2 2 0 1 0 4 0a2 2 0 0 0 -4 0"/><path d="M12 15v3"/><path d="M3 3l18 18"/>"#;
 
 pub const MENU: &str = r#"<path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M4 6l16 0"/><path d="M4 12l16 0"/><path d="M4 18l16 0"/>"#;
 
