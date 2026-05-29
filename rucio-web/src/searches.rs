@@ -2,10 +2,11 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 use crate::SearchStore;
+use crate::downloads::refresh_downloads;
 use crate::icons::{self, Icon};
 use crate::types::{
-    ResultSource, SearchDetailResponse, SearchResult, SearchStartedResponse, SearchState,
-    SearchSummary, StartSearchRequest, format_size,
+    DownloadResponse, DownloadState, ResultSource, SearchDetailResponse, SearchResult,
+    SearchStartedResponse, SearchState, SearchSummary, StartSearchRequest, format_size,
 };
 
 async fn api_start_search(keywords: Vec<String>) -> Option<u64> {
@@ -181,7 +182,10 @@ fn refresh_list(search: SearchStore) {
 }
 
 #[component]
-pub fn SearchesTab(search: SearchStore) -> impl IntoView {
+pub fn SearchesTab(
+    search: SearchStore,
+    downloads: RwSignal<Vec<DownloadResponse>>,
+) -> impl IntoView {
     let query = RwSignal::new(String::new());
 
     // Result filter/sort controls (apply to the currently selected search).
@@ -455,7 +459,7 @@ pub fn SearchesTab(search: SearchStore) -> impl IntoView {
                                 <For
                                     each=move || view_results()
                                     key=|r| r.result_id
-                                    children=|r| view! { <ResultRow result=r/> }
+                                    children=move |r| view! { <ResultRow result=r downloads=downloads/> }
                                 />
                             </ul>
                         }.into_any()
@@ -467,18 +471,46 @@ pub fn SearchesTab(search: SearchStore) -> impl IntoView {
     }
 }
 
-/// Per-row download-button state, driven by the POST result.
+/// Transient per-row state covering only the request window (before the new
+/// download row shows up in the downloads list) plus the error case.
 #[derive(Clone, Copy, PartialEq)]
-enum BtnState {
+enum LocalState {
     Idle,
     Sending,
-    Queued,
-    AlreadyHave,
     Error,
 }
 
+/// Extract the content hash from a result's download link so it can be matched
+/// against `DownloadResponse::root_hash`. Rucio magnets are `rucio:<hash>?…`;
+/// ed2k links are `ed2k://|file|<name>|<size>|<hash>|/`.
+fn link_hash(link: &str) -> Option<String> {
+    if let Some(rest) = link.strip_prefix("rucio:") {
+        let h = rest.split('?').next().unwrap_or("");
+        if !h.is_empty() {
+            return Some(h.to_ascii_lowercase());
+        }
+    } else if link.starts_with("ed2k://") {
+        let parts: Vec<&str> = link.split('|').collect();
+        if let Some(h) = parts.get(4)
+            && h.len() == 32
+        {
+            return Some(h.to_ascii_lowercase());
+        }
+    }
+    None
+}
+
+/// The state of the download matching this link, if any is in the list.
+fn matching_state(link: &str, downloads: &[DownloadResponse]) -> Option<DownloadState> {
+    let h = link_hash(link)?;
+    downloads
+        .iter()
+        .find(|d| d.root_hash.eq_ignore_ascii_case(&h))
+        .map(|d| d.state.clone())
+}
+
 #[component]
-fn ResultRow(result: SearchResult) -> impl IntoView {
+fn ResultRow(result: SearchResult, downloads: RwSignal<Vec<DownloadResponse>>) -> impl IntoView {
     let link = result.download_link.clone();
     let provider = result.provider.clone();
     let can_download = link.is_some();
@@ -492,22 +524,33 @@ fn ResultRow(result: SearchResult) -> impl IntoView {
         ResultSource::Emule => "eMule",
     };
 
-    let btn = RwSignal::new(BtnState::Idle);
+    let local = RwSignal::new(LocalState::Idle);
 
-    // Fire the download request and reflect the outcome in `btn`. A Callback is
-    // used (rather than a plain closure) so the reactive button block, which
-    // re-renders on every `btn` change, can invoke it without moving it.
+    // Live download state for this result, matched by hash against the
+    // downloads list. This is the source of truth that survives tab switches,
+    // unlike the transient `local` state.
+    let link_for_state = link.clone();
+    let dl_state = move || {
+        link_for_state
+            .as_deref()
+            .and_then(|l| downloads.with(|v| matching_state(l, v)))
+    };
+
+    // Fire the download request, then refresh so the new/updated row appears in
+    // the downloads list and `dl_state` takes over the UI. A Callback is used
+    // so the reactive action block can invoke it without moving it.
     let trigger = Callback::new(move |()| {
         let (Some(l), p) = (link.clone(), provider.clone()) else {
             return;
         };
-        btn.set(BtnState::Sending);
+        local.set(LocalState::Sending);
         spawn_local(async move {
             let outcome = api_start_download(l, p).await;
-            btn.set(match outcome {
-                DlOutcome::Queued => BtnState::Queued,
-                DlOutcome::AlreadyHave => BtnState::AlreadyHave,
-                DlOutcome::Error => BtnState::Error,
+            refresh_downloads(downloads).await;
+            local.set(if outcome == DlOutcome::Error {
+                LocalState::Error
+            } else {
+                LocalState::Idle
             });
         });
     });
@@ -517,34 +560,48 @@ fn ResultRow(result: SearchResult) -> impl IntoView {
             <span class="result-name">{result.name}</span>
             <span class="result-size">{format_size(result.size)}</span>
             <span class=source_css>{source_label}</span>
+            <span class="result-action">
             {move || {
                 if !can_download {
                     return view! { <span class="result-no-link">"—"</span> }.into_any();
                 }
-                match btn.get() {
-                    // Idle and Error both offer an actionable button (retry on error).
-                    BtnState::Idle | BtnState::Error => {
-                        let err = btn.get() == BtnState::Error;
-                        view! {
-                            <button
-                                class="btn-sm btn-primary"
-                                on:click=move |_| trigger.run(())
-                            >
-                                {if err { "Retry" } else { "Download" }}
-                            </button>
-                        }.into_any()
-                    }
-                    BtnState::Sending => view! {
-                        <span class="result-dl-status">"Adding…"</span>
+                let derived = dl_state();
+                // Absent, or in a re-downloadable terminal state → offer the button.
+                let show_button = matches!(
+                    derived,
+                    None | Some(DownloadState::Failed) | Some(DownloadState::Cancelled)
+                );
+                if show_button {
+                    return match local.get() {
+                        LocalState::Sending => view! {
+                            <span class="result-dl-status">"Adding…"</span>
+                        }.into_any(),
+                        other => {
+                            let retry = other == LocalState::Error;
+                            view! {
+                                <button
+                                    class="btn-sm btn-primary"
+                                    on:click=move |_| trigger.run(())
+                                >
+                                    {if retry { "Retry" } else { "Download" }}
+                                </button>
+                            }.into_any()
+                        }
+                    };
+                }
+                match derived {
+                    Some(DownloadState::Completed) => view! {
+                        <span class="result-dl-status result-dl-ok">"Downloaded"</span>
                     }.into_any(),
-                    BtnState::Queued => view! {
-                        <span class="result-dl-status result-dl-ok">"Queued"</span>
+                    Some(DownloadState::Paused) => view! {
+                        <span class="result-dl-status result-dl-have">"Paused"</span>
                     }.into_any(),
-                    BtnState::AlreadyHave => view! {
+                    _ => view! {
                         <span class="result-dl-status result-dl-have">"In downloads"</span>
                     }.into_any(),
                 }
             }}
+            </span>
         </li>
     }
 }

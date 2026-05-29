@@ -653,7 +653,7 @@ fn App() -> impl IntoView {
                             temp_limit=temp_limit
                         />
                     }.into_any(),
-                    Tab::Searches => view! { <SearchesTab search=search/> }.into_any(),
+                    Tab::Searches => view! { <SearchesTab search=search downloads=downloads/> }.into_any(),
                     Tab::Shares => view! { <SharesTab/> }.into_any(),
                 }}
             </main>

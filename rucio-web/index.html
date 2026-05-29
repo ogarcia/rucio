@@ -660,10 +660,15 @@
 
         .result-row {
             display: grid;
-            grid-template-columns: 1fr auto auto auto;
+            grid-template-columns: 1fr auto auto 6.5rem;
             align-items: center; gap: 1rem;
             padding: 0.625rem 0;
             border-bottom: 1px solid var(--raised);
+        }
+        /* Fixed-width, right-aligned action cell so the row layout doesn't
+           shift when the button is replaced by a status label. */
+        .result-action {
+            display: flex; align-items: center; justify-content: flex-end;
         }
         .result-row:last-child { border-bottom: none; }
 
