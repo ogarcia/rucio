@@ -189,6 +189,32 @@ pub fn SearchesTab(search: SearchStore) -> impl IntoView {
     let filter_text: RwSignal<String> = RwSignal::new(String::new());
     let sort_by: RwSignal<SortBy> = RwSignal::new(SortBy::SizeDesc);
 
+    // Recent-search dropdown open/closed. A custom dropdown (rather than a
+    // native <select>) is used because Firefox/Linux draws the native option
+    // highlight at the content's intrinsic width, not the stretched control's
+    // width, leaving the right part of each row unhighlighted on wide screens.
+    let dd_open: RwSignal<bool> = RwSignal::new(false);
+
+    // Label shown on the dropdown button: the selected search, or a placeholder.
+    let current_label = move || {
+        search
+            .selected
+            .get()
+            .and_then(|id| {
+                search.list.with(|l| {
+                    l.iter().find(|s| s.id == id).map(|s| {
+                        format!(
+                            "{} — {} ({})",
+                            s.keywords.join(" "),
+                            state_label(&s.state),
+                            s.result_count,
+                        )
+                    })
+                })
+            })
+            .unwrap_or_else(|| "Recent searches…".to_string())
+    };
+
     // Raw (unfiltered) result count of the selected search; drives whether the
     // filter bar is shown. Kept separate from `view_results` so the filter bar
     // only re-renders when results appear/disappear, never on every keystroke.
@@ -263,27 +289,44 @@ pub fn SearchesTab(search: SearchStore) -> impl IntoView {
             // ── Recent searches ───────────────────────────────────────────
             <Show when=move || !search.list.get().is_empty() fallback=|| ()>
                 <div class="search-history">
-                    <select
-                        class="search-history-select"
-                        prop:value=move || search.selected.get().map(|i| i.to_string()).unwrap_or_default()
-                        on:change=move |e| {
-                            if let Ok(id) = event_target_value(&e).parse::<u64>() {
-                                search.selected.set(Some(id));
-                                load_detail(search, id);
-                            }
-                        }
-                    >
-                        <option value="" disabled=true>"Recent searches…"</option>
-                        {move || search.list.get().into_iter().map(|s| {
-                            let label = format!(
-                                "{} — {} ({})",
-                                s.keywords.join(" "),
-                                state_label(&s.state),
-                                s.result_count,
-                            );
-                            view! { <option value=s.id.to_string()>{label}</option> }
-                        }).collect_view()}
-                    </select>
+                    <div class="history-dd">
+                        <button
+                            class="history-dd-btn"
+                            on:click=move |_| dd_open.update(|o| *o = !*o)
+                        >
+                            <span class="history-dd-label">{current_label}</span>
+                            <Icon paths=icons::CHEVRON_DOWN/>
+                        </button>
+                        <Show when=move || dd_open.get() fallback=|| ()>
+                            // Full-screen catcher: any click outside the menu closes it.
+                            <div class="history-dd-backdrop" on:click=move |_| dd_open.set(false)></div>
+                            <ul class="history-dd-menu">
+                                {move || search.list.get().into_iter().map(|s| {
+                                    let id = s.id;
+                                    let label = format!(
+                                        "{} — {} ({})",
+                                        s.keywords.join(" "),
+                                        state_label(&s.state),
+                                        s.result_count,
+                                    );
+                                    view! {
+                                        <li
+                                            class=move || if search.selected.get() == Some(id) {
+                                                "history-dd-item history-dd-item-sel"
+                                            } else {
+                                                "history-dd-item"
+                                            }
+                                            on:click=move |_| {
+                                                search.selected.set(Some(id));
+                                                load_detail(search, id);
+                                                dd_open.set(false);
+                                            }
+                                        >{label}</li>
+                                    }
+                                }).collect_view()}
+                            </ul>
+                        </Show>
+                    </div>
                     <button
                         class="icon-btn"
                         title="Relaunch search"
