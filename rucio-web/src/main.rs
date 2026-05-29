@@ -4,6 +4,57 @@ mod overlays;
 mod searches;
 mod types;
 
+// ── Theme ──────────────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Theme {
+    Auto,
+    Light,
+    Dark,
+}
+
+fn load_theme() -> Theme {
+    let stored = web_sys::window()
+        .and_then(|w| w.local_storage().ok().flatten())
+        .and_then(|ls| ls.get_item("rucio-theme").ok().flatten());
+    match stored.as_deref() {
+        Some("light") => Theme::Light,
+        Some("dark") => Theme::Dark,
+        _ => Theme::Auto,
+    }
+}
+
+/// Apply a theme to the <html> element and persist it to localStorage.
+/// Auto = remove the data-theme attribute so the CSS media query takes over.
+fn apply_theme(t: Theme) {
+    if let Some(el) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.document_element())
+    {
+        match t {
+            Theme::Auto => {
+                let _ = el.remove_attribute("data-theme");
+            }
+            Theme::Light => {
+                let _ = el.set_attribute("data-theme", "light");
+            }
+            Theme::Dark => {
+                let _ = el.set_attribute("data-theme", "dark");
+            }
+        }
+    }
+    if let Some(ls) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
+        let _ = ls.set_item(
+            "rucio-theme",
+            match t {
+                Theme::Auto => "auto",
+                Theme::Light => "light",
+                Theme::Dark => "dark",
+            },
+        );
+    }
+}
+
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::time::Duration;
@@ -269,6 +320,11 @@ fn App() -> impl IntoView {
     let menu_open: RwSignal<bool> = RwSignal::new(false);
     let active_panel: RwSignal<Option<Panel>> = RwSignal::new(None);
 
+    // Theme — apply immediately so the DOM reflects any stored preference.
+    let initial_theme = load_theme();
+    apply_theme(initial_theme);
+    let theme: RwSignal<Theme> = RwSignal::new(initial_theme);
+
     let ws_connected: RwSignal<bool> = RwSignal::new(false);
     let status: RwSignal<Option<StatusResponse>> = RwSignal::new(None);
     let downloads: RwSignal<Vec<DownloadResponse>> = RwSignal::new(vec![]);
@@ -336,6 +392,52 @@ fn App() -> impl IntoView {
 
                     <Show when=move || menu_open.get()>
                         <div class="dropdown">
+                            // ── Theme picker ──────────────────────────────
+                            <div class="theme-picker">
+                                <button
+                                    class=move || if theme.get() == Theme::Auto {
+                                        "theme-btn theme-active"
+                                    } else {
+                                        "theme-btn"
+                                    }
+                                    title="Auto (follow system)"
+                                    on:click=move |_| {
+                                        apply_theme(Theme::Auto);
+                                        theme.set(Theme::Auto);
+                                    }
+                                >
+                                    <icons::Icon paths=icons::DEVICE_DESKTOP/>
+                                </button>
+                                <button
+                                    class=move || if theme.get() == Theme::Light {
+                                        "theme-btn theme-active"
+                                    } else {
+                                        "theme-btn"
+                                    }
+                                    title="Light"
+                                    on:click=move |_| {
+                                        apply_theme(Theme::Light);
+                                        theme.set(Theme::Light);
+                                    }
+                                >
+                                    <icons::Icon paths=icons::SUN/>
+                                </button>
+                                <button
+                                    class=move || if theme.get() == Theme::Dark {
+                                        "theme-btn theme-active"
+                                    } else {
+                                        "theme-btn"
+                                    }
+                                    title="Dark"
+                                    on:click=move |_| {
+                                        apply_theme(Theme::Dark);
+                                        theme.set(Theme::Dark);
+                                    }
+                                >
+                                    <icons::Icon paths=icons::MOON/>
+                                </button>
+                            </div>
+                            <div class="dropdown-sep"/>
                             <button class="dropdown-item" on:click=move |_| {
                                 active_panel.set(Some(Panel::NodeStatus));
                                 menu_open.set(false);

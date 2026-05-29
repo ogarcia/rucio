@@ -19,4 +19,4 @@ futures-util  = "0.3"
 base64        = "0.22"
 serde         = { version = "1", features = ["derive"] }
 serde_json    = "1"
-web-sys       = { version = "0.3", features = ["Window", "Location"] }
+web-sys       = { version = "0.3", features = ["Window", "Location", "Storage", "Document", "Element"] }
