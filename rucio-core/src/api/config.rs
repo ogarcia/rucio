@@ -114,7 +114,7 @@ fn default_max_upload_tasks() -> usize {
 }
 
 fn default_temp_limit() -> u64 {
-    5000
+    5120
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]

@@ -58,11 +58,11 @@ pub struct NetworkConfig {
     pub download_limit_kbps: u64,
     /// Upload cap in KB/s applied while the temporary speed limit is engaged.
     /// This is only the preset value; the toggle itself is runtime state and
-    /// does not persist.  Default: 5000.
+    /// does not persist.  Default: 5120 (= 5.0 MB/s).
     #[serde(default = "NetworkConfig::default_temp_limit")]
     pub temp_upload_limit_kbps: u64,
     /// Download cap in KB/s applied while the temporary speed limit is engaged.
-    /// Default: 5000.
+    /// Default: 5120 (= 5.0 MB/s).
     #[serde(default = "NetworkConfig::default_temp_limit")]
     pub temp_download_limit_kbps: u64,
     /// Maximum number of concurrent chunk-upload tasks.
@@ -86,7 +86,7 @@ impl NetworkConfig {
     }
 
     fn default_temp_limit() -> u64 {
-        5000
+        5120
     }
 }
 
