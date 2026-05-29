@@ -361,7 +361,9 @@
         }
         /* Speeds sit on the right on desktop; margin-auto pushes them there
            so the select/input/count stay grouped on the left. */
-        .dl-speeds { display: flex; align-items: center; gap: 0.75rem; margin-left: auto; }
+        .dl-speeds { display: flex; align-items: center; gap: 0.75rem; }
+        /* Right-hand group: speed meters + the temp-limit button, pushed right. */
+        .dl-status-right { display: flex; align-items: center; gap: 0.5rem; margin-left: auto; }
 
         .dl-filter-select {
             padding: 0.25rem 0.5rem;
@@ -425,7 +427,8 @@
             /* Row 2 spans both columns so the count's text width never widens
                the select column — robust against longer translated strings. */
             .dl-active-count  { grid-row: 2; grid-column: 1 / -1; justify-self: start; }
-            .dl-speeds        { grid-row: 2; grid-column: 1 / -1; justify-self: end; margin-left: 0; }
+            /* Row 2, right side: speeds + button stay together as one group. */
+            .dl-status-right  { grid-row: 2; grid-column: 1 / -1; justify-self: end; margin-left: 0; }
         }
 
         /* ── Downloads ───────────────────────────────────────────────────── */

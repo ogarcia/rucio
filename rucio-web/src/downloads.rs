@@ -413,6 +413,7 @@ pub fn DownloadsTab(
                         }.into_any()
                     }
                 }}
+                <div class="dl-status-right">
                 <div class="dl-speeds">
                     {move || {
                         let dl = dl_speed.get();
@@ -464,6 +465,7 @@ pub fn DownloadsTab(
                         }/>
                     }}
                 </button>
+                </div>
             </div>
         </div>
 
