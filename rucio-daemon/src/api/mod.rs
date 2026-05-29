@@ -421,7 +421,12 @@ pub async fn serve(state: AppState, listen: &str) -> anyhow::Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("failed to bind API on {listen}: {e}"))?;
 
-    tracing::info!(addr = listen, "API server listening");
+    // This is the moment the HTTP API, static frontend and the /api/ws
+    // WebSocket all become reachable — they share one router.
+    tracing::info!(
+        addr = listen,
+        "API server listening — WebSocket /api/ws ready"
+    );
     axum::serve(listener, router(state)).await?;
     Ok(())
 }

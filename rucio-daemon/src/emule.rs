@@ -65,16 +65,23 @@ pub async fn start_kad_task(config: &Config) -> Result<KadHandle> {
 
     let handle = rucio_emule::kad::task::spawn(Arc::new(socket), our_id, task_cfg);
 
-    // Seed the routing table immediately from cached/bootstrap contacts so the
-    // first download does not have to wait for an on-demand bootstrap.
+    // Seed the routing table from cached/bootstrap contacts so the first
+    // download does not have to wait for an on-demand bootstrap. Run it in the
+    // background: the bootstrap waits on UDP replies from up to 200 peers and
+    // would otherwise block startup — including the HTTP/WS server, which is
+    // spawned later in `run()` — for several seconds. Downloads re-bootstrap
+    // on demand if the table is still thin when they start.
     let seeds = load_kad_seeds(config, 200);
     if !seeds.is_empty() {
-        info!(
-            seeds = seeds.len(),
-            "Bootstrapping Kad2 from cached/bootstrap contacts"
-        );
-        let count = handle.bootstrap(seeds).await;
-        info!(contacts = count, "Kad2 initial bootstrap done");
+        let boot_handle = handle.clone();
+        tokio::spawn(async move {
+            info!(
+                seeds = seeds.len(),
+                "Bootstrapping Kad2 from cached/bootstrap contacts"
+            );
+            let count = boot_handle.bootstrap(seeds).await;
+            info!(contacts = count, "Kad2 initial bootstrap done");
+        });
     } else {
         info!("No Kad2 seeds available at startup (download nodes.dat first)");
     }

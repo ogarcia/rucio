@@ -147,30 +147,52 @@ fn start_ws_loop(
                     // WebSocket::open() only creates the JS object; the TCP
                     // handshake hasn't completed yet, so setting green here makes
                     // failed reconnection attempts appear connected.
-                    //
-                    // The daemon sends WsEvent::IndexingCount every second to all
-                    // connected clients regardless of download activity, so even
-                    // an idle daemon triggers the green state within ≤1 s.
                     backoff_ms = 1_000;
 
                     let mut stream = ws;
-                    while let Some(msg) = stream.next().await {
-                        if !ws_connected.get_untracked() {
-                            ws_connected.set(true);
-                        }
-                        if let Ok(Message::Text(text)) = msg {
-                            if let Ok(event) = serde_json::from_str::<WsEvent>(&text) {
-                                handle_event(
-                                    event,
-                                    downloads,
-                                    status,
-                                    search_results,
-                                    search_id,
-                                    searching,
-                                    dl_speed,
-                                    ul_speed,
-                                );
+                    loop {
+                        // Bound the wait on the next frame. The daemon greets
+                        // with Ping the instant the socket upgrades and then
+                        // emits an event every second, so silence past the
+                        // deadline means the socket is dead — typically opened
+                        // while the daemon was down and never handshaken (open()
+                        // returns Ok before the TCP connect resolves), or the
+                        // daemon vanished without a clean close. Either way we
+                        // abandon it and reconnect instead of blocking forever
+                        // on a socket that will never deliver — which is what
+                        // made the indicator slow to turn green on startup.
+                        //
+                        // Use a short deadline until connected (so a stale
+                        // socket is dropped quickly and a freshly started daemon
+                        // is picked up within ~2 s) and a looser heartbeat once
+                        // connected.
+                        let connected = ws_connected.get_untracked();
+                        let deadline = if connected { 5_000 } else { 2_000 };
+                        let next = std::pin::pin!(stream.next());
+                        let timeout = std::pin::pin!(sleep(Duration::from_millis(deadline)));
+                        match futures_util::future::select(next, timeout).await {
+                            futures_util::future::Either::Left((Some(msg), _)) => {
+                                if !connected {
+                                    ws_connected.set(true);
+                                }
+                                if let Ok(Message::Text(text)) = msg {
+                                    if let Ok(event) = serde_json::from_str::<WsEvent>(&text) {
+                                        handle_event(
+                                            event,
+                                            downloads,
+                                            status,
+                                            search_results,
+                                            search_id,
+                                            searching,
+                                            dl_speed,
+                                            ul_speed,
+                                        );
+                                    }
+                                }
                             }
+                            // Stream closed (Left(None)) or the deadline elapsed
+                            // with no frame (Right): give up and reconnect.
+                            _ => break,
                         }
                     }
 
