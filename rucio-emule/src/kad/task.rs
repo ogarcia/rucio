@@ -76,10 +76,11 @@ pub struct KadHandle {
     /// responses (Pong / bootstrap HelloRes).
     external_ip: Arc<AtomicU32>,
     /// Serialises searches: the task runs only one search at a time and drops
-    /// any that arrive while one is active. Holding this across a search call
-    /// makes concurrent callers (e.g. several eMule downloads started at once)
-    /// queue instead of being dropped.
-    search_gate: Arc<tokio::sync::Mutex<()>>,
+    /// any that arrive while one is active. Holding a permit across a search
+    /// call makes concurrent callers queue instead of being dropped, and the
+    /// gate's priority means user keyword searches jump ahead of queued
+    /// download source lookups.
+    search_gate: Arc<super::gate::PriorityGate>,
 }
 
 impl KadHandle {
@@ -97,7 +98,8 @@ impl KadHandle {
     /// Search for sources for the given ed2k hash.
     pub async fn search_sources(&self, hash: Ed2kHash, file_size: u64) -> Vec<KadSource> {
         // One search at a time — wait our turn instead of being dropped.
-        let _gate = self.search_gate.lock().await;
+        // Low priority: yields to user keyword searches.
+        let _permit = self.search_gate.acquire(super::gate::Priority::Low).await;
         let (tx, rx) = oneshot::channel();
         let _ = self
             .tx
@@ -113,7 +115,9 @@ impl KadHandle {
     /// Keyword search — returns matching file hits from Kad index.
     pub async fn search_keyword(&self, keyword: String) -> Vec<KeywordHit> {
         // One search at a time — wait our turn instead of being dropped.
-        let _gate = self.search_gate.lock().await;
+        // High priority: user-initiated, so it jumps ahead of queued source
+        // lookups to keep the search box responsive.
+        let _permit = self.search_gate.acquire(super::gate::Priority::High).await;
         let (tx, rx) = oneshot::channel();
         let _ = self
             .tx
@@ -225,7 +229,7 @@ pub fn spawn(socket: Arc<UdpSocket>, our_id: KadId, cfg: KadTaskConfig) -> KadHa
         tx: cmd_tx,
         routing_table,
         external_ip,
-        search_gate: Arc::new(tokio::sync::Mutex::new(())),
+        search_gate: Arc::new(super::gate::PriorityGate::new()),
     }
 }
 
