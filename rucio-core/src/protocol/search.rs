@@ -186,6 +186,23 @@ pub fn normalize_search_term(s: &str) -> String {
     out
 }
 
+/// Normalize a keyword for the eMule **Kad2** network: lowercase only, no
+/// diacritic folding.
+///
+/// Kad hashes keywords for exact match, and real eMule clients only lowercase
+/// before hashing — it was the old ed2k *servers* that folded accents, and we
+/// don't use those. Folding here (as [`normalize_search_term`] does) would make
+/// our keyword hash miss the files clients indexed with the accent intact.
+///
+/// **Known limitation:** Kad searches are therefore accent-sensitive — `camion`
+/// and `camión` are distinct keywords, and there is no symmetric workaround
+/// because the DHT index is not under our control. Accent-insensitive search
+/// applies only to the rucio network, where we control both sides of the match
+/// (see [`normalize_search_term`]).
+pub fn lowercase_keyword(s: &str) -> String {
+    s.to_lowercase()
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

@@ -17,7 +17,7 @@ use rucio_core::api::searches::{
 };
 use rucio_core::protocol::search::SearchQuery;
 #[cfg(feature = "emule-compat")]
-use rucio_core::protocol::search::normalize_search_term;
+use rucio_core::protocol::search::lowercase_keyword;
 
 use crate::api::{AppState, MAX_SEARCHES, SearchRecord, SearchRegistry};
 use crate::node::messages::NodeCmd;
@@ -337,11 +337,13 @@ fn purge_old_searches(reg: &mut SearchRegistry) {
 /// Spawn a background Kad2 keyword search task.
 ///
 /// eMule Kad2 indexes files by individual words, not by full phrases.
-/// We pick the longest normalized word as the main search key (which lands
-/// in the right place in the DHT) and then filter results client-side so
-/// that ALL words must appear in the filename.  Both the search key and
-/// the filter are accent-folded and lowercased to match how eMule clients
-/// normalize keywords before hashing.
+/// We pick the longest word as the main search key (which lands in the right
+/// place in the DHT) and then filter results client-side so that ALL words
+/// must appear in the filename.  Both the search key and the filter are
+/// lowercased only — Kad hashes keywords for exact match and real clients do
+/// not fold diacritics, so `camión` and `camion` are distinct keywords. This
+/// makes Kad searches accent-sensitive; see [`lowercase_keyword`] for the
+/// rationale and the known-limitation note.
 #[cfg(feature = "emule-compat")]
 fn spawn_kad2_search(state: &AppState, search_id: u64, keywords: Vec<String>) {
     use std::sync::Arc;
@@ -350,22 +352,22 @@ fn spawn_kad2_search(state: &AppState, search_id: u64, keywords: Vec<String>) {
     let reg_clone = Arc::clone(&state.search_registry);
     let ws_tx = state.ws_tx.clone();
 
-    // Build the normalized word list used both for the main key selection
+    // Build the lowercased word list used both for the main key selection
     // and for the client-side all-words filter.
     let norm_words: Vec<String> = keywords
         .iter()
         .flat_map(|k| k.split_whitespace())
-        .map(normalize_search_term)
+        .map(lowercase_keyword)
         .filter(|w| !w.is_empty())
         .collect();
 
-    // Main keyword = longest normalized word (eMule picks the most
-    // "selective" word; longest is a good proxy).
+    // Main keyword = longest word (eMule picks the most "selective" word;
+    // longest is a good proxy).
     let main_keyword = norm_words
         .iter()
         .max_by_key(|w| w.len())
         .cloned()
-        .unwrap_or_else(|| normalize_search_term(&keywords[0]));
+        .unwrap_or_else(|| lowercase_keyword(&keywords[0]));
 
     tokio::spawn(async move {
         tracing::info!(search_id, main_keyword, "Kad2 keyword search started");
@@ -377,8 +379,8 @@ fn spawn_kad2_search(state: &AppState, search_id: u64, keywords: Vec<String>) {
             if !record.cancelled {
                 for h in &hits {
                     // Client-side filter: all words must appear in the
-                    // normalized filename (handles accents + case).
-                    let norm_name = normalize_search_term(&h.name);
+                    // lowercased filename (case-insensitive, accent-sensitive).
+                    let norm_name = lowercase_keyword(&h.name);
                     if !norm_words.iter().all(|w| norm_name.contains(w.as_str())) {
                         continue;
                     }
