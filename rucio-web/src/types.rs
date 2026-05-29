@@ -15,6 +15,46 @@ pub struct StatusResponse {
     pub external_ip: Option<String>,
 }
 
+// ── eMule status ───────────────────────────────────────────────────────────
+
+#[derive(Deserialize, Clone, Copy, Debug, Default, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum EmuleConnectivity {
+    Open,
+    Firewalled,
+    #[default]
+    Unknown,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct EmuleStatusResponse {
+    pub feature_enabled: bool,
+    #[serde(default)]
+    pub runtime_enabled: bool,
+    #[serde(default)]
+    pub nodes_dat_present: bool,
+    #[serde(default)]
+    pub contacts: usize,
+    #[serde(default)]
+    pub connected_peers: usize,
+    #[serde(default)]
+    pub external_ip: Option<String>,
+    #[serde(default)]
+    pub tcp_port: Option<u16>,
+    #[serde(default)]
+    pub udp_port: Option<u16>,
+    #[serde(default)]
+    pub connectivity: EmuleConnectivity,
+    #[serde(default)]
+    pub active_downloads: usize,
+    #[serde(default)]
+    pub upload_slots_total: usize,
+    #[serde(default)]
+    pub upload_slots_in_use: usize,
+    #[serde(default)]
+    pub inbound_connections: u64,
+}
+
 // ── Downloads ────────────────────────────────────────────────────────────────
 
 #[derive(Deserialize, Clone, Debug, PartialEq)]

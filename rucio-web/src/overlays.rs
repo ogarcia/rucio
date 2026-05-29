@@ -8,8 +8,28 @@ use leptos::task::spawn_local;
 
 use crate::icons::{self, Icon};
 use crate::types::{
-    MetricsResponse, StatusResponse, class_badge, format_size, format_speed_full, format_uptime,
+    EmuleConnectivity, EmuleStatusResponse, MetricsResponse, StatusResponse, class_badge,
+    format_size, format_speed_full, format_uptime,
 };
+
+async fn api_fetch_emule_status() -> Option<EmuleStatusResponse> {
+    gloo_net::http::Request::get("/api/v1/emule/status")
+        .send()
+        .await
+        .ok()?
+        .json::<EmuleStatusResponse>()
+        .await
+        .ok()
+}
+
+/// (label, css class) for the eMule connectivity badge, reusing node-class styles.
+fn emule_conn_badge(c: EmuleConnectivity) -> (&'static str, &'static str) {
+    match c {
+        EmuleConnectivity::Open => ("Open", "badge badge-high"),
+        EmuleConnectivity::Firewalled => ("Firewalled", "badge badge-low"),
+        EmuleConnectivity::Unknown => ("Unknown", "badge badge-unknown"),
+    }
+}
 
 #[component]
 pub fn NodeStatusPanel(
@@ -17,6 +37,22 @@ pub fn NodeStatusPanel(
     active_panel: RwSignal<Option<super::Panel>>,
 ) -> impl IntoView {
     let close = move || active_panel.set(None);
+
+    // Fetch the eMule/Kad2 status once when the panel opens. Guard the signal
+    // write with `alive` so a late response after the modal closes can't write
+    // to a disposed scope.
+    let emule: RwSignal<Option<EmuleStatusResponse>> = RwSignal::new(None);
+    let alive = Arc::new(AtomicBool::new(true));
+    let alive_cleanup = alive.clone();
+    on_cleanup(move || alive_cleanup.store(false, Ordering::Relaxed));
+    spawn_local(async move {
+        if let Some(s) = api_fetch_emule_status().await
+            && alive.load(Ordering::Relaxed)
+        {
+            emule.set(Some(s));
+        }
+    });
+
     view! {
         <div class="overlay-backdrop" on:click=move |_| close()>
             <div class="overlay" on:click=move |e| e.stop_propagation()>
@@ -33,6 +69,14 @@ pub fn NodeStatusPanel(
                             let (label, css) = class_badge(&s.class);
                             let uptime = format_uptime(s.uptime_secs);
                             view! {
+                                // Only label this section when the eMule section
+                                // is also shown, so a single-section panel stays
+                                // clean but a two-section one reads consistently.
+                                {move || emule.get()
+                                    .filter(|e| e.feature_enabled && e.runtime_enabled)
+                                    .map(|_| view! {
+                                        <p class="section-label">"Rucio / libp2p"</p>
+                                    })}
                                 <dl class="panel-dl">
                                     <dt>"Version"</dt>
                                     <dd>{s.version}</dd>
@@ -52,6 +96,47 @@ pub fn NodeStatusPanel(
                             }.into_any()
                         }
                     }}
+                    // eMule / Kad2 section — only when the subsystem is available.
+                    {move || emule.get()
+                        .filter(|e| e.feature_enabled && e.runtime_enabled)
+                        .map(|e| {
+                            let (clabel, ccss) = emule_conn_badge(e.connectivity);
+                            view! {
+                                <p class="section-label">"eMule / Kad2"</p>
+                                <dl class="panel-dl">
+                                    <dt>"Connectivity"</dt>
+                                    <dd><span class=ccss>{clabel}</span></dd>
+                                    <dt>"Kad contacts"</dt>
+                                    <dd>{e.connected_peers.to_string()}</dd>
+                                    <dt>"nodes.dat"</dt>
+                                    <dd>{
+                                        if e.nodes_dat_present {
+                                            format!("{} contacts", e.contacts)
+                                        } else {
+                                            "missing".to_string()
+                                        }
+                                    }</dd>
+                                    {e.tcp_port.map(|p| view! {
+                                        <dt>"TCP port"</dt>
+                                        <dd>{p.to_string()}</dd>
+                                    })}
+                                    {e.udp_port.map(|p| view! {
+                                        <dt>"UDP port"</dt>
+                                        <dd>{p.to_string()}</dd>
+                                    })}
+                                    <dt>"Active downloads"</dt>
+                                    <dd>{e.active_downloads.to_string()}</dd>
+                                    <dt>"Upload slots"</dt>
+                                    <dd>{format!("{} / {}", e.upload_slots_in_use, e.upload_slots_total)}</dd>
+                                    <dt>"Inbound conns"</dt>
+                                    <dd>{e.inbound_connections.to_string()}</dd>
+                                    {e.external_ip.map(|ip| view! {
+                                        <dt>"External IP"</dt>
+                                        <dd class="mono">{ip}</dd>
+                                    })}
+                                </dl>
+                            }
+                        })}
                 </div>
             </div>
         </div>
