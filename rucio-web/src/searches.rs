@@ -60,11 +60,40 @@ async fn api_delete_search(id: u64) {
         .await;
 }
 
-async fn api_start_download(link: String, provider: Option<String>) {
-    let providers = provider.into_iter().collect::<Vec<_>>();
-    let body = serde_json::json!({ "magnet": link, "providers": providers });
-    if let Ok(req) = gloo_net::http::Request::post("/api/v1/downloads").json(&body) {
-        let _ = req.send().await;
+/// Outcome of requesting a download for a result, mapped from the HTTP status.
+#[derive(Clone, Copy, PartialEq)]
+enum DlOutcome {
+    /// 202 — newly queued, or already in progress (idempotent).
+    Queued,
+    /// 409 — already completed or already shared locally.
+    AlreadyHave,
+    /// 400/500/network failure.
+    Error,
+}
+
+/// Start a download for a result link. eMule (`ed2k://`) links go to the eMule
+/// endpoint; everything else is treated as a Rucio magnet. The HTTP status is
+/// mapped to a [`DlOutcome`] so the row can show real feedback (e.g. the 409
+/// "already have it" case the backend returns for completed/shared content).
+async fn api_start_download(link: String, provider: Option<String>) -> DlOutcome {
+    let builder = if link.starts_with("ed2k://") {
+        let body = serde_json::json!({ "link": link });
+        gloo_net::http::Request::post("/api/v1/downloads/ed2k").json(&body)
+    } else {
+        let providers = provider.into_iter().collect::<Vec<_>>();
+        let body = serde_json::json!({ "magnet": link, "providers": providers });
+        gloo_net::http::Request::post("/api/v1/downloads").json(&body)
+    };
+    let Ok(req) = builder else {
+        return DlOutcome::Error;
+    };
+    match req.send().await {
+        Ok(r) => match r.status() {
+            202 => DlOutcome::Queued,
+            409 => DlOutcome::AlreadyHave,
+            _ => DlOutcome::Error,
+        },
+        Err(_) => DlOutcome::Error,
     }
 }
 
@@ -395,6 +424,16 @@ pub fn SearchesTab(search: SearchStore) -> impl IntoView {
     }
 }
 
+/// Per-row download-button state, driven by the POST result.
+#[derive(Clone, Copy, PartialEq)]
+enum BtnState {
+    Idle,
+    Sending,
+    Queued,
+    AlreadyHave,
+    Error,
+}
+
 #[component]
 fn ResultRow(result: SearchResult) -> impl IntoView {
     let link = result.download_link.clone();
@@ -410,26 +449,58 @@ fn ResultRow(result: SearchResult) -> impl IntoView {
         ResultSource::Emule => "eMule",
     };
 
+    let btn = RwSignal::new(BtnState::Idle);
+
+    // Fire the download request and reflect the outcome in `btn`. A Callback is
+    // used (rather than a plain closure) so the reactive button block, which
+    // re-renders on every `btn` change, can invoke it without moving it.
+    let trigger = Callback::new(move |()| {
+        let (Some(l), p) = (link.clone(), provider.clone()) else {
+            return;
+        };
+        btn.set(BtnState::Sending);
+        spawn_local(async move {
+            let outcome = api_start_download(l, p).await;
+            btn.set(match outcome {
+                DlOutcome::Queued => BtnState::Queued,
+                DlOutcome::AlreadyHave => BtnState::AlreadyHave,
+                DlOutcome::Error => BtnState::Error,
+            });
+        });
+    });
+
     view! {
         <li class="result-row">
             <span class="result-name">{result.name}</span>
             <span class="result-size">{format_size(result.size)}</span>
             <span class=source_css>{source_label}</span>
-            {if can_download {
-                view! {
-                    <button class="btn-sm btn-primary" on:click=move |_| {
-                        if let Some(l) = link.clone() {
-                            let p = provider.clone();
-                            spawn_local(async move {
-                                api_start_download(l, p).await;
-                            });
-                        }
-                    }>
-                        "Download"
-                    </button>
-                }.into_any()
-            } else {
-                view! { <span class="result-no-link">"—"</span> }.into_any()
+            {move || {
+                if !can_download {
+                    return view! { <span class="result-no-link">"—"</span> }.into_any();
+                }
+                match btn.get() {
+                    // Idle and Error both offer an actionable button (retry on error).
+                    BtnState::Idle | BtnState::Error => {
+                        let err = btn.get() == BtnState::Error;
+                        view! {
+                            <button
+                                class="btn-sm btn-primary"
+                                on:click=move |_| trigger.run(())
+                            >
+                                {if err { "Retry" } else { "Download" }}
+                            </button>
+                        }.into_any()
+                    }
+                    BtnState::Sending => view! {
+                        <span class="result-dl-status">"Adding…"</span>
+                    }.into_any(),
+                    BtnState::Queued => view! {
+                        <span class="result-dl-status result-dl-ok">"Queued"</span>
+                    }.into_any(),
+                    BtnState::AlreadyHave => view! {
+                        <span class="result-dl-status result-dl-have">"In downloads"</span>
+                    }.into_any(),
+                }
             }}
         </li>
     }
