@@ -464,6 +464,8 @@
             border-bottom: 1px solid var(--raised);
             cursor: pointer; border-radius: 0.25rem;
             transition: background 0.1s;
+            /* Don't let shift+click range selection highlight page text. */
+            user-select: none; -webkit-user-select: none;
         }
         .dl-row:hover { background: var(--row-hover); }
         .dl-row-selected { background: var(--row-sel) !important; }

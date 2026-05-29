@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -199,42 +200,83 @@ pub fn DownloadsTab(
     ul_speed: RwSignal<u64>,
     temp_limit: RwSignal<bool>,
 ) -> impl IntoView {
-    let selected_id: RwSignal<Option<i64>> = RwSignal::new(None);
+    // Multi-selection: the set of selected ids, plus the anchor row used as the
+    // pivot for shift+click range selection.
+    let selected_ids: RwSignal<HashSet<i64>> = RwSignal::new(HashSet::new());
+    let anchor: RwSignal<Option<i64>> = RwSignal::new(None);
     let add_open: RwSignal<bool> = RwSignal::new(false);
     let detail: RwSignal<Option<DownloadDetailResponse>> = RwSignal::new(None);
 
     let filter_state: RwSignal<FilterState> = RwSignal::new(FilterState::All);
     let filter_name: RwSignal<String> = RwSignal::new(String::new());
 
-    // The DownloadResponse for the currently selected row.
-    let selected_dl = move || {
-        let id = selected_id.get()?;
-        downloads.get().into_iter().find(|d| d.id == id)
+    // The DownloadResponses currently selected.
+    let selected_dls = move || {
+        downloads.with(|v| {
+            v.iter()
+                .filter(|d| selected_ids.with(|s| s.contains(&d.id)))
+                .cloned()
+                .collect::<Vec<_>>()
+        })
     };
 
-    let can_cancel = move || {
-        selected_dl()
-            .map(|d| !is_terminal(&d.state))
-            .unwrap_or(false)
+    // Info is single-item only.
+    let can_info = move || selected_ids.with(|s| s.len()) == 1;
+    // Cancel/remove act on whichever selected rows qualify.
+    let can_cancel = move || selected_dls().iter().any(|d| !is_terminal(&d.state));
+    let can_remove = move || selected_dls().iter().any(|d| is_terminal(&d.state));
+    let any_active = move || selected_dls().iter().any(|d| is_pausable(&d.state));
+    let any_paused = move || {
+        selected_dls()
+            .iter()
+            .any(|d| d.state == DownloadState::Paused)
     };
-    let can_remove = move || {
-        selected_dl()
-            .map(|d| is_terminal(&d.state))
-            .unwrap_or(false)
+    // The toggle resumes only when nothing is active and something is paused;
+    // otherwise it pauses (the common case for a mixed selection).
+    let show_resume = move || !any_active() && any_paused();
+    let can_pause_toggle = move || any_active() || any_paused();
+
+    // Visible (filtered) ids in display order — used by the list and by
+    // shift+click to resolve the range between the anchor and the clicked row.
+    let visible_ids = move || {
+        let q = filter_name.get().to_lowercase();
+        let fs = filter_state.get();
+        downloads.with(|v| {
+            v.iter()
+                .filter(|d| fs.matches(&d.state))
+                .filter(|d| {
+                    q.is_empty() || d.name.as_deref().unwrap_or("").to_lowercase().contains(&q)
+                })
+                .map(|d| d.id)
+                .collect::<Vec<i64>>()
+        })
     };
-    let can_info = move || selected_id.get().is_some();
-    // The selected download is paused → the toggle offers "Resume".
-    let is_paused = move || {
-        selected_dl()
-            .map(|d| d.state == DownloadState::Paused)
-            .unwrap_or(false)
-    };
-    // The pause/resume toggle is enabled for active *or* paused downloads.
-    let can_pause_toggle = move || {
-        selected_dl()
-            .map(|d| is_pausable(&d.state) || d.state == DownloadState::Paused)
-            .unwrap_or(false)
-    };
+
+    // Row click with modifier keys: plain = select only this row; ctrl/⌘ =
+    // toggle this row; shift = select the range from the anchor to this row.
+    let on_row_click = Callback::new(move |(id, additive, range): (i64, bool, bool)| {
+        if range && let Some(a) = anchor.get_untracked() {
+            let vis = visible_ids();
+            if let (Some(i1), Some(i2)) = (
+                vis.iter().position(|&x| x == a),
+                vis.iter().position(|&x| x == id),
+            ) {
+                let (lo, hi) = if i1 <= i2 { (i1, i2) } else { (i2, i1) };
+                selected_ids.set(vis[lo..=hi].iter().copied().collect());
+                return;
+            }
+        }
+        if additive {
+            selected_ids.update(|s| {
+                if !s.insert(id) {
+                    s.remove(&id);
+                }
+            });
+        } else {
+            selected_ids.set(HashSet::from([id]));
+        }
+        anchor.set(Some(id));
+    });
 
     view! {
         <div class="tab-content">
@@ -254,7 +296,8 @@ pub fn DownloadsTab(
                     title="Show download details"
                     disabled=move || !can_info()
                     on:click=move |_| {
-                        if let Some(id) = selected_id.get() {
+                        let ids: Vec<i64> = selected_ids.with(|s| s.iter().copied().collect());
+                        if let [id] = ids[..] {
                             spawn_local(async move {
                                 if let Some(d) = api_fetch_detail(id).await {
                                     detail.set(Some(d));
@@ -268,42 +311,57 @@ pub fn DownloadsTab(
                 </button>
                 <button
                     class="toolbar-btn"
-                    title=move || if is_paused() { "Resume download" } else { "Pause download" }
+                    title=move || if show_resume() { "Resume downloads" } else { "Pause downloads" }
                     disabled=move || !can_pause_toggle()
                     on:click=move |_| {
-                        if let Some(d) = selected_dl() {
-                            let id = d.id;
-                            let paused = d.state == DownloadState::Paused;
-                            spawn_local(async move {
-                                if paused {
+                        let resume = show_resume();
+                        let targets: Vec<i64> = selected_dls()
+                            .into_iter()
+                            .filter(|d| {
+                                if resume {
+                                    d.state == DownloadState::Paused
+                                } else {
+                                    is_pausable(&d.state)
+                                }
+                            })
+                            .map(|d| d.id)
+                            .collect();
+                        spawn_local(async move {
+                            for id in targets {
+                                if resume {
                                     api_resume(id).await;
                                 } else {
                                     api_pause(id).await;
                                 }
-                                refresh_downloads(downloads).await;
-                            });
-                        }
+                            }
+                            refresh_downloads(downloads).await;
+                        });
                     }
                 >
-                    <Show when=is_paused fallback=|| view! { <Icon paths=icons::PLAYER_PAUSE/> }>
+                    <Show when=show_resume fallback=|| view! { <Icon paths=icons::PLAYER_PAUSE/> }>
                         <Icon paths=icons::PLAYER_PLAY/>
                     </Show>
                     <span class="btn-label">
-                        {move || if is_paused() { "Resume" } else { "Pause" }}
+                        {move || if show_resume() { "Resume" } else { "Pause" }}
                     </span>
                 </button>
                 <button
                     class="toolbar-btn toolbar-btn-danger"
-                    title="Cancel download"
+                    title="Cancel downloads"
                     disabled=move || !can_cancel()
                     on:click=move |_| {
-                        if let Some(id) = selected_id.get() {
-                            spawn_local(async move {
+                        let targets: Vec<i64> = selected_dls()
+                            .into_iter()
+                            .filter(|d| !is_terminal(&d.state))
+                            .map(|d| d.id)
+                            .collect();
+                        spawn_local(async move {
+                            for id in targets {
                                 api_cancel(id).await;
-                                selected_id.set(None);
-                                refresh_downloads(downloads).await;
-                            });
-                        }
+                            }
+                            selected_ids.set(HashSet::new());
+                            refresh_downloads(downloads).await;
+                        });
                     }
                 >
                     <Icon paths=icons::CIRCLE_X/>
@@ -314,13 +372,18 @@ pub fn DownloadsTab(
                     title="Remove from history"
                     disabled=move || !can_remove()
                     on:click=move |_| {
-                        if let Some(id) = selected_id.get() {
-                            spawn_local(async move {
+                        let targets: Vec<i64> = selected_dls()
+                            .into_iter()
+                            .filter(|d| is_terminal(&d.state))
+                            .map(|d| d.id)
+                            .collect();
+                        spawn_local(async move {
+                            for id in targets {
                                 api_remove(id).await;
-                                selected_id.set(None);
-                                refresh_downloads(downloads).await;
-                            });
-                        }
+                            }
+                            selected_ids.set(HashSet::new());
+                            refresh_downloads(downloads).await;
+                        });
                     }
                 >
                     <Icon paths=icons::TRASH/>
@@ -360,7 +423,8 @@ pub fn DownloadsTab(
                                 <DownloadRow
                                     id=id
                                     downloads=downloads
-                                    selected_id=selected_id
+                                    selected_ids=selected_ids
+                                    on_select=on_row_click
                                 />
                             }
                         />
@@ -505,7 +569,8 @@ fn pct_for(dl: &DownloadResponse) -> Option<f64> {
 fn DownloadRow(
     id: i64,
     downloads: RwSignal<Vec<DownloadResponse>>,
-    selected_id: RwSignal<Option<i64>>,
+    selected_ids: RwSignal<HashSet<i64>>,
+    on_select: Callback<(i64, bool, bool)>,
 ) -> impl IntoView {
     // Each reactive prop reads the signal directly and locates the row by id.
     // We deliberately avoid wrapping this in a per-row Memo: Memos inside a
@@ -586,15 +651,13 @@ fn DownloadRow(
 
     view! {
         <li
-            class=move || if selected_id.get() == Some(id) {
+            class=move || if selected_ids.with(|s| s.contains(&id)) {
                 "dl-row dl-row-selected"
             } else {
                 "dl-row"
             }
-            on:click=move |_| {
-                selected_id.update(|s| {
-                    *s = if *s == Some(id) { None } else { Some(id) };
-                });
+            on:click=move |ev| {
+                on_select.run((id, ev.ctrl_key() || ev.meta_key(), ev.shift_key()));
             }
         >
             <div class="dl-top">
