@@ -1,6 +1,14 @@
-use leptos::prelude::*;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
-use crate::types::{StatusResponse, class_badge, format_uptime};
+use gloo_timers::future::sleep;
+use leptos::prelude::*;
+use leptos::task::spawn_local;
+
+use crate::types::{
+    MetricsResponse, StatusResponse, class_badge, format_size, format_speed, format_uptime,
+};
 
 #[component]
 pub fn NodeStatusPanel(
@@ -36,6 +44,94 @@ pub fn NodeStatusPanel(
                                     {s.external_ip.map(|ip| view! {
                                         <dt>"External IP"</dt>
                                         <dd class="mono">{ip}</dd>
+                                    })}
+                                </dl>
+                            }.into_any()
+                        }
+                    }}
+                </div>
+            </div>
+        </div>
+    }
+}
+
+#[component]
+pub fn StatsPanel(active_panel: RwSignal<Option<super::Panel>>) -> impl IntoView {
+    let close = move || active_panel.set(None);
+    let metrics: RwSignal<Option<MetricsResponse>> = RwSignal::new(None);
+
+    let alive = Arc::new(AtomicBool::new(true));
+    let alive_cleanup = alive.clone();
+    on_cleanup(move || alive_cleanup.store(false, Ordering::Relaxed));
+
+    spawn_local(async move {
+        loop {
+            if !alive.load(Ordering::Relaxed) {
+                break;
+            }
+            if let Ok(resp) = gloo_net::http::Request::get("/api/v1/metrics").send().await {
+                if let Ok(m) = resp.json::<MetricsResponse>().await {
+                    if alive.load(Ordering::Relaxed) {
+                        metrics.set(Some(m));
+                    }
+                }
+            }
+            if !alive.load(Ordering::Relaxed) {
+                break;
+            }
+            sleep(Duration::from_secs(2)).await;
+        }
+    });
+
+    view! {
+        <div class="overlay-backdrop" on:click=move |_| close()>
+            <div class="overlay" on:click=move |e| e.stop_propagation()>
+                <div class="overlay-header">
+                    <span class="overlay-title">"Estadísticas"</span>
+                    <button class="overlay-close" on:click=move |_| close()>"✕"</button>
+                </div>
+                <div class="overlay-body">
+                    {move || match metrics.get() {
+                        None => view! { <p class="loading">"Cargando…"</p> }.into_any(),
+                        Some(m) => {
+                            let s = &m.session;
+                            let t = &m.total;
+                            view! {
+                                <p class="section-label">"Esta sesión"</p>
+                                <dl class="panel-dl">
+                                    <dt>"Uptime"</dt>
+                                    <dd>{format_uptime(s.uptime_secs())}</dd>
+                                    <dt>"↓ velocidad"</dt>
+                                    <dd>{format_speed(s.download_speed)}</dd>
+                                    <dt>"↑ velocidad"</dt>
+                                    <dd>{format_speed(s.upload_speed)}</dd>
+                                    <dt>"↓ descargado"</dt>
+                                    <dd>{format_size(s.downloaded_bytes)}</dd>
+                                    <dt>"↑ subido"</dt>
+                                    <dd>{format_size(s.uploaded_bytes)}</dd>
+                                    <dt>"Chunks recibidos"</dt>
+                                    <dd>{s.chunks_received.to_string()}</dd>
+                                    <dt>"Chunks servidos"</dt>
+                                    <dd>{s.chunks_served.to_string()}</dd>
+                                    {(s.chunks_rejected > 0).then(|| view! {
+                                        <dt>"Chunks rechazados"</dt>
+                                        <dd class="dl-error">{s.chunks_rejected.to_string()}</dd>
+                                    })}
+                                </dl>
+
+                                <p class="section-label">"Total histórico"</p>
+                                <dl class="panel-dl">
+                                    <dt>"↓ descargado"</dt>
+                                    <dd>{format_size(t.downloaded_bytes)}</dd>
+                                    <dt>"↑ subido"</dt>
+                                    <dd>{format_size(t.uploaded_bytes)}</dd>
+                                    <dt>"Chunks recibidos"</dt>
+                                    <dd>{t.chunks_received.to_string()}</dd>
+                                    <dt>"Chunks servidos"</dt>
+                                    <dd>{t.chunks_served.to_string()}</dd>
+                                    {(t.chunks_rejected > 0).then(|| view! {
+                                        <dt>"Chunks rechazados"</dt>
+                                        <dd class="dl-error">{t.chunks_rejected.to_string()}</dd>
                                     })}
                                 </dl>
                             }.into_any()

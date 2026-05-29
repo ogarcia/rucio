@@ -125,6 +125,45 @@ impl DownloadPiecesResponse {
     }
 }
 
+// ── Metrics ──────────────────────────────────────────────────────────────────
+
+/// GET /api/v1/metrics — transfer counters for current session and all time.
+#[derive(Deserialize, Clone, Debug)]
+pub struct MetricsResponse {
+    pub session: SessionMetrics,
+    pub total: TotalMetrics,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct SessionMetrics {
+    pub uploaded_bytes: u64,
+    pub downloaded_bytes: u64,
+    pub upload_speed: u64,
+    pub download_speed: u64,
+    pub chunks_served: u64,
+    pub chunks_received: u64,
+    pub chunks_rejected: u64,
+    pub started_at: u64,
+}
+
+impl SessionMetrics {
+    /// Seconds elapsed since the daemon started, derived from the JS clock.
+    pub fn uptime_secs(&self) -> u64 {
+        let now_ms = js_sys::Date::now();
+        let now_secs = (now_ms / 1000.0) as u64;
+        now_secs.saturating_sub(self.started_at)
+    }
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct TotalMetrics {
+    pub uploaded_bytes: u64,
+    pub downloaded_bytes: u64,
+    pub chunks_served: u64,
+    pub chunks_received: u64,
+    pub chunks_rejected: u64,
+}
+
 // ── Searches ─────────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]

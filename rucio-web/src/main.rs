@@ -66,7 +66,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 use downloads::{DownloadsTab, refresh_downloads};
-use overlays::{AddressesPanel, NodeStatusPanel};
+use overlays::{AddressesPanel, NodeStatusPanel, StatsPanel};
 use searches::SearchesTab;
 use types::{
     DownloadResponse, DownloadState, ResultSource, SearchResult, SearchState, StatusResponse,
@@ -110,6 +110,7 @@ enum Tab {
 pub enum Panel {
     NodeStatus,
     Addresses,
+    Stats,
 }
 
 // ── WebSocket ────────────────────────────────────────────────────────────────
@@ -450,20 +451,10 @@ fn App() -> impl IntoView {
                                 active_panel.set(Some(Panel::Addresses));
                                 menu_open.set(false);
                             }>"Addresses"</button>
-                            <div class="dropdown-sep"/>
                             <button class="dropdown-item" on:click=move |_| {
+                                active_panel.set(Some(Panel::Stats));
                                 menu_open.set(false);
-                                spawn_local(async move {
-                                    if let Ok(r) = gloo_net::http::Request::get("/api/v1/status")
-                                        .send().await
-                                    {
-                                        if let Ok(s) = r.json::<StatusResponse>().await {
-                                            status.set(Some(s));
-                                        }
-                                    }
-                                    refresh_downloads(downloads).await;
-                                });
-                            }>"Refresh"</button>
+                            }>"Estadísticas"</button>
                         </div>
                     </Show>
                 </div>
@@ -491,6 +482,9 @@ fn App() -> impl IntoView {
             }.into_any(),
             Panel::Addresses => view! {
                 <AddressesPanel status=status active_panel=active_panel/>
+            }.into_any(),
+            Panel::Stats => view! {
+                <StatsPanel active_panel=active_panel/>
             }.into_any(),
         })}
     }
