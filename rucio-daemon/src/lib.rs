@@ -205,7 +205,14 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     let (download_tx, mut download_rx) = tokio::sync::mpsc::channel::<api::DownloadRequest>(32);
 
     // --- Watcher service ----------------------------------------------------
-    let watcher = watcher::spawn(db.clone(), handle.cmd_tx.clone());
+    // Shared with AppState so watcher-driven indexing shows up in the indexing
+    // status endpoint / WS, the same as manual `share add`.
+    let indexing_count = Arc::new(AtomicUsize::new(0));
+    let watcher = watcher::spawn(
+        db.clone(),
+        handle.cmd_tx.clone(),
+        Arc::clone(&indexing_count),
+    );
 
     // Register all known shared dirs with the watcher (including download_dir
     // which was just inserted above).
@@ -357,7 +364,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
         node_status: Arc::clone(&node_status),
         search_registry: Arc::clone(&search_registry),
         download_tx,
-        indexing_count: Arc::new(AtomicUsize::new(0)),
+        indexing_count: Arc::clone(&indexing_count),
         ws_tx: ws_tx.clone(),
         metrics: Arc::clone(&session_metrics),
         upload_throttle: Arc::clone(&upload_throttle),

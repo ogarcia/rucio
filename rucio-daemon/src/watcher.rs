@@ -29,6 +29,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -75,11 +76,15 @@ impl WatcherHandle {
 /// # Parameters
 /// - `db` — shared DB pool
 /// - `node_tx` — channel to send `NodeCmd` to the libp2p node task
-pub fn spawn(db: Db, node_tx: mpsc::Sender<NodeCmd>) -> WatcherHandle {
+pub fn spawn(
+    db: Db,
+    node_tx: mpsc::Sender<NodeCmd>,
+    indexing_count: Arc<AtomicUsize>,
+) -> WatcherHandle {
     let (cmd_tx, cmd_rx) = mpsc::channel::<WatcherCmd>(64);
 
     tokio::spawn(async move {
-        if let Err(e) = run(db, node_tx, cmd_rx).await {
+        if let Err(e) = run(db, node_tx, cmd_rx, indexing_count).await {
             warn!("WatcherService exited with error: {e}");
         }
     });
@@ -95,6 +100,7 @@ async fn run(
     db: Db,
     node_tx: mpsc::Sender<NodeCmd>,
     mut cmd_rx: mpsc::Receiver<WatcherCmd>,
+    indexing_count: Arc<AtomicUsize>,
 ) -> Result<()> {
     // Bridge: notify (sync) → tokio (async)
     let (ev_tx, mut ev_rx) = mpsc::channel::<notify::Result<Event>>(256);
@@ -162,6 +168,7 @@ async fn run(
                     debounce_dur,
                     &db,
                     &node_tx,
+                    &indexing_count,
                 ).await;
             }
         }
@@ -278,6 +285,7 @@ async fn flush_pending(
     debounce_dur: Duration,
     db: &Db,
     node_tx: &mpsc::Sender<NodeCmd>,
+    indexing_count: &AtomicUsize,
 ) {
     let now = Instant::now();
     let ready: Vec<PathBuf> = pending
@@ -286,13 +294,17 @@ async fn flush_pending(
         .map(|(p, _)| p.clone())
         .collect();
 
-    for path in ready {
-        pending.remove(&path);
-        // Skip if the file no longer exists (deleted after the event).
-        if !path.is_file() {
-            continue;
-        }
-        on_file_upsert(&path, db, node_tx).await;
+    for path in &ready {
+        pending.remove(path);
+    }
+    // Only existing files get indexed; surface that count to the indexing
+    // status endpoint (and WS), decrementing as each one completes — so the
+    // CLI/web report watcher-driven indexing, not just manual `share add`.
+    let to_index: Vec<&PathBuf> = ready.iter().filter(|p| p.is_file()).collect();
+    indexing_count.fetch_add(to_index.len(), Ordering::Relaxed);
+    for path in to_index {
+        on_file_upsert(path, db, node_tx).await;
+        indexing_count.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
