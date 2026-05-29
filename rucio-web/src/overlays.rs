@@ -6,8 +6,9 @@ use gloo_timers::future::sleep;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
+use crate::icons::{self, Icon};
 use crate::types::{
-    MetricsResponse, StatusResponse, class_badge, format_size, format_speed, format_uptime,
+    MetricsResponse, StatusResponse, class_badge, format_size, format_speed_full, format_uptime,
 };
 
 #[component]
@@ -21,7 +22,9 @@ pub fn NodeStatusPanel(
             <div class="overlay" on:click=move |e| e.stop_propagation()>
                 <div class="overlay-header">
                     <span class="overlay-title">"Node status"</span>
-                    <button class="overlay-close" on:click=move |_| close()>"✕"</button>
+                    <button class="overlay-close" on:click=move |_| close()>
+                        <Icon paths=icons::X/>
+                    </button>
                 </div>
                 <div class="overlay-body">
                     {move || match status.get() {
@@ -88,7 +91,9 @@ pub fn StatsPanel(active_panel: RwSignal<Option<super::Panel>>) -> impl IntoView
             <div class="overlay" on:click=move |e| e.stop_propagation()>
                 <div class="overlay-header">
                     <span class="overlay-title">"Statistics"</span>
-                    <button class="overlay-close" on:click=move |_| close()>"✕"</button>
+                    <button class="overlay-close" on:click=move |_| close()>
+                        <Icon paths=icons::X/>
+                    </button>
                 </div>
                 <div class="overlay-body">
                     {move || match metrics.get() {
@@ -102,9 +107,9 @@ pub fn StatsPanel(active_panel: RwSignal<Option<super::Panel>>) -> impl IntoView
                                     <dt>"Uptime"</dt>
                                     <dd>{format_uptime(s.uptime_secs())}</dd>
                                     <dt>"↓ speed"</dt>
-                                    <dd>{format_speed(s.download_speed)}</dd>
+                                    <dd>{format_speed_full(s.download_speed)}</dd>
                                     <dt>"↑ speed"</dt>
-                                    <dd>{format_speed(s.upload_speed)}</dd>
+                                    <dd>{format_speed_full(s.upload_speed)}</dd>
                                     <dt>"↓ downloaded"</dt>
                                     <dd>{format_size(s.downloaded_bytes)}</dd>
                                     <dt>"↑ uploaded"</dt>
@@ -154,7 +159,9 @@ pub fn AddressesPanel(
             <div class="overlay" on:click=move |e| e.stop_propagation()>
                 <div class="overlay-header">
                     <span class="overlay-title">"Addresses"</span>
-                    <button class="overlay-close" on:click=move |_| close()>"✕"</button>
+                    <button class="overlay-close" on:click=move |_| close()>
+                        <Icon paths=icons::X/>
+                    </button>
                 </div>
                 <div class="overlay-body">
                     {move || match status.get() {

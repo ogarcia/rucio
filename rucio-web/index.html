@@ -230,11 +230,13 @@
         }
         .overlay-title { font-size: 0.8125rem; font-weight: 600; color: var(--text); }
         .overlay-close {
+            display: inline-flex; align-items: center; justify-content: center;
             background: transparent; border: none; color: var(--text-4);
-            cursor: pointer; font-size: 0.875rem; padding: 0.125rem 0.25rem;
-            font-family: inherit; transition: color 0.15s;
+            cursor: pointer; padding: 0.125rem; border-radius: 0.25rem;
+            transition: color 0.15s, background 0.1s;
         }
-        .overlay-close:hover { color: var(--text); }
+        .overlay-close .icon { width: 1.125rem; height: 1.125rem; }
+        .overlay-close:hover { color: var(--text); background: var(--row-hover); }
         .overlay-body { padding: 1rem 1.25rem; }
 
         /* ── Panel contents ──────────────────────────────────────────────── */

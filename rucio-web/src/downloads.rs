@@ -646,7 +646,9 @@ fn AddModal(
             <div class="modal" on:click=move |e| e.stop_propagation()>
                 <div class="modal-header">
                     <span class="modal-title">"Add downloads"</span>
-                    <button class="overlay-close" on:click=move |_| on_close()>"✕"</button>
+                    <button class="overlay-close" on:click=move |_| on_close()>
+                        <Icon paths=icons::X/>
+                    </button>
                 </div>
                 <div class="modal-body">
                     <p class="modal-hint">
@@ -707,7 +709,9 @@ fn DownloadInfoOverlay(
             <div class="overlay overlay-wide" on:click=move |e| e.stop_propagation()>
                 <div class="overlay-header">
                     <span class="overlay-title">{name}</span>
-                    <button class="overlay-close" on:click=move |_| on_close()>"✕"</button>
+                    <button class="overlay-close" on:click=move |_| on_close()>
+                        <Icon paths=icons::X/>
+                    </button>
                 </div>
                 <div class="overlay-body">
                     <dl class="panel-dl">

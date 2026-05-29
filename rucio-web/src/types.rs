@@ -305,6 +305,16 @@ pub fn format_speed(bps: u64) -> String {
     }
 }
 
+/// Like [`format_speed`] but always renders a value, showing `0 KB/s` at rest.
+/// Used in panels (e.g. statistics) where an empty string reads as missing data.
+pub fn format_speed_full(bps: u64) -> String {
+    if bps == 0 {
+        "0 KB/s".to_string()
+    } else {
+        format!("{}/s", format_size(bps))
+    }
+}
+
 pub fn format_eta(secs: u64) -> String {
     if secs < 60 {
         format!("{secs}s")
