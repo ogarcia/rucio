@@ -200,8 +200,9 @@
             background: rgba(0,0,0,.35); z-index: 200;
         }
         .overlay {
-            position: fixed; top: 56px; right: 1rem;
-            width: min(400px, calc(100vw - 2rem));
+            position: fixed; top: 56px;
+            left: 50%; transform: translateX(-50%);
+            width: min(560px, calc(100vw - 2rem));
             max-height: calc(100vh - 72px); overflow-y: auto;
             background: var(--surface); border: 1px solid var(--border);
             border-radius: 0.5rem; box-shadow: 0 12px 36px rgba(0,0,0,.2);
@@ -314,7 +315,7 @@
 
         /* ── Wide overlay (info panel) ───────────────────────────────────── */
 
-        .overlay-wide { width: min(480px, calc(100vw - 2rem)); }
+        .overlay-wide { width: min(640px, calc(100vw - 2rem)); }
 
         /* ── Piece map ───────────────────────────────────────────────────── */
 
