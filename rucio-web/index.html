@@ -150,6 +150,59 @@
         .tab:hover { color: var(--text-2); }
         .tab.active { color: var(--text); border-bottom-color: var(--accent); }
 
+        /* ── Navigation drawer (narrow screens) ──────────────────────────── */
+
+        /* Hamburger that opens the sidebar; hidden on wide screens. */
+        .nav-toggle {
+            display: none; align-items: center; justify-content: center;
+            padding: 0 0.75rem; background: transparent; border: none;
+            color: var(--text-2); cursor: pointer;
+        }
+        .nav-toggle .icon { width: 1.375rem; height: 1.375rem; }
+
+        .sidebar-backdrop {
+            position: fixed; inset: 0; z-index: 200;
+            background: rgba(0,0,0,.4); display: flex;
+        }
+        .sidebar {
+            width: 240px; max-width: 80vw; height: 100%;
+            background: var(--surface); border-right: 1px solid var(--border);
+            display: flex; flex-direction: column;
+            box-shadow: 2px 0 16px rgba(0,0,0,.25);
+            animation: sidebar-in 0.15s ease-out;
+        }
+        @keyframes sidebar-in {
+            from { transform: translateX(-100%); }
+            to   { transform: translateX(0); }
+        }
+        .sidebar-logo {
+            display: flex; align-items: center; height: 48px; padding: 0 1.5rem;
+            font-size: 1.0625rem; font-weight: 700; letter-spacing: 0.05em;
+            color: var(--accent);
+        }
+        .sidebar-sep { height: 1px; background: var(--border); margin-bottom: 0.25rem; }
+        .sidebar-item {
+            display: flex; align-items: center; padding: 0.75rem 1.5rem;
+            background: transparent; border: none; border-left: 3px solid transparent;
+            color: var(--text-2); cursor: pointer; text-align: left;
+            font-size: 0.9rem; font-family: inherit;
+            transition: background 0.1s, color 0.1s;
+        }
+        .sidebar-item:hover { background: var(--row-hover); color: var(--text); }
+        .sidebar-item.active {
+            color: var(--text); border-left-color: var(--accent); background: var(--row-sel);
+        }
+
+        @media (max-width: 640px) {
+            .tabs { display: none; }
+            .nav-toggle { display: flex; }
+            /* The hamburger replaces the brand here (the logo lives in the
+               drawer); push the connection/menu icons back to the right since
+               the flex:1 tabs that used to do it are now hidden. */
+            .brand { display: none; }
+            .menu-wrap { margin-left: auto; }
+        }
+
         /* ── Menu ────────────────────────────────────────────────────────── */
 
         .menu-wrap {

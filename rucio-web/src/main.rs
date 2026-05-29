@@ -107,7 +107,16 @@ thread_local! {
 enum Tab {
     Downloads,
     Searches,
+    Shares,
 }
+
+/// The navigation sections, shown as top-bar tabs (wide) or sidebar items
+/// (narrow). One source so both stay in sync.
+const TABS: [(Tab, &str); 3] = [
+    (Tab::Downloads, "Downloads"),
+    (Tab::Searches, "Searches"),
+    (Tab::Shares, "Shares"),
+];
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Panel {
@@ -366,10 +375,24 @@ fn ws_result_to_search_result(r: WsSearchResult) -> SearchResult {
 
 // ── App ───────────────────────────────────────────────────────────────────────
 
+/// Shares section — placeholder until the share management UI lands.
+#[component]
+fn SharesTab() -> impl IntoView {
+    view! {
+        <div class="tab-content">
+            <div class="tab-scroll">
+                <div class="empty-state"><p>"Shares — coming soon"</p></div>
+            </div>
+        </div>
+    }
+}
+
 #[component]
 fn App() -> impl IntoView {
     let active_tab: RwSignal<Tab> = RwSignal::new(Tab::Downloads);
     let menu_open: RwSignal<bool> = RwSignal::new(false);
+    // Navigation drawer (shown via the hamburger on narrow screens).
+    let nav_open: RwSignal<bool> = RwSignal::new(false);
     let active_panel: RwSignal<Option<Panel>> = RwSignal::new(None);
 
     // Theme — apply immediately so the DOM reflects any stored preference.
@@ -436,17 +459,23 @@ fn App() -> impl IntoView {
     view! {
         <div class="layout">
             <header class="topbar">
+                // Navigation hamburger — only shown on narrow screens (CSS).
+                <button
+                    class="nav-toggle"
+                    title="Sections"
+                    on:click=move |_| nav_open.set(true)
+                >
+                    <icons::Icon paths=icons::MENU/>
+                </button>
                 <span class="brand">"Rucio"</span>
 
                 <nav class="tabs">
-                    <button
-                        class=move || if active_tab.get() == Tab::Downloads { "tab active" } else { "tab" }
-                        on:click=move |_| active_tab.set(Tab::Downloads)
-                    >"Downloads"</button>
-                    <button
-                        class=move || if active_tab.get() == Tab::Searches { "tab active" } else { "tab" }
-                        on:click=move |_| active_tab.set(Tab::Searches)
-                    >"Searches"</button>
+                    {TABS.iter().map(|&(tab, label)| view! {
+                        <button
+                            class=move || if active_tab.get() == tab { "tab active" } else { "tab" }
+                            on:click=move |_| active_tab.set(tab)
+                        >{label}</button>
+                    }).collect_view()}
                 </nav>
 
                 <div class="menu-wrap">
@@ -633,9 +662,33 @@ fn App() -> impl IntoView {
                             search_id=search_id
                         />
                     }.into_any(),
+                    Tab::Shares => view! { <SharesTab/> }.into_any(),
                 }}
             </main>
         </div>
+
+        // ── Navigation drawer (narrow screens) ────────────────────────────
+        <Show when=move || nav_open.get()>
+            <div class="sidebar-backdrop" on:click=move |_| nav_open.set(false)>
+                <nav class="sidebar" on:click=move |e| e.stop_propagation()>
+                    <div class="sidebar-logo">"Rucio"</div>
+                    <div class="sidebar-sep"/>
+                    {TABS.iter().map(|&(tab, label)| view! {
+                        <button
+                            class=move || if active_tab.get() == tab {
+                                "sidebar-item active"
+                            } else {
+                                "sidebar-item"
+                            }
+                            on:click=move |_| {
+                                active_tab.set(tab);
+                                nav_open.set(false);
+                            }
+                        >{label}</button>
+                    }).collect_view()}
+                </nav>
+            </div>
+        </Show>
 
         {move || active_panel.get().map(|panel| match panel {
             Panel::NodeStatus => view! {
