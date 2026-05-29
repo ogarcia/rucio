@@ -1,7 +1,9 @@
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-
-use std::time::Duration;
 
 use gloo_timers::future::sleep;
 
@@ -634,17 +636,39 @@ fn PieceMap(id: i64) -> impl IntoView {
     const MAX_SEGMENTS: usize = 240;
 
     let states: RwSignal<Vec<PieceState>> = RwSignal::new(Vec::new());
-    // Stop the polling loop when the overlay closes (component unmount).
-    let alive = RwSignal::new(true);
-    on_cleanup(move || alive.set(false));
+
+    // Use Rc<Cell> instead of RwSignal for the liveness flag.  When the
+    // overlay closes, Leptos first runs on_cleanup callbacks and then frees
+    // all reactive nodes in the scope (including any signals we own).  If
+    // the fetch is in flight at that moment, resuming it and calling
+    // states.set() on a freed node would panic with "unreachable executed".
+    // Rc<Cell<bool>> lives outside the reactive graph so on_cleanup can set
+    // it to false before the scope is freed; we check it after every await
+    // before touching any reactive signal.
+    // Arc<AtomicBool> rather than RwSignal: on_cleanup runs before Leptos
+    // frees the reactive scope, so if a fetch is in flight the future would
+    // resume and try to write into already-freed signal nodes → panic.
+    // AtomicBool lives outside the graph; we check it after every await
+    // before touching any reactive signal.  Arc (Send+Sync) is needed
+    // because Leptos 0.8 spawn_local and on_cleanup require Send.
+    let alive = Arc::new(AtomicBool::new(true));
+    let alive_cleanup = alive.clone();
+    on_cleanup(move || alive_cleanup.store(false, Ordering::Relaxed));
 
     spawn_local(async move {
         loop {
-            if !alive.get_untracked() {
+            if !alive.load(Ordering::Relaxed) {
                 break;
             }
             if let Some(p) = api_fetch_pieces(id).await {
-                states.set(p.piece_states());
+                // Re-check after the await: component may have unmounted
+                // while the HTTP request was in flight.
+                if alive.load(Ordering::Relaxed) {
+                    states.set(p.piece_states());
+                }
+            }
+            if !alive.load(Ordering::Relaxed) {
+                break;
             }
             sleep(Duration::from_millis(1500)).await;
         }
