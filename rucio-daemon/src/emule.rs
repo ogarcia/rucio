@@ -471,6 +471,7 @@ pub async fn run_ed2k_download(
             let db_w = db.clone();
             let hash = link.hash;
             let file_size = link.size;
+            let file_name = link.name.clone();
             let metrics_w = metrics.clone();
             let progress_w = progress.clone();
             let throttle_w = download_throttle.clone();
@@ -522,12 +523,14 @@ pub async fn run_ed2k_download(
 
                     // Connect and perform the eMule handshake.
                     let mut on_connect = |ev: DownloadEvent| match ev {
-                        DownloadEvent::Connected => info!(%peer, "Connected to eMule peer"),
+                        DownloadEvent::Connected => {
+                            info!(%peer, file = %file_name, "Connected to eMule peer")
+                        }
                         DownloadEvent::Queued { rank } => {
-                            info!(%peer, rank, "Queued at eMule peer")
+                            info!(%peer, file = %file_name, rank, "Queued at eMule peer")
                         }
                         DownloadEvent::Started => {
-                            info!(%peer, "Peer granted upload slot — transfer starting")
+                            info!(%peer, file = %file_name, "Peer granted upload slot — transfer starting")
                         }
                         _ => {}
                     };
