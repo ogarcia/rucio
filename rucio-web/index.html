@@ -14,6 +14,12 @@
            the attribute before first paint when a preference is stored.   */
 
         :root {
+            /* Tell the UA to render native controls (the <select> popup,
+               scrollbars, form fields) in the matching scheme. Without this
+               Chromium draws the dropdown in light mode over our dark
+               surfaces, which breaks the selected-option highlight so it only
+               covers the text width instead of the full row. */
+            color-scheme: light;
             --font-base: 17px;
             --bg:        #f8fafc;
             --surface:   #ffffff;
@@ -42,6 +48,7 @@
 
         /* Explicit dark */
         :root[data-theme="dark"] {
+            color-scheme: dark;
             --bg:        #0f0f1a;
             --surface:   #1a1a2e;
             --raised:    #1e2235;
@@ -69,6 +76,7 @@
         /* Auto-dark: follow system preference when no explicit theme is set */
         @media (prefers-color-scheme: dark) {
             :root:not([data-theme]) {
+                color-scheme: dark;
                 --bg:        #0f0f1a;
                 --surface:   #1a1a2e;
                 --raised:    #1e2235;
