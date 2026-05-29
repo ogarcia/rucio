@@ -433,23 +433,32 @@ pub fn SearchesTab(
                     == Some(SearchState::Running);
                 if raw == 0 {
                     return if running {
-                        view! { <div class="empty-state"><p class="searching-indicator">"Searching…"</p></div> }.into_any()
+                        view! {
+                            <div class="empty-state empty-searching">
+                                <span class="spinner spinner-lg"></span>
+                                <p class="searching-indicator">"Searching…"</p>
+                            </div>
+                        }.into_any()
                     } else {
                         view! { <div class="empty-state"><p>"No results"</p></div> }.into_any()
                     };
                 }
                 let results = view_results();
                 let shown = results.len();
+                let count_text = if shown == raw {
+                    format!("{raw} result(s)")
+                } else {
+                    format!("{shown} of {raw} result(s)")
+                };
                 view! {
                     <div class="results-header">
-                        <span class="results-count">
-                            {if shown == raw {
-                                format!("{raw} result(s)")
-                            } else {
-                                format!("{shown} of {raw} result(s)")
-                            }}
-                            {if running { " — searching…" } else { "" }}
-                        </span>
+                        <span class="results-count">{count_text}</span>
+                        {running.then(|| view! {
+                            <span class="results-searching">
+                                <span class="spinner"></span>
+                                "searching…"
+                            </span>
+                        })}
                     </div>
                     {if results.is_empty() {
                         view! { <div class="empty-state"><p>"No results match the filter"</p></div> }.into_any()

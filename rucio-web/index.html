@@ -652,6 +652,7 @@
         .search-filter-bar .dl-filter-input { flex: 1; width: auto; }
 
         .results-header {
+            display: flex; align-items: center; gap: 0.5rem;
             margin-bottom: 0.75rem;
             font-size: 0.75rem; color: var(--text-3);
         }
@@ -695,6 +696,27 @@
         .result-dl-have { color: var(--text-4); }
 
         .searching-indicator { color: var(--accent); }
+
+        /* Indeterminate loading spinner (CSS-only). Sized in `em` so it tracks
+           the surrounding font size; `spinner-lg` is the standalone variant. */
+        .spinner {
+            display: inline-block; width: 1em; height: 1em;
+            border: 2px solid var(--border);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin 0.7s linear infinite;
+            vertical-align: -0.15em;
+        }
+        .spinner-lg { width: 1.75rem; height: 1.75rem; border-width: 3px; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* Centered spinner + label while a search with no results yet runs. */
+        .empty-searching { flex-direction: column; gap: 0.75rem; }
+        /* Inline spinner next to the result count while more results stream in. */
+        .results-searching {
+            display: inline-flex; align-items: center; gap: 0.4rem;
+            color: var(--accent); font-size: 0.75rem;
+        }
 
         /* ── Shared atoms ────────────────────────────────────────────────── */
 
