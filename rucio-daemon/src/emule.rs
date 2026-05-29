@@ -376,6 +376,41 @@ pub async fn run_ed2k_download(
             e.pieces_in_flight = max_workers as u32;
         }
 
+        // Publisher task: derive the in-flight slice indices for this round as
+        // (all slices) − (done) − (still queued). A worker only ever holds one
+        // slice outside the queue at a time, so anything neither done nor queued
+        // is being fetched right now. This avoids instrumenting every worker
+        // exit path. Aborted once the round's workers finish.
+        let in_flight_publisher = {
+            let pub_work = work_queue.clone();
+            let pub_done = done_vec.clone();
+            let pub_ls = live_stats.clone();
+            let pub_key = live_key;
+            let total = num_slices;
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    let queued: std::collections::HashSet<usize> = pub_work
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .map(|(i, _, _)| *i)
+                        .collect();
+                    let done = pub_done.lock().unwrap().clone();
+                    let in_flight: Vec<u32> = (0..total)
+                        .filter(|i| !done.get(*i).copied().unwrap_or(false) && !queued.contains(i))
+                        .map(|i| i as u32)
+                        .collect();
+                    let mut s = pub_ls.write().await;
+                    match s.get_mut(&pub_key) {
+                        Some(e) => e.in_flight_pieces = in_flight,
+                        // Entry gone — download finished/cancelled, stop.
+                        None => break,
+                    }
+                }
+            })
+        };
+
         let mut join_set: JoinSet<()> = JoinSet::new();
 
         let our_tcp_port = config.emule.tcp_port;
@@ -580,6 +615,14 @@ pub async fn run_ed2k_download(
 
         // Wait for all workers to finish.
         while join_set.join_next().await.is_some() {}
+        // Round over: stop deriving in-flight indices and clear the stale set.
+        in_flight_publisher.abort();
+        {
+            let mut s = live_stats.write().await;
+            if let Some(e) = s.get_mut(&live_key) {
+                e.in_flight_pieces = Vec::new();
+            }
+        }
 
         // Check if all slices are now done (drop guard before any await).
         let (done_count_after, all_done) = {

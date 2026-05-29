@@ -73,6 +73,58 @@ pub struct DownloadDetailResponse {
     pub eta_secs: Option<u64>,
 }
 
+/// GET /api/v1/downloads/{id}/pieces — per-piece state for a block bar.
+#[derive(Deserialize, Clone, Debug)]
+pub struct DownloadPiecesResponse {
+    pub id: i64,
+    pub kind: String,
+    pub pieces_total: u64,
+    /// base64 LSB-first bitmap, 1 bit/piece, set when done.
+    pub done_bitmap: String,
+    /// Indices being fetched right now.
+    pub in_flight: Vec<u32>,
+}
+
+/// State of a single piece for rendering.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PieceState {
+    Pending,
+    InFlight,
+    Done,
+}
+
+impl DownloadPiecesResponse {
+    /// Decode the bitmap + in-flight list into a per-piece state vector.
+    /// Returns an empty vector if the bitmap is malformed.
+    pub fn piece_states(&self) -> Vec<PieceState> {
+        use base64::Engine;
+        let total = self.pieces_total as usize;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&self.done_bitmap)
+            .unwrap_or_default();
+        let mut states = Vec::with_capacity(total);
+        for i in 0..total {
+            let done = bytes
+                .get(i / 8)
+                .map(|b| (b >> (i % 8)) & 1 == 1)
+                .unwrap_or(false);
+            states.push(if done {
+                PieceState::Done
+            } else {
+                PieceState::Pending
+            });
+        }
+        for &idx in &self.in_flight {
+            if let Some(s) = states.get_mut(idx as usize) {
+                if *s != PieceState::Done {
+                    *s = PieceState::InFlight;
+                }
+            }
+        }
+        states
+    }
+}
+
 // ── Searches ─────────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]

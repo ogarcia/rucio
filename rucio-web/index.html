@@ -213,6 +213,24 @@
 
         .overlay-wide { width: min(480px, calc(100vw - 2rem)); }
 
+        /* ── Piece map ───────────────────────────────────────────────────── */
+
+        .piece-map-wrap { margin-top: 1rem; }
+        .piece-map {
+            display: flex; gap: 1px;
+            height: 16px; margin-top: 0.375rem;
+            border-radius: 0.25rem; overflow: hidden;
+            background: #0f0f1a;
+        }
+        .piece-seg { flex: 1 1 0; min-width: 0; }
+        .piece-done     { background: #22c55e; }
+        .piece-inflight { background: #facc15; }
+        .piece-partial  { background: #15803d; }
+        .piece-pending  { background: #2d2d4e; }
+        .piece-map-empty {
+            margin-top: 0.375rem; font-size: 0.75rem; color: #475569;
+        }
+
         /* ── Downloads ───────────────────────────────────────────────────── */
 
         .dl-list { list-style: none; display: flex; flex-direction: column; gap: 0; }

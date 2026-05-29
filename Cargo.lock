@@ -4220,6 +4220,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "base64",
  "blake3",
  "clap",
  "dirs",
@@ -4289,6 +4290,7 @@ dependencies = [
 name = "rucio-web"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "futures-util",
  "gloo-net 0.7.0",
  "gloo-timers",

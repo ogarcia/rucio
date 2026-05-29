@@ -266,6 +266,7 @@ impl DownloadEngine {
             e.sources_total = dl.providers.len() as u32;
             e.sources_active = active_peers;
             e.pieces_in_flight = dl.in_flight.len() as u32;
+            e.in_flight_pieces = dl.in_flight.iter().copied().collect();
         }
         // Also surface pending manifests (no transfer yet) so `show` reports
         // how many providers we have lined up before the manifest arrives.
@@ -275,6 +276,7 @@ impl DownloadEngine {
                 e.sources_total = pm.providers.len() as u32;
                 e.sources_active = 0;
                 e.pieces_in_flight = 0;
+                e.in_flight_pieces = Vec::new();
             }
         }
     }

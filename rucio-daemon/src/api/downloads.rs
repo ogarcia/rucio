@@ -237,6 +237,128 @@ fn non_empty(s: String) -> Option<String> {
     (!s.is_empty()).then_some(s)
 }
 
+/// Encode completed-piece indices into a base64 LSB-first bitmap of `total` bits.
+fn encode_done_bitmap(done_idx: impl Iterator<Item = usize>, total: usize) -> String {
+    use base64::Engine;
+    let mut bytes = vec![0u8; total.div_ceil(8)];
+    for i in done_idx {
+        if i < total {
+            bytes[i / 8] |= 1 << (i % 8);
+        }
+    }
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+/// Per-piece state
+///
+/// Returns a compact map of which pieces are done and which are being fetched
+/// right now, for rendering a fine-grained block-style progress bar.
+///
+/// `done_bitmap` is a base64 LSB-first bitmap (1 bit per piece, set when
+/// complete); `in_flight` lists the indices currently downloading (live, empty
+/// when the download is not active). Everything else is pending.
+///
+/// Pieces are libp2p chunks for rucio downloads and 9.28 MB slices for eMule.
+/// Use **negative IDs** for eMule downloads.
+#[utoipa::path(
+    get,
+    path = "/api/v1/downloads/{id}/pieces",
+    params(
+        ("id" = i64, Path, description = "Numeric download ID from `GET /api/v1/downloads`. Negative = eMule download.")
+    ),
+    responses(
+        (status = 200, description = "Per-piece state.", body = rucio_core::api::downloads::DownloadPiecesResponse),
+        (status = 404, description = "No download with that ID.")
+    )
+)]
+pub async fn get_download_pieces(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<Json<rucio_core::api::downloads::DownloadPiecesResponse>, StatusCode> {
+    use rucio_core::api::downloads::DownloadPiecesResponse;
+
+    // Live in-flight indices are keyed by the same signed id as the public API.
+    let in_flight = state
+        .live_stats
+        .read()
+        .await
+        .get(&id)
+        .map(|l| l.in_flight_pieces.clone())
+        .unwrap_or_default();
+
+    if id >= 0 {
+        // libp2p download — pieces are the rows in download_chunks.
+        // Fetch the row only to distinguish an unknown id (404) from a known
+        // download whose manifest hasn't arrived yet (0 pieces).
+        crate::db::downloads::get(&state.db, id)
+            .await
+            .map_err(|e| {
+                tracing::error!("DB error fetching download {id}: {e}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
+            .ok_or(StatusCode::NOT_FOUND)?;
+
+        let chunks = crate::db::downloads::chunks_for(&state.db, id)
+            .await
+            .unwrap_or_default();
+        let total = chunks.len();
+        let done_bitmap = encode_done_bitmap(
+            chunks
+                .iter()
+                .filter(|c| c.status == "done")
+                .map(|c| c.idx as usize),
+            total,
+        );
+
+        Ok(Json(DownloadPiecesResponse {
+            id,
+            kind: "rucio".to_string(),
+            pieces_total: total as u64,
+            done_bitmap,
+            in_flight,
+        }))
+    } else {
+        // eMule download — pieces are 9.28 MB slices tracked in the .part.met file.
+        #[cfg(feature = "emule-compat")]
+        {
+            let emule_id = -id;
+            let row = crate::db::emule_downloads::get(&state.db, emule_id)
+                .await
+                .map_err(|e| {
+                    tracing::error!("DB error fetching emule download {emule_id}: {e}");
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?
+                .ok_or(StatusCode::NOT_FOUND)?;
+
+            let chunk = rucio_emule::ed2k::CHUNK_SIZE as u64;
+            let num_slices = (row.total_size as u64).div_ceil(chunk) as usize;
+            let met_path = state
+                .config
+                .emule
+                .temp_dir
+                .join(format!("{}.part.met", hex::encode(&row.ed2k_hash)));
+            let done = rucio_emule::progress::load_progress(&met_path, num_slices);
+            let done_bitmap = encode_done_bitmap(
+                done.iter().enumerate().filter(|(_, d)| **d).map(|(i, _)| i),
+                num_slices,
+            );
+
+            Ok(Json(DownloadPiecesResponse {
+                id,
+                kind: "emule".to_string(),
+                pieces_total: num_slices as u64,
+                done_bitmap,
+                in_flight,
+            }))
+        }
+        #[cfg(not(feature = "emule-compat"))]
+        {
+            let _ = &state;
+            Err(StatusCode::NOT_FOUND)
+        }
+    }
+}
+
 /// Estimate seconds to completion from current speed and remaining bytes.
 /// `None` when the speed is zero or the download is already complete.
 fn eta_secs(size: u64, bytes_done: u64, speed_bps: u64) -> Option<u64> {
@@ -782,4 +904,42 @@ fn is_pausable(status: &str) -> bool {
         status,
         "finding_providers" | "queued" | "downloading" | "stalled"
     )
+}
+
+#[cfg(test)]
+mod bitmap_tests {
+    use super::encode_done_bitmap;
+    use base64::Engine;
+
+    fn decode(b64: &str) -> Vec<u8> {
+        base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .unwrap()
+    }
+
+    #[test]
+    fn lsb_first_within_byte() {
+        // Pieces 0, 2, 7 done out of 8 → bits 0,2,7 set → 0b1000_0101.
+        let bytes = decode(&encode_done_bitmap([0usize, 2, 7].into_iter(), 8));
+        assert_eq!(bytes, vec![0b1000_0101]);
+    }
+
+    #[test]
+    fn rounds_byte_count_up() {
+        // 9 pieces → 2 bytes; piece 8 lands in bit 0 of byte 1.
+        let bytes = decode(&encode_done_bitmap([8usize].into_iter(), 9));
+        assert_eq!(bytes.len(), 2);
+        assert_eq!(bytes[1], 0b0000_0001);
+    }
+
+    #[test]
+    fn ignores_out_of_range_indices() {
+        let bytes = decode(&encode_done_bitmap([100usize].into_iter(), 8));
+        assert_eq!(bytes, vec![0u8]);
+    }
+
+    #[test]
+    fn empty_when_no_pieces() {
+        assert_eq!(encode_done_bitmap(std::iter::empty(), 0), "");
+    }
 }

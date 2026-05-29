@@ -93,6 +93,30 @@ pub struct DownloadDetailResponse {
     pub eta_secs: Option<u64>,
 }
 
+/// GET /api/v1/downloads/{id}/pieces — per-piece state for rendering a block bar.
+///
+/// The completed pieces are sent as a compact bitmap rather than a per-piece
+/// array: a 1.5 GB libp2p download is ~6000 chunks, which is ~750 bytes as a
+/// bitmap (1 bit/piece) versus ~15 KB as a JSON array of states.
+///
+/// The client reconstructs the three states: `done` from the bitmap, `in_flight`
+/// from the index list, and everything else is pending.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+pub struct DownloadPiecesResponse {
+    pub id: i64,
+    /// Transport: `"rucio"` (libp2p chunks) or `"emule"` (9.28 MB slices).
+    pub kind: String,
+    /// Total number of pieces.
+    pub pieces_total: u64,
+    /// Base64 of a little-endian (LSB-first) bitmap, one bit per piece, set
+    /// when the piece is complete. Bit `i` lives in `byte[i / 8] >> (i % 8)`.
+    /// Length is `ceil(pieces_total / 8)` bytes before encoding.
+    pub done_bitmap: String,
+    /// Indices of pieces being fetched right now. Live data — empty when the
+    /// download is not active. These are not reflected in `done_bitmap`.
+    pub in_flight: Vec<u32>,
+}
+
 /// POST /api/v1/downloads/ed2k
 ///
 /// Queue a download from the eMule network using an `ed2k://` link.

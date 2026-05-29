@@ -26,6 +26,9 @@ pub struct DownloadLiveStats {
     pub sources_active: u32,
     /// Chunks (libp2p) or slices (eMule) being fetched at this moment.
     pub pieces_in_flight: u32,
+    /// Indices of the pieces being fetched right now. Consumed by
+    /// `GET /api/v1/downloads/{id}/pieces` to render a per-piece block bar.
+    pub in_flight_pieces: Vec<u32>,
     /// Smoothed download speed in bytes per second (filled by the sampler).
     pub speed_bps: u64,
 }

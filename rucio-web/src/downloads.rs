@@ -1,9 +1,14 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
+use std::time::Duration;
+
+use gloo_timers::future::sleep;
+
 use crate::icons::{self, Icon};
 use crate::types::{
-    DownloadDetailResponse, DownloadResponse, DownloadState, format_eta, format_size, format_speed,
+    DownloadDetailResponse, DownloadPiecesResponse, DownloadResponse, DownloadState, PieceState,
+    format_eta, format_size, format_speed,
 };
 
 // ── State helpers ─────────────────────────────────────────────────────────────
@@ -95,6 +100,16 @@ async fn api_fetch_detail(id: i64) -> Option<DownloadDetailResponse> {
         .await
         .ok()?
         .json::<DownloadDetailResponse>()
+        .await
+        .ok()
+}
+
+async fn api_fetch_pieces(id: i64) -> Option<DownloadPiecesResponse> {
+    gloo_net::http::Request::get(&format!("/api/v1/downloads/{id}/pieces"))
+        .send()
+        .await
+        .ok()?
+        .json::<DownloadPiecesResponse>()
         .await
         .ok()
 }
@@ -499,6 +514,7 @@ fn DownloadInfoOverlay(
     detail: DownloadDetailResponse,
     on_close: impl Fn() + Copy + 'static,
 ) -> impl IntoView {
+    let id = detail.id;
     let name = detail
         .name
         .clone()
@@ -574,8 +590,86 @@ fn DownloadInfoOverlay(
                             <dd class="mono">{l}</dd>
                         })}
                     </dl>
+
+                    <div class="piece-map-wrap">
+                        <span class="section-label">"Pieces"</span>
+                        <PieceMap id=id/>
+                    </div>
                 </div>
             </div>
         </div>
+    }
+}
+
+// ── Piece map ───────────────────────────────────────────────────────────────
+
+/// Pick the colour class for a contiguous group of pieces. Priority: any
+/// in-flight → in-flight; all done → done; some done → partial; else pending.
+fn segment_class(slice: &[PieceState]) -> &'static str {
+    let mut done = 0usize;
+    let mut in_flight = 0usize;
+    for s in slice {
+        match s {
+            PieceState::Done => done += 1,
+            PieceState::InFlight => in_flight += 1,
+            PieceState::Pending => {}
+        }
+    }
+    if in_flight > 0 {
+        "piece-seg piece-inflight"
+    } else if done == slice.len() {
+        "piece-seg piece-done"
+    } else if done > 0 {
+        "piece-seg piece-partial"
+    } else {
+        "piece-seg piece-pending"
+    }
+}
+
+/// A block-style progress bar that polls `/pieces` while it is mounted.
+/// Pieces are grouped into at most `MAX_SEGMENTS` coloured segments so the bar
+/// stays legible regardless of the (potentially thousands of) piece count.
+#[component]
+fn PieceMap(id: i64) -> impl IntoView {
+    const MAX_SEGMENTS: usize = 240;
+
+    let states: RwSignal<Vec<PieceState>> = RwSignal::new(Vec::new());
+    // Stop the polling loop when the overlay closes (component unmount).
+    let alive = RwSignal::new(true);
+    on_cleanup(move || alive.set(false));
+
+    spawn_local(async move {
+        loop {
+            if !alive.get_untracked() {
+                break;
+            }
+            if let Some(p) = api_fetch_pieces(id).await {
+                states.set(p.piece_states());
+            }
+            sleep(Duration::from_millis(1500)).await;
+        }
+    });
+
+    view! {
+        <Show
+            when=move || !states.get().is_empty()
+            fallback=|| view! { <div class="piece-map-empty">"No piece data"</div> }
+        >
+            <div class="piece-map">
+                {move || {
+                    let st = states.get();
+                    let total = st.len();
+                    let n = total.min(MAX_SEGMENTS).max(1);
+                    (0..n)
+                        .map(|seg| {
+                            let start = seg * total / n;
+                            let end = ((seg + 1) * total / n).max(start + 1).min(total);
+                            let cls = segment_class(&st[start..end]);
+                            view! { <div class=cls/> }
+                        })
+                        .collect_view()
+                }}
+            </div>
+        </Show>
     }
 }
