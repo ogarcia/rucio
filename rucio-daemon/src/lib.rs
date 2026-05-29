@@ -225,6 +225,12 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     ));
     #[cfg(feature = "emule-compat")]
     let emule_inbound_connections = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    // Shared counters the eMule upload server bumps as it serves data; the
+    // metrics tick reconciles their deltas into the session metrics.
+    #[cfg(feature = "emule-compat")]
+    let emule_uploaded_bytes = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    #[cfg(feature = "emule-compat")]
+    let emule_uploaded_chunks = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
 
     // Global cap on concurrently active eMule downloads.  Surplus downloads
     // wait in the `queued` state until a running download finishes.
@@ -283,6 +289,8 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                     tcp_port,
                     downloads: active_downloads.clone(),
                     inbound_connections: emule_inbound_connections.clone(),
+                    uploaded_bytes: emule_uploaded_bytes.clone(),
+                    chunks_served: emule_uploaded_chunks.clone(),
                 });
                 tokio::spawn(rucio_emule::transfer::serve_incoming(listener, upload_ctx));
             }
@@ -458,6 +466,11 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     // Per-download download-speed sampler state: id → (rolling window, last bytes_done).
     let mut speed_samples: std::collections::HashMap<i64, (metrics::SpeedWindow, u64)> =
         std::collections::HashMap::new();
+    // Last-seen totals of the eMule upload counters, for delta reconciliation.
+    #[cfg(feature = "emule-compat")]
+    let mut last_emule_up_bytes = 0u64;
+    #[cfg(feature = "emule-compat")]
+    let mut last_emule_up_chunks = 0u64;
     // Peer classification: true = HighID (globally reachable), false = LowID.
     // Populated from PeerDiscovered events; used to prioritise chunk uploads.
     let mut peer_classes: std::collections::HashMap<libp2p::PeerId, bool> =
@@ -481,6 +494,20 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                 break;
             }
             _ = metrics_tick.tick() => {
+                // Fold the eMule upload server's counters into the session
+                // metrics before the speed window is sealed for this second.
+                #[cfg(feature = "emule-compat")]
+                {
+                    use std::sync::atomic::Ordering;
+                    let up = emule_uploaded_bytes.load(Ordering::Relaxed);
+                    let ch = emule_uploaded_chunks.load(Ordering::Relaxed);
+                    session_metrics.record_upload_bulk(
+                        up.saturating_sub(last_emule_up_bytes),
+                        ch.saturating_sub(last_emule_up_chunks),
+                    );
+                    last_emule_up_bytes = up;
+                    last_emule_up_chunks = ch;
+                }
                 session_metrics.tick();
                 sample_download_speeds(&db, &live_stats, &mut speed_samples).await;
             }

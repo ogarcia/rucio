@@ -141,6 +141,22 @@ impl Metrics {
         self.chunks_rejected.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Add an already-aggregated batch of uploaded bytes and served chunks.
+    ///
+    /// Used to reconcile counters owned by an external subsystem (the eMule
+    /// upload server tracks its own atomics); the caller passes the delta
+    /// since the previous poll. Feeds the speed window so the rate stays live.
+    pub fn record_upload_bulk(&self, bytes: u64, chunks: u64) {
+        if bytes == 0 && chunks == 0 {
+            return;
+        }
+        self.uploaded_bytes.fetch_add(bytes, Ordering::Relaxed);
+        self.chunks_served.fetch_add(chunks, Ordering::Relaxed);
+        if let Ok(mut w) = self.up_window.lock() {
+            w.add(bytes);
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Periodic tick — call every second from the main loop
     // -----------------------------------------------------------------------

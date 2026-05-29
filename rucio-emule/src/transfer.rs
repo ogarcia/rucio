@@ -61,7 +61,7 @@ use md5::{Digest, Md5};
 use std::collections::HashMap;
 use std::io::{self, Read as _};
 use std::net::{SocketAddr, SocketAddrV4};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -840,6 +840,12 @@ pub struct UploadContext {
     /// Counter of inbound TCP connections accepted since startup.
     /// Used by the status endpoint as direct evidence of reachability.
     pub inbound_connections: Arc<AtomicU64>,
+    /// Cumulative bytes sent to peers via OP_SENDINGPART. The daemon polls
+    /// this counter to feed session/upload metrics.
+    pub uploaded_bytes: Arc<AtomicU64>,
+    /// Cumulative count of SENDINGPART blocks served, paired with
+    /// `uploaded_bytes` for the daemon's metrics reconciliation.
+    pub chunks_served: Arc<AtomicU64>,
 }
 
 // ── Incoming TCP server ───────────────────────────────────────────────────────
@@ -967,7 +973,7 @@ async fn handle_incoming(mut stream: TcpStream, peer: SocketAddr, ctx: Arc<Uploa
                 &hash,
                 &info,
                 &done,
-                &ctx.temp_dir,
+                &ctx,
                 OP_TIMEOUT,
             )
             .await
@@ -994,7 +1000,7 @@ async fn run_upload_session(
     hash: &[u8; 16],
     _info: &UploadInfo,
     done: &[bool],
-    temp_dir: &Path,
+    ctx: &UploadContext,
     op_timeout: Duration,
 ) -> io::Result<()> {
     // Wait for STARTUPLOADREQ.
@@ -1012,7 +1018,7 @@ async fn run_upload_session(
 
     write_frame(stream, cipher, OP_ACCEPTUPLOAD_REQ, &[]).await?;
 
-    let part_path = temp_dir.join(format!("{}.part", hex::encode(hash)));
+    let part_path = ctx.temp_dir.join(format!("{}.part", hex::encode(hash)));
 
     // Serve REQUESTPARTS until the peer signals done or disconnects.
     loop {
@@ -1071,6 +1077,8 @@ async fn run_upload_session(
                     sp.extend_from_slice(&(end as u32).to_le_bytes());
                     sp.extend_from_slice(&buf);
                     write_frame(stream, cipher, OP_SENDINGPART, &sp).await?;
+                    ctx.uploaded_bytes.fetch_add(len as u64, Ordering::Relaxed);
+                    ctx.chunks_served.fetch_add(1, Ordering::Relaxed);
                     debug!(start, end, bytes = len, "Sent SENDINGPART");
                 }
             }
