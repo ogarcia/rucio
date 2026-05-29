@@ -15,6 +15,11 @@ use crate::protocol::node::NodeClass;
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum WsEvent {
+    /// Liveness keepalive. Sent once immediately when a client connects (so the
+    /// connection indicator turns green right away, without waiting for any
+    /// download/indexing activity) and periodically thereafter.
+    Ping,
+
     /// One or more downloads changed state or made progress.
     /// Emitted whenever the download engine ticks and at least one active
     /// download exists.

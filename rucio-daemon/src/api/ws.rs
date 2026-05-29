@@ -26,6 +26,16 @@ pub async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> 
 }
 
 async fn handle_socket(mut socket: WebSocket, mut rx: broadcast::Receiver<WsEvent>) {
+    // Greet the client immediately so its connection indicator turns green as
+    // soon as the socket is established — without waiting for the next periodic
+    // event or any download/indexing activity. This goes straight to the socket
+    // (not via the broadcast bus), so it is unaffected by event timing.
+    if let Ok(text) = serde_json::to_string(&WsEvent::Ping)
+        && socket.send(Message::Text(text.into())).await.is_err()
+    {
+        return;
+    }
+
     loop {
         match rx.recv().await {
             Ok(event) => {

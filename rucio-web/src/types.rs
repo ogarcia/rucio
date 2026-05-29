@@ -218,6 +218,7 @@ pub struct SearchDetailResponse {
 #[derive(Deserialize, Clone, Debug)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum WsEvent {
+    Ping,
     DownloadProgress(Vec<DownloadResponse>),
     IndexingCount { pending: usize },
     SearchResult(WsSearchResult),

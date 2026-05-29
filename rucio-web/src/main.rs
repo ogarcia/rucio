@@ -303,6 +303,10 @@ fn handle_event(
         }
 
         WsEvent::IndexingCount { .. } => {}
+
+        // Liveness keepalive — receiving it already flipped the connection
+        // indicator to connected in the WS loop; nothing else to do.
+        WsEvent::Ping => {}
     }
 }
 
