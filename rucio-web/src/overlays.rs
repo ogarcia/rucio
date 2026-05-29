@@ -87,50 +87,50 @@ pub fn StatsPanel(active_panel: RwSignal<Option<super::Panel>>) -> impl IntoView
         <div class="overlay-backdrop" on:click=move |_| close()>
             <div class="overlay" on:click=move |e| e.stop_propagation()>
                 <div class="overlay-header">
-                    <span class="overlay-title">"Estadísticas"</span>
+                    <span class="overlay-title">"Statistics"</span>
                     <button class="overlay-close" on:click=move |_| close()>"✕"</button>
                 </div>
                 <div class="overlay-body">
                     {move || match metrics.get() {
-                        None => view! { <p class="loading">"Cargando…"</p> }.into_any(),
+                        None => view! { <p class="loading">"Loading…"</p> }.into_any(),
                         Some(m) => {
                             let s = &m.session;
                             let t = &m.total;
                             view! {
-                                <p class="section-label">"Esta sesión"</p>
+                                <p class="section-label">"This session"</p>
                                 <dl class="panel-dl">
                                     <dt>"Uptime"</dt>
                                     <dd>{format_uptime(s.uptime_secs())}</dd>
-                                    <dt>"↓ velocidad"</dt>
+                                    <dt>"↓ speed"</dt>
                                     <dd>{format_speed(s.download_speed)}</dd>
-                                    <dt>"↑ velocidad"</dt>
+                                    <dt>"↑ speed"</dt>
                                     <dd>{format_speed(s.upload_speed)}</dd>
-                                    <dt>"↓ descargado"</dt>
+                                    <dt>"↓ downloaded"</dt>
                                     <dd>{format_size(s.downloaded_bytes)}</dd>
-                                    <dt>"↑ subido"</dt>
+                                    <dt>"↑ uploaded"</dt>
                                     <dd>{format_size(s.uploaded_bytes)}</dd>
-                                    <dt>"Chunks recibidos"</dt>
+                                    <dt>"Chunks received"</dt>
                                     <dd>{s.chunks_received.to_string()}</dd>
-                                    <dt>"Chunks servidos"</dt>
+                                    <dt>"Chunks served"</dt>
                                     <dd>{s.chunks_served.to_string()}</dd>
                                     {(s.chunks_rejected > 0).then(|| view! {
-                                        <dt>"Chunks rechazados"</dt>
+                                        <dt>"Chunks rejected"</dt>
                                         <dd class="dl-error">{s.chunks_rejected.to_string()}</dd>
                                     })}
                                 </dl>
 
-                                <p class="section-label">"Total histórico"</p>
+                                <p class="section-label">"All-time total"</p>
                                 <dl class="panel-dl">
-                                    <dt>"↓ descargado"</dt>
+                                    <dt>"↓ downloaded"</dt>
                                     <dd>{format_size(t.downloaded_bytes)}</dd>
-                                    <dt>"↑ subido"</dt>
+                                    <dt>"↑ uploaded"</dt>
                                     <dd>{format_size(t.uploaded_bytes)}</dd>
-                                    <dt>"Chunks recibidos"</dt>
+                                    <dt>"Chunks received"</dt>
                                     <dd>{t.chunks_received.to_string()}</dd>
-                                    <dt>"Chunks servidos"</dt>
+                                    <dt>"Chunks served"</dt>
                                     <dd>{t.chunks_served.to_string()}</dd>
                                     {(t.chunks_rejected > 0).then(|| view! {
-                                        <dt>"Chunks rechazados"</dt>
+                                        <dt>"Chunks rejected"</dt>
                                         <dd class="dl-error">{t.chunks_rejected.to_string()}</dd>
                                     })}
                                 </dl>

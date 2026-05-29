@@ -28,12 +28,12 @@ enum FilterState {
 impl FilterState {
     fn label(self) -> &'static str {
         match self {
-            FilterState::All => "Todas",
-            FilterState::Active => "Activas",
-            FilterState::Downloading => "Descargando",
-            FilterState::Paused => "Pausadas",
-            FilterState::Completed => "Completadas",
-            FilterState::History => "Historial",
+            FilterState::All => "All",
+            FilterState::Active => "Active",
+            FilterState::Downloading => "Downloading",
+            FilterState::Paused => "Paused",
+            FilterState::Completed => "Completed",
+            FilterState::History => "History",
         }
     }
 
@@ -369,17 +369,17 @@ pub fn DownloadsTab(
                             });
                         }
                     >
-                        <option value="all">"Todas"</option>
-                        <option value="active">"Activas"</option>
-                        <option value="downloading">"Descargando"</option>
-                        <option value="paused">"Pausadas"</option>
-                        <option value="completed">"Completadas"</option>
-                        <option value="history">"Historial"</option>
+                        <option value="all">"All"</option>
+                        <option value="active">"Active"</option>
+                        <option value="downloading">"Downloading"</option>
+                        <option value="paused">"Paused"</option>
+                        <option value="completed">"Completed"</option>
+                        <option value="history">"History"</option>
                     </select>
                     <input
                         type="text"
                         class="dl-filter-input"
-                        placeholder="Buscar…"
+                        placeholder="Filter…"
                         prop:value=move || filter_name.get()
                         on:input=move |e| filter_name.set(event_target_value(&e))
                     />
@@ -388,7 +388,7 @@ pub fn DownloadsTab(
                         if n > 0 {
                             view! {
                                 <span class="dl-active-count">
-                                    {format!("{n} activa{}", if n == 1 { "" } else { "s" })}
+                                    {format!("{n} active")}
                                 </span>
                             }.into_any()
                         } else {
@@ -410,7 +410,7 @@ pub fn DownloadsTab(
                                 </span>
                             }.into_any()
                         } else {
-                            view! { <span class="dl-speed-idle">"Sin transferencia"</span> }.into_any()
+                            view! { <span class="dl-speed-idle">"Idle"</span> }.into_any()
                         }
                     }}
                 </div>

@@ -467,7 +467,7 @@ fn App() -> impl IntoView {
                             <button class="dropdown-item" on:click=move |_| {
                                 active_panel.set(Some(Panel::Stats));
                                 menu_open.set(false);
-                            }>"Estadísticas"</button>
+                            }>"Statistics"</button>
                         </div>
                     </Show>
                 </div>
