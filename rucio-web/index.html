@@ -95,13 +95,19 @@
 
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-        html { font-size: var(--font-base); }
+        html {
+            font-size: var(--font-base);
+            overflow-x: hidden; /* prevent horizontal overflow from expanding
+                                   the scroll area and making fixed elements
+                                   drift on narrow screens */
+        }
 
         body {
             font-family: system-ui, sans-serif;
             background: var(--bg);
             color: var(--text);
             min-height: 100vh;
+            overflow-x: hidden;
         }
 
         /* ── Layout ──────────────────────────────────────────────────────── */
