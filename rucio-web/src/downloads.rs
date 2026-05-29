@@ -355,48 +355,50 @@ pub fn DownloadsTab(
 
             // ── Filter + stats bar ────────────────────────────────────────
             <div class="dl-statusbar">
-                <div class="dl-statusbar-left">
-                    <select
-                        class="dl-filter-select"
-                        on:change=move |e| {
-                            filter_state.set(match event_target_value(&e).as_str() {
-                                "active"      => FilterState::Active,
-                                "downloading" => FilterState::Downloading,
-                                "paused"      => FilterState::Paused,
-                                "completed"   => FilterState::Completed,
-                                "history"     => FilterState::History,
-                                _             => FilterState::All,
-                            });
-                        }
-                    >
-                        <option value="all">"All"</option>
-                        <option value="active">"Active"</option>
-                        <option value="downloading">"Downloading"</option>
-                        <option value="paused">"Paused"</option>
-                        <option value="completed">"Completed"</option>
-                        <option value="history">"History"</option>
-                    </select>
-                    <input
-                        type="text"
-                        class="dl-filter-input"
-                        placeholder="Filter…"
-                        prop:value=move || filter_name.get()
-                        on:input=move |e| filter_name.set(event_target_value(&e))
-                    />
-                    {move || {
-                        let n = downloads.with(|v| v.iter().filter(|d| is_streamed_state(&d.state)).count());
-                        if n > 0 {
-                            view! {
-                                <span class="dl-active-count">
-                                    {format!("{n} active")}
-                                </span>
-                            }.into_any()
-                        } else {
-                            ().into_any()
-                        }
-                    }}
-                </div>
-                <div class="dl-statusbar-right">
+                <select
+                    class="dl-filter-select"
+                    on:change=move |e| {
+                        filter_state.set(match event_target_value(&e).as_str() {
+                            "active"      => FilterState::Active,
+                            "downloading" => FilterState::Downloading,
+                            "paused"      => FilterState::Paused,
+                            "completed"   => FilterState::Completed,
+                            "history"     => FilterState::History,
+                            _             => FilterState::All,
+                        });
+                    }
+                >
+                    <option value="all">"All"</option>
+                    <option value="active">"Active"</option>
+                    <option value="downloading">"Downloading"</option>
+                    <option value="paused">"Paused"</option>
+                    <option value="completed">"Completed"</option>
+                    <option value="history">"History"</option>
+                </select>
+                <input
+                    type="text"
+                    class="dl-filter-input"
+                    placeholder="Filter…"
+                    prop:value=move || filter_name.get()
+                    on:input=move |e| filter_name.set(event_target_value(&e))
+                />
+                {move || {
+                    let n = downloads.with(|v| v.iter().filter(|d| is_streamed_state(&d.state)).count());
+                    if n > 0 {
+                        view! {
+                            <span class="dl-active-count">
+                                {format!("{n} active")}
+                            </span>
+                        }.into_any()
+                    } else {
+                        view! {
+                            <span class="dl-active-count dl-active-none">
+                                "No active downloads"
+                            </span>
+                        }.into_any()
+                    }
+                }}
+                <div class="dl-speeds">
                     {move || {
                         let dl = dl_speed.get();
                         let ul = ul_speed.get();

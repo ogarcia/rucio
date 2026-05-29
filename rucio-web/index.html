@@ -342,15 +342,16 @@
         /* ── Filter / status bar ────────────────────────────────────────── */
 
         .dl-statusbar {
-            display: flex; align-items: center; justify-content: space-between;
-            gap: 0.75rem; flex-wrap: wrap;
+            display: flex; align-items: center;
+            gap: 0.5rem;
             padding: 0.5rem 1.5rem;
             border-top: 1px solid var(--border);
             background: var(--surface);
             flex-shrink: 0;
         }
-        .dl-statusbar-left  { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
-        .dl-statusbar-right { display: flex; align-items: center; gap: 0.75rem; }
+        /* Speeds sit on the right on desktop; margin-auto pushes them there
+           so the select/input/count stay grouped on the left. */
+        .dl-speeds { display: flex; align-items: center; gap: 0.75rem; margin-left: auto; }
 
         .dl-filter-select {
             padding: 0.25rem 0.5rem;
@@ -373,10 +374,35 @@
             background: var(--sa); padding: 0.1rem 0.45rem;
             border-radius: 9999px; font-weight: 600; white-space: nowrap;
         }
+        /* Idle state: neutral text instead of a coloured pill, so a count of
+           zero never reads as activity while the layout stays put. */
+        .dl-active-none {
+            color: var(--text-4); background: transparent;
+            font-weight: 400; padding-left: 0;
+        }
         .dl-speed { font-size: 0.75rem; font-weight: 500; white-space: nowrap; }
         .dl-speed-down { color: var(--sa-fg); }
         .dl-speed-up   { color: var(--sd-fg); }
         .dl-speed-idle { font-size: 0.75rem; color: var(--text-4); }
+
+        /* Mobile: two purposeful rows via grid. Row 1 = select + elastic
+           input; row 2 = active count (left) and speeds (right), matching
+           the desktop left/right split. Declared after the base rules so it
+           wins the cascade at ≤540px. */
+        @media (max-width: 540px) {
+            .dl-statusbar {
+                display: grid;
+                grid-template-columns: auto 1fr;
+                gap: 0.5rem; padding: 0.5rem 1rem;
+            }
+            /* Row 1: select keeps its natural width, input fills the rest. */
+            .dl-filter-select { grid-row: 1; grid-column: 1; }
+            .dl-filter-input  { grid-row: 1; grid-column: 2; width: auto; min-width: 0; }
+            /* Row 2 spans both columns so the count's text width never widens
+               the select column — robust against longer translated strings. */
+            .dl-active-count  { grid-row: 2; grid-column: 1 / -1; justify-self: start; }
+            .dl-speeds        { grid-row: 2; grid-column: 1 / -1; justify-self: end; margin-left: 0; }
+        }
 
         /* ── Downloads ───────────────────────────────────────────────────── */
 
