@@ -398,6 +398,7 @@ pub async fn run_ed2k_download(
             .min(num_remaining);
 
         info!(
+            file = %link.name,
             workers = max_workers,
             remaining_slices = num_remaining,
             sources = valid_sources.len(),
