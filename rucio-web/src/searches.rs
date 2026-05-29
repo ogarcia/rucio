@@ -250,6 +250,28 @@ pub fn SearchesTab(
         refresh_list(search);
     });
 
+    // Reconcile the selected search against its authoritative result count.
+    // The summary count (in `search.list`) is kept current by the WS — both the
+    // per-result `SearchResult` events and the final `SearchStateChanged`. If it
+    // ever exceeds the results we actually hold locally — e.g. live results were
+    // missed, or arrived before the search was selected — fetch the full set so
+    // the view refreshes on its own instead of needing a manual re-select.
+    Effect::new(move |_| {
+        let Some(id) = search.selected.get() else {
+            return;
+        };
+        let summary_count = search
+            .list
+            .with(|l| l.iter().find(|s| s.id == id).map(|s| s.result_count))
+            .unwrap_or(0);
+        let local_count = search
+            .results
+            .with(|m| m.get(&id).map(|v| v.len()).unwrap_or(0));
+        if summary_count > local_count {
+            load_detail(search, id);
+        }
+    });
+
     let do_search = move || {
         let kw: Vec<String> = query
             .get()
