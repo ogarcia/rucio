@@ -429,16 +429,22 @@ fn v1_router() -> Router<AppState> {
 
 /// Bind and serve the API on the address from config.
 pub async fn serve(state: AppState, listen: &str) -> anyhow::Result<()> {
+    // Build the router first — this generates the full OpenAPI spec and Scalar
+    // docs, which is not instant. Doing it before the log (and before bind)
+    // means that by the time we announce the server is ready, axum can start
+    // accepting immediately, rather than the port being open while the router
+    // is still being built and the WebSocket upgrade can't yet be served.
+    let app = router(state);
     let listener = tokio::net::TcpListener::bind(listen)
         .await
         .map_err(|e| anyhow::anyhow!("failed to bind API on {listen}: {e}"))?;
 
-    // This is the moment the HTTP API, static frontend and the /api/ws
-    // WebSocket all become reachable — they share one router.
+    // The HTTP API, static frontend and the /api/ws WebSocket all become
+    // reachable now — they share one router.
     tracing::info!(
         addr = listen,
         "API server listening — WebSocket /api/ws ready"
     );
-    axum::serve(listener, router(state)).await?;
+    axum::serve(listener, app).await?;
     Ok(())
 }
