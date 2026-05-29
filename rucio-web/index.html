@@ -610,6 +610,13 @@
         .icon-btn:disabled { opacity: 0.4; cursor: default; }
         .icon-btn-danger:hover:not(:disabled) { color: var(--sf-fg); }
 
+        /* Result filter/sort controls, between the history row and the list. */
+        .search-filter-bar {
+            display: flex; align-items: center; gap: 0.5rem;
+            padding: 0.5rem 1.5rem; flex-shrink: 0;
+        }
+        .search-filter-bar .dl-filter-input { flex: 1; width: auto; }
+
         .results-header {
             margin-bottom: 0.75rem;
             font-size: 0.75rem; color: var(--text-3);

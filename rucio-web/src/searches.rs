@@ -76,6 +76,47 @@ fn state_label(s: &SearchState) -> &'static str {
     }
 }
 
+// ── Result filtering & sorting ──────────────────────────────────────────────
+
+/// Source filter applied to the visible result list.
+#[derive(Clone, Copy, PartialEq)]
+enum SourceFilter {
+    All,
+    Rucio,
+    Emule,
+}
+
+impl SourceFilter {
+    fn matches(self, src: &ResultSource) -> bool {
+        match self {
+            SourceFilter::All => true,
+            SourceFilter::Rucio => *src == ResultSource::Rucio,
+            SourceFilter::Emule => *src == ResultSource::Emule,
+        }
+    }
+}
+
+/// Sort order applied to the visible result list.
+#[derive(Clone, Copy, PartialEq)]
+enum SortBy {
+    NameAsc,
+    NameDesc,
+    SizeDesc,
+    SizeAsc,
+}
+
+impl SortBy {
+    fn apply(self, v: &mut [SearchResult]) {
+        use std::cmp::Reverse;
+        match self {
+            SortBy::NameAsc => v.sort_by_key(|r| r.name.to_lowercase()),
+            SortBy::NameDesc => v.sort_by_key(|r| Reverse(r.name.to_lowercase())),
+            SortBy::SizeDesc => v.sort_by_key(|r| Reverse(r.size)),
+            SortBy::SizeAsc => v.sort_by_key(|r| r.size),
+        }
+    }
+}
+
 /// Fetch a search's full result set once (the snapshot of what's accumulated so
 /// far, Rucio + eMule) and merge it into the store; live additions arrive via
 /// the WebSocket. Also syncs the summary's state/count.
@@ -113,6 +154,37 @@ fn refresh_list(search: SearchStore) {
 #[component]
 pub fn SearchesTab(search: SearchStore) -> impl IntoView {
     let query = RwSignal::new(String::new());
+
+    // Result filter/sort controls (apply to the currently selected search).
+    let filter_source: RwSignal<SourceFilter> = RwSignal::new(SourceFilter::All);
+    let filter_text: RwSignal<String> = RwSignal::new(String::new());
+    let sort_by: RwSignal<SortBy> = RwSignal::new(SortBy::SizeDesc);
+
+    // Raw (unfiltered) result count of the selected search; drives whether the
+    // filter bar is shown. Kept separate from `view_results` so the filter bar
+    // only re-renders when results appear/disappear, never on every keystroke.
+    let raw_count = move || {
+        search
+            .selected
+            .get()
+            .and_then(|id| search.results.with(|m| m.get(&id).map(|v| v.len())))
+            .unwrap_or(0)
+    };
+
+    // The selected search's results after applying the source/text filter and
+    // the sort order. Recomputed reactively wherever it's read.
+    let view_results = move || {
+        let mut v = search
+            .selected
+            .get()
+            .and_then(|id| search.results.with(|m| m.get(&id).cloned()))
+            .unwrap_or_default();
+        let sf = filter_source.get();
+        let q = filter_text.get().to_lowercase();
+        v.retain(|r| sf.matches(&r.source) && (q.is_empty() || r.name.to_lowercase().contains(&q)));
+        sort_by.get().apply(&mut v);
+        v
+    };
 
     // Load the recent-search list once when the tab mounts; the WS keeps it live.
     Effect::new(move |_| {
@@ -225,47 +297,98 @@ pub fn SearchesTab(search: SearchStore) -> impl IntoView {
                 </div>
             </Show>
 
+            // ── Filter & sort bar (only when the selection has results) ───
+            <Show when=move || { raw_count() > 0 } fallback=|| ()>
+                <div class="search-filter-bar">
+                    <select
+                        class="dl-filter-select"
+                        on:change=move |e| {
+                            filter_source.set(match event_target_value(&e).as_str() {
+                                "rucio" => SourceFilter::Rucio,
+                                "emule" => SourceFilter::Emule,
+                                _ => SourceFilter::All,
+                            });
+                        }
+                    >
+                        <option value="all">"All sources"</option>
+                        <option value="rucio">"Rucio"</option>
+                        <option value="emule">"eMule"</option>
+                    </select>
+                    <select
+                        class="dl-filter-select"
+                        prop:value="size-desc"
+                        on:change=move |e| {
+                            sort_by.set(match event_target_value(&e).as_str() {
+                                "name-asc" => SortBy::NameAsc,
+                                "name-desc" => SortBy::NameDesc,
+                                "size-asc" => SortBy::SizeAsc,
+                                _ => SortBy::SizeDesc,
+                            });
+                        }
+                    >
+                        <option value="size-desc">"Largest first"</option>
+                        <option value="size-asc">"Smallest first"</option>
+                        <option value="name-asc">"Name (A→Z)"</option>
+                        <option value="name-desc">"Name (Z→A)"</option>
+                    </select>
+                    <input
+                        type="text"
+                        class="dl-filter-input"
+                        placeholder="Filter results…"
+                        prop:value=move || filter_text.get()
+                        on:input=move |e| filter_text.set(event_target_value(&e))
+                    />
+                </div>
+            </Show>
+
             <div class="tab-scroll">
             {move || {
                 let sel = search.selected.get();
-                let results = sel
-                    .and_then(|id| search.results.with(|m| m.get(&id).cloned()))
-                    .unwrap_or_default();
-                let state = sel.and_then(|id| {
-                    search.list.with(|l| l.iter().find(|s| s.id == id).map(|s| s.state.clone()))
-                });
                 if sel.is_none() {
-                    view! {
+                    return view! {
                         <div class="empty-state"><p>"Search for files, or pick a recent search"</p></div>
-                    }.into_any()
-                } else if results.is_empty() {
-                    let running = state == Some(SearchState::Running);
-                    if running {
+                    }.into_any();
+                }
+                let raw = raw_count();
+                let running = sel
+                    .and_then(|id| {
+                        search.list.with(|l| l.iter().find(|s| s.id == id).map(|s| s.state.clone()))
+                    })
+                    == Some(SearchState::Running);
+                if raw == 0 {
+                    return if running {
                         view! { <div class="empty-state"><p class="searching-indicator">"Searching…"</p></div> }.into_any()
                     } else {
                         view! { <div class="empty-state"><p>"No results"</p></div> }.into_any()
-                    }
-                } else {
-                    view! {
-                        <div class="results-header">
-                            <span class="results-count">
-                                {results.len().to_string()} " result(s)"
-                                {if state == Some(SearchState::Running) { " — searching…" } else { "" }}
-                            </span>
-                        </div>
-                        <ul class="results-list">
-                            <For
-                                each=move || {
-                                    search.selected.get()
-                                        .and_then(|id| search.results.with(|m| m.get(&id).cloned()))
-                                        .unwrap_or_default()
-                                }
-                                key=|r| r.result_id
-                                children=|r| view! { <ResultRow result=r/> }
-                            />
-                        </ul>
-                    }.into_any()
+                    };
                 }
+                let results = view_results();
+                let shown = results.len();
+                view! {
+                    <div class="results-header">
+                        <span class="results-count">
+                            {if shown == raw {
+                                format!("{raw} result(s)")
+                            } else {
+                                format!("{shown} of {raw} result(s)")
+                            }}
+                            {if running { " — searching…" } else { "" }}
+                        </span>
+                    </div>
+                    {if results.is_empty() {
+                        view! { <div class="empty-state"><p>"No results match the filter"</p></div> }.into_any()
+                    } else {
+                        view! {
+                            <ul class="results-list">
+                                <For
+                                    each=move || view_results()
+                                    key=|r| r.result_id
+                                    children=|r| view! { <ResultRow result=r/> }
+                                />
+                            </ul>
+                        }.into_any()
+                    }}
+                }.into_any()
             }}
             </div>
         </div>
