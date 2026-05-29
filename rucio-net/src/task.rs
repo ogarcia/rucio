@@ -427,9 +427,13 @@ async fn on_swarm_event(
         }
         SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
             match classify_dial_error(&error) {
-                // Private-IP failures: Kad routing table noise from peers
-                // behind NAT that advertised their LAN address. Not actionable.
-                DialNoise::Private => debug!(%error, "Outgoing connection error (private address)"),
+                // Expected, non-actionable dial failures: the peer advertised
+                // non-routable addresses (LAN/loopback/link-local), or it isn't
+                // reachable where it advertised (connection refused, timed out,
+                // host unreachable, reset) — routine churn in a P2P swarm.
+                DialNoise::Expected => {
+                    debug!(%error, "Outgoing connection error (expected: peer unreachable)")
+                }
                 // ENETUNREACH on a public address: the OS has no route for
                 // that address family (typically IPv6 not configured). Logged
                 // at INFO so a legitimate routing change stays visible without
@@ -946,11 +950,16 @@ fn try_relay_reservation(
 }
 
 enum DialNoise {
-    /// All failed addresses are private/link-local/loopback. → DEBUG
-    Private,
-    /// All failed addresses are public but the OS has no route (ENETUNREACH).
-    /// Typically means IPv6 is not configured on this host. → INFO so a
-    /// legitimate routing change stays visible without producing WARN noise.
+    /// Failure is expected and not actionable: the peer advertised non-routable
+    /// addresses (private/link-local/loopback), or it simply isn't reachable at
+    /// the addresses it advertised (connection refused, timed out, host
+    /// unreachable, reset) — routine for peers behind NAT, with a closed port,
+    /// or not listening yet. → DEBUG
+    Expected,
+    /// All failed public addresses returned ENETUNREACH: the OS has no route for
+    /// that address family. Typically means IPv6 is not configured on this
+    /// host. → INFO so a legitimate routing change stays visible without
+    /// producing WARN noise.
     Unreachable,
     /// Any other failure — genuinely unexpected. → WARN
     Real,
@@ -958,17 +967,19 @@ enum DialNoise {
 
 /// Classify a `DialError` for log-level selection.
 ///
-/// * `WrongPeerId` on a private/loopback address → `Private` (DEBUG).
+/// * `WrongPeerId` on a private/loopback address → `Expected` (DEBUG).
 ///   This happens when identify advertises the remote node's own loopback
 ///   addresses and Kad later tries to dial them, hitting our local daemon.
 ///
 /// * `Transport` failures are checked per `(addr, err)` pair:
-///   - private address → contributes to `Private`
+///   - private/loopback/link-local address → skipped (contributes to `Expected`)
 ///   - public address + `ENETUNREACH` → contributes to `Unreachable`
+///   - public address + a peer-reachability error (connection refused, reset,
+///     timed out, host unreachable) → contributes to `Expected`
 ///   - anything else → `Real` (short-circuits immediately)
 ///
 /// The returned level is the "worst" across all pairs:
-/// `Private < Unreachable < Real`.
+/// `Expected < Unreachable < Real`.
 fn classify_dial_error(error: &DialError) -> DialNoise {
     use libp2p::core::transport::TransportError;
     use std::io;
@@ -979,7 +990,7 @@ fn classify_dial_error(error: &DialError) -> DialNoise {
         // local daemon with a different peer ID — expected, not actionable.
         DialError::WrongPeerId { address, .. } => {
             if addr_is_private_or_loopback(address) {
-                DialNoise::Private
+                DialNoise::Expected
             } else {
                 DialNoise::Real
             }
@@ -990,17 +1001,32 @@ fn classify_dial_error(error: &DialError) -> DialNoise {
                 if addr_is_private_or_loopback(addr) {
                     continue;
                 }
-                if matches!(err, TransportError::Other(e) if e.kind() == io::ErrorKind::NetworkUnreachable)
-                {
-                    has_unreachable = true;
-                } else {
-                    return DialNoise::Real;
+                match err {
+                    // ENETUNREACH: this host has no route for the address
+                    // family (e.g. no IPv6). Worth surfacing at INFO.
+                    TransportError::Other(e) if e.kind() == io::ErrorKind::NetworkUnreachable => {
+                        has_unreachable = true;
+                    }
+                    // The peer advertised a public address but isn't reachable
+                    // there: behind NAT, port closed, or not listening yet.
+                    // Routine churn in a P2P swarm — expected, not actionable.
+                    TransportError::Other(e)
+                        if matches!(
+                            e.kind(),
+                            io::ErrorKind::ConnectionRefused
+                                | io::ErrorKind::ConnectionReset
+                                | io::ErrorKind::TimedOut
+                                | io::ErrorKind::HostUnreachable
+                        ) => {}
+                    // Protocol/handshake/negotiation failures on a public
+                    // address, or any other transport error — unexpected.
+                    _ => return DialNoise::Real,
                 }
             }
             if has_unreachable {
                 DialNoise::Unreachable
             } else {
-                DialNoise::Private
+                DialNoise::Expected
             }
         }
         _ => DialNoise::Real,
