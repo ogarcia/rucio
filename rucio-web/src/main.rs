@@ -378,7 +378,7 @@ fn App() -> impl IntoView {
                                 viewBox="0 0 24 24" stroke="currentColor" fill="none"
                                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
                                 title=if connected { "Connected" } else { "Disconnected" }
-                                inner_html=if connected { icons::WIFI } else { icons::WIFI_OFF }
+                                inner_html=if connected { icons::NETWORK } else { icons::NETWORK_OFF }
                             ></svg>
                         }
                     }}

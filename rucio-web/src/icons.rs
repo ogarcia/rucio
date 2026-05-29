@@ -33,9 +33,9 @@ pub const CIRCLE_X: &str = r#"<path stroke="none" d="M0 0h24v24H0z" fill="none"/
 
 pub const TRASH: &str = r#"<path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M4 7l16 0"/><path d="M10 11l0 6"/><path d="M14 11l0 6"/><path d="M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2 -2l1 -12"/><path d="M9 7v-3a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v3"/>"#;
 
-pub const WIFI: &str = r#"<path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M12 18l.01 0"/><path d="M9.172 15.172a4 4 0 0 1 5.656 0"/><path d="M6.343 12.343a8 8 0 0 1 11.314 0"/><path d="M3.515 9.515c4.686 -4.687 12.284 -4.687 16.97 0"/>"#;
+pub const NETWORK: &str = r#"<path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M6 9m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0"/><path d="M18 9m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0"/><path d="M12 19m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0"/><path d="M6 9l6 10"/><path d="M18 9l-6 10"/><path d="M6 9h12"/>"#;
 
-pub const WIFI_OFF: &str = r#"<path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M12 18l.01 0"/><path d="M9.172 15.172a4 4 0 0 1 5.656 0"/><path d="M6.343 12.343a7.975 7.975 0 0 1 3.044 -2.02"/><path d="M3.515 9.515a12 12 0 0 1 3.544 -2.8"/><path d="M3 3l18 18"/>"#;
+pub const NETWORK_OFF: &str = r#"<path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M6 9m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0"/><path d="M18 9m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0"/><path d="M12 19m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0"/><path d="M6 9l6 10"/><path d="M18 9l-6 10"/><path d="M6 9h3"/><path d="M14.5 9h3.5"/><path d="M3 3l18 18"/>"#;
 
 pub const MENU: &str = r#"<path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M4 6l16 0"/><path d="M4 12l16 0"/><path d="M4 18l16 0"/>"#;
 
