@@ -216,6 +216,10 @@ pub struct SearchRecord {
     pub keywords: Vec<String>,
     pub cancelled: bool,
     pub kad2_done: bool,
+    /// True while the Kad2 leg is queued behind another Kad search waiting for
+    /// its turn (Kad runs one search at a time). Surfaced to the UI so the user
+    /// sees "eMule: queued" instead of an unexplained delay.
+    pub kad2_waiting: bool,
     pub results: Vec<InternalResult>,
     pub started_at: std::time::Instant,
     /// UUID string of the Gossipsub query — used to map incoming results.

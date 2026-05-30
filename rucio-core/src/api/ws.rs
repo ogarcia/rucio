@@ -50,6 +50,9 @@ pub enum WsEvent {
         id: u64,
         state: crate::api::searches::SearchState,
         result_count: usize,
+        /// Whether the eMule/Kad2 leg is currently queued waiting for its turn.
+        #[serde(default)]
+        emule_queued: bool,
     },
 
     /// A peer connected to this node.

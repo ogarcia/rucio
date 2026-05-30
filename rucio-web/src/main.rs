@@ -325,11 +325,13 @@ fn handle_event(
             id,
             state,
             result_count,
+            emule_queued,
         } => {
             search.list.update(|list| {
                 if let Some(s) = list.iter_mut().find(|s| s.id == id) {
                     s.state = state;
                     s.result_count = result_count;
+                    s.emule_queued = emule_queued;
                 }
             });
         }

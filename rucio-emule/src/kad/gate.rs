@@ -83,6 +83,13 @@ impl PriorityGate {
         }
     }
 
+    /// Whether the single search slot is currently held. A `true` result means
+    /// a caller acquiring now would have to wait its turn. Best-effort: the
+    /// state can change the instant after this returns.
+    pub fn is_busy(&self) -> bool {
+        self.inner.lock().unwrap().busy
+    }
+
     /// Release the slot and wake the next waiter (highs first). `busy` is only
     /// ever set true by an acquirer that returns a permit, so a cancelled
     /// waiter can never leave the gate stuck.

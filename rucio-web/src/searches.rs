@@ -155,6 +155,7 @@ fn load_detail(search: SearchStore, id: u64) {
         if let Some(d) = api_search_detail(id).await {
             let count = d.results.len();
             let st = d.state.clone();
+            let queued = d.emule_queued;
             search.results.update(|m| {
                 let v = m.entry(id).or_default();
                 for r in d.results {
@@ -167,6 +168,7 @@ fn load_detail(search: SearchStore, id: u64) {
                 if let Some(s) = list.iter_mut().find(|s| s.id == id) {
                     s.state = st;
                     s.result_count = count;
+                    s.emule_queued = queued;
                 }
             });
         }
@@ -448,17 +450,20 @@ pub fn SearchesTab(
                     }.into_any();
                 }
                 let raw = raw_count();
-                let running = sel
-                    .and_then(|id| {
-                        search.list.with(|l| l.iter().find(|s| s.id == id).map(|s| s.state.clone()))
-                    })
-                    == Some(SearchState::Running);
+                let summary = sel.and_then(|id| {
+                    search.list.with(|l| l.iter().find(|s| s.id == id).cloned())
+                });
+                let running = summary.as_ref().map(|s| s.state.clone()) == Some(SearchState::Running);
+                // Whether the eMule/Kad leg is queued behind another search.
+                let emule_queued = summary.as_ref().is_some_and(|s| s.emule_queued);
                 if raw == 0 {
                     return if running {
                         view! {
                             <div class="empty-state empty-searching">
                                 <span class="spinner spinner-lg"></span>
-                                <p class="searching-indicator">"Searching…"</p>
+                                <p class="searching-indicator">
+                                    {if emule_queued { "Waiting for an eMule turn…" } else { "Searching…" }}
+                                </p>
                             </div>
                         }.into_any()
                     } else {
@@ -478,7 +483,7 @@ pub fn SearchesTab(
                         {running.then(|| view! {
                             <span class="results-searching">
                                 <span class="spinner"></span>
-                                "searching…"
+                                {if emule_queued { "eMule queued…" } else { "searching…" }}
                             </span>
                         })}
                     </div>

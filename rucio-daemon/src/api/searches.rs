@@ -83,6 +83,7 @@ pub async fn list_searches(State(state): State<AppState>) -> Json<SearchListResp
             keywords: r.keywords.clone(),
             state: r.effective_state(),
             result_count: r.results.len(),
+            emule_queued: r.kad2_waiting,
         })
         .collect();
     // Newest first.
@@ -129,6 +130,7 @@ pub async fn get_search(
         keywords: record.keywords.clone(),
         state: record.effective_state(),
         results,
+        emule_queued: record.kad2_waiting,
     }))
 }
 
@@ -283,6 +285,7 @@ async fn start_search_internal(state: &AppState, keywords: Vec<String>) -> Resul
             kad2_done: true,
             #[cfg(feature = "emule-compat")]
             kad2_done: false,
+            kad2_waiting: false,
             results: Vec::new(),
             started_at: std::time::Instant::now(),
             gossip_query_id: gossip_query_id.clone(),
@@ -334,6 +337,32 @@ fn purge_old_searches(reg: &mut SearchRegistry) {
     }
 }
 
+/// Set a search's `kad2_waiting` flag and broadcast the change so the UI can
+/// show (or clear) the "eMule queued" hint live.
+#[cfg(feature = "emule-compat")]
+async fn set_kad_waiting(
+    registry: &crate::api::SharedSearchRegistry,
+    ws_tx: &tokio::sync::broadcast::Sender<rucio_core::api::ws::WsEvent>,
+    search_id: u64,
+    waiting: bool,
+) {
+    let evt = {
+        let mut reg = registry.write().await;
+        reg.records.get_mut(&search_id).map(|record| {
+            record.kad2_waiting = waiting;
+            rucio_core::api::ws::WsEvent::SearchStateChanged {
+                id: search_id,
+                state: record.effective_state(),
+                result_count: record.results.len(),
+                emule_queued: waiting,
+            }
+        })
+    };
+    if let Some(evt) = evt {
+        let _ = ws_tx.send(evt);
+    }
+}
+
 /// Spawn a background Kad2 keyword search task.
 ///
 /// eMule Kad2 indexes files by individual words, not by full phrases.
@@ -370,8 +399,21 @@ fn spawn_kad2_search(state: &AppState, search_id: u64, keywords: Vec<String>) {
         .unwrap_or_else(|| lowercase_keyword(&keywords[0]));
 
     tokio::spawn(async move {
+        // Surface the "waiting for a Kad turn" phase. Kad runs one search at a
+        // time; if another holds the slot, mark this search queued so the UI
+        // can show it, then clear the flag once we acquire our turn.
+        let queued = kad.search_in_progress();
+        if queued {
+            set_kad_waiting(&reg_clone, &ws_tx, search_id, true).await;
+        }
+        let permit = kad.acquire_keyword_slot().await;
+        if queued {
+            set_kad_waiting(&reg_clone, &ws_tx, search_id, false).await;
+        }
+
         tracing::info!(search_id, main_keyword, "Kad2 keyword search started");
-        let hits = kad.search_keyword(main_keyword.clone()).await;
+        let hits = kad.search_keyword_held(main_keyword.clone()).await;
+        drop(permit);
         tracing::info!(search_id, hits = hits.len(), "Kad2 keyword search finished");
 
         let mut reg = reg_clone.write().await;

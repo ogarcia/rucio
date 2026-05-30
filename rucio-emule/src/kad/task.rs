@@ -113,11 +113,34 @@ impl KadHandle {
     }
 
     /// Keyword search — returns matching file hits from Kad index.
+    ///
+    /// Acquires the (high-priority) search slot and runs the search. Use
+    /// [`KadHandle::acquire_keyword_slot`] + [`KadHandle::search_keyword_held`]
+    /// instead when you need to observe the "waiting for a turn" phase.
     pub async fn search_keyword(&self, keyword: String) -> Vec<KeywordHit> {
         // One search at a time — wait our turn instead of being dropped.
         // High priority: user-initiated, so it jumps ahead of queued source
         // lookups to keep the search box responsive.
-        let _permit = self.search_gate.acquire(super::gate::Priority::High).await;
+        let _permit = self.acquire_keyword_slot().await;
+        self.search_keyword_held(keyword).await
+    }
+
+    /// Whether a Kad search currently holds the single search slot, i.e. a
+    /// keyword search started now would have to wait its turn. Best-effort.
+    pub fn search_in_progress(&self) -> bool {
+        self.search_gate.is_busy()
+    }
+
+    /// Acquire the high-priority search slot, waiting our turn. Awaiting this is
+    /// the "queued" phase; once it resolves the search may run. Hold the
+    /// returned permit until the search completes, then drop it.
+    pub async fn acquire_keyword_slot(&self) -> super::gate::SearchPermit {
+        self.search_gate.acquire(super::gate::Priority::High).await
+    }
+
+    /// Run a keyword search assuming the caller already holds the search slot
+    /// (via [`KadHandle::acquire_keyword_slot`]). Does not touch the gate.
+    pub async fn search_keyword_held(&self, keyword: String) -> Vec<KeywordHit> {
         let (tx, rx) = oneshot::channel();
         let _ = self
             .tx

@@ -677,6 +677,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                                 id: *id,
                                 state,
                                 result_count: record.results.len(),
+                                emule_queued: record.kad2_waiting,
                             });
                         }
                     }

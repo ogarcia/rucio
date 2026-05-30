@@ -300,6 +300,8 @@ pub struct SearchDetailResponse {
     pub keywords: Vec<String>,
     pub state: SearchState,
     pub results: Vec<SearchResult>,
+    #[serde(default)]
+    pub emule_queued: bool,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -308,6 +310,9 @@ pub struct SearchSummary {
     pub keywords: Vec<String>,
     pub state: SearchState,
     pub result_count: usize,
+    /// True while the eMule/Kad2 leg is queued waiting for its turn.
+    #[serde(default)]
+    pub emule_queued: bool,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -338,6 +343,8 @@ pub enum WsEvent {
         id: u64,
         state: SearchState,
         result_count: usize,
+        #[serde(default)]
+        emule_queued: bool,
     },
     PeerConnected {
         peer_id: String,

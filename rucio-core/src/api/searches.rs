@@ -48,6 +48,11 @@ pub struct SearchSummary {
     pub keywords: Vec<String>,
     pub state: SearchState,
     pub result_count: usize,
+    /// True while the eMule/Kad2 leg of this search is queued behind another
+    /// Kad search, waiting for its turn (Kad runs one search at a time). The
+    /// Rucio (gossip) leg is unaffected and may still be returning results.
+    #[serde(default)]
+    pub emule_queued: bool,
 }
 
 /// GET /api/v1/searches response body.
@@ -102,4 +107,7 @@ pub struct SearchDetailResponse {
     pub keywords: Vec<String>,
     pub state: SearchState,
     pub results: Vec<SearchResult>,
+    /// See [`SearchSummary::emule_queued`].
+    #[serde(default)]
+    pub emule_queued: bool,
 }
