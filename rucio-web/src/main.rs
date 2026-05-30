@@ -66,7 +66,7 @@ use gloo_timers::future::sleep;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use downloads::{DownloadsTab, refresh_downloads};
+use downloads::{DownloadsTab, clear_history, pause_all, refresh_downloads, resume_all};
 use overlays::{AddressesPanel, NodeStatusPanel, StatsPanel};
 use searches::SearchesTab;
 use shares::SharesTab;
@@ -670,6 +670,31 @@ fn App() -> impl IntoView {
                                         )}
                                     </span>
                                 </div>
+                            </div>
+                            <div class="dropdown-sep"/>
+                            // ── Actions (bulk operations on all downloads) ─
+                            <div class="menu-section">
+                                <div class="menu-section-title">"Actions"</div>
+                                <button class="dropdown-item" on:click=move |_| {
+                                    menu_open.set(false);
+                                    spawn_local(pause_all(downloads));
+                                }>"Pause all"</button>
+                                <button class="dropdown-item" on:click=move |_| {
+                                    menu_open.set(false);
+                                    spawn_local(resume_all(downloads));
+                                }>"Resume all"</button>
+                                <button class="dropdown-item" on:click=move |_| {
+                                    // Destructive (removes finished rows): confirm first.
+                                    let ok = web_sys::window()
+                                        .and_then(|w| w.confirm_with_message(
+                                            "Clear all finished downloads from the history? Files on disk are kept.",
+                                        ).ok())
+                                        .unwrap_or(false);
+                                    if ok {
+                                        menu_open.set(false);
+                                        spawn_local(clear_history(downloads));
+                                    }
+                                }>"Clear history"</button>
                             </div>
                             <div class="dropdown-sep"/>
                             // ── Node (read-only info panels) ──────────────

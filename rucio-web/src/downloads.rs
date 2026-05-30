@@ -150,6 +150,56 @@ async fn api_resume(id: i64) {
         .await;
 }
 
+// ── Bulk actions (used by the menu) ─────────────────────────────────────────
+//
+// These iterate the current download list client-side, reusing the per-id
+// endpoints (same approach as the multi-selection toolbar). Fine for the
+// occasional manual action; if histories ever get huge, a bulk endpoint would
+// be more efficient.
+
+/// Pause every active (pausable) download.
+pub async fn pause_all(downloads: RwSignal<Vec<DownloadResponse>>) {
+    let ids: Vec<i64> = downloads
+        .get_untracked()
+        .iter()
+        .filter(|d| is_pausable(&d.state))
+        .map(|d| d.id)
+        .collect();
+    for id in ids {
+        api_pause(id).await;
+    }
+    refresh_downloads(downloads).await;
+}
+
+/// Resume every paused download.
+pub async fn resume_all(downloads: RwSignal<Vec<DownloadResponse>>) {
+    let ids: Vec<i64> = downloads
+        .get_untracked()
+        .iter()
+        .filter(|d| d.state == DownloadState::Paused)
+        .map(|d| d.id)
+        .collect();
+    for id in ids {
+        api_resume(id).await;
+    }
+    refresh_downloads(downloads).await;
+}
+
+/// Remove every finished (completed/failed/cancelled) download from the history.
+/// Files already on disk are kept.
+pub async fn clear_history(downloads: RwSignal<Vec<DownloadResponse>>) {
+    let ids: Vec<i64> = downloads
+        .get_untracked()
+        .iter()
+        .filter(|d| is_terminal(&d.state))
+        .map(|d| d.id)
+        .collect();
+    for id in ids {
+        api_remove(id).await;
+    }
+    refresh_downloads(downloads).await;
+}
+
 async fn api_fetch_detail(id: i64) -> Option<DownloadDetailResponse> {
     gloo_net::http::Request::get(&format!("/api/v1/downloads/{id}"))
         .send()
