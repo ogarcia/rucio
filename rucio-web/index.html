@@ -440,6 +440,17 @@
         }
         .config-pending .icon { width: 0.875rem; height: 0.875rem; flex-shrink: 0; }
 
+        /* Narrow screens: a long label (e.g. "Temp download limit") would push
+           the input out of the row, so stack label over a full-width input.
+           Declared after the base rules so it wins the cascade. */
+        @media (max-width: 480px) {
+            .config-field {
+                flex-direction: column; align-items: stretch; gap: 0.3rem;
+            }
+            .config-label { white-space: normal; }
+            .config-input, .config-input-sm { width: 100%; }
+        }
+
         .modal-hint { font-size: 0.75rem; color: var(--text-3); }
         .modal-hint code {
             background: var(--bg); padding: 0.1rem 0.3rem;
