@@ -14,10 +14,10 @@
 //! (and an Ed25519 identity key is generated alongside it) so that subsequent
 //! restarts are fully reproducible without flags.
 //!
-//! This is role 1 of SPEC phase 5. Role 2 (the passive DHT indexer) is an
-//! opt-in extension compiled in with the `indexer` feature and enabled at
-//! runtime with `--index` or `indexer.enabled = true` in the config; see the
-//! [`indexer`] module.
+//! This is role 1 of SPEC phase 5. Role 2 (the passive DHT indexer) is compiled
+//! in with the `indexer` feature; when built that way it runs by default and is
+//! turned off with `--no-index` (or `indexer.enabled = false` in the config).
+//! See the [`indexer`] module.
 
 mod config;
 
@@ -67,11 +67,12 @@ struct Args {
     )]
     bootstrap_peer: Vec<String>,
 
-    /// Enable the passive DHT indexer role. Overrides `indexer.enabled`.
-    /// Requires the `indexer` build feature.
+    /// Disable the passive DHT indexer role. It runs by default when built with
+    /// the `indexer` feature; pass this to run as a plain bootstrap node.
+    /// Overrides `indexer.enabled`.
     #[cfg(feature = "indexer")]
     #[arg(long)]
-    index: bool,
+    no_index: bool,
 
     /// SQLite path for the indexer database. Overrides `indexer.db`.
     #[cfg(feature = "indexer")]
@@ -147,8 +148,8 @@ async fn main() -> Result<()> {
 
     #[cfg(feature = "indexer")]
     {
-        if args.index {
-            cfg.indexer.enabled = true;
+        if args.no_index {
+            cfg.indexer.enabled = false;
         }
         if let Some(db) = args.index_db {
             cfg.indexer.db = Some(db);

@@ -2,8 +2,8 @@
 //!
 //! Records the `ADD_PROVIDER` announcements captured by `rucio-net` (via
 //! [`NodeEvent::ProviderRecord`](rucio_net::NodeEvent)) into SQLite and exposes
-//! a search/admin REST API. Compiled in only with the `indexer` feature and
-//! activated at runtime with `--index`.
+//! a search/admin REST API. Compiled in only with the `indexer` feature; when
+//! built that way it runs by default and is turned off with `--no-index`.
 //!
 //! When enrichment is enabled, each newly seen hash is resolved to a file name
 //! and size by requesting the manifest from the announcing peer, so the search

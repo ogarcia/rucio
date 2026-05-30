@@ -33,8 +33,10 @@ pub struct NodeConfig {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct IndexerConfig {
-    /// Enable the indexer role at startup (equivalent to `--index`).
-    #[serde(default)]
+    /// Run the indexer role at startup. Defaults to `true` when built with the
+    /// `indexer` feature — the whole point of that build — so a plain bootstrap
+    /// node needs `enabled = false` (or the `--no-index` flag).
+    #[serde(default = "default_indexer_enabled")]
     pub enabled: bool,
     /// SQLite database path.
     pub db: Option<PathBuf>,
@@ -75,6 +77,10 @@ fn default_enrich() -> bool {
     true
 }
 
+fn default_indexer_enabled() -> bool {
+    true
+}
+
 impl Default for NodeConfig {
     fn default() -> Self {
         Self {
@@ -88,7 +94,7 @@ impl Default for NodeConfig {
 impl Default for IndexerConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: default_indexer_enabled(),
             db: None,
             api_listen: default_api_listen(),
             api_token: None,
@@ -197,9 +203,9 @@ listen = ["/ip4/0.0.0.0/tcp/4321", "/ip6/::/tcp/4321"]
 bootstrap_peers = []
 
 [indexer]
-# Enable the passive DHT indexer role.
-# Requires: compiled with --features indexer.  CLI override: --index
-enabled = false
+# Run the passive DHT indexer role. With an `indexer`-feature build it runs by
+# default; set this to false (or pass --no-index) for a plain bootstrap node.
+enabled = true
 
 # SQLite database path.
 db = "{db}"

@@ -3,43 +3,44 @@
 The **DHT indexer** is an optional role built into `rucio-bootstrap` (requires
 the `indexer` build feature, included in the `latest-bootstrap` container image).
 
-When enabled, the node captures every `ADD_PROVIDER` announcement it receives
-from the Kademlia DHT — i.e. every time a peer publishes a file to the network —
-and records the hash and the announcing peer in a local SQLite database.  It
-then contacts the announcing peer to fetch the file's name and size via the
-manifest protocol (**enrichment**), so the search API can match on human-readable
-names rather than raw hashes.
+The node captures every `ADD_PROVIDER` announcement it receives from the
+Kademlia DHT — i.e. every time a peer publishes a file to the network — and
+records the hash and the announcing peer in a local SQLite database.  It then
+contacts the announcing peer to fetch the file's name and size via the manifest
+protocol (**enrichment**), so the search API can match on human-readable names
+rather than raw hashes.
 
 The indexer does not download, store, or serve any file content.
 
 ---
 
-## Enabling the indexer
+## Running the indexer
 
-### Via config file
+When `rucio-bootstrap` is built with the `indexer` feature (as in the
+`latest-bootstrap` container image), the indexer **runs by default** — that is
+the whole point of that build. On first run the SQLite database is created
+automatically at `~/.local/share/rucio-bootstrap/index.db`. There is nothing to
+turn on.
 
-Set `indexer.enabled = true` in `~/.config/rucio-bootstrap/config.toml`:
+### Running as a plain bootstrap node instead
+
+To run an `indexer`-feature build as a plain bootstrap node (no capturing, no
+search API), disable the role:
+
+```sh
+rucio-bootstrap --no-index
+```
+
+…or set it in `~/.config/rucio-bootstrap/config.toml`:
 
 ```toml
 [indexer]
-enabled = true
+enabled = false
 ```
 
-Restart the node.  On first run the SQLite database is created automatically
-at `~/.local/share/rucio-bootstrap/index.db`.
-
-### Via CLI flag
-
-```sh
-rucio-bootstrap --index
-```
-
-The `--index` flag overrides `indexer.enabled` for that invocation only; the
-config file is not modified.
-
-> **Note:** running `rucio-bootstrap --index` without the `indexer` build
-> feature compiled in will produce an "unrecognised flag" error.  Use the
-> `latest-bootstrap` container image or compile with `--features indexer`.
+The `--no-index` flag overrides `indexer.enabled` for that invocation only; the
+config file is not modified. On a build *without* the `indexer` feature the flag
+does not exist and the node is always a plain bootstrap.
 
 ---
 
@@ -49,7 +50,7 @@ config file is not modified.
 
 | Key | Default | Description |
 |---|---|---|
-| `enabled` | `false` | Enable the indexer at startup. Equivalent to `--index`. |
+| `enabled` | `true` | Run the indexer at startup (on an `indexer`-feature build). Set to `false`, or pass `--no-index`, for a plain bootstrap node. |
 | `db` | `~/.local/share/rucio-bootstrap/index.db` | SQLite database path. Created automatically. |
 | `api_listen` | `127.0.0.1:3003` | Bind address for the REST search API. Change to `0.0.0.0:3003` to expose it on the network. |
 | `api_token` | *(unset)* | Bearer token protecting the `/api/v1/admin/*` endpoints. **Admin endpoints are disabled when this is unset.** |
@@ -78,7 +79,7 @@ identity_count = 3
 
 | Flag | Env variable | Overrides |
 |---|---|---|
-| `--index` | — | `indexer.enabled` |
+| `--no-index` | — | `indexer.enabled` (forces off) |
 | `--index-db <PATH>` | `RUCIO_BOOTSTRAP_INDEX_DB` | `indexer.db` |
 | `--api-listen <ADDR>` | `RUCIO_BOOTSTRAP_API_LISTEN` | `indexer.api_listen` |
 | `--api-token <TOKEN>` | `RUCIO_BOOTSTRAP_API_TOKEN` | `indexer.api_token` |
@@ -262,13 +263,12 @@ podman run -d \
   -e RUCIO_BOOTSTRAP_API_LISTEN=0.0.0.0:3003 \
   -e RUCIO_BOOTSTRAP_API_TOKEN=changeme \
   -v rucio-bootstrap-data:/var/lib/rucio \
-  ghcr.io/YOUR_ORG/rucio:latest-bootstrap \
-  --index
+  ghcr.io/YOUR_ORG/rucio:latest-bootstrap
 ```
 
-The `--index` flag activates the indexer for this run.  To make it permanent
-instead, set `indexer.enabled = true` in the config file inside the volume
-(no flag needed on the next start).
+The `latest-bootstrap` image runs the indexer by default — no flag needed.
+Pass `--no-index` (or set `indexer.enabled = false` in the config file inside
+the volume) to run it as a plain bootstrap node instead.
 
 > Port 3003 is the indexer REST API.  If you only want it accessible from
 > localhost, omit `-p 3003:3003` and use `docker exec` or an SSH tunnel to
@@ -280,14 +280,16 @@ Add to the `[Service]` section of the unit file from
 [01 — Bootstrap node](01-bootstrap-node.md):
 
 ```ini
-ExecStart=/usr/local/bin/rucio-bootstrap --index
+ExecStart=/usr/local/bin/rucio-bootstrap
 Environment=RUCIO_BOOTSTRAP_API_LISTEN=127.0.0.1:3003
 Environment=RUCIO_BOOTSTRAP_API_TOKEN=changeme
 Environment=RUCIO_BOOTSTRAP_INDEX_DB=/var/lib/rucio-bootstrap/index.db
 ```
 
-Or set the keys in `/etc/rucio-bootstrap/config.toml` and keep the
-`ExecStart` without flags.
+An `indexer`-feature build indexes by default, so `ExecStart` needs no flag;
+add `--no-index` if you want a plain bootstrap node instead. The environment
+variables (or the equivalent keys in `/etc/rucio-bootstrap/config.toml`)
+configure the REST API and database path.
 
 ---
 
