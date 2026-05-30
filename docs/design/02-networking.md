@@ -38,10 +38,17 @@ The Kademlia DHT is the backbone of internet-wide discovery.
 nodes can find providers for a hash by calling `kad.get_providers(key)`.
 
 **Bootstrap** — on startup, rucio dials a set of bootstrap peers
-(`network.bootstrap_peers` in config). Once connected, it runs a random walk
-to populate its routing table. Re-announcement happens every 22 minutes to
-keep provider records alive (DHT records expire after roughly 24–48 hours
-depending on the implementation).
+(`network.bootstrap_peers` in config, falling back to `BUILTIN_BOOTSTRAP_PEERS`).
+Addresses may be literal IPs or `/dns4` / `/dns6` names — the transport is built
+`.with_dns()` so domains resolve, which lets the infrastructure survive IP
+changes. Once connected, it runs a random walk to populate its routing table.
+
+**Re-announcement timing** — the startup re-announce runs *before* any peer is
+connected, so its provider-publication queries reach nobody (they only register
+the keys locally). To actually publish into the DHT, the daemon re-announces
+once more ~5 s after the **first peer connects** (Kad bootstrap has populated
+the routing table by then). After that, a 22-minute tick keeps provider records
+fresh (DHT records expire after roughly 24–48 hours).
 
 **Stale share pruning** — during re-announcement, any file path that no longer
 exists on disk is removed from the database and not re-announced.
@@ -49,6 +56,28 @@ exists on disk is removed from the database and not re-announced.
 **Re-bootstrap** — the main event loop runs a 10-minute tick that re-adds
 bootstrap peers and triggers a new random walk if the node has no connected
 peers. This handles transient network outages and natural DHT churn.
+
+**Provider store limits** — the Kademlia `MemoryStore` caps how many keys it
+holds, tuned per role in `BehaviourConfig`:
+
+- `kad_max_provided_keys` — our *own* shared files we announce. The libp2p
+  default (1024) is far too low for a real library, so a full node sets it to
+  1M. (A node sharing more than the cap fails to announce the excess with
+  "store cannot contain any more provider records".)
+- `kad_max_records` — provider records from *other* peers held in RAM to serve
+  `GET_PROVIDERS` as a DHT server. A client keeps this modest (100k) so it
+  doesn't become a large in-memory store; a bootstrap/indexer node sets it high
+  (1M) since it sees the whole network.
+
+**Bootstrap/indexer storage** — a `rucio-bootstrap` node running the passive
+indexer keeps two independent stores: a persistent **SQLite** index (the source
+of truth for REST search, unbounded by the caps above) and the in-RAM
+`MemoryStore` (bounded, used only to re-serve records over the DHT). A full
+MemoryStore therefore degrades DHT re-serving but never search, and is not a
+single point of failure since a file's real providers answer `GET_PROVIDERS`
+themselves. Moving the DHT store to disk (a SQLite-backed `RecordStore`) was
+deliberately deferred — see the `indexer` module docs for the cost/options
+hierarchy.
 
 ### Gossipsub
 
