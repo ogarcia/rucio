@@ -1,3 +1,4 @@
+mod config;
 mod downloads;
 mod icons;
 mod overlays;
@@ -66,6 +67,7 @@ use gloo_timers::future::sleep;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
+use config::ConfigModal;
 use downloads::{
     DownloadsTab, any_pausable, any_paused, any_terminal, clear_history, pause_all,
     refresh_downloads, resume_all,
@@ -463,6 +465,8 @@ fn App() -> impl IntoView {
     let base_down: RwSignal<u64> = RwSignal::new(0);
     // Preset temporary caps, for the read-only line under the toggle.
     let temp_up: RwSignal<u64> = RwSignal::new(0);
+    // Full configuration modal open/closed.
+    let config_open: RwSignal<bool> = RwSignal::new(false);
     let temp_down: RwSignal<u64> = RwSignal::new(0);
 
     // Initial data fetch.
@@ -727,6 +731,11 @@ fn App() -> impl IntoView {
                                     menu_open.set(false);
                                 }>"Statistics"</button>
                             </div>
+                            <div class="dropdown-sep"/>
+                            <button class="dropdown-item" on:click=move |_| {
+                                config_open.set(true);
+                                menu_open.set(false);
+                            }>"Settings"</button>
                         </div>
                     </Show>
                 </div>
@@ -782,6 +791,16 @@ fn App() -> impl IntoView {
                 <StatsPanel active_panel=active_panel/>
             }.into_any(),
         })}
+
+        <Show when=move || config_open.get()>
+            <ConfigModal
+                base_up=base_up
+                base_down=base_down
+                temp_up=temp_up
+                temp_down=temp_down
+                on_close=move || config_open.set(false)
+            />
+        </Show>
     }
 }
 

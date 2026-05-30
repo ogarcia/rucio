@@ -293,6 +293,72 @@ pub fn format_rate_kbps(kbps: u64) -> String {
     }
 }
 
+// ── Configuration ──────────────────────────────────────────────────────────
+
+// Mirror of the daemon's GET/PUT /api/v1/config payloads.
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct NodeConfig {
+    pub identity_path: String,
+    pub listen_addrs: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct ApiConfig {
+    pub listen: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct NetworkConfig {
+    pub bootstrap_peers: Vec<String>,
+    #[serde(default)]
+    pub upload_limit_kbps: u64,
+    #[serde(default)]
+    pub download_limit_kbps: u64,
+    #[serde(default)]
+    pub temp_upload_limit_kbps: u64,
+    #[serde(default)]
+    pub temp_download_limit_kbps: u64,
+    #[serde(default)]
+    pub max_upload_tasks: usize,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct StorageConfig {
+    pub download_dir: String,
+    pub temp_dir: String,
+    pub database_path: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct EmuleConfig {
+    pub enabled: bool,
+    pub temp_dir: String,
+    pub udp_port: u16,
+    pub tcp_port: u16,
+    #[serde(default)]
+    pub external_ip: Option<String>,
+    pub download_slots_per_file: usize,
+    pub max_upload_slots: usize,
+    pub max_concurrent_downloads: usize,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct ConfigSnapshot {
+    pub node: NodeConfig,
+    pub api: ApiConfig,
+    pub network: NetworkConfig,
+    pub storage: StorageConfig,
+    pub emule: EmuleConfig,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ConfigResponse {
+    pub current: ConfigSnapshot,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub pending: Option<Box<ConfigSnapshot>>,
+}
+
 // ── Searches ─────────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
