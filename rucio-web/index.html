@@ -449,7 +449,8 @@
            the input out of the row, so stack label over a full-width input.
            Declared after the base rules so it wins the cascade. */
         @media (max-width: 480px) {
-            .config-field {
+            /* .config-field-keep stays inline (e.g. the small eMule toggle). */
+            .config-field:not(.config-field-keep) {
                 flex-direction: column; align-items: stretch; gap: 0.3rem;
             }
             .config-label { white-space: normal; }

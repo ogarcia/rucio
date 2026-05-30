@@ -310,7 +310,7 @@ pub fn ConfigModal(
                             }.into_any(),
                             ConfigTab::Emule => view! {
                                 <div class="config-section">
-                                    <div class="config-field">
+                                    <div class="config-field config-field-keep">
                                         <label class="config-label">"eMule enabled"</label>
                                         <span
                                             class=move || if f_em_enabled.get() {
