@@ -507,6 +507,12 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
         u64,
         rucio_core::api::searches::SearchState,
     > = std::collections::HashMap::new();
+    // The startup re-announce runs before any peer is connected, so its
+    // provider-publication queries reach nobody. Re-announce once more shortly
+    // after the first peer connects (Kad bootstrap has populated the routing
+    // table by then) so shares actually land in the DHT without waiting for the
+    // 22-minute reprovide tick.
+    let mut reannounced_after_connect = false;
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
@@ -761,6 +767,21 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                         let _ = ws_tx.send(WsEvent::PeerConnected {
                             peer_id: peer_id.to_string(),
                         });
+                        // First peer since startup: re-announce shares once the
+                        // routing table has had a few seconds to fill, so their
+                        // provider records actually reach the DHT.
+                        if !reannounced_after_connect {
+                            reannounced_after_connect = true;
+                            let db2 = db.clone();
+                            let tx2 = handle.cmd_tx.clone();
+                            tokio::spawn(async move {
+                                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                                let n = reannounce_shares(&db2, &tx2).await;
+                                if n > 0 {
+                                    info!("Re-announced {n} share(s) after first peer connected");
+                                }
+                            });
+                        }
                     }
                     Some(node::messages::NodeEvent::PeerDisconnected { peer_id }) => {
                         let mut ns = node_status.write().await;

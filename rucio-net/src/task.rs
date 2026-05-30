@@ -85,6 +85,10 @@ pub async fn spawn(cfg: &NetConfig) -> Result<NodeHandle> {
         )
         .context("building TCP transport")?
         .with_quic()
+        // Resolve /dns4 and /dns6 bootstrap addresses so the network can use
+        // stable domain names instead of hard-coded IPs that change over time.
+        .with_dns()
+        .context("building DNS transport")?
         .with_relay_client(libp2p::noise::Config::new, libp2p::yamux::Config::default)
         .context("building relay transport")?
         .with_behaviour(|keypair, relay_client| {
