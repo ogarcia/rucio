@@ -814,6 +814,30 @@ pub async fn delete_download(State(state): State<AppState>, Path(id): Path<i64>)
     }
 }
 
+/// Clear the download history
+///
+/// Removes every **finished** download — completed, failed, or cancelled — from the database
+/// in a single operation, across both libp2p and eMule downloads. Active and paused downloads
+/// are left untouched. Files already written to disk are **not** deleted.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/downloads/history",
+    responses(
+        (status = 200, description = "Returns `{ \"removed\": N }` with the number of entries cleared.")
+    )
+)]
+pub async fn clear_history(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let removed = crate::db::downloads::delete_terminal(&state.db)
+        .await
+        .unwrap_or(0);
+    #[cfg(feature = "emule-compat")]
+    let removed = removed
+        + crate::db::emule_downloads::delete_terminal(&state.db)
+            .await
+            .unwrap_or(0);
+    Json(serde_json::json!({ "removed": removed }))
+}
+
 // ── eMule compatibility ───────────────────────────────────────────────────────
 
 /// Start an eMule download

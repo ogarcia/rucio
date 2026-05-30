@@ -307,6 +307,17 @@ pub async fn delete(db: &Db, download_id: i64) -> Result<bool> {
     Ok(affected > 0)
 }
 
+/// Delete every finished download (completed/error/cancelled) in one statement.
+/// Active and paused downloads are left untouched. Returns the number removed.
+pub async fn delete_terminal(db: &Db) -> Result<u64> {
+    let affected =
+        sqlx::query("DELETE FROM downloads WHERE status IN ('completed', 'error', 'cancelled')")
+            .execute(db)
+            .await?
+            .rows_affected();
+    Ok(affected)
+}
+
 /// Mark any pending/active download for `root_hash` as failed.
 /// Used when the manifest cannot be retrieved from any provider.
 pub async fn fail_by_hash(db: &Db, root_hash: &[u8; 32]) -> Result<()> {

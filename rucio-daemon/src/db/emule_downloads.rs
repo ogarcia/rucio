@@ -264,6 +264,19 @@ pub async fn delete(db: &Db, id: i64) -> Result<bool> {
     Ok(affected > 0)
 }
 
+/// Delete every finished eMule download (completed/error/cancelled) in one
+/// statement. Active and paused downloads are left untouched. Returns the
+/// number removed.
+pub async fn delete_terminal(db: &Db) -> Result<u64> {
+    let affected = sqlx::query(
+        "DELETE FROM emule_downloads WHERE status IN ('completed', 'error', 'cancelled')",
+    )
+    .execute(db)
+    .await?
+    .rows_affected();
+    Ok(affected)
+}
+
 // ── Private helpers ───────────────────────────────────────────────────────────
 
 fn row_from_sqlx(r: &sqlx::sqlite::SqliteRow) -> EmuleDownloadRow {

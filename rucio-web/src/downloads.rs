@@ -185,18 +185,12 @@ pub async fn resume_all(downloads: RwSignal<Vec<DownloadResponse>>) {
     refresh_downloads(downloads).await;
 }
 
-/// Remove every finished (completed/failed/cancelled) download from the history.
-/// Files already on disk are kept.
+/// Remove every finished (completed/failed/cancelled) download from the history
+/// in a single request. Files already on disk are kept.
 pub async fn clear_history(downloads: RwSignal<Vec<DownloadResponse>>) {
-    let ids: Vec<i64> = downloads
-        .get_untracked()
-        .iter()
-        .filter(|d| is_terminal(&d.state))
-        .map(|d| d.id)
-        .collect();
-    for id in ids {
-        api_remove(id).await;
-    }
+    let _ = gloo_net::http::Request::delete("/api/v1/downloads/history")
+        .send()
+        .await;
     refresh_downloads(downloads).await;
 }
 

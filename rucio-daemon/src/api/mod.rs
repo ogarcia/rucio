@@ -91,6 +91,7 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         downloads::pause_download,
         downloads::resume_download,
         downloads::delete_download,
+        downloads::clear_history,
         searches::post_search,
         searches::list_searches,
         searches::get_search,
@@ -411,6 +412,11 @@ fn v1_router() -> Router<AppState> {
         // downloads
         .route("/downloads", routing::get(downloads::list_downloads))
         .route("/downloads", routing::post(downloads::start_download))
+        // Static path registered before /downloads/{id} so it never parses as an id.
+        .route(
+            "/downloads/history",
+            routing::delete(downloads::clear_history),
+        )
         .route(
             "/downloads/ed2k",
             routing::post(downloads::start_ed2k_download),
