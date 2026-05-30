@@ -73,9 +73,36 @@ fn urlencoding_encode(s: &str) -> String {
 fn copy_to_clipboard(text: &str) {
     if let Some(win) = web_sys::window() {
         // Fire-and-forget: the returned Promise resolves asynchronously and we
-        // don't need to await it. Works in secure contexts (localhost counts).
+        // don't need to await it.
+        //
+        // NOTE: the Clipboard API only works in a *secure context*. localhost
+        // counts as secure, as does any HTTPS origin, so copying works when the
+        // panel is served locally or behind a TLS reverse proxy (the expected
+        // setup when exposed to the internet). Over plain HTTP to a LAN IP the
+        // browser blocks it and this silently no-ops — an accepted limitation.
         let _ = win.navigator().clipboard().write_text(text);
     }
+}
+
+/// Last path component, for a compact folder label.
+fn basename(p: &str) -> &str {
+    let trimmed = p.trim_end_matches('/');
+    trimmed.rsplit('/').next().unwrap_or(trimmed)
+}
+
+/// Whether `file_path` lives under directory `dir`. Mirrors the daemon's
+/// prefix matching (`path == dir` or `path` starts with `dir/`). Assumes `/`
+/// separators, which holds for the Unix hosts the daemon runs on.
+fn file_under_dir(file_path: &str, dir: &str) -> bool {
+    if file_path == dir {
+        return true;
+    }
+    let prefix = if dir.ends_with('/') {
+        dir.to_string()
+    } else {
+        format!("{dir}/")
+    };
+    file_path.starts_with(&prefix)
 }
 
 fn confirm(message: &str) -> bool {
@@ -92,6 +119,9 @@ pub fn SharesTab(indexing: RwSignal<usize>) -> impl IntoView {
     let files: RwSignal<Vec<ShareFile>> = RwSignal::new(vec![]);
     let filter: RwSignal<String> = RwSignal::new(String::new());
     let add_open: RwSignal<bool> = RwSignal::new(false);
+    // When set, the file list is restricted to this directory. Toggled by
+    // clicking a folder row.
+    let selected_dir: RwSignal<Option<String>> = RwSignal::new(None);
     // root_hash of the file whose magnet was just copied (for the "Copied!" hint).
     let copied: RwSignal<Option<String>> = RwSignal::new(None);
 
@@ -137,8 +167,10 @@ pub fn SharesTab(indexing: RwSignal<usize>) -> impl IntoView {
 
     let visible_files = move || {
         let q = filter.get().to_lowercase();
+        let dir = selected_dir.get();
         files.with(|v| {
             v.iter()
+                .filter(|f| dir.as_deref().is_none_or(|d| file_under_dir(&f.path, d)))
                 .filter(|f| q.is_empty() || f.name.to_lowercase().contains(&q))
                 .cloned()
                 .collect::<Vec<_>>()
@@ -181,10 +213,28 @@ pub fn SharesTab(indexing: RwSignal<usize>) -> impl IntoView {
                             each=move || dirs.get()
                             key=|d| d.path.clone()
                             children=move |d| {
-                                let path = d.path.clone();
+                                let path_click = d.path.clone();
+                                let path_class = d.path.clone();
+                                let path_rm = d.path.clone();
                                 let protected = d.protected;
                                 view! {
-                                    <li class="share-dir-row">
+                                    <li
+                                        class=move || if selected_dir.get().as_deref() == Some(path_class.as_str()) {
+                                            "share-dir-row share-dir-selected"
+                                        } else {
+                                            "share-dir-row"
+                                        }
+                                        title="Click to show only this folder's files"
+                                        on:click=move |_| {
+                                            selected_dir.update(|cur| {
+                                                if cur.as_deref() == Some(path_click.as_str()) {
+                                                    *cur = None;
+                                                } else {
+                                                    *cur = Some(path_click.clone());
+                                                }
+                                            });
+                                        }
+                                    >
                                         <span class="share-dir-icon"><Icon paths=icons::FOLDER/></span>
                                         <div class="share-dir-main">
                                             <span class="share-dir-path">{d.path.clone()}</span>
@@ -203,13 +253,19 @@ pub fn SharesTab(indexing: RwSignal<usize>) -> impl IntoView {
                                                 <button
                                                     class="icon-btn icon-btn-danger"
                                                     title="Stop sharing this folder (files stay on disk)"
-                                                    on:click=move |_| {
-                                                        let p = path.clone();
+                                                    on:click=move |ev| {
+                                                        // Don't let the row's select toggle fire too.
+                                                        ev.stop_propagation();
+                                                        let p = path_rm.clone();
                                                         if confirm(&format!(
                                                             "Stop sharing this folder?\n{p}\n\nFiles stay on disk; re-adding will re-index them."
                                                         )) {
                                                             spawn_local(async move {
                                                                 api_remove_dir(&p).await;
+                                                                // Clear the filter if it pointed here.
+                                                                if selected_dir.get_untracked().as_deref() == Some(p.as_str()) {
+                                                                    selected_dir.set(None);
+                                                                }
                                                                 if let Some(d) = api_list_dirs().await { dirs.set(d); }
                                                                 if let Some(f) = api_list_files().await { files.set(f); }
                                                             });
@@ -229,7 +285,22 @@ pub fn SharesTab(indexing: RwSignal<usize>) -> impl IntoView {
 
                 // ── Shared files ──────────────────────────────────────────
                 <div class="share-files-header">
-                    <span class="share-section-label">"Shared files"</span>
+                    <span class="share-section-label">
+                        {move || match selected_dir.get() {
+                            Some(d) => format!("Files in {}", basename(&d)),
+                            None => "Shared files".to_string(),
+                        }}
+                    </span>
+                    {move || selected_dir.get().map(|_| view! {
+                        <button
+                            class="share-clear-filter"
+                            title="Show files from all folders"
+                            on:click=move |_| selected_dir.set(None)
+                        >
+                            <Icon paths=icons::X/>
+                            "Clear"
+                        </button>
+                    })}
                     <input
                         type="text"
                         class="dl-filter-input"

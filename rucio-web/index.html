@@ -730,9 +730,17 @@
             margin: 0.5rem 0 0.5rem;
         }
         .share-files-header {
-            display: flex; align-items: center; justify-content: space-between;
-            gap: 0.75rem; margin-top: 1.5rem;
+            display: flex; align-items: center;
+            gap: 0.5rem; margin-top: 1.5rem;
         }
+        .share-files-header .dl-filter-input { margin-left: auto; }
+        .share-clear-filter {
+            display: inline-flex; align-items: center; gap: 0.25rem;
+            padding: 0.15rem 0.5rem; font-size: 0.6875rem; font-family: inherit;
+            background: var(--row-sel); color: var(--accent);
+            border: none; border-radius: 9999px; cursor: pointer;
+        }
+        .share-clear-filter .icon { width: 0.75rem; height: 0.75rem; }
         .empty-state-sm { height: 80px; }
 
         .share-dir-list, .share-file-list {
@@ -740,8 +748,13 @@
         }
         .share-dir-row {
             display: flex; align-items: center; gap: 0.75rem;
-            padding: 0.625rem 0; border-bottom: 1px solid var(--raised);
+            padding: 0.625rem 0.5rem; border-bottom: 1px solid var(--raised);
+            cursor: pointer; border-radius: 0.25rem;
+            user-select: none; -webkit-user-select: none;
+            transition: background 0.1s;
         }
+        .share-dir-row:hover { background: var(--row-hover); }
+        .share-dir-selected { background: var(--row-sel) !important; }
         .share-dir-row:last-child { border-bottom: none; }
         .share-dir-icon { color: var(--text-3); display: inline-flex; flex-shrink: 0; }
         .share-dir-icon .icon { width: 1.125rem; height: 1.125rem; }
