@@ -1,7 +1,10 @@
 //! TOML configuration file for `rucio-bootstrap`.
 //!
-//! On first run, [`load_or_init`] writes a documented template to
-//! `~/.config/rucio-bootstrap/config.toml` (XDG config dir). CLI flags always
+//! Every field has a default, so the node runs with no config file at all —
+//! handy for server deployments driven entirely by env vars / flags. [`load`]
+//! reads the file if present and otherwise returns the built-in defaults
+//! without writing anything. [`write_template`] writes a documented example to
+//! the config path on demand (the `--init-config` flag). CLI flags always
 //! override the file; the file is the persistent default.
 
 use std::net::SocketAddr;
@@ -146,41 +149,42 @@ pub fn extra_identity_path(primary: &Path, i: usize) -> PathBuf {
 
 // ── load / init ───────────────────────────────────────────────────────────────
 
-/// Load the config from `path`, or write a documented default template there
-/// on first run.
+/// Load the config from `path`, or return the built-in defaults if the file
+/// does not exist.
 ///
-/// Returns `(config, first_run)`.  On first run the identity and database paths
-/// in the config are pre-populated with the platform default locations.
-pub fn load_or_init(path: &Path) -> Result<(Config, bool)> {
-    if path.exists() {
-        let text = std::fs::read_to_string(path)
-            .with_context(|| format!("reading config {}", path.display()))?;
-        let cfg: Config =
-            toml::from_str(&text).with_context(|| format!("parsing config {}", path.display()))?;
-        return Ok((cfg, false));
+/// Nothing is written: every field has a default (see the module docs), so a
+/// missing file is a valid "all defaults" configuration. Unresolved paths
+/// (identity, database) fall back to their platform defaults at the call site.
+pub fn load(path: &Path) -> Result<Config> {
+    if !path.exists() {
+        return Ok(Config::default());
     }
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("reading config {}", path.display()))?;
+    toml::from_str(&text).with_context(|| format!("parsing config {}", path.display()))
+}
 
-    let identity = default_identity_path();
-    let db = default_index_db_path();
-
+/// Write a documented example config template to `path`, with the identity and
+/// database fields pre-filled with the platform default locations.
+///
+/// Refuses to overwrite an existing file. Used by the `--init-config` flag so
+/// operators can opt into a config file instead of having one written silently
+/// on first run.
+pub fn write_template(path: &Path) -> Result<()> {
+    if path.exists() {
+        anyhow::bail!(
+            "config file already exists at {} — refusing to overwrite",
+            path.display()
+        );
+    }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating config dir {}", parent.display()))?;
     }
+    let identity = default_identity_path();
+    let db = default_index_db_path();
     std::fs::write(path, render_template(&identity, &db))
-        .with_context(|| format!("writing default config to {}", path.display()))?;
-
-    let cfg = Config {
-        node: NodeConfig {
-            identity: Some(identity),
-            ..NodeConfig::default()
-        },
-        indexer: IndexerConfig {
-            db: Some(db),
-            ..IndexerConfig::default()
-        },
-    };
-    Ok((cfg, true))
+        .with_context(|| format!("writing config template to {}", path.display()))
 }
 
 fn render_template(identity: &Path, db: &Path) -> String {
@@ -188,8 +192,9 @@ fn render_template(identity: &Path, db: &Path) -> String {
     let db = db.to_string_lossy();
     format!(
         r#"# rucio-bootstrap configuration
-# Written on first run — edit freely.
-# CLI flags always override these values for a single invocation.
+# Example written by `rucio-bootstrap --init-config` — edit freely.
+# Every value shown is also the built-in default, so you only need to keep the
+# lines you actually want to change. CLI flags and env vars override the file.
 
 [node]
 # Persistent Ed25519 identity (keeps the same PeerId across restarts).

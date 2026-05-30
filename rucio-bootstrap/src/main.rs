@@ -10,9 +10,10 @@
 //! from; this binary exists to be a *dedicated, stable* entry point without the
 //! overhead of serving content.
 //!
-//! On first run a documented `config.toml` is written to the XDG config dir
-//! (and an Ed25519 identity key is generated alongside it) so that subsequent
-//! restarts are fully reproducible without flags.
+//! No config file is required: every setting has a default, so the node runs
+//! from env vars / flags alone (an Ed25519 identity key is still generated and
+//! persisted so the PeerId is stable across restarts). Operators who want a
+//! config file can write a documented example with `--init-config`.
 //!
 //! This is role 1 of SPEC phase 5. Role 2 (the passive DHT indexer) is compiled
 //! in with the `indexer` feature; when built that way it runs by default and is
@@ -43,10 +44,17 @@ use rucio_net::{BehaviourConfig, NetConfig, NodeCmd, NodeEvent};
 )]
 struct Args {
     /// Path to the configuration file.  Defaults to
-    /// `$XDG_CONFIG_HOME/rucio-bootstrap/config.toml`.  On first run the file
-    /// is created automatically with documented defaults.
+    /// `$XDG_CONFIG_HOME/rucio-bootstrap/config.toml`.  Optional: if it does
+    /// not exist the built-in defaults are used (nothing is written).  Use
+    /// `--init-config` to write a documented example here.
     #[arg(long, env = "RUCIO_BOOTSTRAP_CONFIG")]
     config: Option<PathBuf>,
+
+    /// Write a documented example configuration file to the config path (the
+    /// `--config` value / `RUCIO_BOOTSTRAP_CONFIG`, else the XDG default) and
+    /// exit.  Refuses to overwrite an existing file.
+    #[arg(long)]
+    init_config: bool,
 
     /// Path to the persistent Ed25519 identity key.  Overrides `node.identity`
     /// in the config file.
@@ -118,21 +126,29 @@ async fn main() -> Result<()> {
     );
     let args = Args::parse();
 
-    // ── Load / initialise config ──────────────────────────────────────────────
+    // ── Load config (or write an example and exit) ─────────────────────────────
     let config_path = args
         .config
         .clone()
         .unwrap_or_else(config::default_config_path);
-    let (mut cfg, first_run) = config::load_or_init(&config_path)
+
+    if args.init_config {
+        config::write_template(&config_path)?;
+        println!("Wrote example config to {}", config_path.display());
+        println!("Edit it and start rucio-bootstrap, or point to it with RUCIO_BOOTSTRAP_CONFIG.");
+        return Ok(());
+    }
+
+    let mut cfg = config::load(&config_path)
         .with_context(|| format!("loading config from {}", config_path.display()))?;
 
-    if first_run {
+    if config_path.exists() {
+        info!(path = %config_path.display(), "Loaded config");
+    } else {
         info!(
             path = %config_path.display(),
-            "First run — config file created. Edit it to customise the node."
+            "No config file — using defaults (override with env vars / flags, or run --init-config to create one)"
         );
-    } else {
-        info!(path = %config_path.display(), "Loaded config");
     }
 
     // ── Merge CLI flags (CLI wins over config file) ───────────────────────────

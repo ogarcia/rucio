@@ -61,16 +61,19 @@ it in the config. See [below](#container-deployment) for a full example.
 
 ## First run
 
-On the first invocation `rucio-bootstrap` creates two files automatically:
+`rucio-bootstrap` needs no config file — every setting has a built-in default,
+so you can run it straight away and drive it with env vars or flags. The only
+file it persists is the identity key, so the Peer ID stays stable across
+restarts:
 
 | File | Default path | Purpose |
 |---|---|---|
-| `config.toml` | `~/.config/rucio-bootstrap/config.toml` | All settings, with comments |
-| `identity.key` | `~/.local/share/rucio-bootstrap/identity.key` | Ed25519 keypair (stable Peer ID) |
+| `identity.key` | `~/.local/share/rucio-bootstrap/identity.key` | Ed25519 keypair (stable Peer ID), generated on first run |
+| `config.toml` | `~/.config/rucio-bootstrap/config.toml` | Optional. Written only when you run `--init-config` (see below) |
 
 ```
 $ rucio-bootstrap
-INFO rucio_bootstrap: First run — config file created. Edit it to customise the node.
+INFO rucio_bootstrap: No config file — using defaults (override with env vars / flags, or run --init-config to create one)
   path=/home/rucio/.config/rucio-bootstrap/config.toml
 WARN rucio_net::identity: Identity file not found — generating new keypair
   path=/home/rucio/.local/share/rucio-bootstrap/identity.key
@@ -80,6 +83,10 @@ INFO rucio_bootstrap: No bootstrap peers configured — running as a seed node (
 INFO rucio_bootstrap: Ready — add one of these to a node's bootstrap_peers:
 INFO rucio_bootstrap:   /ip4/0.0.0.0/tcp/4321/p2p/12D3KooW...   (replace 0.0.0.0 with the server's public IP)
 ```
+
+> **Tip for servers:** the single most useful setting is the identity path —
+> point `RUCIO_BOOTSTRAP_IDENTITY` at a persistent location and you rarely need
+> anything else. A config file is entirely optional.
 
 Copy the full `multiaddr` printed at startup (with your server's real IP
 substituted for `0.0.0.0`) and add it to each client's `network.bootstrap_peers`:
@@ -95,8 +102,17 @@ as long as `identity.key` is not deleted.
 
 ## Configuration
 
-The config file is created automatically on first run.  Edit it with any text
-editor; the file includes comments explaining every key.
+A config file is optional — the node runs on defaults without one. When you do
+want one, write a documented template and edit it:
+
+```sh
+rucio-bootstrap --init-config
+# writes ~/.config/rucio-bootstrap/config.toml (or $RUCIO_BOOTSTRAP_CONFIG),
+# refusing to overwrite an existing file
+```
+
+Every value in the template is also the built-in default, so you only need to
+keep the lines you actually change. CLI flags and env vars override the file.
 
 ### `[node]` section
 
@@ -193,9 +209,10 @@ journalctl -u rucio-bootstrap -f
 ## Container deployment
 
 The container image runs as a non-root user (`rucio`, uid 10001) with
-`WORKDIR /var/lib/rucio` as the home directory.  On first run the config and
-identity files are created inside this directory, so **mount a named volume
-there** to persist them across container restarts:
+`WORKDIR /var/lib/rucio` as the home directory.  On first run the identity key
+is created inside this directory, so **mount a named volume there** to keep a
+stable Peer ID across container restarts (no config file is written — the node
+runs on defaults plus the env vars below):
 
 ```sh
 podman run -d \
@@ -227,6 +244,9 @@ podman run -d \
 ```
 
 ### Using a config file from the host
+
+Generate a template on the host (`rucio-bootstrap --init-config`, or write it by
+hand), then mount it read-only — the node never writes to it:
 
 ```sh
 podman run -d \
