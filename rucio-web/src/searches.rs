@@ -462,7 +462,7 @@ pub fn SearchesTab(
                             <div class="empty-state empty-searching">
                                 <span class="spinner spinner-lg"></span>
                                 <p class="searching-indicator">
-                                    {if emule_queued { "Waiting for an eMule turn…" } else { "Searching…" }}
+                                    {if emule_queued { "Waiting for an eMule search turn…" } else { "Searching…" }}
                                 </p>
                             </div>
                         }.into_any()
