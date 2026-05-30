@@ -69,19 +69,29 @@ impl EventTx {
     /// Deliver an event without blocking the swarm. Drops (and accounts) the
     /// event if the consumer's buffer is full. `async` only so existing
     /// `.emit(..).await` call sites read naturally; it never awaits the channel.
-    async fn emit(&self, ev: NodeEvent) {
-        if let Err(TrySendError::Full(_)) = self.tx.try_send(ev) {
-            let n = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
-            // Warn on each power of two so the log surfaces a growing backlog
-            // without spamming a line per dropped event.
-            if n.is_power_of_two() {
-                warn!(
-                    dropped_total = n,
-                    "Event consumer overloaded — dropping node events"
-                );
+    ///
+    /// Returns `true` if the event was queued for the consumer, `false` if it
+    /// was dropped (buffer full) or the receiver is gone. Callers that stash
+    /// state keyed to an event (e.g. a response channel) use this to avoid
+    /// leaking that state when the event never reaches the consumer.
+    async fn emit(&self, ev: NodeEvent) -> bool {
+        match self.tx.try_send(ev) {
+            Ok(()) => true,
+            Err(TrySendError::Full(_)) => {
+                let n = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
+                // Warn on each power of two so the log surfaces a growing
+                // backlog without spamming a line per dropped event.
+                if n.is_power_of_two() {
+                    warn!(
+                        dropped_total = n,
+                        "Event consumer overloaded — dropping node events"
+                    );
+                }
+                false
             }
+            // The receiver is gone; the loop exits on its own.
+            Err(TrySendError::Closed(_)) => false,
         }
-        // TrySendError::Closed: the receiver is gone; the loop exits on its own.
     }
 }
 
@@ -925,13 +935,18 @@ async fn on_transfer_event(
         } => {
             debug!(%peer, chunk_idx = request.chunk_idx, "Received chunk request");
             let channel_id = state.store_chunk_channel(channel);
-            let _ = event_tx
+            let delivered = event_tx
                 .emit(NodeEvent::ChunkRequested {
                     peer,
                     request,
                     channel_id,
                 })
                 .await;
+            if !delivered {
+                // Event dropped under overload — drop the response channel too
+                // so it doesn't linger forever (the peer's request expires).
+                state.pending_chunk_channels.remove(&channel_id);
+            }
         }
 
         request_response::Event::OutboundFailure { peer, error, .. } => {
@@ -983,13 +998,18 @@ async fn on_manifest_event(
         } => {
             debug!(%peer, root_hash = hex::encode(request.root_hash), "Received manifest request");
             let channel_id = state.store_manifest_channel(channel);
-            let _ = event_tx
+            let delivered = event_tx
                 .emit(NodeEvent::ManifestRequested {
                     peer,
                     request,
                     channel_id,
                 })
                 .await;
+            if !delivered {
+                // Event dropped under overload — drop the response channel too
+                // so it doesn't linger forever (the peer's request expires).
+                state.pending_manifest_channels.remove(&channel_id);
+            }
         }
 
         request_response::Event::OutboundFailure { peer, error, .. } => {

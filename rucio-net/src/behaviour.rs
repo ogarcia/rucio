@@ -169,6 +169,10 @@ impl RucioBehaviour {
         ));
 
         let mut kademlia_config = kad::Config::new(libp2p::StreamProtocol::new("/rucio/kad/1.0.0"));
+        // Refresh the routing table periodically so it doesn't go stale as peers
+        // churn. libp2p enables this by default, but pin it explicitly so the
+        // behaviour doesn't silently change if that default ever does.
+        kademlia_config.set_periodic_bootstrap_interval(Some(Duration::from_secs(5 * 60)));
         if cfg.capture_provider_records {
             // FilterBoth surfaces each received provider record as an event
             // (InboundRequest::AddProvider) instead of storing it silently.
