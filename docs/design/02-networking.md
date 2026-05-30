@@ -37,9 +37,12 @@ The Kademlia DHT is the backbone of internet-wide discovery.
 `kad.start_providing(key)` where `key` is the BLAKE3 hash of the file. Other
 nodes can find providers for a hash by calling `kad.get_providers(key)`.
 
-**Bootstrap** — on startup, rucio dials a set of bootstrap peers
-(`network.bootstrap_peers` in config, falling back to `BUILTIN_BOOTSTRAP_PEERS`).
-Addresses may be literal IPs or `/dns4` / `/dns6` names — the transport is built
+**Bootstrap** — on startup, rucio dials a set of bootstrap peers. By default the
+configured `network.bootstrap_peers` are **added** to `BUILTIN_BOOTSTRAP_PEERS`
+(deduplicated); setting `network.exclusive_bootstrap = true` uses only the
+configured peers and ignores the built-ins (for a separate network — not a
+privacy boundary, since anyone with a peer multiaddr can still join). Addresses
+may be literal IPs or `/dns4` / `/dns6` names — the transport is built
 `.with_dns()` so domains resolve, which lets the infrastructure survive IP
 changes. Once connected, it runs a random walk to populate its routing table.
 

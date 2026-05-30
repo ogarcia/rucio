@@ -191,9 +191,39 @@ rucio config unset network.bootstrap_peers \
   "/ip4/203.0.113.1/tcp/4321/p2p/12D3KooW..."
 ```
 
-**Default:** the built-in public bootstrap node at `208.85.21.46:4321` (both
-IPv4 and IPv6). You rarely need to change this; LAN discovery via mDNS also
-works independently.
+**Default:** empty. The peers you configure here are **added** to the built-in
+public bootstrap node (`208.85.21.46:4321`, IPv4 + IPv6) — they do not replace
+it — so a fresh node still reaches the public network out of the box. LAN
+discovery via mDNS also works independently.
+
+---
+
+### `network.exclusive_bootstrap`
+
+When `true`, the daemon bootstraps **only** from `network.bootstrap_peers` and
+ignores the built-in list entirely. **Default:** `false` (additive).
+
+Use it to run a **separate network** that doesn't touch the public one: point
+every node at your own bootstrap peer(s) and set this flag on each. In the web
+panel it's the **"Use only my bootstrap peers"** toggle in
+**Settings → Network**. Like the other network settings, it takes effect after
+a daemon restart.
+
+```toml
+[network]
+bootstrap_peers = ["/ip4/203.0.113.1/tcp/4321/p2p/12D3KooW..."]
+exclusive_bootstrap = true
+```
+
+> **Scope and privacy — read this.** `exclusive_bootstrap` is **not** a privacy
+> or security boundary. The rucio network has no membership authentication and
+> does not encrypt *who* may join; it only controls **which** bootstrap peers
+> *this* node dials. Anyone who learns one of your peers' multiaddrs — by
+> capturing a packet, reading a config file, or scanning — can bootstrap into
+> your "separate" network just by adding it to their own `bootstrap_peers`. It
+> does not hide, authenticate, or wall off anything. For a genuinely private
+> deployment, isolate it at the network layer (VPN, firewall rules, or a
+> private address range that outsiders cannot route to).
 
 ---
 
@@ -355,6 +385,7 @@ max_upload_tasks     = 64        # concurrent chunk-upload tasks
 bootstrap_peers = [
   "/ip4/203.0.113.1/tcp/4321/p2p/12D3KooWXXX...",
 ]
+exclusive_bootstrap  = false       # true = use only the peers above (separate network)
 
 [storage]
 # Paths below show Linux defaults; see the sections above for macOS paths.
