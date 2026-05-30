@@ -16,7 +16,6 @@ use tower::ServiceExt;
 
 use rucio_core::api::searches::SearchStartedResponse as SearchesStartedResponse;
 use rucio_core::api::searches::{SearchDetailResponse, SearchState};
-use rucio_core::api::shares::SharesResponse;
 use rucio_core::api::ws::WsEvent;
 
 use crate::api::{AppState, NodeStatus, SearchRegistry, router};
@@ -269,11 +268,12 @@ async fn get_shares_returns_empty_list() {
     let (state, _rx, _dl_rx, _dir) = test_state().await;
     let app = router(state);
 
+    // GET /shares lists directories; the per-file listing is /shares/files.
     let resp = app
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/api/v1/shares")
+                .uri("/api/v1/shares/files")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -561,10 +561,11 @@ async fn insert_share(
 }
 
 #[tokio::test]
-async fn get_shares_empty() {
+async fn get_shares_dirs_empty() {
     let (state, _rx, _dl_rx, _dir) = test_state().await;
     let app = router(state);
 
+    // GET /shares lists the watched directories (the unit of add/remove).
     let resp = app
         .oneshot(
             Request::builder()
@@ -577,8 +578,8 @@ async fn get_shares_empty() {
         .unwrap();
 
     assert_eq!(resp.status(), StatusCode::OK);
-    let body: SharesResponse = body_json(resp.into_body()).await;
-    assert!(body.shares.is_empty());
+    let body: rucio_core::api::shares::SharedDirsResponse = body_json(resp.into_body()).await;
+    assert!(body.dirs.is_empty());
 }
 
 #[tokio::test]
