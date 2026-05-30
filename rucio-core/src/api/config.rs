@@ -107,6 +107,10 @@ pub struct NetworkConfig {
     /// Maximum number of concurrent chunk-upload tasks.  Default: 64.
     #[serde(default = "default_max_upload_tasks")]
     pub max_upload_tasks: usize,
+    /// Use only the configured `bootstrap_peers`, ignoring the built-in list.
+    /// Default `false` (configured peers are added to the built-ins).
+    #[serde(default)]
+    pub exclusive_bootstrap: bool,
 }
 
 fn default_max_upload_tasks() -> usize {

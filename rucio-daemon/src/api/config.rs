@@ -56,6 +56,7 @@ pub async fn get_config(State(state): State<AppState>) -> Json<ConfigResponse> {
             disk.node != cfg.node
                 || disk.network.bootstrap_peers != cfg.network.bootstrap_peers
                 || disk.network.max_upload_tasks != cfg.network.max_upload_tasks
+                || disk.network.exclusive_bootstrap != cfg.network.exclusive_bootstrap
                 || disk.storage != cfg.storage
                 || disk.emule != cfg.emule
         })
@@ -94,6 +95,7 @@ fn build_snapshot(
             temp_upload_limit_kbps,
             temp_download_limit_kbps,
             max_upload_tasks: cfg.network.max_upload_tasks,
+            exclusive_bootstrap: cfg.network.exclusive_bootstrap,
         },
         storage: StorageConfig {
             download_dir: cfg.storage.download_dir.to_string_lossy().into_owned(),
@@ -163,6 +165,7 @@ pub async fn put_config(
     new_cfg.network.temp_upload_limit_kbps = c.network.temp_upload_limit_kbps;
     new_cfg.network.temp_download_limit_kbps = c.network.temp_download_limit_kbps;
     new_cfg.network.max_upload_tasks = c.network.max_upload_tasks.max(1);
+    new_cfg.network.exclusive_bootstrap = c.network.exclusive_bootstrap;
     new_cfg.storage.download_dir = c.storage.download_dir.into();
     new_cfg.storage.temp_dir = c.storage.temp_dir.into();
     new_cfg.emule.enabled = c.emule.enabled;

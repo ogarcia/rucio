@@ -79,6 +79,7 @@ pub fn ConfigModal(
     let f_boot = RwSignal::new(String::new());
     let f_listen = RwSignal::new(String::new());
     let f_tasks = RwSignal::new(String::new());
+    let f_excl_boot = RwSignal::new(false);
     // Storage fields (database_path is read-only).
     let f_st_dl = RwSignal::new(String::new());
     let f_st_tmp = RwSignal::new(String::new());
@@ -110,6 +111,7 @@ pub fn ConfigModal(
                 f_boot.set(snap.network.bootstrap_peers.join("\n"));
                 f_listen.set(snap.node.listen_addrs.join("\n"));
                 f_tasks.set(snap.network.max_upload_tasks.to_string());
+                f_excl_boot.set(snap.network.exclusive_bootstrap);
                 f_st_dl.set(snap.storage.download_dir.clone());
                 f_st_tmp.set(snap.storage.temp_dir.clone());
                 f_st_db.set(snap.storage.database_path.clone());
@@ -144,6 +146,7 @@ pub fn ConfigModal(
             .max(1);
         snap.network.bootstrap_peers = lines_to_vec(&f_boot.get_untracked());
         snap.node.listen_addrs = lines_to_vec(&f_listen.get_untracked());
+        snap.network.exclusive_bootstrap = f_excl_boot.get_untracked();
         // Storage (database_path is read-only and left as loaded).
         snap.storage.download_dir = f_st_dl.get_untracked().trim().to_string();
         snap.storage.temp_dir = f_st_tmp.get_untracked().trim().to_string();
@@ -271,6 +274,19 @@ pub fn ConfigModal(
                                         <textarea class="config-textarea" rows="3"
                                             prop:value=move || f_boot.get()
                                             on:input=move |e| f_boot.set(event_target_value(&e))/>
+                                    </div>
+                                    <div class="config-field config-field-keep">
+                                        <label class="config-label">"Use only my bootstrap peers"</label>
+                                        <span
+                                            class=move || if f_excl_boot.get() {
+                                                "toggle-pill toggle-on toggle-clickable"
+                                            } else {
+                                                "toggle-pill toggle-clickable"
+                                            }
+                                            on:click=move |_| f_excl_boot.update(|v| *v = !*v)
+                                        >
+                                            {move || if f_excl_boot.get() { "On" } else { "Off" }}
+                                        </span>
                                     </div>
                                     <div class="config-field config-field-col">
                                         <label class="config-label">"Listen addresses (one per line)"</label>

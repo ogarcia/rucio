@@ -74,6 +74,14 @@ pub struct NetworkConfig {
     /// Default: 64.  Override via `RUCIOD_MAX_UPLOAD_TASKS`.
     #[serde(default = "NetworkConfig::default_max_upload_tasks")]
     pub max_upload_tasks: usize,
+    /// Use *only* the configured `bootstrap_peers`, ignoring the built-in list.
+    ///
+    /// Default `false`: configured peers are **added** to the built-in ones.
+    /// Set `true` to bootstrap exclusively from your own peers (e.g. a separate
+    /// network). Note this is not a privacy/security boundary — anyone with one
+    /// of your peer multiaddrs can still join.
+    #[serde(default)]
+    pub exclusive_bootstrap: bool,
 }
 
 impl NetworkConfig {
@@ -100,6 +108,7 @@ impl Default for NetworkConfig {
             temp_upload_limit_kbps: Self::default_temp_limit(),
             temp_download_limit_kbps: Self::default_temp_limit(),
             max_upload_tasks: Self::default_max_upload_tasks(),
+            exclusive_bootstrap: false,
         }
     }
 }
@@ -587,21 +596,26 @@ impl Config {
 
     /// Returns the bootstrap peers to use at startup.
     ///
-    /// If the user has configured peers in `[network] bootstrap_peers` those
-    /// are used exclusively.  Otherwise the built-in fallback list is returned.
-    /// This lets operators run a fully private network by setting at least one
-    /// peer in the config, while giving out-of-the-box users automatic access
-    /// to the public network once `BUILTIN_BOOTSTRAP_PEERS` is populated.
+    /// By default the configured `[network] bootstrap_peers` are **added** to
+    /// the built-in list (deduplicated). When `network.exclusive_bootstrap` is
+    /// set, only the configured peers are used and the built-ins are ignored —
+    /// useful for a separate network. With neither configured peers nor the
+    /// exclusive flag, the built-in list is returned as the fallback.
     pub fn effective_bootstrap_peers(&self) -> Vec<&str> {
-        if !self.network.bootstrap_peers.is_empty() {
-            self.network
-                .bootstrap_peers
-                .iter()
-                .map(String::as_str)
-                .collect()
-        } else {
-            BUILTIN_BOOTSTRAP_PEERS.to_vec()
+        let mut peers: Vec<&str> = self
+            .network
+            .bootstrap_peers
+            .iter()
+            .map(String::as_str)
+            .collect();
+        if !self.network.exclusive_bootstrap {
+            for b in BUILTIN_BOOTSTRAP_PEERS {
+                if !peers.contains(b) {
+                    peers.push(b);
+                }
+            }
         }
+        peers
     }
 
     /// Persist the current configuration to disk.
@@ -665,6 +679,38 @@ mod tests {
         cfg.apply_env_overrides();
         unsafe { std::env::remove_var("RUCIOD_API_LISTEN") };
         assert_eq!(cfg.api.listen, "0.0.0.0:8080");
+    }
+
+    #[test]
+    fn effective_bootstrap_is_additive_by_default() {
+        let mut cfg = Config::default();
+        let mine = "/ip4/1.2.3.4/tcp/4321/p2p/12D3KooWmine";
+        cfg.network.bootstrap_peers = vec![mine.to_string()];
+        let peers = cfg.effective_bootstrap_peers();
+        // Configured peer plus all the built-ins.
+        assert!(peers.contains(&mine));
+        assert_eq!(peers.len(), 1 + BUILTIN_BOOTSTRAP_PEERS.len());
+        for b in BUILTIN_BOOTSTRAP_PEERS {
+            assert!(peers.contains(b));
+        }
+    }
+
+    #[test]
+    fn effective_bootstrap_exclusive_ignores_builtin() {
+        let mut cfg = Config::default();
+        let mine = "/ip4/1.2.3.4/tcp/4321/p2p/12D3KooWmine";
+        cfg.network.bootstrap_peers = vec![mine.to_string()];
+        cfg.network.exclusive_bootstrap = true;
+        assert_eq!(cfg.effective_bootstrap_peers(), vec![mine]);
+    }
+
+    #[test]
+    fn effective_bootstrap_dedups_builtin() {
+        let mut cfg = Config::default();
+        // Configuring a peer that is also built-in must not duplicate it.
+        cfg.network.bootstrap_peers = vec![BUILTIN_BOOTSTRAP_PEERS[0].to_string()];
+        let peers = cfg.effective_bootstrap_peers();
+        assert_eq!(peers.len(), BUILTIN_BOOTSTRAP_PEERS.len());
     }
 
     #[test]

@@ -311,6 +311,8 @@ pub struct NetworkConfig {
     pub temp_download_limit_kbps: u64,
     #[serde(default)]
     pub max_upload_tasks: usize,
+    #[serde(default)]
+    pub exclusive_bootstrap: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
