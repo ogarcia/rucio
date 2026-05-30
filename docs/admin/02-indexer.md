@@ -58,6 +58,24 @@ does not exist and the node is always a plain bootstrap.
 | `enrich` | `true` | Contact announcing peers to resolve file name and size. Disable with `false` or `--no-enrich` to index hashes only. |
 | `identity_count` | `0` | Number of **additional** Kademlia identities to spawn. See [Multi-identity](#multi-identity). |
 
+#### Generating an API token
+
+The token is a static bearer secret with no expiry — anyone holding it can call
+the admin endpoints. Use a long, random value (don't pick a memorable string):
+
+```sh
+openssl rand -hex 32        # 64 hex chars (256 bits) — recommended
+openssl rand -base64 24     # shorter, still 192 bits of entropy
+# no openssl handy?
+head -c 32 /dev/urandom | base64
+```
+
+Prefer passing it through the `RUCIO_BOOTSTRAP_API_TOKEN` environment variable
+(or a secrets manager) over writing it into `config.toml`, so it never lands in
+a file or backup in clear text. To rotate it, set a new value and restart the
+node. Treat the admin API as private regardless: keep `api_listen` on a trusted
+network rather than the public internet.
+
 ### Full example
 
 ```toml
