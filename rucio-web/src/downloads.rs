@@ -41,17 +41,6 @@ enum FilterState {
 }
 
 impl FilterState {
-    fn label(self) -> &'static str {
-        match self {
-            FilterState::All => "All",
-            FilterState::Active => "Active",
-            FilterState::Downloading => "Downloading",
-            FilterState::Paused => "Paused",
-            FilterState::Completed => "Completed",
-            FilterState::History => "History",
-        }
-    }
-
     fn matches(self, s: &DownloadState) -> bool {
         match self {
             FilterState::All => true,

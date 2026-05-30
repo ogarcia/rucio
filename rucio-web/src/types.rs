@@ -134,17 +134,11 @@ pub struct DownloadDetailResponse {
     pub state: DownloadState,
     pub error: Option<String>,
     pub dest_path: Option<String>,
-    pub added_at: i64,
-    pub updated_at: i64,
     pub link: Option<String>,
-    pub pieces_done: Option<u64>,
-    pub pieces_total: Option<u64>,
     #[serde(default)]
     pub sources_total: Option<u32>,
     #[serde(default)]
     pub sources_active: Option<u32>,
-    #[serde(default)]
-    pub pieces_in_flight: Option<u32>,
     #[serde(default)]
     pub speed_bps: Option<u64>,
     #[serde(default)]
@@ -154,8 +148,6 @@ pub struct DownloadDetailResponse {
 /// GET /api/v1/downloads/{id}/pieces — per-piece state for a block bar.
 #[derive(Deserialize, Clone, Debug)]
 pub struct DownloadPiecesResponse {
-    pub id: i64,
-    pub kind: String,
     pub pieces_total: u64,
     /// base64 LSB-first bitmap, 1 bit/piece, set when done.
     pub done_bitmap: String,
@@ -261,8 +253,6 @@ pub struct TempLimitStatus {
     pub active: bool,
     pub upload_kbps: u64,
     pub download_kbps: u64,
-    pub effective_upload_kbps: u64,
-    pub effective_download_kbps: u64,
 }
 
 #[derive(Serialize)]
@@ -400,8 +390,6 @@ pub struct SearchResult {
 
 #[derive(Deserialize, Clone, Debug)]
 pub struct SearchDetailResponse {
-    pub id: u64,
-    pub keywords: Vec<String>,
     pub state: SearchState,
     pub results: Vec<SearchResult>,
     #[serde(default)]
@@ -450,10 +438,14 @@ pub enum WsEvent {
         #[serde(default)]
         emule_queued: bool,
     },
+    // peer_id is part of the WS payload but the client only keeps a count, so
+    // it isn't read — kept so the event still deserializes.
     PeerConnected {
+        #[allow(dead_code)]
         peer_id: String,
     },
     PeerDisconnected {
+        #[allow(dead_code)]
         peer_id: String,
     },
     NodeClassChanged {
