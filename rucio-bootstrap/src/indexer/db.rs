@@ -56,45 +56,7 @@ pub async fn open(path: &Path) -> Result<Db> {
             .await
             .context("applying index schema")?;
     }
-    migrate_name_norm(&pool).await?;
     Ok(pool)
-}
-
-/// Additive migration for accent-insensitive search: ensure `files.name_norm`
-/// exists (older databases predate it) and backfill any rows missing it.
-///
-/// `CREATE TABLE IF NOT EXISTS` does not add columns to an existing table, so a
-/// database created before this column needs an explicit `ALTER TABLE`. The
-/// pre-stable policy is otherwise "no migrations", but this one is cheap and
-/// avoids forcing operators to drop a populated index.
-async fn migrate_name_norm(pool: &Db) -> Result<()> {
-    let columns: Vec<String> = sqlx::query_scalar("SELECT name FROM pragma_table_info('files')")
-        .fetch_all(pool)
-        .await
-        .context("inspecting files columns")?;
-    if !columns.iter().any(|c| c == "name_norm") {
-        sqlx::query("ALTER TABLE files ADD COLUMN name_norm TEXT")
-            .execute(pool)
-            .await
-            .context("adding files.name_norm column")?;
-    }
-
-    // Backfill rows that have no normalized name yet (freshly migrated, or
-    // written before normalization existed).
-    let rows: Vec<(String, String)> =
-        sqlx::query_as("SELECT hash, name FROM files WHERE name_norm IS NULL")
-            .fetch_all(pool)
-            .await
-            .context("reading rows to backfill")?;
-    for (hash, name) in rows {
-        sqlx::query("UPDATE files SET name_norm = ?1 WHERE hash = ?2")
-            .bind(normalize_search_term(&name))
-            .bind(hash)
-            .execute(pool)
-            .await
-            .context("backfilling name_norm")?;
-    }
-    Ok(())
 }
 
 fn now() -> i64 {
@@ -376,27 +338,6 @@ mod tests {
         assert_eq!(
             hashes(&search(&db, "año dragon", 50, 0).await.unwrap()),
             vec!["e0e0"]
-        );
-    }
-
-    #[tokio::test]
-    async fn migration_backfills_existing_rows() {
-        let db = mem_db().await;
-        // Simulate a pre-migration row: name present, name_norm NULL.
-        upsert(&db, "aaaa", "12D3KooWp").await.unwrap();
-        sqlx::query("INSERT INTO files (hash, name, size, indexed_at) VALUES ('aaaa', 'Canción.mp3', 10, 0)")
-            .execute(&db)
-            .await
-            .unwrap();
-        // Not yet searchable by folded term.
-        assert!(search(&db, "cancion", 50, 0).await.unwrap().is_empty());
-
-        migrate_name_norm(&db).await.unwrap();
-
-        // After backfill the folded search finds it.
-        assert_eq!(
-            hashes(&search(&db, "cancion", 50, 0).await.unwrap()),
-            vec!["aaaa"]
         );
     }
 
