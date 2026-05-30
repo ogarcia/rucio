@@ -24,13 +24,14 @@ page. Each release ships a `rucio-<version>-<target>.tar.gz` per target:
 | macOS Intel | `rucio-<version>-x86_64-apple-darwin.tar.gz` |
 | macOS Apple Silicon | `rucio-<version>-aarch64-apple-darwin.tar.gz` |
 
-Unpack it and place the binary on your PATH:
+Each archive contains the `rucio` binary plus a `ruciod` symlink to it (the
+name that triggers daemon mode). Unpack it and place both on your PATH:
 
 ```sh
 # Linux x86_64 example — adjust the filename for your platform
 tar -xzf rucio-*-x86_64-unknown-linux-musl.tar.gz
 install -m755 rucio /usr/local/bin/rucio
-ln -s /usr/local/bin/rucio /usr/local/bin/ruciod
+cp -P ruciod /usr/local/bin/ruciod   # relative symlink -> rucio
 ```
 
 The release binary is the complete client — daemon, CLI, embedded web panel and

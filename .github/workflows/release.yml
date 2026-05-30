@@ -91,9 +91,13 @@ jobs:
       - name: Package
         shell: bash
         run: |
-          BINARY=target/${{ matrix.target }}/release/rucio
+          BINDIR=target/${{ matrix.target }}/release
           ARCHIVE=rucio-${{ github.ref_name }}-${{ matrix.target }}.tar.gz
-          tar -czf "$ARCHIVE" -C "$(dirname "$BINARY")" "$(basename "$BINARY")"
+          # `ruciod` is the daemon entrypoint: the same binary invoked under that
+          # name. Ship it as a relative symlink next to the binary so extracting
+          # the archive yields both commands (tar stores the link, not a copy).
+          ln -sf rucio "$BINDIR/ruciod"
+          tar -czf "$ARCHIVE" -C "$BINDIR" rucio ruciod
           echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
 
       - name: Upload artifact
