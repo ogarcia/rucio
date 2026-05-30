@@ -404,6 +404,10 @@
         }
         /* ── Configuration modal ─────────────────────────────────────────── */
         .modal-config { width: 560px; }
+        .modal-config .modal-body { max-height: 60vh; overflow-y: auto; }
+        .config-input:disabled, .config-textarea:disabled {
+            opacity: 0.5; cursor: not-allowed;
+        }
         .config-tabs {
             display: flex; gap: 0.25rem;
             padding: 0 1.25rem; border-bottom: 1px solid var(--border);

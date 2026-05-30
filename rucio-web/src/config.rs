@@ -2,7 +2,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 use crate::icons::{self, Icon};
-use crate::types::{ConfigResponse, ConfigSnapshot};
+use crate::types::{ConfigResponse, ConfigSnapshot, EmuleStatusResponse};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ConfigTab {
@@ -26,6 +26,16 @@ async fn api_put_config(body: &ConfigResponse) -> bool {
         Ok(req) => req.send().await.map(|r| r.ok()).unwrap_or(false),
         Err(_) => false,
     }
+}
+
+async fn api_emule_status() -> Option<EmuleStatusResponse> {
+    gloo_net::http::Request::get("/api/v1/emule/status")
+        .send()
+        .await
+        .ok()?
+        .json::<EmuleStatusResponse>()
+        .await
+        .ok()
 }
 
 fn parse_kbps(s: &str) -> u64 {
@@ -53,13 +63,15 @@ pub fn ConfigModal(
 ) -> impl IntoView {
     let tab = RwSignal::new(ConfigTab::Network);
     // The on-disk snapshot we edit (pending if any, else current). Kept whole so
-    // a save preserves sections this phase doesn't expose yet.
+    // a save preserves sections this modal doesn't expose.
     let base: RwSignal<Option<ConfigSnapshot>> = RwSignal::new(None);
     let has_pending = RwSignal::new(false);
     let saving = RwSignal::new(false);
     let loaded = RwSignal::new(false);
+    // Whether the daemon was built with eMule support; gates the eMule tab.
+    let emule_available = RwSignal::new(false);
 
-    // Network field bindings (text inputs).
+    // Network fields.
     let f_dl = RwSignal::new(String::new());
     let f_ul = RwSignal::new(String::new());
     let f_tdl = RwSignal::new(String::new());
@@ -67,10 +79,26 @@ pub fn ConfigModal(
     let f_boot = RwSignal::new(String::new());
     let f_listen = RwSignal::new(String::new());
     let f_tasks = RwSignal::new(String::new());
+    // Storage fields (database_path is read-only).
+    let f_st_dl = RwSignal::new(String::new());
+    let f_st_tmp = RwSignal::new(String::new());
+    let f_st_db = RwSignal::new(String::new());
+    // eMule fields.
+    let f_em_enabled = RwSignal::new(false);
+    let f_em_udp = RwSignal::new(String::new());
+    let f_em_tcp = RwSignal::new(String::new());
+    let f_em_extip = RwSignal::new(String::new());
+    let f_em_temp = RwSignal::new(String::new());
+    let f_em_slots = RwSignal::new(String::new());
+    let f_em_upslots = RwSignal::new(String::new());
+    let f_em_maxconc = RwSignal::new(String::new());
 
     // Load once on open.
     Effect::new(move |_| {
         spawn_local(async move {
+            if let Some(st) = api_emule_status().await {
+                emule_available.set(st.feature_enabled);
+            }
             if let Some(resp) = api_get_config().await {
                 has_pending.set(resp.pending.is_some());
                 // Edit the on-disk state so we don't clobber pending changes.
@@ -82,6 +110,17 @@ pub fn ConfigModal(
                 f_boot.set(snap.network.bootstrap_peers.join("\n"));
                 f_listen.set(snap.node.listen_addrs.join("\n"));
                 f_tasks.set(snap.network.max_upload_tasks.to_string());
+                f_st_dl.set(snap.storage.download_dir.clone());
+                f_st_tmp.set(snap.storage.temp_dir.clone());
+                f_st_db.set(snap.storage.database_path.clone());
+                f_em_enabled.set(snap.emule.enabled);
+                f_em_udp.set(snap.emule.udp_port.to_string());
+                f_em_tcp.set(snap.emule.tcp_port.to_string());
+                f_em_extip.set(snap.emule.external_ip.clone().unwrap_or_default());
+                f_em_temp.set(snap.emule.temp_dir.clone());
+                f_em_slots.set(snap.emule.download_slots_per_file.to_string());
+                f_em_upslots.set(snap.emule.max_upload_slots.to_string());
+                f_em_maxconc.set(snap.emule.max_concurrent_downloads.to_string());
                 base.set(Some(snap));
                 loaded.set(true);
             }
@@ -92,6 +131,7 @@ pub fn ConfigModal(
         let Some(mut snap) = base.get_untracked() else {
             return;
         };
+        // Network.
         snap.network.download_limit_kbps = parse_kbps(&f_dl.get_untracked());
         snap.network.upload_limit_kbps = parse_kbps(&f_ul.get_untracked());
         snap.network.temp_download_limit_kbps = parse_kbps(&f_tdl.get_untracked());
@@ -104,8 +144,31 @@ pub fn ConfigModal(
             .max(1);
         snap.network.bootstrap_peers = lines_to_vec(&f_boot.get_untracked());
         snap.node.listen_addrs = lines_to_vec(&f_listen.get_untracked());
+        // Storage (database_path is read-only and left as loaded).
+        snap.storage.download_dir = f_st_dl.get_untracked().trim().to_string();
+        snap.storage.temp_dir = f_st_tmp.get_untracked().trim().to_string();
+        // eMule. Numeric fields keep their previous value if left blank/invalid.
+        snap.emule.enabled = f_em_enabled.get_untracked();
+        if let Ok(p) = f_em_udp.get_untracked().trim().parse() {
+            snap.emule.udp_port = p;
+        }
+        if let Ok(p) = f_em_tcp.get_untracked().trim().parse() {
+            snap.emule.tcp_port = p;
+        }
+        let ext = f_em_extip.get_untracked().trim().to_string();
+        snap.emule.external_ip = (!ext.is_empty()).then_some(ext);
+        snap.emule.temp_dir = f_em_temp.get_untracked().trim().to_string();
+        if let Ok(n) = f_em_slots.get_untracked().trim().parse::<usize>() {
+            snap.emule.download_slots_per_file = n.clamp(1, 50);
+        }
+        if let Ok(n) = f_em_upslots.get_untracked().trim().parse::<usize>() {
+            snap.emule.max_upload_slots = n.clamp(1, 50);
+        }
+        if let Ok(n) = f_em_maxconc.get_untracked().trim().parse::<usize>() {
+            snap.emule.max_concurrent_downloads = n.clamp(1, 50);
+        }
 
-        // Capture the limits to mirror into the menu's quick-settings signals.
+        // Mirror the limits into the menu's quick-settings signals.
         let (dl, ul, tdl, tul) = (
             snap.network.download_limit_kbps,
             snap.network.upload_limit_kbps,
@@ -137,6 +200,9 @@ pub fn ConfigModal(
             "config-tab"
         }
     };
+    // eMule fields are read-only until eMule is enabled (the toggle itself stays
+    // editable so you can turn it on).
+    let em_locked = move || !f_em_enabled.get();
 
     view! {
         <div class="modal-backdrop" on:click=move |_| on_close()>
@@ -153,8 +219,10 @@ pub fn ConfigModal(
                         on:click=move |_| tab.set(ConfigTab::Network)>"Network"</button>
                     <button class=move || tab_class(ConfigTab::Storage)
                         on:click=move |_| tab.set(ConfigTab::Storage)>"Storage"</button>
-                    <button class=move || tab_class(ConfigTab::Emule)
-                        on:click=move |_| tab.set(ConfigTab::Emule)>"eMule"</button>
+                    <Show when=move || emule_available.get() fallback=|| ()>
+                        <button class=move || tab_class(ConfigTab::Emule)
+                            on:click=move |_| tab.set(ConfigTab::Emule)>"eMule"</button>
+                    </Show>
                 </div>
 
                 <div class="modal-body">
@@ -219,10 +287,91 @@ pub fn ConfigModal(
                                 </div>
                             }.into_any(),
                             ConfigTab::Storage => view! {
-                                <div class="empty-state empty-state-sm"><p>"Storage settings — coming soon"</p></div>
+                                <div class="config-section">
+                                    <p class="config-hint">"Directories apply after a daemon restart."</p>
+                                    <div class="config-field config-field-col">
+                                        <label class="config-label">"Download directory"</label>
+                                        <input class="config-input" type="text"
+                                            prop:value=move || f_st_dl.get()
+                                            on:input=move |e| f_st_dl.set(event_target_value(&e))/>
+                                    </div>
+                                    <div class="config-field config-field-col">
+                                        <label class="config-label">"Temp directory"</label>
+                                        <input class="config-input" type="text"
+                                            prop:value=move || f_st_tmp.get()
+                                            on:input=move |e| f_st_tmp.set(event_target_value(&e))/>
+                                    </div>
+                                    <div class="config-field config-field-col">
+                                        <label class="config-label">"Database path (read-only)"</label>
+                                        <input class="config-input" type="text" disabled=true
+                                            prop:value=move || f_st_db.get()/>
+                                    </div>
+                                </div>
                             }.into_any(),
                             ConfigTab::Emule => view! {
-                                <div class="empty-state empty-state-sm"><p>"eMule settings — coming soon"</p></div>
+                                <div class="config-section">
+                                    <div class="config-field">
+                                        <label class="config-label">"eMule enabled"</label>
+                                        <button
+                                            class=move || if f_em_enabled.get() { "toggle-pill toggle-on" } else { "toggle-pill" }
+                                            on:click=move |_| f_em_enabled.update(|v| *v = !*v)
+                                        >
+                                            {move || if f_em_enabled.get() { "On" } else { "Off" }}
+                                        </button>
+                                    </div>
+                                    <p class="config-hint">
+                                        "Changes apply after a daemon restart. The fields below are read-only until eMule is enabled."
+                                    </p>
+                                    <div class="config-field">
+                                        <label class="config-label">"TCP port"</label>
+                                        <input class="config-input config-input-sm" type="text"
+                                            disabled=em_locked
+                                            prop:value=move || f_em_tcp.get()
+                                            on:input=move |e| f_em_tcp.set(event_target_value(&e))/>
+                                    </div>
+                                    <div class="config-field">
+                                        <label class="config-label">"UDP port (Kad2)"</label>
+                                        <input class="config-input config-input-sm" type="text"
+                                            disabled=em_locked
+                                            prop:value=move || f_em_udp.get()
+                                            on:input=move |e| f_em_udp.set(event_target_value(&e))/>
+                                    </div>
+                                    <div class="config-field">
+                                        <label class="config-label">"External IP (blank = auto)"</label>
+                                        <input class="config-input" type="text"
+                                            disabled=em_locked
+                                            prop:value=move || f_em_extip.get()
+                                            on:input=move |e| f_em_extip.set(event_target_value(&e))/>
+                                    </div>
+                                    <div class="config-field config-field-col">
+                                        <label class="config-label">"Temp directory"</label>
+                                        <input class="config-input" type="text"
+                                            disabled=em_locked
+                                            prop:value=move || f_em_temp.get()
+                                            on:input=move |e| f_em_temp.set(event_target_value(&e))/>
+                                    </div>
+                                    <div class="config-field">
+                                        <label class="config-label">"Download slots per file"</label>
+                                        <input class="config-input config-input-sm" type="text"
+                                            disabled=em_locked
+                                            prop:value=move || f_em_slots.get()
+                                            on:input=move |e| f_em_slots.set(event_target_value(&e))/>
+                                    </div>
+                                    <div class="config-field">
+                                        <label class="config-label">"Max upload slots"</label>
+                                        <input class="config-input config-input-sm" type="text"
+                                            disabled=em_locked
+                                            prop:value=move || f_em_upslots.get()
+                                            on:input=move |e| f_em_upslots.set(event_target_value(&e))/>
+                                    </div>
+                                    <div class="config-field">
+                                        <label class="config-label">"Max concurrent downloads"</label>
+                                        <input class="config-input config-input-sm" type="text"
+                                            disabled=em_locked
+                                            prop:value=move || f_em_maxconc.get()
+                                            on:input=move |e| f_em_maxconc.set(event_target_value(&e))/>
+                                    </div>
+                                </div>
                             }.into_any(),
                         }
                     }}
