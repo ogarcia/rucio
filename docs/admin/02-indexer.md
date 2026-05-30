@@ -107,17 +107,27 @@ Public endpoint.  Returns HTTP 200 with basic status information.
 
 ### `GET /api/v1/search`
 
-Public endpoint.  Search the index by hash hex prefix **or** file name
-substring (case-insensitive).  Returns the most recently announced results first.
+Public endpoint.  Returns the most recently announced results first.
+
+The query `q` is matched two ways:
+
+- as a hex **prefix** of the content hash (a single whitespace-free token);
+- against the indexed **file name**, split into whitespace-separated terms that
+  must *all* appear as case-insensitive substrings. Word separators in the name
+  (dots, dashes, underscores) don't matter, so `ghost in the shell` matches
+  `Ghost.in.the.Shell.ARISE...`.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `q` | string | `""` | Search query. Empty string returns all records. |
-| `limit` | integer | `20` | Maximum results per page. |
+| `q` | string | `""` | Search query (empty returns all records). |
+| `limit` | integer | `50` | Maximum results per page (clamped to 1–500). |
 | `offset` | integer | `0` | Pagination offset. |
 
 ```sh
-# Search by name
+# Multi-word name search (all terms must match)
+curl "http://localhost:3003/api/v1/search?q=ghost+in+the+shell"
+
+# Single word
 curl "http://localhost:3003/api/v1/search?q=ubuntu"
 
 # Search by hash prefix

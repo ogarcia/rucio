@@ -98,11 +98,30 @@ pub struct HashRow {
     pub last_seen: i64,
 }
 
-/// Hashes matching `query` — either by hash hex prefix or, once enriched, by
-/// file-name substring. An empty `query` matches everything. Most recently
-/// announced first.
+/// Escape the LIKE metacharacters (`%`, `_`, and the escape char itself) in a
+/// user term so it is matched literally. Pair with `ESCAPE '\'` in the query.
+fn like_escape(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
+/// Hashes matching `query`, most recently announced first.
+///
+/// The query is matched two ways:
+///
+/// * **Hash prefix** — a single whitespace-free token is also tried as a hex
+///   prefix of the content hash.
+/// * **File name** — the query is split on whitespace into terms, and a record
+///   matches only if *every* term occurs (case-insensitive substring) in the
+///   enriched file name. So `ghost in the shell` matches
+///   `Ghost.in.the.Shell.ARISE...` even though the words are dot-separated.
+///
+/// An empty `query` matches everything (used by the list endpoint).
 pub async fn search(db: &Db, query: &str, limit: i64, offset: i64) -> Result<Vec<HashRow>> {
-    let rows = sqlx::query_as::<_, HashRow>(
+    let terms: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+
+    let mut qb = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
         "SELECT pr.hash            AS hash,
                 f.name             AS name,
                 f.size             AS size,
@@ -110,19 +129,35 @@ pub async fn search(db: &Db, query: &str, limit: i64, offset: i64) -> Result<Vec
                 MIN(pr.first_seen) AS first_seen,
                 MAX(pr.last_seen)  AS last_seen
          FROM provider_records pr
-         LEFT JOIN files f ON f.hash = pr.hash
-         WHERE pr.hash LIKE ?1 || '%'
-            OR (f.name IS NOT NULL AND f.name LIKE '%' || ?2 || '%')
-         GROUP BY pr.hash
-         ORDER BY last_seen DESC
-         LIMIT ?3 OFFSET ?4",
-    )
-    .bind(query.to_lowercase())
-    .bind(query)
-    .bind(limit)
-    .bind(offset)
-    .fetch_all(db)
-    .await?;
+         LEFT JOIN files f ON f.hash = pr.hash",
+    );
+
+    if !terms.is_empty() {
+        qb.push(" WHERE (");
+
+        // Hash-prefix match only makes sense for a single, whitespace-free term.
+        if terms.len() == 1 {
+            qb.push("pr.hash LIKE ");
+            qb.push_bind(format!("{}%", like_escape(&terms[0])));
+            qb.push(" ESCAPE '\\' OR ");
+        }
+
+        // File-name match: AND over every term as a case-insensitive substring.
+        qb.push("(f.name IS NOT NULL");
+        for term in &terms {
+            qb.push(" AND LOWER(f.name) LIKE ");
+            qb.push_bind(format!("%{}%", like_escape(term)));
+            qb.push(" ESCAPE '\\'");
+        }
+        qb.push("))");
+    }
+
+    qb.push(" GROUP BY pr.hash ORDER BY last_seen DESC LIMIT ");
+    qb.push_bind(limit);
+    qb.push(" OFFSET ");
+    qb.push_bind(offset);
+
+    let rows = qb.build_query_as::<HashRow>().fetch_all(db).await?;
     Ok(rows)
 }
 
@@ -188,4 +223,88 @@ pub async fn prune(db: &Db, retention_days: i64) -> Result<u64> {
         .execute(db)
         .await?;
     Ok(res.rows_affected())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    /// In-memory DB on a single connection (so the schema persists for the
+    /// lifetime of the pool).
+    async fn mem_db() -> Db {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for stmt in SCHEMA.split(';').map(str::trim).filter(|s| !s.is_empty()) {
+            sqlx::query(stmt).execute(&pool).await.unwrap();
+        }
+        pool
+    }
+
+    /// Insert one enriched hash with a provider and a file name.
+    async fn insert(db: &Db, hash: &str, name: &str) {
+        upsert(db, hash, "12D3KooWprovider").await.unwrap();
+        upsert_file(db, hash, name, 1234).await.unwrap();
+    }
+
+    fn hashes(rows: &[HashRow]) -> Vec<&str> {
+        rows.iter().map(|r| r.hash.as_str()).collect()
+    }
+
+    #[tokio::test]
+    async fn multi_word_query_matches_separator_delimited_name() {
+        let db = mem_db().await;
+        insert(
+            &db,
+            "5040a9f7e363afc4",
+            "Ghost.in.the.Shell.ARISE.Border.04.BDRip.1080p.mkv",
+        )
+        .await;
+        insert(&db, "deadbeefdeadbeef", "Some.Other.Movie.1080p.mkv").await;
+
+        // Single word (the case that already worked).
+        let r = search(&db, "ghost", 50, 0).await.unwrap();
+        assert_eq!(hashes(&r), vec!["5040a9f7e363afc4"]);
+
+        // Multi-word query across dot separators — the reported bug.
+        let r = search(&db, "ghost in the shell", 50, 0).await.unwrap();
+        assert_eq!(hashes(&r), vec!["5040a9f7e363afc4"]);
+
+        // Case-insensitive and order-independent.
+        let r = search(&db, "SHELL ghost", 50, 0).await.unwrap();
+        assert_eq!(hashes(&r), vec!["5040a9f7e363afc4"]);
+
+        // A term that is absent excludes the record (AND semantics).
+        let r = search(&db, "ghost batman", 50, 0).await.unwrap();
+        assert!(r.is_empty());
+    }
+
+    #[tokio::test]
+    async fn hash_prefix_and_empty_query() {
+        let db = mem_db().await;
+        insert(&db, "5040a9f7e363afc4", "Ghost.in.the.Shell.mkv").await;
+        insert(&db, "deadbeefdeadbeef", "Other.mkv").await;
+
+        // Single token is also tried as a hash prefix.
+        let r = search(&db, "5040a9f7", 50, 0).await.unwrap();
+        assert_eq!(hashes(&r), vec!["5040a9f7e363afc4"]);
+
+        // Empty query returns everything.
+        let r = search(&db, "", 50, 0).await.unwrap();
+        assert_eq!(r.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn like_wildcards_are_matched_literally() {
+        let db = mem_db().await;
+        insert(&db, "aaaa", "50%.discount.flyer.pdf").await;
+        insert(&db, "bbbb", "5012.report.pdf").await;
+
+        // `%` must not act as a wildcard: only the literal "50%" name matches.
+        let r = search(&db, "50%", 50, 0).await.unwrap();
+        assert_eq!(hashes(&r), vec!["aaaa"]);
+    }
 }
