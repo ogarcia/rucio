@@ -74,6 +74,7 @@ Pre-built images are published to `ghcr.io/ogarcia/rucio`.
 |---|---|---|
 | `latest` / `0.1.x` | Complete: `rucio` (daemon + CLI) + embedded web panel + eMule | **Default.** Desktop and single-host servers |
 | `latest-headless` / `0.1.x-headless` | `ruciod` daemon only — no web, no CLI | Servers/VPS controlled via the API, smallest footprint |
+| `latest-cli` / `0.1.x-cli` | Standalone `rucio-cli` only — no daemon | Driving a remote daemon from another host/CI |
 | `latest-bootstrap` / `0.1.x-bootstrap` | `rucio-bootstrap` with indexer | Dedicated DHT bootstrap node |
 
 > `latest` is the full client — if you came from an earlier tag where `latest`
@@ -110,6 +111,21 @@ docker run -d --name ruciod \
   -p 4321:4321/tcp \
   ghcr.io/ogarcia/rucio:latest-headless
 ```
+
+### Standalone CLI (drive a remote daemon)
+
+A tiny image with just the `rucio-cli` client — no daemon, no libp2p. Point it
+at a daemon's REST API with `RUCIO_API` and append any CLI command:
+
+```sh
+docker run --rm \
+  -e RUCIO_API=http://daemon-host:3003 \
+  ghcr.io/ogarcia/rucio:latest-cli \
+  download list
+```
+
+The entrypoint is the CLI itself, so everything after the image name is passed
+straight through (`download list`, `search add "query"`, `node status`, …).
 
 ### Volume ownership (UID / GID)
 

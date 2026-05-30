@@ -12,6 +12,11 @@
 #                 Daemon only (`ruciod`), no web panel, no CLI. Smallest
 #                 footprint, for servers/VPS controlled via the API.
 #
+#   cli        →  tag "master-cli" / "0.1.0-cli" / "latest-cli"
+#                 Standalone `rucio-cli` client only (no daemon, no libp2p) —
+#                 a tiny image to drive a remote daemon over its REST API.
+#                 Point it at the daemon with RUCIO_API.
+#
 #   bootstrap  →  tag "master-bootstrap" / "0.1.0-bootstrap" / "latest-bootstrap"
 #                 rucio-bootstrap compiled with --features indexer: a stable DHT
 #                 entry point plus the passive DHT indexer (REST search API).
@@ -20,11 +25,13 @@
 # Local build (compiles from source):
 #   podman build --target complete   -t rucio:dev            .
 #   podman build --target headless   -t rucio:dev-headless   .
+#   podman build --target cli        -t rucio:dev-cli        .
 #   podman build --target bootstrap  -t rucio-bootstrap:dev  .
 #
 # CI build (binaries pre-compiled and placed in dist/):
 #   podman build --target complete   --build-arg BUILDER=prebuilt .
 #   podman build --target headless   --build-arg BUILDER=prebuilt .
+#   podman build --target cli        --build-arg BUILDER=prebuilt .
 #   podman build --target bootstrap  --build-arg BUILDER=prebuilt .
 #
 # Environment variables (runtime):
@@ -71,10 +78,13 @@ RUN cd rucio-web && trunk build --release
 
 # First pass (no web-ui): the headless daemon and the bootstrap binary.
 # Second pass recompiles only the fat `rucio` with the embedded web panel.
+# The first pass builds the workspace default-members, which already includes
+# the standalone rucio-cli — just copy it out alongside the daemon binaries.
 RUN cargo build --release --locked --features emule-compat,indexer && \
     cp target/release/ruciod          /usr/bin/ruciod          && \
     cp target/release/rucio-bootstrap /usr/bin/rucio-bootstrap && \
-    strip /usr/bin/ruciod /usr/bin/rucio-bootstrap && \
+    cp target/release/rucio-cli       /usr/bin/rucio-cli       && \
+    strip /usr/bin/ruciod /usr/bin/rucio-bootstrap /usr/bin/rucio-cli && \
     # complete: fat binary with eMule + embedded web panel (incremental)
     cargo build --release --locked -p rucio --features emule-compat,web-ui && \
     cp target/release/rucio /usr/bin/rucio && \
@@ -85,6 +95,7 @@ RUN cargo build --release --locked --features emule-compat,indexer && \
 FROM scratch AS prebuilt
 COPY --chmod=0755 dist/ruciod          /usr/bin/ruciod
 COPY --chmod=0755 dist/rucio           /usr/bin/rucio
+COPY --chmod=0755 dist/rucio-cli       /usr/bin/rucio-cli
 COPY --chmod=0755 dist/rucio-bootstrap /usr/bin/rucio-bootstrap
 
 # ── Stage 1c: indirection — points to 'builder' or 'prebuilt' via build arg ──
@@ -145,7 +156,21 @@ EXPOSE 4672/udp
 
 ENTRYPOINT ["/usr/bin/ruciod"]
 
-# ── Stage 4: runtime – bootstrap node (tag: …-bootstrap) ─────────────────────
+# ── Stage 4: runtime – standalone CLI client (tag: …-cli) ────────────────────
+
+FROM docker.io/alpine:3.23 AS cli
+
+RUN apk add --no-cache ca-certificates
+
+# Installed as `rucio` so usage matches the docs: `docker run …:latest-cli …`.
+COPY --from=bins /usr/bin/rucio-cli /usr/bin/rucio
+
+# Target a remote daemon by overriding this (or pass --api on each command).
+ENV RUCIO_API=http://127.0.0.1:3003
+
+ENTRYPOINT ["/usr/bin/rucio"]
+
+# ── Stage 5: runtime – bootstrap node (tag: …-bootstrap) ─────────────────────
 
 FROM docker.io/alpine:3.23 AS bootstrap
 

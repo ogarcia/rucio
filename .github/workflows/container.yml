@@ -58,15 +58,17 @@ jobs:
       - name: Build Leptos frontend
         run: cd rucio-web && trunk build --release
 
-      # Headless daemon (ruciod) and bootstrap — no web panel.
-      - name: Build (headless + bootstrap, no web-ui)
+      # Headless daemon (ruciod), bootstrap and the standalone CLI — no web
+      # panel. rucio-cli is a workspace default-member, built by this command.
+      - name: Build (headless + bootstrap + cli, no web-ui)
         run: |
           cargo build --release --locked --target x86_64-unknown-linux-musl \
             --features emule-compat,indexer
           mkdir dist
           cp target/x86_64-unknown-linux-musl/release/ruciod          dist/
           cp target/x86_64-unknown-linux-musl/release/rucio-bootstrap dist/
-          strip dist/ruciod dist/rucio-bootstrap
+          cp target/x86_64-unknown-linux-musl/release/rucio-cli       dist/
+          strip dist/ruciod dist/rucio-bootstrap dist/rucio-cli
 
       # Recompile only the fat `rucio` with the embedded web panel — this is the
       # `complete`/latest image. Incremental over the build above.
@@ -186,6 +188,58 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=headless
           cache-to: type=gha,mode=max,scope=headless
+
+  # ── cli image (tag: master-cli / 0.1.0-cli / latest-cli) ──────────────────
+  image-cli:
+    name: Build cli image
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: binaries
+          path: dist/
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch,suffix=-cli
+            type=ref,event=pr,suffix=-cli
+            type=semver,pattern={{version}},suffix=-cli
+            type=semver,pattern={{major}}.{{minor}},suffix=-cli
+            type=raw,value=latest-cli,enable=${{ startsWith(github.ref, 'refs/tags/') }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Containerfile
+          target: cli
+          build-args: BUILDER=prebuilt
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=cli
+          cache-to: type=gha,mode=max,scope=cli
 
   # ── bootstrap image (tag: master-bootstrap / 0.1.0-bootstrap / latest-bootstrap)
   image-bootstrap:
