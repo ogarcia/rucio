@@ -263,7 +263,7 @@ podman run -d \
   -e RUCIO_BOOTSTRAP_API_LISTEN=0.0.0.0:3003 \
   -e RUCIO_BOOTSTRAP_API_TOKEN=changeme \
   -v rucio-bootstrap-data:/var/lib/rucio \
-  ghcr.io/YOUR_ORG/rucio:latest-bootstrap
+  ghcr.io/ogarcia/rucio:latest-bootstrap
 ```
 
 The `latest-bootstrap` image runs the indexer by default — no flag needed.

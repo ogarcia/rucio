@@ -39,7 +39,7 @@ ln -s /usr/local/bin/rucio /usr/local/bin/ruciod
 Requires Rust 1.85 or later (uses the 2024 edition).
 
 ```sh
-git clone https://github.com/anomalyco/rucio
+git clone https://github.com/ogarcia/rucio
 cd rucio
 cargo build --release
 install -m755 target/release/rucio /usr/local/bin/rucio

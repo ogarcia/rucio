@@ -436,7 +436,7 @@ docker run \
   -e RUCIOD_UPNP=false \
   -v rucio-data:/data \
   -p 3003:3003 -p 4321:4321 \
-  ghcr.io/yourorg/rucio
+  ghcr.io/ogarcia/rucio
 ```
 
 With eMule/Kad2 support:
@@ -452,7 +452,7 @@ docker run \
   -e RUCIOD_UPNP=false \
   -v rucio-data:/data \
   -p 3003:3003 -p 4321:4321 -p 40067:40067/tcp -p 40066:40066/udp \
-  ghcr.io/yourorg/rucio
+  ghcr.io/ogarcia/rucio
 ```
 
 > **Note:** `-p 40066:40066` without a `/udp` suffix maps **both TCP and UDP**

@@ -19,7 +19,7 @@ Download the pre-compiled binary for your platform from the
 
 ```sh
 # Linux x86_64 example — adjust the filename for your platform
-curl -Lo rucio https://github.com/anomalyco/rucio/releases/latest/download/rucio-linux-x86_64
+curl -Lo rucio https://github.com/ogarcia/rucio/releases/latest/download/rucio-linux-x86_64
 install -m755 rucio /usr/local/bin/rucio
 ln -s /usr/local/bin/rucio /usr/local/bin/ruciod
 ```
@@ -35,7 +35,7 @@ rucio --version
 ### Standard build
 
 ```sh
-git clone https://github.com/anomalyco/rucio
+git clone https://github.com/ogarcia/rucio
 cd rucio
 cargo build --release
 install -m755 target/release/rucio /usr/local/bin/rucio
@@ -68,7 +68,7 @@ daemon mode — see [Architecture](../design/01-architecture.md) for details.
 
 ## Option C — Container image
 
-Pre-built images are published to `ghcr.io/anomalyco/rucio`.
+Pre-built images are published to `ghcr.io/ogarcia/rucio`.
 
 | Tag | Contents | Typical use |
 |---|---|---|
@@ -83,7 +83,7 @@ Pre-built images are published to `ghcr.io/anomalyco/rucio`.
 docker run -d --name ruciod \
   -v rucio-data:/var/lib/rucio \
   -p 4321:4321/tcp \
-  ghcr.io/anomalyco/rucio:latest
+  ghcr.io/ogarcia/rucio:latest
 ```
 
 ### With web control panel
@@ -96,7 +96,7 @@ docker run -d --name ruciod \
   -p 4321:4321/tcp \
   -p 3003:3003/tcp \
   -p 4672:4672/udp \
-  ghcr.io/anomalyco/rucio:latest-web
+  ghcr.io/ogarcia/rucio:latest-web
 ```
 
 Open `http://<host>:3003/` in a browser to access the panel.  The REST API
@@ -113,7 +113,7 @@ docker run -d --name ruciod \
   -p 3003:3003/tcp \
   -p 4662:4662/tcp \
   -p 4672:4672/udp \
-  ghcr.io/anomalyco/rucio:latest-full
+  ghcr.io/ogarcia/rucio:latest-full
 ```
 
 ### Volume ownership (UID / GID)

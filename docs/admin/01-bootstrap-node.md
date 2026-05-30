@@ -34,7 +34,7 @@ becomes valuable when you want:
 
 ```sh
 # Download the latest release binary
-curl -L https://github.com/YOUR_ORG/rucio/releases/latest/download/rucio-bootstrap \
+curl -L https://github.com/ogarcia/rucio/releases/latest/download/rucio-bootstrap \
      -o /usr/local/bin/rucio-bootstrap
 chmod +x /usr/local/bin/rucio-bootstrap
 ```
@@ -50,7 +50,7 @@ cargo install --path rucio-bootstrap --features indexer --locked
 ### Container image
 
 ```sh
-podman pull ghcr.io/YOUR_ORG/rucio:latest-bootstrap
+podman pull ghcr.io/ogarcia/rucio:latest-bootstrap
 ```
 
 The `latest-bootstrap` image is compiled with `--features indexer` so the
@@ -151,7 +151,7 @@ Create `/etc/systemd/system/rucio-bootstrap.service`:
 ```ini
 [Unit]
 Description=Rucio DHT bootstrap node
-Documentation=https://github.com/YOUR_ORG/rucio/blob/master/docs/admin/01-bootstrap-node.md
+Documentation=https://github.com/ogarcia/rucio/blob/master/docs/admin/01-bootstrap-node.md
 After=network-online.target
 Wants=network-online.target
 
@@ -203,7 +203,7 @@ podman run -d \
   --restart unless-stopped \
   -p 4321:4321 \
   -v rucio-bootstrap-data:/var/lib/rucio \
-  ghcr.io/YOUR_ORG/rucio:latest-bootstrap
+  ghcr.io/ogarcia/rucio:latest-bootstrap
 ```
 
 The Peer ID printed on first run is stable as long as the volume is
@@ -223,7 +223,7 @@ podman run -d \
   -e RUCIO_BOOTSTRAP_PEERS="/ip4/203.0.113.1/tcp/4321/p2p/12D3KooW..." \
   -e RUCIO_BOOTSTRAP_LOG=debug \
   -v rucio-bootstrap-data:/var/lib/rucio \
-  ghcr.io/YOUR_ORG/rucio:latest-bootstrap
+  ghcr.io/ogarcia/rucio:latest-bootstrap
 ```
 
 ### Using a config file from the host
@@ -236,7 +236,7 @@ podman run -d \
   -e RUCIO_BOOTSTRAP_CONFIG=/config/config.toml \
   -v /etc/rucio-bootstrap:/config:ro \
   -v rucio-bootstrap-data:/var/lib/rucio \
-  ghcr.io/YOUR_ORG/rucio:latest-bootstrap
+  ghcr.io/ogarcia/rucio:latest-bootstrap
 ```
 
 > The container image already includes the `indexer` feature compiled in.
