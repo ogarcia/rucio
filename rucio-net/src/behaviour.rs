@@ -9,7 +9,8 @@
 
 use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::{
-    dcutr, gossipsub, identify, kad, mdns, relay, request_response, swarm::NetworkBehaviour,
+    connection_limits, dcutr, gossipsub, identify, kad, mdns, relay, request_response,
+    swarm::NetworkBehaviour,
 };
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -124,6 +125,10 @@ impl BehaviourConfig {
 /// The combined network behaviour.
 #[derive(NetworkBehaviour)]
 pub struct RucioBehaviour {
+    /// Guards against connection-count abuse (per-peer and pending-inbound
+    /// caps). Emits no events. Listed first so its limit checks run before the
+    /// other behaviours accept a connection.
+    pub connection_limits: connection_limits::Behaviour,
     pub identify: identify::Behaviour,
     pub kademlia: kad::Behaviour<kad::store::MemoryStore>,
     pub mdns: Toggle<mdns::tokio::Behaviour>,
@@ -148,6 +153,16 @@ impl RucioBehaviour {
         relay_client: relay::client::Behaviour,
         cfg: BehaviourConfig,
     ) -> anyhow::Result<Self> {
+        // Cap connection-count abuse without throttling a bootstrap node's
+        // legitimate fan-in: limit how many connections a single peer may hold
+        // and how many inbound handshakes can be in flight at once, but leave
+        // the total number of established connections unbounded.
+        let connection_limits = connection_limits::Behaviour::new(
+            connection_limits::ConnectionLimits::default()
+                .with_max_established_per_peer(Some(8))
+                .with_max_pending_incoming(Some(128)),
+        );
+
         let identify = identify::Behaviour::new(identify::Config::new(
             "/rucio/1.0.0".to_string(),
             keypair.public(),
@@ -208,6 +223,7 @@ impl RucioBehaviour {
         let dcutr = cfg.dcutr.then(|| dcutr::Behaviour::new(peer_id));
 
         Ok(Self {
+            connection_limits,
             identify,
             kademlia,
             mdns: Toggle::from(mdns),

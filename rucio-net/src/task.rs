@@ -18,8 +18,10 @@ use rucio_core::protocol::{
     transfer::{ChunkRequest, ChunkResponse},
 };
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::TrySendError;
 use tracing::{debug, info, warn};
 
 use crate::NetConfig;
@@ -34,7 +36,54 @@ use super::{
 };
 
 const CMD_BUFFER: usize = 64;
-const EVENT_BUFFER: usize = 256;
+const EVENT_BUFFER: usize = 1024;
+/// Cap on the gossipsub retry backlog held while no mesh peer is subscribed.
+/// Without a bound, a node that searches before any peer joins would grow this
+/// queue indefinitely; oldest entries are dropped past this many.
+const MAX_PENDING_PUBLISHES: usize = 256;
+
+/// Event sender that never blocks the swarm reactor on a slow consumer.
+///
+/// The node task delivers events from the same `select!` loop that drives the
+/// swarm. If we awaited a bounded `send()` and the consumer fell behind, the
+/// full buffer would suspend that loop — and with it all network I/O (pings,
+/// keepalive, Kademlia, gossipsub), eventually dropping every connection. So we
+/// deliver with `try_send` instead: if the buffer is full the event is dropped
+/// (counted, and warned periodically) rather than stalling the node. This is
+/// safe for our event set — provider records are re-announced, searches and
+/// transfers are retried — and a stalled-but-alive node is far worse than a few
+/// dropped events under sustained overload.
+struct EventTx {
+    tx: mpsc::Sender<NodeEvent>,
+    dropped: AtomicU64,
+}
+
+impl EventTx {
+    fn new(tx: mpsc::Sender<NodeEvent>) -> Self {
+        Self {
+            tx,
+            dropped: AtomicU64::new(0),
+        }
+    }
+
+    /// Deliver an event without blocking the swarm. Drops (and accounts) the
+    /// event if the consumer's buffer is full. `async` only so existing
+    /// `.emit(..).await` call sites read naturally; it never awaits the channel.
+    async fn emit(&self, ev: NodeEvent) {
+        if let Err(TrySendError::Full(_)) = self.tx.try_send(ev) {
+            let n = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
+            // Warn on each power of two so the log surfaces a growing backlog
+            // without spamming a line per dropped event.
+            if n.is_power_of_two() {
+                warn!(
+                    dropped_total = n,
+                    "Event consumer overloaded — dropping node events"
+                );
+            }
+        }
+        // TrySendError::Closed: the receiver is gone; the loop exits on its own.
+    }
+}
 
 /// How long to keep a connection with no active streams before closing it.
 /// libp2p defaults this to zero (immediate close); we hold connections so the
@@ -134,7 +183,7 @@ pub async fn spawn(cfg: &NetConfig) -> Result<NodeHandle> {
         }
     }
 
-    tokio::spawn(run_loop(swarm, peer_id, cmd_rx, event_tx));
+    tokio::spawn(run_loop(swarm, peer_id, cmd_rx, EventTx::new(event_tx)));
 
     Ok(NodeHandle { cmd_tx, event_rx })
 }
@@ -218,7 +267,7 @@ async fn run_loop(
     mut swarm: libp2p::Swarm<RucioBehaviour>,
     peer_id: PeerId,
     mut cmd_rx: mpsc::Receiver<NodeCmd>,
-    event_tx: mpsc::Sender<NodeEvent>,
+    event_tx: EventTx,
 ) {
     let topic_query = IdentTopic::new(TOPIC_SEARCH);
     let topic_result = IdentTopic::new(TOPIC_SEARCH_RESULT);
@@ -372,6 +421,12 @@ fn publish_json<T: serde::Serialize>(
                 Ok(_) => debug!("Published {label}"),
                 Err(gossipsub::PublishError::NoPeersSubscribedToTopic) => {
                     debug!("No mesh peers yet for {label} — queued for retry");
+                    // Bound the retry backlog: on a node with no mesh peers yet
+                    // this would otherwise grow without limit. Drop the oldest.
+                    if pending.len() >= MAX_PENDING_PUBLISHES {
+                        pending.remove(0);
+                        debug!("Pending-publish queue full — dropped oldest entry");
+                    }
                     pending.push((topic.clone(), bytes, label.to_string()));
                 }
                 Err(e) => warn!("Could not publish {label}: {e}"),
@@ -387,7 +442,7 @@ fn publish_json<T: serde::Serialize>(
 
 async fn on_swarm_event(
     event: SwarmEvent<RucioBehaviourEvent>,
-    event_tx: &mpsc::Sender<NodeEvent>,
+    event_tx: &EventTx,
     state: &mut LoopState,
     peer_id: PeerId,
     swarm: &mut libp2p::Swarm<RucioBehaviour>,
@@ -399,13 +454,13 @@ async fn on_swarm_event(
             if !state.ready_sent {
                 state.ready_sent = true;
                 let _ = event_tx
-                    .send(NodeEvent::Ready {
+                    .emit(NodeEvent::Ready {
                         peer_id,
                         listen_addrs: state.confirmed_addrs.iter().cloned().collect(),
                     })
                     .await;
             } else {
-                let _ = event_tx.send(NodeEvent::ListenAddrAdded(address)).await;
+                let _ = event_tx.emit(NodeEvent::ListenAddrAdded(address)).await;
             }
         }
         SwarmEvent::ListenerClosed {
@@ -414,7 +469,7 @@ async fn on_swarm_event(
             warn!(?addresses, ?reason, "Listener closed");
             for a in &addresses {
                 state.confirmed_addrs.remove(a);
-                let _ = event_tx.send(NodeEvent::ListenAddrRemoved(a.clone())).await;
+                let _ = event_tx.emit(NodeEvent::ListenAddrRemoved(a.clone())).await;
             }
         }
         SwarmEvent::ConnectionEstablished { peer_id: pid, .. } => {
@@ -440,7 +495,7 @@ async fn on_swarm_event(
                 }
             }
             let _ = event_tx
-                .send(NodeEvent::PeerConnected { peer_id: pid })
+                .emit(NodeEvent::PeerConnected { peer_id: pid })
                 .await;
         }
         SwarmEvent::ConnectionClosed {
@@ -453,7 +508,7 @@ async fn on_swarm_event(
                 gossipsub.remove_explicit_peer(&pid);
             }
             let _ = event_tx
-                .send(NodeEvent::PeerDisconnected { peer_id: pid })
+                .emit(NodeEvent::PeerDisconnected { peer_id: pid })
                 .await;
         }
         SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
@@ -519,7 +574,7 @@ async fn on_swarm_event(
                                 debug!(%pid, "mDNS dial skipped or failed: {e}");
                             }
                             let _ = event_tx
-                                .send(NodeEvent::PeerDiscovered {
+                                .emit(NodeEvent::PeerDiscovered {
                                     peer_id: pid,
                                     addrs,
                                 })
@@ -531,7 +586,7 @@ async fn on_swarm_event(
                         for (pid, _) in peers {
                             if seen.insert(pid) {
                                 let _ =
-                                    event_tx.send(NodeEvent::PeerExpired { peer_id: pid }).await;
+                                    event_tx.emit(NodeEvent::PeerExpired { peer_id: pid }).await;
                             }
                         }
                     }
@@ -550,7 +605,7 @@ async fn on_swarm_event(
                             && let Some(key) = state.provider_queries.get(&id)
                         {
                             let _ = event_tx
-                                .send(NodeEvent::ProvidersFound {
+                                .emit(NodeEvent::ProvidersFound {
                                     key: key.clone(),
                                     providers: providers.into_iter().collect(),
                                 })
@@ -590,7 +645,7 @@ async fn on_swarm_event(
                             debug!(?e, "Could not store captured provider record");
                         }
                         let _ = event_tx
-                            .send(NodeEvent::ProviderRecord {
+                            .emit(NodeEvent::ProviderRecord {
                                 key,
                                 provider,
                                 addresses,
@@ -632,7 +687,7 @@ async fn on_swarm_event(
                                     &mut state.relay_reserved,
                                 );
                             }
-                            let _ = event_tx.send(NodeEvent::ClassChanged(new_class)).await;
+                            let _ = event_tx.emit(NodeEvent::ClassChanged(new_class)).await;
                         }
 
                         // Only surface addresses that are reachable from the internet
@@ -641,7 +696,7 @@ async fn on_swarm_event(
                         // not stable inbound addresses.
                         if is_stable_external_addr(&observed, &listen_vec) {
                             let _ = event_tx
-                                .send(NodeEvent::ObservedAddr {
+                                .emit(NodeEvent::ObservedAddr {
                                     addr: observed,
                                     reported_by: pid,
                                 })
@@ -683,7 +738,7 @@ async fn on_swarm_event(
                         // `rucio peers` shows multiaddrs for all connected
                         // peers, not just those found via mDNS.
                         let _ = event_tx
-                            .send(NodeEvent::PeerDiscovered {
+                            .emit(NodeEvent::PeerDiscovered {
                                 peer_id: pid,
                                 addrs: info.listen_addrs,
                             })
@@ -784,6 +839,8 @@ async fn on_swarm_event(
                     debug!(peer = %dcutr_event.remote_peer_id, "DCUtR hole punch failed — relay connection maintained");
                 }
             }
+            // connection_limits emits no events of its own.
+            RucioBehaviourEvent::ConnectionLimits(_) => {}
         },
 
         _ => {}
@@ -794,7 +851,7 @@ async fn on_swarm_event(
 // Gossipsub handler
 // ---------------------------------------------------------------------------
 
-async fn on_gossipsub_event(event: gossipsub::Event, event_tx: &mpsc::Sender<NodeEvent>) {
+async fn on_gossipsub_event(event: gossipsub::Event, event_tx: &EventTx) {
     match event {
         gossipsub::Event::Message { message, .. } => {
             let topic_str = message.topic.as_str();
@@ -803,7 +860,7 @@ async fn on_gossipsub_event(event: gossipsub::Event, event_tx: &mpsc::Sender<Nod
                 match serde_json::from_slice::<SearchQuery>(&message.data) {
                     Ok(query) => {
                         debug!(id = %query.id, keywords = ?query.keywords, "Received search query");
-                        let _ = event_tx.send(NodeEvent::SearchQueryReceived(query)).await;
+                        let _ = event_tx.emit(NodeEvent::SearchQueryReceived(query)).await;
                     }
                     Err(e) => warn!("Failed to decode search query: {e}"),
                 }
@@ -811,7 +868,7 @@ async fn on_gossipsub_event(event: gossipsub::Event, event_tx: &mpsc::Sender<Nod
                 match serde_json::from_slice::<SearchResult>(&message.data) {
                     Ok(result) => {
                         debug!(qid = %result.query_id, "Received search result from {}", result.provider);
-                        let _ = event_tx.send(NodeEvent::SearchResult(result)).await;
+                        let _ = event_tx.emit(NodeEvent::SearchResult(result)).await;
                     }
                     Err(e) => warn!("Failed to decode search result: {e}"),
                 }
@@ -833,7 +890,7 @@ async fn on_gossipsub_event(event: gossipsub::Event, event_tx: &mpsc::Sender<Nod
 
 async fn on_transfer_event(
     event: request_response::Event<ChunkRequest, ChunkResponse>,
-    event_tx: &mpsc::Sender<NodeEvent>,
+    event_tx: &EventTx,
     state: &mut LoopState,
 ) {
     match event {
@@ -849,7 +906,7 @@ async fn on_transfer_event(
         } => {
             debug!(%peer, "Received chunk response");
             let _ = event_tx
-                .send(NodeEvent::ChunkReceived {
+                .emit(NodeEvent::ChunkReceived {
                     request_id,
                     peer,
                     response,
@@ -869,7 +926,7 @@ async fn on_transfer_event(
             debug!(%peer, chunk_idx = request.chunk_idx, "Received chunk request");
             let channel_id = state.store_chunk_channel(channel);
             let _ = event_tx
-                .send(NodeEvent::ChunkRequested {
+                .emit(NodeEvent::ChunkRequested {
                     peer,
                     request,
                     channel_id,
@@ -893,7 +950,7 @@ async fn on_transfer_event(
 
 async fn on_manifest_event(
     event: request_response::Event<ManifestRequest, ManifestResponse>,
-    event_tx: &mpsc::Sender<NodeEvent>,
+    event_tx: &EventTx,
     state: &mut LoopState,
 ) {
     match event {
@@ -908,7 +965,7 @@ async fn on_manifest_event(
         } => {
             debug!(%peer, "Received manifest response");
             let _ = event_tx
-                .send(NodeEvent::ManifestReceived {
+                .emit(NodeEvent::ManifestReceived {
                     request_id,
                     peer,
                     response,
@@ -927,7 +984,7 @@ async fn on_manifest_event(
             debug!(%peer, root_hash = hex::encode(request.root_hash), "Received manifest request");
             let channel_id = state.store_manifest_channel(channel);
             let _ = event_tx
-                .send(NodeEvent::ManifestRequested {
+                .emit(NodeEvent::ManifestRequested {
                     peer,
                     request,
                     channel_id,
