@@ -42,7 +42,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: ${{ matrix.target }},wasm32-unknown-unknown
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -54,13 +54,25 @@ jobs:
         with:
           tool: cross
 
+      - name: Install trunk
+        uses: taiki-e/install-action@v2
+        with:
+          tool: trunk
+
+      # The release binary is the complete client (web panel embedded via the
+      # web-ui feature / rust-embed), matching the `latest` container image, so
+      # the frontend is built first. trunk runs on the host; for the cross
+      # target it then compiles the binary, reading the dist/ trunk produced.
+      - name: Build frontend
+        run: cd rucio-web && trunk build --release
+
       - name: Build (cross)
         if: matrix.use_cross
-        run: cross build --release --target ${{ matrix.target }} --bin rucio --features emule-compat
+        run: cross build --release --target ${{ matrix.target }} --bin rucio --features emule-compat,web-ui
 
       - name: Build (cargo)
         if: ${{ !matrix.use_cross }}
-        run: cargo build --release --target ${{ matrix.target }} --bin rucio --features emule-compat
+        run: cargo build --release --target ${{ matrix.target }} --bin rucio --features emule-compat,web-ui
 
       - name: Package
         shell: bash
