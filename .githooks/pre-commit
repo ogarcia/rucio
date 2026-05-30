@@ -3,8 +3,14 @@
 # or fails clippy. `cargo test` is intentionally NOT run here —
 # tests are CI's job; the hook keeps the local feedback loop fast.
 #
+# Covers both the native workspace (default-members) and the wasm frontend
+# (rucio-web), which is excluded from default-members and so needs its own
+# clippy pass against the wasm target.
+#
 # Activate once per clone:
 #   git config core.hooksPath .githooks
+# Requires the wasm target once:
+#   rustup target add wasm32-unknown-unknown   # (or the distro's rust-wasm)
 
 set -euo pipefail
 
@@ -17,5 +23,11 @@ fi
 if ! cargo clippy --all-targets --all-features -- -D warnings; then
     echo
     echo "✗ clippy reported warnings. Fix them before committing." >&2
+    exit 1
+fi
+
+if ! cargo clippy -p rucio-web --target wasm32-unknown-unknown -- -D warnings; then
+    echo
+    echo "✗ clippy (rucio-web / wasm) reported warnings. Fix them before committing." >&2
     exit 1
 fi

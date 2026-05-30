@@ -185,10 +185,10 @@ impl DownloadPiecesResponse {
             });
         }
         for &idx in &self.in_flight {
-            if let Some(s) = states.get_mut(idx as usize) {
-                if *s != PieceState::Done {
-                    *s = PieceState::InFlight;
-                }
+            if let Some(s) = states.get_mut(idx as usize)
+                && *s != PieceState::Done
+            {
+                *s = PieceState::InFlight;
             }
         }
         states

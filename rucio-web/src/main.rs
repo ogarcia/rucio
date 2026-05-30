@@ -252,13 +252,13 @@ fn start_ws_loop(
                                 if !connected {
                                     ws_connected.set(true);
                                 }
-                                if let Ok(Message::Text(text)) = msg {
-                                    if let Ok(event) = serde_json::from_str::<WsEvent>(&text) {
-                                        handle_event(
-                                            event, downloads, status, dl_speed, ul_speed, search,
-                                            indexing,
-                                        );
-                                    }
+                                if let Ok(Message::Text(text)) = msg
+                                    && let Ok(event) = serde_json::from_str::<WsEvent>(&text)
+                                {
+                                    handle_event(
+                                        event, downloads, status, dl_speed, ul_speed, search,
+                                        indexing,
+                                    );
                                 }
                             }
                             // Stream closed (Left(None)) or the deadline elapsed
@@ -471,10 +471,10 @@ fn App() -> impl IntoView {
 
     // Initial data fetch.
     spawn_local(async move {
-        if let Ok(r) = gloo_net::http::Request::get("/api/v1/status").send().await {
-            if let Ok(s) = r.json::<StatusResponse>().await {
-                status.set(Some(s));
-            }
+        if let Ok(r) = gloo_net::http::Request::get("/api/v1/status").send().await
+            && let Ok(s) = r.json::<StatusResponse>().await
+        {
+            status.set(Some(s));
         }
         if let Ok(r) = gloo_net::http::Request::get("/api/v1/config/temp-limit")
             .send()

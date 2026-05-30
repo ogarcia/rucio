@@ -106,12 +106,10 @@ pub async fn refresh_downloads(downloads: RwSignal<Vec<DownloadResponse>>) {
     if let Ok(resp) = gloo_net::http::Request::get("/api/v1/downloads")
         .send()
         .await
+        && let Ok(body) = resp.json::<crate::types::DownloadsResponse>().await
+        && downloads.with_untracked(|cur| cur != &body.downloads)
     {
-        if let Ok(body) = resp.json::<crate::types::DownloadsResponse>().await {
-            if downloads.with_untracked(|cur| cur != &body.downloads) {
-                downloads.set(body.downloads);
-            }
-        }
+        downloads.set(body.downloads);
     }
 }
 
@@ -972,7 +970,7 @@ fn PieceMap(id: i64) -> impl IntoView {
                 {move || {
                     let st = states.get();
                     let total = st.len();
-                    let n = total.min(MAX_SEGMENTS).max(1);
+                    let n = total.clamp(1, MAX_SEGMENTS);
                     (0..n)
                         .map(|seg| {
                             let start = seg * total / n;

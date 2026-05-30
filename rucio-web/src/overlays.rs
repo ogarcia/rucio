@@ -157,12 +157,11 @@ pub fn StatsPanel(active_panel: RwSignal<Option<super::Panel>>) -> impl IntoView
             if !alive.load(Ordering::Relaxed) {
                 break;
             }
-            if let Ok(resp) = gloo_net::http::Request::get("/api/v1/metrics").send().await {
-                if let Ok(m) = resp.json::<MetricsResponse>().await {
-                    if alive.load(Ordering::Relaxed) {
-                        metrics.set(Some(m));
-                    }
-                }
+            if let Ok(resp) = gloo_net::http::Request::get("/api/v1/metrics").send().await
+                && let Ok(m) = resp.json::<MetricsResponse>().await
+                && alive.load(Ordering::Relaxed)
+            {
+                metrics.set(Some(m));
             }
             if !alive.load(Ordering::Relaxed) {
                 break;
