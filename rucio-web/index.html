@@ -242,7 +242,8 @@
             color: var(--text); cursor: pointer;
             font-size: 0.8125rem; font-family: inherit; transition: background 0.1s;
         }
-        .dropdown-item:hover { background: var(--border); }
+        .dropdown-item:hover:not(:disabled) { background: var(--border); }
+        .dropdown-item:disabled { opacity: 0.4; cursor: default; }
         .dropdown-sep { height: 1px; background: var(--border); margin: 0.25rem 0; }
         /* Toggle row: label left, state pill right. */
         .dropdown-toggle {

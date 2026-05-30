@@ -66,7 +66,10 @@ use gloo_timers::future::sleep;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use downloads::{DownloadsTab, clear_history, pause_all, refresh_downloads, resume_all};
+use downloads::{
+    DownloadsTab, any_pausable, any_paused, any_terminal, clear_history, pause_all,
+    refresh_downloads, resume_all,
+};
 use overlays::{AddressesPanel, NodeStatusPanel, StatsPanel};
 use searches::SearchesTab;
 use shares::SharesTab;
@@ -675,15 +678,26 @@ fn App() -> impl IntoView {
                             // ── Actions (bulk operations on all downloads) ─
                             <div class="menu-section">
                                 <div class="menu-section-title">"Actions"</div>
-                                <button class="dropdown-item" on:click=move |_| {
-                                    menu_open.set(false);
-                                    spawn_local(pause_all(downloads));
-                                }>"Pause all"</button>
-                                <button class="dropdown-item" on:click=move |_| {
-                                    menu_open.set(false);
-                                    spawn_local(resume_all(downloads));
-                                }>"Resume all"</button>
-                                <button class="dropdown-item" on:click=move |_| {
+                                <button
+                                    class="dropdown-item"
+                                    disabled=move || !downloads.with(|v| any_pausable(v))
+                                    on:click=move |_| {
+                                        menu_open.set(false);
+                                        spawn_local(pause_all(downloads));
+                                    }
+                                >"Pause all"</button>
+                                <button
+                                    class="dropdown-item"
+                                    disabled=move || !downloads.with(|v| any_paused(v))
+                                    on:click=move |_| {
+                                        menu_open.set(false);
+                                        spawn_local(resume_all(downloads));
+                                    }
+                                >"Resume all"</button>
+                                <button
+                                    class="dropdown-item"
+                                    disabled=move || !downloads.with(|v| any_terminal(v))
+                                    on:click=move |_| {
                                     // Destructive (removes finished rows): confirm first.
                                     let ok = web_sys::window()
                                         .and_then(|w| w.confirm_with_message(

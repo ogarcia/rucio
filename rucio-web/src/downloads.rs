@@ -194,6 +194,23 @@ pub async fn clear_history(downloads: RwSignal<Vec<DownloadResponse>>) {
     refresh_downloads(downloads).await;
 }
 
+// Predicates for enabling/disabling the bulk menu actions.
+
+/// True if any download can be paused (active/non-terminal).
+pub fn any_pausable(list: &[DownloadResponse]) -> bool {
+    list.iter().any(|d| is_pausable(&d.state))
+}
+
+/// True if any download is currently paused (and could be resumed).
+pub fn any_paused(list: &[DownloadResponse]) -> bool {
+    list.iter().any(|d| d.state == DownloadState::Paused)
+}
+
+/// True if any finished download exists (and could be cleared from history).
+pub fn any_terminal(list: &[DownloadResponse]) -> bool {
+    list.iter().any(|d| is_terminal(&d.state))
+}
+
 async fn api_fetch_detail(id: i64) -> Option<DownloadDetailResponse> {
     gloo_net::http::Request::get(&format!("/api/v1/downloads/{id}"))
         .send()
