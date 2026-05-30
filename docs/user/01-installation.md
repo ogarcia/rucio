@@ -72,40 +72,20 @@ Pre-built images are published to `ghcr.io/ogarcia/rucio`.
 
 | Tag | Contents | Typical use |
 |---|---|---|
-| `latest` / `0.1.x` | `ruciod` daemon only | Production nodes, VPS, minimal footprint |
-| `latest-web` / `0.1.x-web` | `ruciod` + embedded web panel | Single-host deployments with browser UI |
-| `latest-full` / `0.1.x-full` | `ruciod` + `rucio` CLI + web panel | Development / debugging |
+| `latest` / `0.1.x` | Complete: `rucio` (daemon + CLI) + embedded web panel + eMule | **Default.** Desktop and single-host servers |
+| `latest-headless` / `0.1.x-headless` | `ruciod` daemon only — no web, no CLI | Servers/VPS controlled via the API, smallest footprint |
 | `latest-bootstrap` / `0.1.x-bootstrap` | `rucio-bootstrap` with indexer | Dedicated DHT bootstrap node |
 
-### Quick start
+> `latest` is the full client — if you came from an earlier tag where `latest`
+> was the bare daemon, that's now `latest-headless`.
+
+### Quick start (complete)
+
+The default image runs the daemon, serves the web panel, and lets you `exec`
+in to use the `rucio` CLI:
 
 ```sh
-docker run -d --name ruciod \
-  -v rucio-data:/var/lib/rucio \
-  -p 4321:4321/tcp \
-  ghcr.io/ogarcia/rucio:latest
-```
-
-### With web control panel
-
-```sh
-docker run -d --name ruciod \
-  -e RUCIOD_API_LISTEN=0.0.0.0:3003 \
-  -e RUCIOD_UPNP=false \
-  -v rucio-data:/var/lib/rucio \
-  -p 4321:4321/tcp \
-  -p 3003:3003/tcp \
-  -p 4672:4672/udp \
-  ghcr.io/ogarcia/rucio:latest-web
-```
-
-Open `http://<host>:3003/` in a browser to access the panel.  The REST API
-remains available at the same address under `/api/v1/`.
-
-### With eMule / Kad2 support and web panel
-
-```sh
-docker run -d --name ruciod \
+docker run -d --name rucio \
   -e RUCIOD_API_LISTEN=0.0.0.0:3003 \
   -e RUCIOD_UPNP=false \
   -v rucio-data:/var/lib/rucio \
@@ -113,7 +93,22 @@ docker run -d --name ruciod \
   -p 3003:3003/tcp \
   -p 4662:4662/tcp \
   -p 4672:4672/udp \
-  ghcr.io/ogarcia/rucio:latest-full
+  ghcr.io/ogarcia/rucio:latest
+```
+
+Open `http://<host>:3003/` in a browser for the panel; the REST API is at the
+same address under `/api/v1/`. Run CLI commands with
+`docker exec rucio rucio <command>`.
+
+### Headless daemon (no web panel)
+
+For servers where the panel isn't needed:
+
+```sh
+docker run -d --name ruciod \
+  -v rucio-data:/var/lib/rucio \
+  -p 4321:4321/tcp \
+  ghcr.io/ogarcia/rucio:latest-headless
 ```
 
 ### Volume ownership (UID / GID)
