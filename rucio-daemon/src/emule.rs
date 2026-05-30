@@ -255,7 +255,19 @@ pub async fn run_ed2k_download(
             )
             .await;
             info!("Searching Kad2 for sources");
-            let fresh = kad.search_sources(link.hash, link.size).await;
+            // Race the search against a pause/cancel: if the user stops the
+            // download while it's queued for or running a Kad search, abandon
+            // the search (dropping the future leaves the gate's queue / releases
+            // its turn) instead of blocking until the lookup finishes.
+            let fresh = tokio::select! {
+                res = kad.search_sources(link.hash, link.size) => res,
+                reason = wait_for_stop(db, download_id) => {
+                    info!(name = %link.name, status = %reason, "stopped while searching for sources");
+                    active_downloads.write().await.remove(&hash_key);
+                    live_stats.write().await.remove(&live_key);
+                    return Ok(());
+                }
+            };
             // Merge new peers into the cache — deduplicate by (IP, tcp_port).
             for s in fresh {
                 if !cached_sources
@@ -771,6 +783,20 @@ async fn stop_reason(db: &Db, download_id: i64) -> Option<String> {
     match crate::db::emule_downloads::get_status(db, download_id).await {
         Ok(Some(s)) if s == "cancelled" || s == "paused" => Some(s),
         _ => None,
+    }
+}
+
+/// Resolve once the download is paused/cancelled. Used to race against a Kad
+/// source search (`select!`) so pausing abandons the search immediately — a
+/// queued search leaves the gate's queue, an active one releases its turn (the
+/// in-flight Kad lookup then expires on its own). Polls because stop is a DB
+/// status change, not a push signal.
+async fn wait_for_stop(db: &Db, download_id: i64) -> String {
+    loop {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        if let Some(reason) = stop_reason(db, download_id).await {
+            return reason;
+        }
     }
 }
 
