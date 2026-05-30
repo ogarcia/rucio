@@ -672,18 +672,22 @@ fn App() -> impl IntoView {
                                 </div>
                             </div>
                             <div class="dropdown-sep"/>
-                            <button class="dropdown-item" on:click=move |_| {
-                                active_panel.set(Some(Panel::NodeStatus));
-                                menu_open.set(false);
-                            }>"Node status"</button>
-                            <button class="dropdown-item" on:click=move |_| {
-                                active_panel.set(Some(Panel::Addresses));
-                                menu_open.set(false);
-                            }>"Addresses"</button>
-                            <button class="dropdown-item" on:click=move |_| {
-                                active_panel.set(Some(Panel::Stats));
-                                menu_open.set(false);
-                            }>"Statistics"</button>
+                            // ── Node (read-only info panels) ──────────────
+                            <div class="menu-section">
+                                <div class="menu-section-title">"Node"</div>
+                                <button class="dropdown-item" on:click=move |_| {
+                                    active_panel.set(Some(Panel::NodeStatus));
+                                    menu_open.set(false);
+                                }>"Node status"</button>
+                                <button class="dropdown-item" on:click=move |_| {
+                                    active_panel.set(Some(Panel::Addresses));
+                                    menu_open.set(false);
+                                }>"Addresses"</button>
+                                <button class="dropdown-item" on:click=move |_| {
+                                    active_panel.set(Some(Panel::Stats));
+                                    menu_open.set(false);
+                                }>"Statistics"</button>
+                            </div>
                         </div>
                     </Show>
                 </div>
