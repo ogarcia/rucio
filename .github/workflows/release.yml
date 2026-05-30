@@ -17,6 +17,14 @@ jobs:
   build:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+    # aarch64 musl is built natively on the ARM runner, so target (musl) differs
+    # from host (gnu) and cc-rs treats it as a cross build: ring then looks for
+    # aarch64-linux-musl-gcc, which musl-tools does not ship (only musl-gcc).
+    # Point ring's C compiler and the linker at musl-gcc. These vars are
+    # target-scoped, so they are inert for the x86_64 (cross) and macOS jobs.
+    env:
+      CC_aarch64_unknown_linux_musl: musl-gcc
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
     strategy:
       fail-fast: false
       matrix:
@@ -53,6 +61,12 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: cross
+
+      # Native aarch64 musl build needs a musl C toolchain for ring (see the
+      # CC_* env above).
+      - name: Install musl toolchain
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools musl-dev
 
       - name: Install trunk
         uses: taiki-e/install-action@v2
