@@ -86,7 +86,9 @@ pub struct SearchStore {
 }
 
 /// Preset bandwidth caps offered in the menu dropdowns (KB/s; 0 = unlimited).
-const LIMIT_PRESETS: [u64; 9] = [0, 50, 100, 256, 512, 1024, 2048, 5120, 10240];
+/// Scaled for modern links (a ~500 Mbps line is ~62 MB/s), so the ceiling
+/// reaches 100 MB/s rather than the old 10 MB/s.
+const LIMIT_PRESETS: [u64; 9] = [0, 512, 1024, 2048, 5120, 10240, 25600, 51200, 102400];
 
 /// PUT the base speed limits to the daemon (fire-and-forget).
 fn put_limits(upload_kbps: u64, download_kbps: u64) {
