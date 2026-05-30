@@ -600,11 +600,15 @@
         .search-btn:hover:not(:disabled) { background: var(--accent-2); }
         .search-btn:disabled { opacity: 0.6; cursor: default; }
 
-        /* Recent-search selector + actions, below the search bar. */
+        /* Recent-search selector + actions, below the search bar. The negative
+           top margin cancels the tab-toolbar's bottom padding (0.875rem) that
+           would otherwise stack above this row, so its 0.5rem padding reads the
+           same above and below. */
         .search-history {
             display: flex; align-items: center; gap: 0.5rem;
             padding: 0.5rem 1.5rem; border-bottom: 1px solid var(--border);
             background: var(--surface); flex-shrink: 0;
+            margin-top: -0.875rem;
         }
         /* Custom recent-search dropdown. Replaces a native <select> so the
            option highlight reliably fills the full row width on every browser
