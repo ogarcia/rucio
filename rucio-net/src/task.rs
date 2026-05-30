@@ -1090,7 +1090,6 @@ enum DialNoise {
 /// `Expected < Unreachable < Real`.
 fn classify_dial_error(error: &DialError) -> DialNoise {
     use libp2p::core::transport::TransportError;
-    use std::io;
 
     match error {
         // identify propagates every listen address of the remote, including
@@ -1109,26 +1108,15 @@ fn classify_dial_error(error: &DialError) -> DialNoise {
                 if addr_is_private_or_loopback(addr) {
                     continue;
                 }
-                match err {
-                    // ENETUNREACH: this host has no route for the address
-                    // family (e.g. no IPv6). Worth surfacing at INFO.
-                    TransportError::Other(e) if e.kind() == io::ErrorKind::NetworkUnreachable => {
-                        has_unreachable = true;
-                    }
-                    // The peer advertised a public address but isn't reachable
-                    // there: behind NAT, port closed, or not listening yet.
-                    // Routine churn in a P2P swarm — expected, not actionable.
-                    TransportError::Other(e)
-                        if matches!(
-                            e.kind(),
-                            io::ErrorKind::ConnectionRefused
-                                | io::ErrorKind::ConnectionReset
-                                | io::ErrorKind::TimedOut
-                                | io::ErrorKind::HostUnreachable
-                        ) => {}
-                    // Protocol/handshake/negotiation failures on a public
-                    // address, or any other transport error — unexpected.
-                    _ => return DialNoise::Real,
+                // Non-transport errors (e.g. MultiaddrNotSupported) point at an
+                // addressing/config problem — surface them.
+                let TransportError::Other(e) = err else {
+                    return DialNoise::Real;
+                };
+                match classify_transport_io(e) {
+                    DialNoise::Unreachable => has_unreachable = true,
+                    DialNoise::Expected => {}
+                    DialNoise::Real => return DialNoise::Real,
                 }
             }
             if has_unreachable {
@@ -1139,6 +1127,54 @@ fn classify_dial_error(error: &DialError) -> DialNoise {
         }
         _ => DialNoise::Real,
     }
+}
+
+/// Classify the `io::Error` behind a single transport dial attempt.
+///
+/// libp2p's combined transport (DNS / relay / Or-transport) can fold several
+/// attempts into one error that surfaces as [`io::ErrorKind::Other`] with a
+/// `"Multiple dial errors occurred: …"` message, so a `kind()` check alone
+/// misses the routine reachability failures nested inside (this is why dialling
+/// a peer that just went away used to log at WARN). Fall back to scanning the
+/// rendered error for known-benign markers in that case.
+fn classify_transport_io(e: &std::io::Error) -> DialNoise {
+    use std::io::ErrorKind;
+    match e.kind() {
+        // ENETUNREACH: this host has no route for the address family (e.g. no
+        // IPv6). Worth surfacing at INFO.
+        ErrorKind::NetworkUnreachable => DialNoise::Unreachable,
+        // The peer advertised a public address but isn't reachable there:
+        // behind NAT, port closed, or not listening yet. Routine churn.
+        ErrorKind::ConnectionRefused
+        | ErrorKind::ConnectionReset
+        | ErrorKind::TimedOut
+        | ErrorKind::HostUnreachable
+        | ErrorKind::BrokenPipe => DialNoise::Expected,
+        // Aggregated / wrapped errors arrive as Other; peek at the text.
+        _ if dial_text_is_benign(&e.to_string()) => DialNoise::Expected,
+        // Genuinely unexpected (protocol/negotiation bug, config error, …).
+        _ => DialNoise::Real,
+    }
+}
+
+/// Heuristic for nested/aggregated dial errors (`ErrorKind::Other`): `true` when
+/// the rendered chain only mentions routine, non-actionable failures — a peer
+/// that is down, advertised an unroutable address, or hit a transient
+/// handshake/negotiation error. These are expected churn as peers come and go.
+fn dial_text_is_benign(text: &str) -> bool {
+    const BENIGN: &[&str] = &[
+        "Connection refused",
+        "Connection reset",
+        "Broken pipe",
+        "timed out",
+        "Timed out",
+        "unreachable", // network/host unreachable, "No route to host"
+        "No route to host",
+        "Invalid argument", // e.g. link-local address without a scope id
+        "Handshake failed", // transient or loopback handshake noise
+        "Failed to negotiate transport",
+    ];
+    BENIGN.iter().any(|marker| text.contains(marker))
 }
 
 /// Return `true` if the IP component of `addr` is loopback or link-local —
@@ -1172,4 +1208,46 @@ fn addr_is_private_or_loopback(addr: &Multiaddr) -> bool {
         }
         _ => false,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Error, ErrorKind};
+
+    // The exact shape that used to log at WARN when a peer went away: a public
+    // address whose transport error is a nested "Multiple dial errors" aggregate
+    // (ErrorKind::Other) wrapping routine reachability failures.
+    #[test]
+    fn aggregated_reachability_failure_is_expected() {
+        let e = Error::other(
+            "Multiple dial errors occurred:\n - Connection refused (os error 111): \
+             Connection refused (os error 111)",
+        );
+        assert!(matches!(classify_transport_io(&e), DialNoise::Expected));
+    }
+
+    #[test]
+    fn direct_kinds_are_classified() {
+        assert!(matches!(
+            classify_transport_io(&Error::from(ErrorKind::ConnectionRefused)),
+            DialNoise::Expected
+        ));
+        assert!(matches!(
+            classify_transport_io(&Error::from(ErrorKind::NetworkUnreachable)),
+            DialNoise::Unreachable
+        ));
+    }
+
+    #[test]
+    fn link_local_invalid_argument_is_benign() {
+        let e = Error::other("Invalid argument (os error 22)");
+        assert!(matches!(classify_transport_io(&e), DialNoise::Expected));
+    }
+
+    #[test]
+    fn genuinely_unexpected_error_stays_real() {
+        let e = Error::other("unsupported protocol /rucio/kad/9.9.9");
+        assert!(matches!(classify_transport_io(&e), DialNoise::Real));
+    }
 }
