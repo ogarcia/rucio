@@ -63,6 +63,12 @@ pub struct BehaviourConfig {
     /// *other* peers that we hold in RAM as a DHT server. A client keeps this
     /// modest (it shouldn't become a large in-memory store); a bootstrap /
     /// indexer node, which sees the whole network, sets it high.
+    ///
+    /// This is a RAM ceiling, not a hard data limit: a bootstrap/indexer also
+    /// persists every captured record to SQLite for search, so hitting this cap
+    /// loses only DHT re-serving from RAM, not the index. See the storage-model
+    /// notes in `rucio-bootstrap`'s `indexer` module before raising it or
+    /// reaching for a disk-backed `RecordStore`.
     pub kad_max_records: usize,
 }
 

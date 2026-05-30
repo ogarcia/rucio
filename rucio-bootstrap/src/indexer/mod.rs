@@ -8,6 +8,48 @@
 //! When enrichment is enabled, each newly seen hash is resolved to a file name
 //! and size by requesting the manifest from the announcing peer, so the search
 //! API can match on names rather than just hashes.
+//!
+//! # Storage model & scaling (read before "fixing" a full provider store)
+//!
+//! There are **two independent stores** here, and conflating them causes
+//! confusion:
+//!
+//! 1. **SQLite** (this module, `db.rs`) — the *search index*. Every captured
+//!    `ADD_PROVIDER` is persisted here and this is what the REST `/search`
+//!    serves. It is on disk, pruned by `last_seen`, and **not** bounded by any
+//!    Kademlia limit. This scales with disk and is the authoritative index.
+//!
+//! 2. **Kademlia `MemoryStore`** (in `rucio-net`) — the in-RAM DHT store used
+//!    to answer `GET_PROVIDERS` like any DHT server. Captured records are also
+//!    re-inserted here (see `task.rs`, the `AddProvider` handler) so the node
+//!    keeps serving them. It is bounded by `BehaviourConfig::kad_max_records`
+//!    (1M for a bootstrap/indexer role; 100k for a client).
+//!
+//! When the MemoryStore fills, `add_provider` fails and we log it once at
+//! `debug` ("Could not store captured provider record"); the record still
+//! lands in SQLite, so **search is unaffected** — only this node's ability to
+//! *re-serve* that record over the DHT from RAM is lost. That is not a single
+//! point of failure: the file's actual providers still answer `GET_PROVIDERS`
+//! themselves; the bootstrap re-serving is a courtesy, not the source of truth.
+//!
+//! ## If you see "weird things" at scale
+//!
+//! Symptoms might be: high RAM on the bootstrap, the debug "Could not store
+//! captured provider record" line appearing, or the node not re-serving some
+//! providers over the DHT. In rough order of cost, the options are:
+//!
+//! 1. **Raise the cap** — `kad_max_records` is just a RAM ceiling; bump it.
+//! 2. **Run several bootstrap/indexer nodes** — they split the keyspace, so no
+//!    single node must hold everything in RAM.
+//! 3. **Last resort: a disk-backed `RecordStore`** over this SQLite DB instead
+//!    of the `MemoryStore`. This was considered and deliberately *not* done
+//!    because libp2p's `RecordStore` trait is **synchronous** (so it would
+//!    block the swarm reactor on disk I/O, or force `rusqlite`), its
+//!    `records()`/`provided()` iterators are walked on every republication
+//!    cycle (materialising millions of rows), and it must faithfully replicate
+//!    record TTLs, `max_providers_per_key`, and XOR-distance ordering. It is
+//!    several days of work with real performance/correctness risk, and is only
+//!    worth it if measurement proves options 1–2 insufficient.
 
 mod api;
 mod db;
