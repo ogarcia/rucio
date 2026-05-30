@@ -289,19 +289,19 @@ pub fn ConfigModal(
                             ConfigTab::Storage => view! {
                                 <div class="config-section">
                                     <p class="config-hint">"Directories apply after a daemon restart."</p>
-                                    <div class="config-field config-field-col">
+                                    <div class="config-field">
                                         <label class="config-label">"Download directory"</label>
                                         <input class="config-input" type="text"
                                             prop:value=move || f_st_dl.get()
                                             on:input=move |e| f_st_dl.set(event_target_value(&e))/>
                                     </div>
-                                    <div class="config-field config-field-col">
+                                    <div class="config-field">
                                         <label class="config-label">"Temp directory"</label>
                                         <input class="config-input" type="text"
                                             prop:value=move || f_st_tmp.get()
                                             on:input=move |e| f_st_tmp.set(event_target_value(&e))/>
                                     </div>
-                                    <div class="config-field config-field-col">
+                                    <div class="config-field">
                                         <label class="config-label">"Database path (read-only)"</label>
                                         <input class="config-input" type="text" disabled=true
                                             prop:value=move || f_st_db.get()/>
@@ -312,12 +312,16 @@ pub fn ConfigModal(
                                 <div class="config-section">
                                     <div class="config-field">
                                         <label class="config-label">"eMule enabled"</label>
-                                        <button
-                                            class=move || if f_em_enabled.get() { "toggle-pill toggle-on" } else { "toggle-pill" }
+                                        <span
+                                            class=move || if f_em_enabled.get() {
+                                                "toggle-pill toggle-on toggle-clickable"
+                                            } else {
+                                                "toggle-pill toggle-clickable"
+                                            }
                                             on:click=move |_| f_em_enabled.update(|v| *v = !*v)
                                         >
                                             {move || if f_em_enabled.get() { "On" } else { "Off" }}
-                                        </button>
+                                        </span>
                                     </div>
                                     <p class="config-hint">
                                         "Changes apply after a daemon restart. The fields below are read-only until eMule is enabled."
@@ -343,7 +347,7 @@ pub fn ConfigModal(
                                             prop:value=move || f_em_extip.get()
                                             on:input=move |e| f_em_extip.set(event_target_value(&e))/>
                                     </div>
-                                    <div class="config-field config-field-col">
+                                    <div class="config-field">
                                         <label class="config-label">"Temp directory"</label>
                                         <input class="config-input" type="text"
                                             disabled=em_locked
