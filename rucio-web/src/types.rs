@@ -55,6 +55,44 @@ pub struct EmuleStatusResponse {
     pub inbound_connections: u64,
 }
 
+// ── Shares ─────────────────────────────────────────────────────────────────
+
+/// A watched directory (the unit of add/remove). GET /api/v1/shares.
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+pub struct SharedDir {
+    pub path: String,
+    pub protected: bool,
+    pub file_count: u64,
+    pub total_size: u64,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct SharedDirsResponse {
+    pub dirs: Vec<SharedDir>,
+}
+
+/// A single shared file. GET /api/v1/shares/files.
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+pub struct ShareFile {
+    pub root_hash: String,
+    pub name: String,
+    pub size: u64,
+    pub path: String,
+    pub magnet: String,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct SharesFilesResponse {
+    pub shares: Vec<ShareFile>,
+}
+
+/// Response to POST /api/v1/shares.
+#[derive(Deserialize, Clone, Debug)]
+pub struct AddShareResponse {
+    pub queued: usize,
+    pub errors: Vec<String>,
+}
+
 // ── Downloads ────────────────────────────────────────────────────────────────
 
 #[derive(Deserialize, Clone, Debug, PartialEq)]

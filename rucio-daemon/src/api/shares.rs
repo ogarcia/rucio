@@ -9,7 +9,10 @@ use std::sync::atomic::Ordering;
 use axum::Json;
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::StatusCode;
-use rucio_core::api::shares::{AddShareRequest, AddShareResponse, ShareResponse, SharesResponse};
+use rucio_core::api::shares::{
+    AddShareRequest, AddShareResponse, ShareResponse, SharedDirResponse, SharedDirsResponse,
+    SharesResponse,
+};
 use rucio_core::protocol::chunk::{CHUNK_SIZE, Hash};
 use rucio_core::protocol::magnet::MagnetLink;
 use serde::Deserialize;
@@ -46,6 +49,44 @@ fn build_magnet(root_hash: &[u8], name: &str, size: u64, self_peer_id: &str) -> 
 // GET /api/v1/shares
 // ---------------------------------------------------------------------------
 
+/// List shared directories
+///
+/// Returns the watched directories — the unit you add (`POST /api/v1/shares`) and remove
+/// (`DELETE /api/v1/shares?path=…`). Each entry reports the absolute path, whether it is
+/// protected (the download directory, always shared and not removable), and the number and
+/// total size of indexed files under it.
+///
+/// Use `GET /api/v1/shares/files` for the individual indexed files.
+#[utoipa::path(
+    get,
+    path = "/api/v1/shares",
+    responses(
+        (status = 200, description = "All watched directories.", body = SharedDirsResponse)
+    )
+)]
+pub async fn list_shares(State(state): State<AppState>) -> Json<SharedDirsResponse> {
+    let dirs = db::shared_dirs::list(&state.db).await.unwrap_or_default();
+
+    let mut out = Vec::with_capacity(dirs.len());
+    for d in dirs {
+        let (file_count, total_size) = db::shares::count_and_size_by_prefix(&state.db, &d.path)
+            .await
+            .unwrap_or((0, 0));
+        out.push(SharedDirResponse {
+            path: d.path,
+            protected: d.protected,
+            file_count: file_count as u64,
+            total_size: total_size as u64,
+        });
+    }
+
+    Json(SharedDirsResponse { dirs: out })
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/shares/files
+// ---------------------------------------------------------------------------
+
 /// List shared files
 ///
 /// Returns every file that has been indexed and is currently being shared by this node.
@@ -58,12 +99,12 @@ fn build_magnet(root_hash: &[u8], name: &str, size: u64, self_peer_id: &str) -> 
 /// and whenever the filesystem watcher detects a new file under a watched directory.
 #[utoipa::path(
     get,
-    path = "/api/v1/shares",
+    path = "/api/v1/shares/files",
     responses(
         (status = 200, description = "All currently shared files.", body = SharesResponse)
     )
 )]
-pub async fn list_shares(State(state): State<AppState>) -> Json<SharesResponse> {
+pub async fn list_share_files(State(state): State<AppState>) -> Json<SharesResponse> {
     let rows = db::shares::list(&state.db).await.unwrap_or_default();
     let peer_id = state.node_status.read().await.peer_id.clone();
 

@@ -32,10 +32,30 @@ pub struct ShareResponse {
     pub magnet: String,
 }
 
-/// GET /api/v1/shares
+/// GET /api/v1/shares/files
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct SharesResponse {
     pub shares: Vec<ShareResponse>,
+}
+
+/// A shared directory (watched folder) with aggregate counts.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+pub struct SharedDirResponse {
+    /// Absolute path of the watched directory.
+    pub path: String,
+    /// True for the download directory, which is always shared and cannot be
+    /// removed.
+    pub protected: bool,
+    /// Number of indexed files under this directory.
+    pub file_count: u64,
+    /// Total size of indexed files under this directory, in bytes.
+    pub total_size: u64,
+}
+
+/// GET /api/v1/shares — the watched directories (the unit of add/remove).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+pub struct SharedDirsResponse {
+    pub dirs: Vec<SharedDirResponse>,
 }
 
 impl From<&FileDescriptor> for ShareResponse {

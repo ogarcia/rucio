@@ -166,6 +166,28 @@ pub async fn delete_by_path_prefix(db: &Db, prefix: &str) -> Result<Vec<Vec<u8>>
     Ok(hashes)
 }
 
+/// Count the shared files under `prefix` (a directory) and sum their sizes.
+/// Uses the same prefix semantics as [`delete_by_path_prefix`], so the count
+/// matches exactly what removing that directory would unshare.
+pub async fn count_and_size_by_prefix(db: &Db, prefix: &str) -> Result<(i64, i64)> {
+    let pattern = if prefix.ends_with(std::path::MAIN_SEPARATOR) {
+        format!("{prefix}%")
+    } else {
+        format!("{prefix}{}%", std::path::MAIN_SEPARATOR)
+    };
+
+    let row = sqlx::query(
+        "SELECT COUNT(*) AS cnt, COALESCE(SUM(size), 0) AS total \
+         FROM shared_files WHERE path = ?1 OR path LIKE ?2",
+    )
+    .bind(prefix)
+    .bind(&pattern)
+    .fetch_one(db)
+    .await?;
+
+    Ok((row.get::<i64, _>("cnt"), row.get::<i64, _>("total")))
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

@@ -2,6 +2,7 @@ mod downloads;
 mod icons;
 mod overlays;
 mod searches;
+mod shares;
 mod types;
 
 // ── Theme ──────────────────────────────────────────────────────────────────
@@ -68,6 +69,7 @@ use leptos::task::spawn_local;
 use downloads::{DownloadsTab, refresh_downloads};
 use overlays::{AddressesPanel, NodeStatusPanel, StatsPanel};
 use searches::SearchesTab;
+use shares::SharesTab;
 use types::{
     DownloadResponse, SearchResult, SearchSummary, SpeedLimits, StatusResponse, TempLimitRequest,
     TempLimitStatus, WsEvent, format_rate_kbps, is_streamed_state,
@@ -156,6 +158,7 @@ fn start_ws_loop(
     dl_speed: RwSignal<u64>,
     ul_speed: RwSignal<u64>,
     search: SearchStore,
+    indexing: RwSignal<usize>,
 ) {
     spawn_local(async move {
         let mut backoff_ms = 1_000u64;
@@ -211,6 +214,7 @@ fn start_ws_loop(
                                     if let Ok(event) = serde_json::from_str::<WsEvent>(&text) {
                                         handle_event(
                                             event, downloads, status, dl_speed, ul_speed, search,
+                                            indexing,
                                         );
                                     }
                                 }
@@ -241,6 +245,7 @@ fn handle_event(
     dl_speed: RwSignal<u64>,
     ul_speed: RwSignal<u64>,
     search: SearchStore,
+    indexing: RwSignal<usize>,
 ) {
     match event {
         WsEvent::DownloadProgress(list) => {
@@ -360,7 +365,9 @@ fn handle_event(
             });
         }
 
-        WsEvent::IndexingCount { .. } => {}
+        WsEvent::IndexingCount { pending } => {
+            indexing.set(pending);
+        }
 
         WsEvent::SessionStats {
             download_speed,
@@ -382,18 +389,6 @@ fn handle_event(
 
 // ── App ───────────────────────────────────────────────────────────────────────
 
-/// Shares section — placeholder until the share management UI lands.
-#[component]
-fn SharesTab() -> impl IntoView {
-    view! {
-        <div class="tab-content">
-            <div class="tab-scroll">
-                <div class="empty-state"><p>"Shares — coming soon"</p></div>
-            </div>
-        </div>
-    }
-}
-
 #[component]
 fn App() -> impl IntoView {
     let active_tab: RwSignal<Tab> = RwSignal::new(Tab::Downloads);
@@ -410,6 +405,8 @@ fn App() -> impl IntoView {
     let ws_connected: RwSignal<bool> = RwSignal::new(false);
     let status: RwSignal<Option<StatusResponse>> = RwSignal::new(None);
     let downloads: RwSignal<Vec<DownloadResponse>> = RwSignal::new(vec![]);
+    // Number of files currently being indexed (driven by the WS IndexingCount).
+    let indexing: RwSignal<usize> = RwSignal::new(0);
     let dl_speed: RwSignal<u64> = RwSignal::new(0);
     let ul_speed: RwSignal<u64> = RwSignal::new(0);
     let search = SearchStore {
@@ -454,7 +451,15 @@ fn App() -> impl IntoView {
     });
 
     // Start the persistent WebSocket loop.
-    start_ws_loop(ws_connected, downloads, status, dl_speed, ul_speed, search);
+    start_ws_loop(
+        ws_connected,
+        downloads,
+        status,
+        dl_speed,
+        ul_speed,
+        search,
+        indexing,
+    );
 
     view! {
         <div class="layout">
@@ -656,7 +661,7 @@ fn App() -> impl IntoView {
                         />
                     }.into_any(),
                     Tab::Searches => view! { <SearchesTab search=search downloads=downloads/> }.into_any(),
-                    Tab::Shares => view! { <SharesTab/> }.into_any(),
+                    Tab::Shares => view! { <SharesTab indexing=indexing/> }.into_any(),
                 }}
             </main>
         </div>

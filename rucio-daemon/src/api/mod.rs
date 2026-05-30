@@ -76,6 +76,7 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         status::get_status,
         status::get_peers,
         shares::list_shares,
+        shares::list_share_files,
         shares::add_share,
         shares::indexing_status,
         shares::get_magnet,
@@ -114,6 +115,8 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         rucio_core::api::shares::AddShareResponse,
         rucio_core::api::shares::ShareResponse,
         rucio_core::api::shares::SharesResponse,
+        rucio_core::api::shares::SharedDirResponse,
+        rucio_core::api::shares::SharedDirsResponse,
         rucio_core::api::downloads::StartDownloadRequest,
         rucio_core::api::downloads::StartEd2kDownloadRequest,
         rucio_core::api::downloads::StartEd2kDownloadResponse,
@@ -399,6 +402,7 @@ fn v1_router() -> Router<AppState> {
         .route("/peers", routing::get(status::get_peers))
         // shares
         .route("/shares", routing::get(shares::list_shares))
+        .route("/shares/files", routing::get(shares::list_share_files))
         .route("/shares", routing::post(shares::add_share))
         .route("/shares/indexing", routing::get(shares::indexing_status))
         .route("/shares", routing::delete(shares::remove_shares_by_path))

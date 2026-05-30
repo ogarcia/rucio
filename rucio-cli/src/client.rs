@@ -153,7 +153,8 @@ impl ApiClient {
     // -----------------------------------------------------------------------
 
     pub async fn list_shares(&self) -> Result<SharesResponse> {
-        self.get("/api/v1/shares").await
+        // The shared *files*; GET /api/v1/shares now lists watched directories.
+        self.get("/api/v1/shares/files").await
     }
 
     pub async fn add_share(&self, path: &str) -> Result<AddShareResponse> {

@@ -718,6 +718,61 @@
             color: var(--accent); font-size: 0.75rem;
         }
 
+        /* ── Shares ──────────────────────────────────────────────────────── */
+
+        .share-indexing {
+            display: inline-flex; align-items: center; gap: 0.4rem;
+            margin-left: 0.5rem; font-size: 0.75rem; color: var(--accent);
+        }
+        .share-section-label {
+            font-size: 0.6875rem; font-weight: 700; letter-spacing: 0.06em;
+            text-transform: uppercase; color: var(--text-4);
+            margin: 0.5rem 0 0.5rem;
+        }
+        .share-files-header {
+            display: flex; align-items: center; justify-content: space-between;
+            gap: 0.75rem; margin-top: 1.5rem;
+        }
+        .empty-state-sm { height: 80px; }
+
+        .share-dir-list, .share-file-list {
+            list-style: none; display: flex; flex-direction: column; gap: 0;
+        }
+        .share-dir-row {
+            display: flex; align-items: center; gap: 0.75rem;
+            padding: 0.625rem 0; border-bottom: 1px solid var(--raised);
+        }
+        .share-dir-row:last-child { border-bottom: none; }
+        .share-dir-icon { color: var(--text-3); display: inline-flex; flex-shrink: 0; }
+        .share-dir-icon .icon { width: 1.125rem; height: 1.125rem; }
+        .share-dir-main { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+        .share-dir-path {
+            font-size: 0.8125rem; color: var(--text);
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .share-dir-meta { font-size: 0.6875rem; color: var(--text-3); }
+        .share-badge {
+            font-size: 0.625rem; font-weight: 700; letter-spacing: 0.03em;
+            background: var(--sa); color: var(--sa-fg);
+            padding: 0.1rem 0.45rem; border-radius: 9999px; white-space: nowrap;
+        }
+
+        .share-file-row {
+            display: grid; grid-template-columns: 1fr auto auto;
+            align-items: center; gap: 1rem;
+            padding: 0.5rem 0; border-bottom: 1px solid var(--raised);
+        }
+        .share-file-row:last-child { border-bottom: none; }
+        .share-file-name {
+            font-size: 0.8125rem; color: var(--text);
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
+        }
+        .share-file-size { font-size: 0.75rem; color: var(--text-3); white-space: nowrap; }
+        .share-copy-btn {
+            display: inline-flex; align-items: center; gap: 0.3rem; white-space: nowrap;
+        }
+        .share-copy-btn .icon { width: 0.875rem; height: 0.875rem; }
+
         /* ── Shared atoms ────────────────────────────────────────────────── */
 
         .empty-state {
