@@ -9,6 +9,7 @@ use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
+use rucio_core::protocol::search::normalize_search_term;
 use serde::Serialize;
 use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::{FromRow, SqlitePool};
@@ -27,6 +28,7 @@ CREATE INDEX IF NOT EXISTS idx_pr_last_seen ON provider_records (last_seen);
 CREATE TABLE IF NOT EXISTS files (
     hash       TEXT PRIMARY KEY,
     name       TEXT NOT NULL,
+    name_norm  TEXT,
     size       INTEGER NOT NULL,
     indexed_at INTEGER NOT NULL
 );
@@ -54,7 +56,45 @@ pub async fn open(path: &Path) -> Result<Db> {
             .await
             .context("applying index schema")?;
     }
+    migrate_name_norm(&pool).await?;
     Ok(pool)
+}
+
+/// Additive migration for accent-insensitive search: ensure `files.name_norm`
+/// exists (older databases predate it) and backfill any rows missing it.
+///
+/// `CREATE TABLE IF NOT EXISTS` does not add columns to an existing table, so a
+/// database created before this column needs an explicit `ALTER TABLE`. The
+/// pre-stable policy is otherwise "no migrations", but this one is cheap and
+/// avoids forcing operators to drop a populated index.
+async fn migrate_name_norm(pool: &Db) -> Result<()> {
+    let columns: Vec<String> = sqlx::query_scalar("SELECT name FROM pragma_table_info('files')")
+        .fetch_all(pool)
+        .await
+        .context("inspecting files columns")?;
+    if !columns.iter().any(|c| c == "name_norm") {
+        sqlx::query("ALTER TABLE files ADD COLUMN name_norm TEXT")
+            .execute(pool)
+            .await
+            .context("adding files.name_norm column")?;
+    }
+
+    // Backfill rows that have no normalized name yet (freshly migrated, or
+    // written before normalization existed).
+    let rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT hash, name FROM files WHERE name_norm IS NULL")
+            .fetch_all(pool)
+            .await
+            .context("reading rows to backfill")?;
+    for (hash, name) in rows {
+        sqlx::query("UPDATE files SET name_norm = ?1 WHERE hash = ?2")
+            .bind(normalize_search_term(&name))
+            .bind(hash)
+            .execute(pool)
+            .await
+            .context("backfilling name_norm")?;
+    }
+    Ok(())
 }
 
 fn now() -> i64 {
@@ -113,13 +153,19 @@ fn like_escape(s: &str) -> String {
 /// * **Hash prefix** — a single whitespace-free token is also tried as a hex
 ///   prefix of the content hash.
 /// * **File name** — the query is split on whitespace into terms, and a record
-///   matches only if *every* term occurs (case-insensitive substring) in the
-///   enriched file name. So `ghost in the shell` matches
-///   `Ghost.in.the.Shell.ARISE...` even though the words are dot-separated.
+///   matches only if *every* term occurs as a substring of the enriched file
+///   name. Matching is case- and accent-insensitive: both the stored name and
+///   the terms are folded with [`normalize_search_term`], so `ghost in the
+///   shell` matches `Ghost.in.the.Shell.ARISE...` and `camion` matches
+///   `Camión...`.
 ///
 /// An empty `query` matches everything (used by the list endpoint).
 pub async fn search(db: &Db, query: &str, limit: i64, offset: i64) -> Result<Vec<HashRow>> {
-    let terms: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+    let terms: Vec<String> = query
+        .split_whitespace()
+        .map(normalize_search_term)
+        .filter(|t| !t.is_empty())
+        .collect();
 
     let mut qb = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
         "SELECT pr.hash            AS hash,
@@ -142,10 +188,11 @@ pub async fn search(db: &Db, query: &str, limit: i64, offset: i64) -> Result<Vec
             qb.push(" ESCAPE '\\' OR ");
         }
 
-        // File-name match: AND over every term as a case-insensitive substring.
-        qb.push("(f.name IS NOT NULL");
+        // File-name match: AND over every term as a substring of the folded
+        // name. Terms are already normalized to name_norm's character space.
+        qb.push("(f.name_norm IS NOT NULL");
         for term in &terms {
-            qb.push(" AND LOWER(f.name) LIKE ");
+            qb.push(" AND f.name_norm LIKE ");
             qb.push_bind(format!("%{}%", like_escape(term)));
             qb.push(" ESCAPE '\\'");
         }
@@ -171,15 +218,21 @@ pub async fn has_file(db: &Db, hash_hex: &str) -> Result<bool> {
 }
 
 /// Record (or refresh) the file metadata for a hash.
+///
+/// Stores both the display `name` and an accent-folded, lowercased `name_norm`
+/// (via [`normalize_search_term`]) so searches match the same character space
+/// as the rucio network.
 pub async fn upsert_file(db: &Db, hash_hex: &str, name: &str, size: i64) -> Result<()> {
     let ts = now();
+    let name_norm = normalize_search_term(name);
     sqlx::query(
-        "INSERT INTO files (hash, name, size, indexed_at)
-         VALUES (?1, ?2, ?3, ?4)
-         ON CONFLICT(hash) DO UPDATE SET name = ?2, size = ?3, indexed_at = ?4",
+        "INSERT INTO files (hash, name, name_norm, size, indexed_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(hash) DO UPDATE SET name = ?2, name_norm = ?3, size = ?4, indexed_at = ?5",
     )
     .bind(hash_hex)
     .bind(name)
+    .bind(&name_norm)
     .bind(size)
     .bind(ts)
     .execute(db)
@@ -295,6 +348,56 @@ mod tests {
         // Empty query returns everything.
         let r = search(&db, "", 50, 0).await.unwrap();
         assert_eq!(r.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn search_is_accent_insensitive() {
+        let db = mem_db().await;
+        insert(&db, "c0c0", "Camión.de.Bomberos.Documental.mkv").await;
+        insert(&db, "d0d0", "Ano.Nuevo.2024.mkv").await;
+        insert(&db, "e0e0", "El.Año.del.Dragón.mkv").await;
+
+        // Folded query matches the accented name (the reported gap).
+        assert_eq!(
+            hashes(&search(&db, "camion", 50, 0).await.unwrap()),
+            vec!["c0c0"]
+        );
+        // Accented query still matches (symmetric).
+        assert_eq!(
+            hashes(&search(&db, "camión", 50, 0).await.unwrap()),
+            vec!["c0c0"]
+        );
+        // ñ is a distinct letter, not folded: "ano" must not match "Año".
+        assert_eq!(
+            hashes(&search(&db, "ano", 50, 0).await.unwrap()),
+            vec!["d0d0"]
+        );
+        // "año" matches the ñ name, and "dragon" folds to match "Dragón".
+        assert_eq!(
+            hashes(&search(&db, "año dragon", 50, 0).await.unwrap()),
+            vec!["e0e0"]
+        );
+    }
+
+    #[tokio::test]
+    async fn migration_backfills_existing_rows() {
+        let db = mem_db().await;
+        // Simulate a pre-migration row: name present, name_norm NULL.
+        upsert(&db, "aaaa", "12D3KooWp").await.unwrap();
+        sqlx::query("INSERT INTO files (hash, name, size, indexed_at) VALUES ('aaaa', 'Canción.mp3', 10, 0)")
+            .execute(&db)
+            .await
+            .unwrap();
+        // Not yet searchable by folded term.
+        assert!(search(&db, "cancion", 50, 0).await.unwrap().is_empty());
+
+        migrate_name_norm(&db).await.unwrap();
+
+        // After backfill the folded search finds it.
+        assert_eq!(
+            hashes(&search(&db, "cancion", 50, 0).await.unwrap()),
+            vec!["aaaa"]
+        );
     }
 
     #[tokio::test]

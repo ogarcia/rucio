@@ -144,8 +144,10 @@ pub struct SearchParams {
     ///
     /// - as a hex **prefix** of the content hash (single whitespace-free token);
     /// - against the indexed **file name**, split into whitespace-separated
-    ///   terms that must *all* appear (case-insensitive substring). So
-    ///   `ghost in the shell` matches `Ghost.in.the.Shell.ARISE...`.
+    ///   terms that must *all* appear as substrings. Matching is case- and
+    ///   accent-insensitive (folded like the rucio network), so
+    ///   `ghost in the shell` matches `Ghost.in.the.Shell.ARISE...` and
+    ///   `camion` matches `Camión...`.
     ///
     /// An empty value returns the most recently announced records.
     pub q: String,
