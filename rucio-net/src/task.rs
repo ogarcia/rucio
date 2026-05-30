@@ -18,6 +18,7 @@ use rucio_core::protocol::{
     transfer::{ChunkRequest, ChunkResponse},
 };
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
@@ -34,6 +35,12 @@ use super::{
 
 const CMD_BUFFER: usize = 64;
 const EVENT_BUFFER: usize = 256;
+
+/// How long to keep a connection with no active streams before closing it.
+/// libp2p defaults this to zero (immediate close); we hold connections so the
+/// gossipsub mesh and Kademlia routing table stay warm and connections are
+/// reused across queries instead of re-dialled.
+const IDLE_CONNECTION_TIMEOUT: Duration = Duration::from_secs(60);
 
 // ---------------------------------------------------------------------------
 // Public handle
@@ -101,6 +108,13 @@ pub async fn spawn(cfg: &NetConfig) -> Result<NodeHandle> {
             .map_err(|e| -> Box<dyn std::error::Error + Send + Sync + 'static> { e.into() })
         })
         .context("attaching behaviour")?
+        // libp2p's SwarmBuilder defaults idle_connection_timeout to ZERO, which
+        // tears a connection down the instant it has no active streams. For a
+        // DHT/gossipsub node that means peers connect, run one query, and drop
+        // immediately — constant churn, an empty routing table, and a bootstrap
+        // node that always reports 0 connected peers. Hold idle connections long
+        // enough for the mesh and Kademlia to keep them warm and reuse them.
+        .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(IDLE_CONNECTION_TIMEOUT))
         .build();
 
     let topic_query = IdentTopic::new(TOPIC_SEARCH);

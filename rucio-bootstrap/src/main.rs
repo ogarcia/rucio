@@ -25,6 +25,7 @@ mod config;
 #[cfg(feature = "indexer")]
 mod indexer;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -327,7 +328,9 @@ async fn main() -> Result<()> {
     }
 
     // ── Main event loop ───────────────────────────────────────────────────────
-    let mut connected: usize = 0;
+    // Connection count per peer (a peer may hold several connections, e.g. TCP
+    // and QUIC); the heartbeat reports the number of distinct connected peers.
+    let mut peer_conns: HashMap<PeerId, usize> = HashMap::new();
     let mut heartbeat = tokio::time::interval(Duration::from_secs(60));
     heartbeat.tick().await; // consume the immediate first tick
 
@@ -341,7 +344,7 @@ async fn main() -> Result<()> {
                 break;
             }
             _ = heartbeat.tick() => {
-                info!(connected_peers = connected, "Bootstrap node alive");
+                info!(connected_peers = peer_conns.len(), "Bootstrap node alive");
             }
             ev = fan_rx.recv() => {
                 let Some((swarm_idx, ev)) = ev else {
@@ -365,9 +368,16 @@ async fn main() -> Result<()> {
                     NodeEvent::ObservedAddr { ref addr, .. } if swarm_idx == 0 => {
                         info!("Observed public address: {addr}/p2p/{peer_id}");
                     }
-                    NodeEvent::PeerConnected { .. } => connected += 1,
-                    NodeEvent::PeerDisconnected { .. } => {
-                        connected = connected.saturating_sub(1)
+                    NodeEvent::PeerConnected { peer_id: pid } => {
+                        *peer_conns.entry(pid).or_insert(0) += 1;
+                    }
+                    NodeEvent::PeerDisconnected { peer_id: pid } => {
+                        if let Some(n) = peer_conns.get_mut(&pid) {
+                            *n -= 1;
+                            if *n == 0 {
+                                peer_conns.remove(&pid);
+                            }
+                        }
                     }
                     NodeEvent::FatalError(ref e) => {
                         warn!(swarm = swarm_idx, "Fatal node error: {e}");
