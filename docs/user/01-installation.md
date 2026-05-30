@@ -14,15 +14,27 @@ are used).
 
 ## Option A — Release binary
 
-Download the pre-compiled binary for your platform from the
-[Releases](../../../releases) page.
+Download the archive for your platform from the [Releases](../../../releases)
+page. Each release ships a `rucio-<version>-<target>.tar.gz` per target:
+
+| Platform | Archive |
+|---|---|
+| Linux x86\_64 | `rucio-<version>-x86_64-unknown-linux-musl.tar.gz` |
+| Linux aarch64 | `rucio-<version>-aarch64-unknown-linux-musl.tar.gz` |
+| macOS Intel | `rucio-<version>-x86_64-apple-darwin.tar.gz` |
+| macOS Apple Silicon | `rucio-<version>-aarch64-apple-darwin.tar.gz` |
+
+Unpack it and place the binary on your PATH:
 
 ```sh
 # Linux x86_64 example — adjust the filename for your platform
-curl -Lo rucio https://github.com/ogarcia/rucio/releases/latest/download/rucio-linux-x86_64
+tar -xzf rucio-*-x86_64-unknown-linux-musl.tar.gz
 install -m755 rucio /usr/local/bin/rucio
 ln -s /usr/local/bin/rucio /usr/local/bin/ruciod
 ```
+
+The release binary is the complete client — daemon, CLI, embedded web panel and
+eMule support all built in.
 
 Verify the installation:
 
