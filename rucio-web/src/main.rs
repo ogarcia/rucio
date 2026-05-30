@@ -121,6 +121,41 @@ enum Tab {
     Shares,
 }
 
+impl Tab {
+    fn as_str(self) -> &'static str {
+        match self {
+            Tab::Downloads => "downloads",
+            Tab::Searches => "searches",
+            Tab::Shares => "shares",
+        }
+    }
+
+    fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "downloads" => Some(Tab::Downloads),
+            "searches" => Some(Tab::Searches),
+            "shares" => Some(Tab::Shares),
+            _ => None,
+        }
+    }
+}
+
+/// Load the last-active tab from localStorage, defaulting to Downloads.
+fn load_tab() -> Tab {
+    web_sys::window()
+        .and_then(|w| w.local_storage().ok().flatten())
+        .and_then(|ls| ls.get_item("rucio-tab").ok().flatten())
+        .and_then(|s| Tab::from_str(&s))
+        .unwrap_or(Tab::Downloads)
+}
+
+/// Persist the active tab so a reload returns to it.
+fn save_tab(t: Tab) {
+    if let Some(ls) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
+        let _ = ls.set_item("rucio-tab", t.as_str());
+    }
+}
+
 /// The navigation sections, shown as top-bar tabs (wide) or sidebar items
 /// (narrow). One source so both stay in sync.
 const TABS: [(Tab, &str); 3] = [
@@ -391,7 +426,9 @@ fn handle_event(
 
 #[component]
 fn App() -> impl IntoView {
-    let active_tab: RwSignal<Tab> = RwSignal::new(Tab::Downloads);
+    let active_tab: RwSignal<Tab> = RwSignal::new(load_tab());
+    // Persist the active tab so a page reload returns to it.
+    Effect::new(move |_| save_tab(active_tab.get()));
     let menu_open: RwSignal<bool> = RwSignal::new(false);
     // Navigation drawer (shown via the hamburger on narrow screens).
     let nav_open: RwSignal<bool> = RwSignal::new(false);
