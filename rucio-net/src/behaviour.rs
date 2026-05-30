@@ -55,6 +55,15 @@ pub struct BehaviourConfig {
     /// through a relay, DCUtR attempts to upgrade to a direct connection by
     /// coordinating simultaneous TCP/QUIC dials (NAT hole punch).
     pub dcutr: bool,
+    /// Kademlia `MemoryStore` cap on **self-provided** keys — i.e. how many of
+    /// our own shared files we can announce. The libp2p default (1024) is far
+    /// too low for a real library, so set this generously.
+    pub kad_max_provided_keys: usize,
+    /// Kademlia `MemoryStore` cap on **stored** records — provider records from
+    /// *other* peers that we hold in RAM as a DHT server. A client keeps this
+    /// modest (it shouldn't become a large in-memory store); a bootstrap /
+    /// indexer node, which sees the whole network, sets it high.
+    pub kad_max_records: usize,
 }
 
 impl BehaviourConfig {
@@ -68,6 +77,10 @@ impl BehaviourConfig {
             capture_provider_records: false,
             relay_server: true,
             dcutr: true,
+            // We may share many files; keep records (others' provider records
+            // we hold as a DHT server) modest so a client isn't a big RAM store.
+            kad_max_provided_keys: 1_000_000,
+            kad_max_records: 100_000,
         }
     }
 
@@ -83,6 +96,10 @@ impl BehaviourConfig {
             capture_provider_records: false,
             relay_server: false,
             dcutr: false,
+            // A bootstrap node provides no files of its own but sees the whole
+            // network, so hold few provided keys and many stored records.
+            kad_max_provided_keys: 1024,
+            kad_max_records: 1_000_000,
         }
     }
 
@@ -137,13 +154,14 @@ impl RucioBehaviour {
             kademlia_config.set_record_filtering(kad::StoreInserts::FilterBoth);
         }
         // The default MemoryStore caps both stored and self-provided keys at
-        // 1024. A node sharing more than ~1024 files would fail to announce the
-        // excess ("store cannot contain any more provider records"), so raise
-        // the limits well beyond any realistic library size. Records are small
-        // (a key + provider set), so a generous cap costs little memory.
+        // 1024 — far too low for a real library (a node sharing >1024 files
+        // would fail to announce the excess: "store cannot contain any more
+        // provider records"). The caps are role-tuned via BehaviourConfig:
+        // generous self-provided keys for everyone, modest stored records on a
+        // client and a large pool on a bootstrap/indexer node.
         let store_config = kad::store::MemoryStoreConfig {
-            max_provided_keys: 1_000_000,
-            max_records: 1_000_000,
+            max_provided_keys: cfg.kad_max_provided_keys,
+            max_records: cfg.kad_max_records,
             ..Default::default()
         };
         let store = kad::store::MemoryStore::with_config(peer_id, store_config);
