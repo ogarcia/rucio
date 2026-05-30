@@ -153,6 +153,60 @@ docker run --user "$(id -u):$(id -g)" -v /srv/rucio:/var/lib/rucio ...
 See [Configuration](06-configuration.md) for the full list of environment
 variables accepted by the container.
 
+## Option D — Static web panel behind your own web server
+
+The `latest`/complete image already serves the panel; you only need this if you
+want to host the panel yourself — typically nginx with TLS in front of a
+**headless** daemon on another host.
+
+Download the pre-built assets from the [Releases](../../../releases) page
+(`rucio-web-<version>.tar.gz`) and unpack them where your web server can read
+them:
+
+```sh
+mkdir -p /srv/rucio-web
+tar -xzf rucio-web-*.tar.gz -C /srv/rucio-web
+```
+
+The panel makes every request same-origin (`/api/v1/...` for REST and
+`/api/ws` for the live WebSocket), so the only requirement is that your server
+serves the static files and reverse-proxies `/api/` to the daemon's API port:
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name rucio.example.com;
+
+    # TLS config (certificates, etc.) omitted.
+
+    root /srv/rucio-web;
+
+    # Static panel — SPA fallback to index.html.
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # REST API and WebSocket — proxy to the headless daemon. This single
+    # block covers both /api/v1/ and /api/ws.
+    location /api/ {
+        proxy_pass http://daemon-host:3003;
+
+        # Required for the /api/ws live-events WebSocket.
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade    $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+Run the daemon with `latest-headless` (the panel is served by nginx, not the
+daemon) and expose its API to nginx — keep `3003` on a private network rather
+than the public internet.
+
 ---
 
 ## Running as a system service (Linux / systemd)

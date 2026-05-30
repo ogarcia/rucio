@@ -90,11 +90,53 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
+  # Static web panel — the trunk-built assets, for users who want to serve the
+  # panel from their own web server (e.g. nginx + TLS) against a headless
+  # daemon. The complete binary already embeds these; this is the unbundled
+  # form. See docs/user/01-installation.md for the nginx reverse-proxy snippet.
+  # ---------------------------------------------------------------------------
+  web:
+    name: Build static web panel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm-web
+
+      - name: Install trunk
+        uses: taiki-e/install-action@v2
+        with:
+          tool: trunk
+
+      - name: Build frontend
+        run: cd rucio-web && trunk build --release
+
+      - name: Package
+        shell: bash
+        run: |
+          ARCHIVE=rucio-web-${{ github.ref_name }}.tar.gz
+          tar -czf "$ARCHIVE" -C rucio-web/dist .
+          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: rucio-web
+          path: ${{ env.ARCHIVE }}
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
   # Create GitHub Release and attach all binaries
   # ---------------------------------------------------------------------------
   release:
     name: GitHub Release
-    needs: build
+    needs: [build, web]
     runs-on: ubuntu-latest
     permissions:
       contents: write
