@@ -249,6 +249,37 @@ Run the daemon with `latest-headless` (the panel is served by nginx, not the
 daemon) and expose its API to nginx — keep `3003` on a private network rather
 than the public internet.
 
+### Add authentication (strongly recommended)
+
+> rucio has **no built-in authentication** — anything that can reach the daemon
+> can drive it. When you expose it on a public hostname, put a basic auth gate
+> in front of it at the nginx layer.
+
+Create a password file (the `htpasswd` tool ships with `apache2-utils` /
+`httpd-tools`):
+
+```sh
+htpasswd -c /etc/nginx/rucio.htpasswd youruser
+```
+
+Then add two lines to the `server` block of either variant above:
+
+```nginx
+server {
+    # ... listen / server_name / TLS as above ...
+
+    auth_basic           "rucio";
+    auth_basic_user_file /etc/nginx/rucio.htpasswd;
+
+    # ... location blocks as above ...
+}
+```
+
+The credentials cover the panel, the REST API and the `/api/ws` WebSocket in
+one go. Because the panel uses same-origin requests, the browser replays the
+basic-auth header to `/api/...` automatically once you've logged in. Only serve
+this over HTTPS — basic auth sends the password on every request.
+
 ---
 
 ## Running as a system service (Linux / systemd)
