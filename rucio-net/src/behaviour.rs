@@ -136,7 +136,17 @@ impl RucioBehaviour {
             // (InboundRequest::AddProvider) instead of storing it silently.
             kademlia_config.set_record_filtering(kad::StoreInserts::FilterBoth);
         }
-        let store = kad::store::MemoryStore::new(peer_id);
+        // The default MemoryStore caps both stored and self-provided keys at
+        // 1024. A node sharing more than ~1024 files would fail to announce the
+        // excess ("store cannot contain any more provider records"), so raise
+        // the limits well beyond any realistic library size. Records are small
+        // (a key + provider set), so a generous cap costs little memory.
+        let store_config = kad::store::MemoryStoreConfig {
+            max_provided_keys: 1_000_000,
+            max_records: 1_000_000,
+            ..Default::default()
+        };
+        let store = kad::store::MemoryStore::with_config(peer_id, store_config);
         let mut kademlia = kad::Behaviour::with_config(peer_id, store, kademlia_config);
         // Run as a full DHT server so provider records are stored and
         // propagated to other peers.  Without this libp2p defaults to client

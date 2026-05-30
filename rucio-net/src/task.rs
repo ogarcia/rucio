@@ -152,6 +152,9 @@ struct LoopState {
     relay_candidates: Vec<(PeerId, Vec<Multiaddr>)>,
     /// True once `listen_on` for a relay circuit reservation has been issued.
     relay_reserved: bool,
+    /// Set after the first `start_providing` failure so we warn about a full
+    /// provider store only once instead of for every share.
+    provider_store_full_warned: bool,
 }
 
 impl LoopState {
@@ -170,6 +173,7 @@ impl LoopState {
             kad_bootstrapped: false,
             relay_candidates: Vec::new(),
             relay_reserved: false,
+            provider_store_full_warned: false,
         }
     }
 
@@ -251,7 +255,16 @@ async fn run_loop(
                     Some(NodeCmd::StartProviding(key)) => {
                         let record_key = kad::RecordKey::new(&key);
                         if let Err(e) = swarm.behaviour_mut().kademlia.start_providing(record_key) {
-                            warn!("start_providing error: {e}");
+                            // A full provider store would otherwise log once per
+                            // share; warn a single time and stay quiet after.
+                            if !state.provider_store_full_warned {
+                                warn!(
+                                    "start_providing error: {e} — further occurrences suppressed"
+                                );
+                                state.provider_store_full_warned = true;
+                            } else {
+                                debug!("start_providing error: {e}");
+                            }
                         }
                     }
                     Some(NodeCmd::StopProviding(key)) => {
