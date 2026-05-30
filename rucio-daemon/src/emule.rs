@@ -197,42 +197,14 @@ pub async fn run_ed2k_download(
         },
     );
 
-    // Acquire a global download slot.  When all slots are busy the download
-    // parks here in the `queued` state until a running download finishes,
-    // capping the total number of open peer connections across all downloads.
-    let _slot = match download_slots.clone().try_acquire_owned() {
-        Ok(permit) => {
-            info!(
-                name = %link.name,
-                max_concurrent = config.emule.max_concurrent_downloads,
-                slots_free = download_slots.available_permits(),
-                "eMule download slot acquired"
-            );
-            permit
-        }
-        Err(_) => {
-            info!(name = %link.name, "All download slots busy — queued");
-            let _ =
-                crate::db::emule_downloads::set_status_if_running(db, download_id, "queued").await;
-            match download_slots.clone().acquire_owned().await {
-                Ok(permit) => {
-                    info!(
-                        name = %link.name,
-                        max_concurrent = config.emule.max_concurrent_downloads,
-                        slots_free = download_slots.available_permits(),
-                        "eMule download slot acquired after queuing"
-                    );
-                    permit
-                }
-                Err(_) => {
-                    // Semaphore closed — daemon shutting down.
-                    active_downloads.write().await.remove(&hash_key);
-                    live_stats.write().await.remove(&live_key);
-                    return Ok(());
-                }
-            }
-        }
-    };
+    // A download slot (`max_concurrent_downloads`) represents *actively
+    // downloading*, not merely being in this loop. We claim it only once we
+    // have sources and are about to transfer (see below), so downloads stuck in
+    // `finding_providers` never starve ones that do have sources. It is held
+    // with hysteresis: kept across short re-search rounds and released only when
+    // the download falls back to `stalled` (or pauses / finishes, when this
+    // function returns and the permit drops).
+    let mut slot: Option<tokio::sync::OwnedSemaphorePermit> = None;
 
     // How long to reuse a source cache before querying Kad2 again.
     // eMule's own re-ask interval is 30 minutes; we match it to avoid
@@ -310,6 +282,11 @@ pub async fn run_ed2k_download(
             } else {
                 "finding_providers"
             };
+            // Release the slot once stalled so a download with sources can take
+            // it; within the hysteresis window we keep it across empty rounds.
+            if status == "stalled" {
+                slot = None;
+            }
             let _ =
                 crate::db::emule_downloads::set_status_if_running(db, download_id, status).await;
             {
@@ -337,6 +314,34 @@ pub async fn run_ed2k_download(
         );
 
         let sources = cached_sources.clone();
+
+        // We have sources and are about to transfer — claim a download slot now
+        // (not earlier, so searching never consumes one). If all slots are busy,
+        // park as `queued` with the sources cached until one frees up.
+        if slot.is_none() {
+            if download_slots.available_permits() == 0 {
+                info!(name = %link.name, "Have sources — waiting for a download slot (queued)");
+                let _ =
+                    crate::db::emule_downloads::set_status_if_running(db, download_id, "queued")
+                        .await;
+            }
+            match download_slots.clone().acquire_owned().await {
+                Ok(permit) => slot = Some(permit),
+                Err(_) => {
+                    // Semaphore closed — daemon shutting down.
+                    active_downloads.write().await.remove(&hash_key);
+                    live_stats.write().await.remove(&live_key);
+                    return Ok(());
+                }
+            }
+            // The user may have paused/cancelled while we waited for the slot.
+            if let Some(reason) = stop_reason(db, download_id).await {
+                info!(name = %link.name, status = %reason, "stopped while waiting for a slot");
+                active_downloads.write().await.remove(&hash_key);
+                live_stats.write().await.remove(&live_key);
+                return Ok(());
+            }
+        }
 
         // --- Attempt parallel download from discovered sources ---
         let _ =
@@ -696,6 +701,10 @@ pub async fn run_ed2k_download(
             } else {
                 "finding_providers"
             };
+            // Release the slot once stalled (hysteresis: kept during the window).
+            if status == "stalled" {
+                slot = None;
+            }
             let _ =
                 crate::db::emule_downloads::set_status_if_running(db, download_id, status).await;
             let delay = retry_delay_secs(retry_count);
