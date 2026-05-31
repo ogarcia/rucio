@@ -66,6 +66,10 @@ pub enum Opcode {
     /// Firewall check request — payload: our TCP port (u16). Asks the peer to
     /// open a TCP connection back to us (callback) and tell us our external IP.
     FirewalledReq = 0x50,
+    /// Firewall check request v2 (eMule v7+) — payload: TCP port(u16) +
+    /// requester KadID(16) + connect options(1). Same intent as `FirewalledReq`;
+    /// modern peers send this when checking us, so we must answer it too.
+    FirewalledReq2 = 0x53,
     /// Firewall check response — payload: our external IPv4 (u32), as the peer
     /// sees us. Sent regardless of whether the TCP callback succeeded.
     FirewalledRes = 0x58,
@@ -92,6 +96,7 @@ impl Opcode {
             0x44 => Some(Self::PublishSourceReq),
             0x4b => Some(Self::PublishRes),
             0x50 => Some(Self::FirewalledReq),
+            0x53 => Some(Self::FirewalledReq2),
             0x58 => Some(Self::FirewalledRes),
             0x59 => Some(Self::FirewalledAck),
             _ => None,
@@ -572,6 +577,12 @@ pub fn decode(data: &[u8]) -> Result<KadPacket, PacketError> {
         Some(Opcode::FirewalledReq) => {
             // Payload: TCP port (u16 LE). Some senders append extra bytes; we
             // only need the port.
+            let port = read_u16(&mut cur).unwrap_or(0);
+            KadPacket::FirewalledReq { tcp_port: port }
+        }
+        Some(Opcode::FirewalledReq2) => {
+            // Payload: TCP port(u16) + requester KadID(16) + connect options(1).
+            // We only need the port; handle it like the legacy firewall request.
             let port = read_u16(&mut cur).unwrap_or(0);
             KadPacket::FirewalledReq { tcp_port: port }
         }

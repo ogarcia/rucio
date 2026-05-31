@@ -223,25 +223,49 @@ pub fn obfuscate(plain: &[u8], recv_key: u32, _our_ip: Ipv4Addr, seed: [u8; 4]) 
     obfuscate_recv_key(plain, recv_key, random_key_part)
 }
 
+/// Result of a successful deobfuscation.
+pub struct Deobfuscated {
+    /// The decrypted Kad packet, starting with `0xe4`/`0xe5`.
+    pub payload: Vec<u8>,
+    /// The `SenderVerifyKey` carried in the obfuscation header — the peer's UDP
+    /// key, which we store on the contact and echo back as `ReceiverVerifyKey`
+    /// when we obfuscate packets to them (eMule semantics). `None` for the
+    /// legacy IP-based scheme, which carries no verify keys.
+    pub sender_verify_key: Option<u32>,
+}
+
 /// Attempt to decrypt an incoming obfuscated packet.
 ///
 /// Tries the KadID scheme (using our KadID), the RecvKey scheme, and the legacy IP-based scheme.
-/// Returns the decrypted payload (starting with `0xe4`) on success.
+/// Returns the decrypted payload (starting with `0xe4`) on success. Thin wrapper
+/// over [`deobfuscate_keyed`] for callers that don't need the peer's UDP key.
 pub fn deobfuscate(
     data: &[u8],
     our_udp_key: u32,
     sender_ip: Ipv4Addr,
     our_kad_id: Option<&[u8; 16]>,
 ) -> Option<Vec<u8>> {
+    deobfuscate_keyed(data, our_udp_key, sender_ip, our_kad_id).map(|d| d.payload)
+}
+
+/// Like [`deobfuscate`], but also returns the `SenderVerifyKey` from the
+/// obfuscation header so the caller can learn the peer's UDP key.
+pub fn deobfuscate_keyed(
+    data: &[u8],
+    our_udp_key: u32,
+    sender_ip: Ipv4Addr,
+    our_kad_id: Option<&[u8; 16]>,
+) -> Option<Deobfuscated> {
     if data.len() < 9 {
         return None;
     }
 
     let random_key_part = u16::from_le_bytes(data[1..3].try_into().ok()?);
 
-    // Helper to try a given RC4 key and verify the magic.
+    // Helper to try a given RC4 key and verify the magic. Returns the payload
+    // plus the SenderVerifyKey (Kad only).
     // `kad`: if true, 8 extra verify key bytes follow the padding (aMule Kad wire format).
-    let try_key = |key: &[u8], kad: bool| -> Option<Vec<u8>> {
+    let try_key = |key: &[u8], kad: bool| -> Option<(Vec<u8>, Option<u32>)> {
         let mut rc4 = Rc4::new(key);
         let mut candidate = data[3..].to_vec();
         rc4.apply(&mut candidate);
@@ -251,15 +275,26 @@ pub fn deobfuscate(
             let magic = u32::from_le_bytes(candidate[0..4].try_into().unwrap());
             if magic == MAGICVALUE_UDP_SYNC_CLIENT {
                 let pad_len = (candidate[4] & 0x0f) as usize;
-                // Kad packets have 8 extra verify-key bytes before the payload.
+                // Kad packets have 8 extra verify-key bytes before the payload:
+                // [ReceiverVerifyKey(4 LE)][SenderVerifyKey(4 LE)].
                 let verify_overhead = if kad { 8 } else { 0 };
                 let payload_start = 5 + pad_len + verify_overhead;
                 if candidate.len() > payload_start {
+                    // The SenderVerifyKey is the second of the two verify keys —
+                    // the peer's UDP key, bound to our IP on their side.
+                    let sender_verify_key = if kad {
+                        let off = 5 + pad_len + 4;
+                        Some(u32::from_le_bytes(
+                            candidate[off..off + 4].try_into().unwrap(),
+                        ))
+                    } else {
+                        None
+                    };
                     let payload = candidate[payload_start..].to_vec();
                     if payload.first().copied() == Some(0xe4)
                         || payload.first().copied() == Some(0xe5)
                     {
-                        return Some(payload);
+                        return Some((payload, sender_verify_key));
                     }
                 }
             }
@@ -270,16 +305,22 @@ pub fn deobfuscate(
     // Try KadID scheme first (peer encrypted using our KadID).
     if let Some(kad_id) = our_kad_id {
         let key = session_key_kad_id(kad_id, random_key_part);
-        if let Some(p) = try_key(&key, true) {
-            return Some(p);
+        if let Some((payload, sender_verify_key)) = try_key(&key, true) {
+            return Some(Deobfuscated {
+                payload,
+                sender_verify_key,
+            });
         }
     }
 
     // Try RecvKey scheme (v6+ nodes that know our UDPKey).
     {
         let key = session_key_recv_key(our_udp_key, random_key_part);
-        if let Some(p) = try_key(&key, true) {
-            return Some(p);
+        if let Some((payload, sender_verify_key)) = try_key(&key, true) {
+            return Some(Deobfuscated {
+                payload,
+                sender_verify_key,
+            });
         }
     }
 
@@ -293,7 +334,10 @@ pub fn deobfuscate(
             rc4.apply(&mut candidate);
             if candidate.first().copied() == Some(0xe4) || candidate.first().copied() == Some(0xe5)
             {
-                return Some(candidate);
+                return Some(Deobfuscated {
+                    payload: candidate,
+                    sender_verify_key: None,
+                });
             }
         }
     }
@@ -452,6 +496,35 @@ mod tests {
         assert_eq!(
             recovered, plain,
             "deobfuscate must recover the original packet"
+        );
+    }
+
+    /// `deobfuscate_keyed` must recover the peer's SenderVerifyKey from the
+    /// obfuscation header — this is the peer's UDP key that lets us obfuscate
+    /// replies and send firewall checks.
+    #[test]
+    fn test_deobfuscate_keyed_extracts_sender_verify_key() {
+        let plain = vec![0xe4u8, 0x19, 0xAA, 0xBB];
+        let recv_key: u32 = 0xBEEFCAFE;
+        let rkp: u16 = 0x1234;
+        let sender_ip: std::net::Ipv4Addr = "9.9.9.9".parse().unwrap();
+        let peer_sender_key: u32 = 0x0BADF00D;
+
+        // Build a RecvKey-scheme packet carrying a non-zero SenderVerifyKey,
+        // mirroring what an eMule peer puts in the obfuscation header.
+        let key = session_key_recv_key(recv_key, rkp);
+        let mut rc4 = Rc4::new(&key);
+        let mut out = build_header(&mut rc4, 0x02, rkp, Some(0), Some(peer_sender_key));
+        let mut enc = plain.clone();
+        rc4.apply(&mut enc);
+        out.extend_from_slice(&enc);
+
+        let d = deobfuscate_keyed(&out, recv_key, sender_ip, None).unwrap();
+        assert_eq!(d.payload, plain, "payload must round-trip");
+        assert_eq!(
+            d.sender_verify_key,
+            Some(peer_sender_key),
+            "must extract the peer's SenderVerifyKey from the header"
         );
     }
 }

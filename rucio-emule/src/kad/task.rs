@@ -371,7 +371,6 @@ async fn run_task(
                             &socket,
                             our_id,
                             our_udp_key,
-                            our_external_ip,
                             &cfg,
                             &routing_table,
                             &mut active_search,
@@ -408,7 +407,7 @@ async fn run_task(
                             if fw_due {
                                 fw_check_tick = Instant::now() + FW_CHECK_INTERVAL;
                             }
-                            send_firewall_checks(&socket, &cfg, &routing_table, our_external_ip).await;
+                            send_firewall_checks(&socket, &cfg, &routing_table).await;
                         }
                     }
                 }
@@ -427,7 +426,7 @@ async fn run_task(
                             info!(external_ip = %ip, "External IP learned during Kad bootstrap");
                         }
                         // Ask a few contacts to connect back and report our IP.
-                        send_firewall_checks(&socket, &cfg, &routing_table, our_external_ip).await;
+                        send_firewall_checks(&socket, &cfg, &routing_table).await;
                         let _ = reply.send(count);
                     }
                     KadCommand::SearchSources { hash, file_size, reply } => {
@@ -452,7 +451,7 @@ async fn run_task(
                             &initial_candidates, cfg.alpha, reply,
                         );
                         debug!(sent = pkts.len(), %target, "Started Kad2 source search");
-                        send_out_packets(&socket, pkts, our_external_ip).await;
+                        send_out_packets(&socket, pkts).await;
                         active_search = Some(search);
                     }
                     KadCommand::SearchKeyword { keyword, reply } => {
@@ -477,7 +476,7 @@ async fn run_task(
                             &initial_candidates, cfg.alpha, reply,
                         );
                         info!(keyword, %target, sent = pkts.len(), "Started Kad2 keyword search");
-                        send_out_packets(&socket, pkts, our_external_ip).await;
+                        send_out_packets(&socket, pkts).await;
                         active_search = Some(search);
                     }
                     KadCommand::Status { reply } => {
@@ -504,22 +503,30 @@ async fn run_task(
 /// Send `KADEMLIA_FIREWALLED_REQ` to a few contacts so they connect back and
 /// report our external IP (firewall-check phase 1a — IP discovery).
 ///
-/// Prefers contacts that advertised a UDP key: they have completed a handshake
-/// with us, so they know our key and can obfuscate the `FIREWALLED_RES` reply
-/// back to us. Cheap and idempotent — safe to call periodically.
+/// Prefers contacts whose UDP key we know (so the request — and the
+/// `FIREWALLED_RES` reply — can be obfuscated), but falls back to any contact:
+/// eMule answers a plain firewall request unconditionally, so a key is not
+/// required to learn our IP. Cheap and idempotent — safe to call periodically.
 async fn send_firewall_checks(
     socket: &UdpSocket,
     cfg: &KadTaskConfig,
     routing_table: &Arc<RwLock<RoutingTable>>,
-    our_external_ip: std::net::Ipv4Addr,
 ) {
     let contacts: Vec<Contact> = {
         let rt = routing_table.read().await;
-        rt.all_contacts()
-            .filter(|c| c.udp_key.is_some())
-            .take(4)
-            .cloned()
-            .collect()
+        let mut keyed: Vec<Contact> = Vec::new();
+        let mut unkeyed: Vec<Contact> = Vec::new();
+        for c in rt.all_contacts() {
+            if c.udp_key.is_some() {
+                keyed.push(c.clone());
+            } else if unkeyed.len() < 4 {
+                unkeyed.push(c.clone());
+            }
+            if keyed.len() >= 4 {
+                break;
+            }
+        }
+        keyed.into_iter().chain(unkeyed).take(4).collect()
     };
     if contacts.is_empty() {
         return;
@@ -527,24 +534,23 @@ async fn send_firewall_checks(
     let req = encode_firewalled_req(cfg.tcp_port);
     for c in &contacts {
         let addr = SocketAddr::V4(c.socket_addr_udp());
-        send_kad_pkt(socket, &req, addr, c.udp_key, our_external_ip).await;
+        send_kad_pkt(socket, &req, addr, c.udp_key).await;
     }
     debug!(probes = contacts.len(), "Sent Kad firewall-check requests");
 }
 
 /// Send a Kad2 packet, obfuscating it if `recv_key` is known.
-/// Falls back to plain if our external IP is not yet known (can't obfuscate).
-/// Returns `true` if the packet was sent obfuscated, `false` if sent plain (or failed).
+/// Kad obfuscation keys are derived from the receiver's key/NodeID, not our own
+/// IP, so we can obfuscate even before we know our external address (unlike
+/// ed2k). Falls back to plain when we have no key for the peer; eMule accepts
+/// plain Kad packets. Returns `true` if sent obfuscated, `false` otherwise.
 async fn send_kad_pkt(
     socket: &UdpSocket,
     plain: &[u8],
     addr: SocketAddr,
     recv_key: Option<u32>,
-    our_ip: std::net::Ipv4Addr,
 ) -> bool {
-    if let Some(key) = recv_key
-        && !our_ip.is_unspecified()
-    {
+    if let Some(key) = recv_key {
         let rkp = super::obfuscation::random_key_part();
         let obfuscated = super::obfuscation::obfuscate_recv_key(plain, key, rkp);
         let _ = socket.send_to(&obfuscated, addr).await;
@@ -555,18 +561,14 @@ async fn send_kad_pkt(
 }
 
 /// Send a Kad2 packet obfuscated with the KadID scheme (eMule v6+).
-/// Used when we have the peer's KadID but not their announced UDPKey.
+/// Used when we have the peer's KadID but not their announced UDPKey. The KadID
+/// scheme keys off the receiver's NodeID, so our own IP is not needed.
 async fn send_kad_pkt_kad_id(
     socket: &UdpSocket,
     plain: &[u8],
     addr: SocketAddr,
     kad_id: &[u8; 16],
-    our_ip: std::net::Ipv4Addr,
 ) -> bool {
-    if our_ip.is_unspecified() {
-        let _ = socket.send_to(plain, addr).await;
-        return false;
-    }
     let rkp = super::obfuscation::random_key_part();
     let obfuscated = super::obfuscation::obfuscate_kad_id(plain, kad_id, rkp);
     let _ = socket.send_to(&obfuscated, addr).await;
@@ -582,7 +584,6 @@ async fn handle_packet(
     socket: &UdpSocket,
     our_id: KadId,
     our_udp_key: u32,
-    our_external_ip: std::net::Ipv4Addr,
     cfg: &KadTaskConfig,
     routing_table: &Arc<RwLock<RoutingTable>>,
     active_search: &mut Option<ActiveSearch>,
@@ -593,23 +594,27 @@ async fn handle_packet(
         SocketAddr::V4(a) => Some(*a.ip()),
         SocketAddr::V6(_) => None,
     };
-    let pkt = {
+    // `sender_verify_key` is the peer's UDP key, recovered from the obfuscation
+    // header of an encrypted packet (eMule carries it there, not as a HELLO tag).
+    // We store it on the contact so we can obfuscate replies and — crucially —
+    // send firewall checks to learn our own external IP.
+    let (pkt, sender_verify_key) = {
         let plain_result = decode(data);
         match plain_result {
-            Ok(p) => p,
+            Ok(p) => (p, None),
             Err(_) => {
                 // Try deobfuscation if we have sender's IPv4.
                 if let Some(ip) = src_v4_ip {
-                    if let Some(plain) = super::obfuscation::deobfuscate(
+                    if let Some(d) = super::obfuscation::deobfuscate_keyed(
                         data,
                         our_udp_key,
                         ip,
                         Some(our_id.as_bytes()),
                     ) {
-                        match decode(&plain) {
+                        match decode(&d.payload) {
                             Ok(p) => {
                                 trace!("Kad2 deobfuscated packet from {src}");
-                                p
+                                (p, d.sender_verify_key)
                             }
                             Err(e) => {
                                 trace!("Kad2 decode error (after deobfuscate) from {src}: {e}");
@@ -673,7 +678,7 @@ async fn handle_packet(
                     udp_port: src.port(),
                     tcp_port: hello.tcp_port,
                     version: hello.version,
-                    udp_key: hello.udp_key,
+                    udp_key: sender_verify_key.or(hello.udp_key),
                 };
                 routing_table.write().await.insert(contact);
             }
@@ -704,7 +709,7 @@ async fn handle_packet(
                     udp_port: src.port(),
                     tcp_port: hello.tcp_port,
                     version: hello.version,
-                    udp_key: hello.udp_key,
+                    udp_key: sender_verify_key.or(hello.udp_key),
                 };
                 routing_table.write().await.insert_or_update_key(contact);
             }
@@ -743,7 +748,7 @@ async fn handle_packet(
 
             if let (Some(s), SocketAddr::V4(sender)) = (active_search.as_mut(), src) {
                 let pkts = s.on_res(&res, sender, cfg.alpha);
-                send_out_packets(socket, pkts, our_external_ip).await;
+                send_out_packets(socket, pkts).await;
             }
         }
 
@@ -795,7 +800,7 @@ async fn handle_packet(
                     None
                 };
                 let res = encode_firewalled_res(ip);
-                send_kad_pkt(socket, &res, src, recv_key, our_external_ip).await;
+                send_kad_pkt(socket, &res, src, recv_key).await;
 
                 // The TCP callback: a short, best-effort connect is enough — the
                 // peer's listener counts the inbound connection on accept.
@@ -1008,21 +1013,13 @@ async fn do_bootstrap(
             let _ = socket.send_to(&pkt, addr).await;
             // Send HELLO_REQ: use the peer's known UDPKey if available, otherwise plain.
             // (key_from_kad_id doesn't work in practice — peers don't implement it)
-            send_kad_pkt(socket, &hello, addr, c.udp_key, our_external_ip).await;
+            send_kad_pkt(socket, &hello, addr, c.udp_key).await;
         }
     }
 
     // After bootstrap we only have contacts in low-indexed XOR buckets (far nodes).
     // Run an iterative find_node(our_id) to discover near-neighbourhood contacts.
-    do_find_node(
-        socket,
-        our_id,
-        our_udp_key,
-        our_external_ip,
-        cfg,
-        routing_table,
-    )
-    .await;
+    do_find_node(socket, our_id, our_udp_key, cfg, routing_table).await;
 
     let count = routing_table.read().await.len();
     info!(contacts = count, "Kad2 bootstrap complete");
@@ -1041,7 +1038,6 @@ async fn do_find_node(
     socket: &UdpSocket,
     our_id: KadId,
     our_udp_key: u32,
-    our_external_ip: std::net::Ipv4Addr,
     cfg: &KadTaskConfig,
     routing_table: &Arc<RwLock<RoutingTable>>,
 ) {
@@ -1067,7 +1063,7 @@ async fn do_find_node(
         for c in &candidates {
             let addr = SocketAddr::V4(c.socket_addr_udp());
             queried.insert(c.socket_addr_udp());
-            send_kad_pkt(socket, &req, addr, c.udp_key, our_external_ip).await;
+            send_kad_pkt(socket, &req, addr, c.udp_key).await;
         }
         debug!(sent = candidates.len(), round, "Kad2 find_node round");
 
@@ -1189,7 +1185,7 @@ async fn send_keepalive(
             // Stride of 31 (prime) to spread the three picks across the table.
             let c = &all[(offset + i * 31) % n];
             let addr = SocketAddr::V4(c.socket_addr_udp());
-            send_kad_pkt(socket, &hello, addr, c.udp_key, our_external_ip).await;
+            send_kad_pkt(socket, &hello, addr, c.udp_key).await;
         }
     }
     debug!(routing_table = count, "Kad2 keepalive sent");
@@ -1198,21 +1194,17 @@ async fn send_keepalive(
 // ── Search packet sender ──────────────────────────────────────────────────────
 
 /// Dispatch a batch of packets produced by [`ActiveSearch`].
-async fn send_out_packets(
-    socket: &UdpSocket,
-    packets: Vec<OutPacket>,
-    our_external_ip: std::net::Ipv4Addr,
-) {
+async fn send_out_packets(socket: &UdpSocket, packets: Vec<OutPacket>) {
     for p in packets {
         match p.obfusc {
             ObfuscMode::Plain => {
                 let _ = socket.send_to(&p.bytes, p.addr).await;
             }
             ObfuscMode::RecvKey(key) => {
-                send_kad_pkt(socket, &p.bytes, p.addr, Some(key), our_external_ip).await;
+                send_kad_pkt(socket, &p.bytes, p.addr, Some(key)).await;
             }
             ObfuscMode::KadId(id) => {
-                send_kad_pkt_kad_id(socket, &p.bytes, p.addr, &id, our_external_ip).await;
+                send_kad_pkt_kad_id(socket, &p.bytes, p.addr, &id).await;
             }
         }
     }
