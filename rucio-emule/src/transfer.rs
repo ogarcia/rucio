@@ -848,6 +848,11 @@ pub struct UploadContext {
     /// Counter of inbound TCP connections accepted since startup.
     /// Used by the status endpoint as direct evidence of reachability.
     pub inbound_connections: Arc<AtomicU64>,
+    /// Unix-seconds timestamp of the most recent inbound TCP connection
+    /// (`0` = none yet). Drives a *recent*-reachability verdict so connectivity
+    /// can decay back to firewalled if inbound stops, rather than latching Open
+    /// forever on the cumulative counter.
+    pub last_inbound_at: Arc<AtomicU64>,
     /// Cumulative bytes sent to peers via OP_SENDINGPART. The daemon polls
     /// this counter to feed session/upload metrics.
     pub uploaded_bytes: Arc<AtomicU64>,
@@ -872,6 +877,11 @@ pub async fn serve_incoming(listener: TcpListener, ctx: Arc<UploadContext>) {
         match listener.accept().await {
             Ok((stream, peer)) => {
                 ctx.inbound_connections.fetch_add(1, Ordering::Relaxed);
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                ctx.last_inbound_at.store(now, Ordering::Relaxed);
                 let ctx = Arc::clone(&ctx);
                 tokio::spawn(handle_incoming(stream, peer, ctx));
             }

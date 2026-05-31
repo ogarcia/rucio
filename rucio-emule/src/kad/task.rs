@@ -43,6 +43,11 @@ use tokio::sync::{RwLock, mpsc, oneshot};
 use tokio::time::{Instant, timeout};
 use tracing::{debug, info, trace, warn};
 
+/// How often to re-run the Kad firewall check once our IP is known, to keep the
+/// connectivity verdict fresh (open nodes keep receiving callbacks). Shorter
+/// than the daemon's recent-inbound window so an open node never decays.
+const FW_CHECK_INTERVAL: Duration = Duration::from_secs(5 * 60);
+
 // ── External-IP consensus ───────────────────────────────────────────────────
 
 /// Aggregates the external IP reported by Kad peers (via `TAG_SENDER_IP` in
@@ -311,6 +316,10 @@ async fn run_task(
     let mut recv_buf = [0u8; 4096];
     let mut active_search: Option<ActiveSearch> = None;
     let mut keepalive_tick = Instant::now() + cfg.keepalive_interval;
+    // Re-run the firewall check periodically so an open node keeps receiving
+    // callbacks (its connectivity verdict stays fresh) and a firewalled one
+    // keeps confirming it gets none.
+    let mut fw_check_tick = Instant::now() + FW_CHECK_INTERVAL;
     // Seeds from the last bootstrap call — reused for automatic re-bootstrap
     // when the routing table drops below min_contacts.
     let mut last_seeds: Vec<Contact> = Vec::new();
@@ -391,10 +400,15 @@ async fn run_task(
                         if Instant::now() >= keepalive_tick {
                             keepalive_tick = Instant::now() + cfg.keepalive_interval;
                             send_keepalive(&socket, our_id, our_udp_key, our_external_ip, &cfg, &routing_table, &last_seeds).await;
-                            // Keep probing for our external IP until we know it.
-                            if our_external_ip.is_unspecified() {
-                                send_firewall_checks(&socket, &cfg, &routing_table, our_external_ip).await;
+                        }
+                        // Probe for callbacks: aggressively until we know our IP,
+                        // then periodically to keep the connectivity verdict fresh.
+                        let fw_due = Instant::now() >= fw_check_tick;
+                        if our_external_ip.is_unspecified() || fw_due {
+                            if fw_due {
+                                fw_check_tick = Instant::now() + FW_CHECK_INTERVAL;
                             }
+                            send_firewall_checks(&socket, &cfg, &routing_table, our_external_ip).await;
                         }
                     }
                 }

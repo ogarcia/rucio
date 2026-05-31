@@ -242,6 +242,8 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     ));
     #[cfg(feature = "emule-compat")]
     let emule_inbound_connections = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    #[cfg(feature = "emule-compat")]
+    let emule_last_inbound_at = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     // Shared counters the eMule upload server bumps as it serves data; the
     // metrics tick reconciles their deltas into the session metrics.
     #[cfg(feature = "emule-compat")]
@@ -313,6 +315,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                     tcp_port,
                     downloads: active_downloads.clone(),
                     inbound_connections: emule_inbound_connections.clone(),
+                    last_inbound_at: emule_last_inbound_at.clone(),
                     uploaded_bytes: emule_uploaded_bytes.clone(),
                     chunks_served: emule_uploaded_chunks.clone(),
                     upload_limiter: Some(upload_limiter),
@@ -378,6 +381,8 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
         emule_upload_slots: emule_upload_slots.clone(),
         #[cfg(feature = "emule-compat")]
         emule_inbound_connections: emule_inbound_connections.clone(),
+        #[cfg(feature = "emule-compat")]
+        emule_last_inbound_at: emule_last_inbound_at.clone(),
         external_ip,
         live_stats: Arc::clone(&live_stats),
     };

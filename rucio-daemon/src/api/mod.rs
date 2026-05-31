@@ -360,6 +360,10 @@ pub struct AppState {
     /// Counter of inbound eMule TCP connections accepted since startup.
     #[cfg(feature = "emule-compat")]
     pub emule_inbound_connections: Arc<std::sync::atomic::AtomicU64>,
+    /// Unix-seconds timestamp of the most recent inbound eMule TCP connection
+    /// (`0` = none). Drives the recent-reachability connectivity verdict.
+    #[cfg(feature = "emule-compat")]
+    pub emule_last_inbound_at: Arc<std::sync::atomic::AtomicU64>,
     /// External IP address as reported by UPnP gateway.  `None` when no gateway found.
     pub external_ip: crate::upnp::ExternalIp,
     /// Per-download live statistics (sources, pieces in flight, speed).

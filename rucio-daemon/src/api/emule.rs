@@ -88,8 +88,14 @@ pub async fn get_emule_status(State(state): State<AppState>) -> Json<EmuleStatus
             let upload_slots_in_use =
                 upload_slots_total.saturating_sub(state.emule_upload_slots.available_permits());
 
+            let last_inbound_at = state
+                .emule_last_inbound_at
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let uptime_secs = state.started_at.elapsed().as_secs();
             let (connectivity, connectivity_reason) = classify_connectivity(
                 inbound,
+                last_inbound_at,
+                uptime_secs,
                 state.config.network.upnp,
                 upnp_external_ip.as_deref(),
                 configured_external_ip.as_deref(),
@@ -144,22 +150,42 @@ pub async fn get_emule_status(State(state): State<AppState>) -> Json<EmuleStatus
     Json(resp)
 }
 
+/// A peer connecting to us within this window counts as current proof of
+/// reachability. Longer than the Kad firewall-check interval so an open node
+/// stays Open between probes; short enough that losing reachability decays.
+#[cfg(feature = "emule-compat")]
+const RECENT_INBOUND_WINDOW_SECS: u64 = 20 * 60;
+/// Grace period after startup before "no inbound" is read as Firewalled rather
+/// than Unknown — leaves time to bootstrap Kad and run the first firewall checks.
+#[cfg(feature = "emule-compat")]
+const CONNECTIVITY_WARMUP_SECS: u64 = 5 * 60;
+
 /// Infer the eMule TCP port's connectivity class from the data the daemon has
-/// at hand.  Strongest evidence first: an actual inbound connection proves the
+/// at hand.  Strongest evidence first: a *recent* inbound connection proves the
 /// port is open; UPnP success is a strong proxy; a manually configured external
-/// IP is the user's promise; everything else is uncertain.
+/// IP is the user's promise; a warmed-up node with no inbound is firewalled;
+/// otherwise we are still determining it.
 #[cfg(feature = "emule-compat")]
 fn classify_connectivity(
     inbound: u64,
+    last_inbound_at: u64,
+    uptime_secs: u64,
     upnp_enabled: bool,
     upnp_external_ip: Option<&str>,
     configured_external_ip: Option<&str>,
 ) -> (EmuleConnectivity, String) {
-    if inbound > 0 {
-        let s = if inbound == 1 { "" } else { "s" };
+    // Most direct, current evidence: a peer connected to us recently. With the
+    // Kad firewall check actively soliciting callbacks, this reflects an
+    // actively-probed result, not just luck — and it decays if inbound stops.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if last_inbound_at != 0 && now.saturating_sub(last_inbound_at) <= RECENT_INBOUND_WINDOW_SECS {
+        let mins = now.saturating_sub(last_inbound_at) / 60;
         return (
             EmuleConnectivity::Open,
-            format!("{inbound} inbound connection{s} served"),
+            format!("inbound connection {mins} min ago ({inbound} total)"),
         );
     }
     if upnp_enabled {
@@ -177,9 +203,18 @@ fn classify_connectivity(
             "external IP configured by user".to_string(),
         );
     }
+    // No recent inbound and no UPnP/config. Once we have run long enough to
+    // bootstrap and fire firewall checks, the absence of any callback is
+    // evidence of being firewalled; before that we just don't know yet.
+    if uptime_secs >= CONNECTIVITY_WARMUP_SECS {
+        return (
+            EmuleConnectivity::Firewalled,
+            "no inbound connections after firewall checks — likely behind NAT/firewall".to_string(),
+        );
+    }
     (
         EmuleConnectivity::Unknown,
-        "UPnP disabled and no external IP configured".to_string(),
+        "determining connectivity (waiting for firewall-check callbacks)".to_string(),
     )
 }
 
@@ -256,5 +291,48 @@ pub async fn post_emule_bootstrap(
             path: save_path.display().to_string(),
             url,
         }))
+    }
+}
+
+#[cfg(all(test, feature = "emule-compat"))]
+mod tests {
+    use super::*;
+
+    fn now_secs() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }
+
+    #[test]
+    fn recent_inbound_is_open() {
+        let (c, _) = classify_connectivity(3, now_secs() - 60, 9999, false, None, None);
+        assert_eq!(c, EmuleConnectivity::Open);
+    }
+
+    #[test]
+    fn stale_inbound_falls_through() {
+        // Inbound long ago, no UPnP/config, warmed up → Firewalled, not Open.
+        let (c, _) = classify_connectivity(5, now_secs() - 3600, 9999, false, None, None);
+        assert_eq!(c, EmuleConnectivity::Firewalled);
+    }
+
+    #[test]
+    fn no_inbound_before_warmup_is_unknown() {
+        let (c, _) = classify_connectivity(0, 0, 30, false, None, None);
+        assert_eq!(c, EmuleConnectivity::Unknown);
+    }
+
+    #[test]
+    fn no_inbound_after_warmup_is_firewalled() {
+        let (c, _) = classify_connectivity(0, 0, 9999, false, None, None);
+        assert_eq!(c, EmuleConnectivity::Firewalled);
+    }
+
+    #[test]
+    fn upnp_mapping_is_open_without_inbound() {
+        let (c, _) = classify_connectivity(0, 0, 9999, true, Some("203.0.113.5"), None);
+        assert_eq!(c, EmuleConnectivity::Open);
     }
 }

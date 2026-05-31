@@ -94,6 +94,8 @@ async fn test_state() -> (
         emule_upload_slots: Arc::new(tokio::sync::Semaphore::new(4)),
         #[cfg(feature = "emule-compat")]
         emule_inbound_connections: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        #[cfg(feature = "emule-compat")]
+        emule_last_inbound_at: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         external_ip: Arc::new(tokio::sync::RwLock::new(None)),
         live_stats: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
     };
