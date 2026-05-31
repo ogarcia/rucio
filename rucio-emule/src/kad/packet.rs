@@ -947,12 +947,32 @@ pub fn encode_pong(external_port: u16) -> Vec<u8> {
 }
 
 /// Build a `KADEMLIA2_HELLO_RES` advertising our node.
-pub fn encode_hello_res(our_id: &KadId, tcp_port: u16) -> Vec<u8> {
+///
+/// When `sender_ip` is given, echo it back as `TAG_SENDER_IP` so the peer can
+/// learn its own public address without running a firewall check — this is how
+/// a node behind no UPnP/configured IP discovers its external IP from us.
+pub fn encode_hello_res(
+    our_id: &KadId,
+    tcp_port: u16,
+    sender_ip: Option<std::net::Ipv4Addr>,
+) -> Vec<u8> {
     let mut buf = vec![KAD2_PROTO, Opcode::HelloRes as u8];
     our_id.write_to(&mut buf).unwrap();
     write_u16(&mut buf, tcp_port).unwrap();
     buf.push(KAD_VERSION);
-    buf.push(0); // tag count = 0
+    match sender_ip {
+        Some(ip) if !ip.is_unspecified() => {
+            buf.push(1); // tag count = 1
+            // TAG_SENDER_IP: TAGTYPE_UINT32(0x03) + name_len(2 LE) + name[0x09]
+            // + value(u32). Encoded so our decoder recovers the octets exactly
+            // (read_u32 LE → to_be_bytes → Ipv4Addr).
+            buf.push(0x03);
+            write_u16(&mut buf, 1).unwrap();
+            buf.push(0x09);
+            write_u32(&mut buf, u32::from_be_bytes(ip.octets())).unwrap();
+        }
+        _ => buf.push(0), // tag count = 0
+    }
     buf
 }
 

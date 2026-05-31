@@ -33,6 +33,7 @@ use super::routing::RoutingTable;
 use super::search::{ActiveSearch, ObfuscMode, OutPacket};
 pub use super::search::{KadSource, KeywordHit};
 use crate::ed2k::Ed2kHash;
+use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -41,6 +42,46 @@ use tokio::net::UdpSocket;
 use tokio::sync::{RwLock, mpsc, oneshot};
 use tokio::time::{Instant, timeout};
 use tracing::{debug, info, trace, warn};
+
+// ── External-IP consensus ───────────────────────────────────────────────────
+
+/// Aggregates the external IP reported by Kad peers (via `TAG_SENDER_IP` in
+/// HelloRes / learned from Pong) and tracks the most-voted value.
+///
+/// A single peer can misreport (or lie about) our IP, so instead of trusting
+/// the first report we keep a tally and publish whichever IP currently leads.
+/// The first report wins immediately (so the IP shows up right away), but a
+/// genuinely different value will overtake it once more peers agree.
+#[derive(Default)]
+struct ExternalIpVotes {
+    votes: HashMap<Ipv4Addr, u32>,
+    leader: Option<Ipv4Addr>,
+}
+
+impl ExternalIpVotes {
+    /// Record one peer's report. Returns `Some(ip)` when the leading IP changes
+    /// (i.e. the published value should be updated), `None` otherwise.
+    fn record(&mut self, ip: Ipv4Addr) -> Option<Ipv4Addr> {
+        if ip.is_unspecified() {
+            return None;
+        }
+        let count = {
+            let e = self.votes.entry(ip).or_insert(0);
+            *e += 1;
+            *e
+        };
+        let leader_votes = self
+            .leader
+            .and_then(|l| self.votes.get(&l).copied())
+            .unwrap_or(0);
+        if self.leader != Some(ip) && count > leader_votes {
+            self.leader = Some(ip);
+            Some(ip)
+        } else {
+            None
+        }
+    }
+}
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -273,8 +314,10 @@ async fn run_task(
     // Seeds from the last bootstrap call — reused for automatic re-bootstrap
     // when the routing table drops below min_contacts.
     let mut last_seeds: Vec<Contact> = Vec::new();
-    // Our external IPv4 — seeded from config, then updated from peer responses.
+    // Our external IPv4 — seeded from config, then updated by majority vote
+    // across the IPs peers report back to us (TAG_SENDER_IP / bootstrap).
     let mut our_external_ip = cfg.initial_external_ip;
+    let mut ip_votes = ExternalIpVotes::default();
     if !our_external_ip.is_unspecified() {
         info!(%our_external_ip, "Using configured external IP for Kad2 obfuscation");
     }
@@ -313,7 +356,7 @@ async fn run_task(
                                 debug!(hex = %hex::encode(&recv_buf[..n]), %src, "Kad2 SearchRes raw hex");
                             }
                         }
-                        if let Some(ip) = handle_packet(
+                        if let Some(reported) = handle_packet(
                             &recv_buf[..n],
                             src,
                             &socket,
@@ -323,12 +366,11 @@ async fn run_task(
                             &cfg,
                             &routing_table,
                             &mut active_search,
-                        ).await {
-                            // A Pong told us our external IP.
-                            if our_external_ip.is_unspecified() {
-                                our_external_ip = ip;
-                                debug!(%our_external_ip, "Learned our external IP from Pong");
-                            }
+                        ).await
+                            && let Some(ip) = ip_votes.record(reported)
+                        {
+                            our_external_ip = ip;
+                            info!(external_ip = %ip, "External IP learned from Kad peers (consensus)");
                         }
                     }
                     Ok(Err(e)) => warn!("Kad2 recv error: {e}"),
@@ -362,8 +404,9 @@ async fn run_task(
                         let (count, learned_ip) = do_bootstrap(
                             &socket, our_id, our_udp_key, our_external_ip, &cfg, &routing_table, seeds
                         ).await;
-                        if our_external_ip.is_unspecified() && !learned_ip.is_unspecified() {
-                            our_external_ip = learned_ip;
+                        if let Some(ip) = ip_votes.record(learned_ip) {
+                            our_external_ip = ip;
+                            info!(external_ip = %ip, "External IP learned during Kad bootstrap");
                         }
                         let _ = reply.send(count);
                     }
@@ -583,7 +626,9 @@ async fn handle_packet(
                 };
                 routing_table.write().await.insert(contact);
             }
-            let resp = encode_hello_res(&our_id, cfg.tcp_port);
+            // Echo the requester's IP (as we see it) so it can learn its own
+            // external address from our HelloRes.
+            let resp = encode_hello_res(&our_id, cfg.tcp_port, src_v4_ip);
             let _ = socket.send_to(&resp, src).await;
             let ack = encode_hello_res_ack(&our_id);
             let _ = socket.send_to(&ack, src).await;
@@ -595,11 +640,11 @@ async fn handle_packet(
                 if let Some(key) = hello.udp_key {
                     trace!(%src, udp_key = key, "Got UDPKey from HelloRes");
                 }
+                // Always report the IP so the caller can tally votes across
+                // peers; the gate used to be first-write-wins and never updated.
                 if let Some(our_ip) = hello.sender_ip
                     && !our_ip.is_unspecified()
-                    && our_external_ip.is_unspecified()
                 {
-                    debug!(%our_ip, "Learned our external IP from HelloRes TAG_SENDER_IP");
                     return Some(our_ip);
                 }
                 let contact = Contact {
@@ -1073,3 +1118,33 @@ async fn send_out_packets(
 // ── Re-export for convenience ──────────────────────────────────────────────────
 
 pub use super::routing::parse_nodes_dat;
+
+#[cfg(test)]
+mod tests {
+    use super::ExternalIpVotes;
+    use std::net::Ipv4Addr;
+
+    #[test]
+    fn first_report_wins_immediately() {
+        let mut v = ExternalIpVotes::default();
+        let ip = Ipv4Addr::new(203, 0, 113, 5);
+        assert_eq!(v.record(ip), Some(ip)); // shown right away
+        assert_eq!(v.record(ip), None); // same leader, no change
+    }
+
+    #[test]
+    fn majority_overtakes_a_minority_report() {
+        let mut v = ExternalIpVotes::default();
+        let wrong = Ipv4Addr::new(10, 0, 0, 1);
+        let right = Ipv4Addr::new(203, 0, 113, 5);
+        assert_eq!(v.record(wrong), Some(wrong)); // 1 vote → leads
+        assert_eq!(v.record(right), None); // 1 vs 1, no strict majority yet
+        assert_eq!(v.record(right), Some(right)); // 2 > 1 → new leader
+    }
+
+    #[test]
+    fn unspecified_is_ignored() {
+        let mut v = ExternalIpVotes::default();
+        assert_eq!(v.record(Ipv4Addr::UNSPECIFIED), None);
+    }
+}
