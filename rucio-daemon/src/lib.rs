@@ -223,6 +223,23 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
         }
     }
 
+    // Reconcile shared dirs against disk now — inotify only sees live changes,
+    // so files added/removed/modified while the daemon was stopped (or any
+    // inotify event the kernel dropped under load) would otherwise be missed —
+    // then re-check once a day. Cheap on a stable library: it only hashes files
+    // that are actually new or whose size/mtime changed.
+    {
+        let db = db.clone();
+        let node_tx = handle.cmd_tx.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(24 * 3600));
+            loop {
+                tick.tick().await; // fires immediately on the first iteration
+                watcher::reconcile_shares(&db, &node_tx).await;
+            }
+        });
+    }
+
     // --- API server ---------------------------------------------------------
     let (ws_tx, _) = tokio::sync::broadcast::channel::<WsEvent>(256);
 

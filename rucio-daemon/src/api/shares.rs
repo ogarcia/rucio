@@ -503,6 +503,17 @@ pub async fn indexing_status(State(state): State<super::AppState>) -> Json<serde
 
 /// Hash a single file, split into chunks, and insert into the DB.
 /// Returns the root hash on success.
+/// File modification time as Unix seconds, or `0` if it can't be read. Stored
+/// with each indexed file so the rescan can detect offline changes by mtime.
+pub(crate) fn file_mtime_secs(path: &Path) -> i64 {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 pub(crate) async fn index_file(db: &crate::db::Db, path: &Path) -> anyhow::Result<[u8; 32]> {
     let path_owned = path.to_path_buf();
 
@@ -530,6 +541,7 @@ pub(crate) async fn index_file(db: &crate::db::Db, path: &Path) -> anyhow::Resul
             path: &path.to_string_lossy(),
             chunk_size: CHUNK_SIZE,
             added_at: now,
+            mtime: file_mtime_secs(path),
             chunks: &fh.chunks,
         },
     )

@@ -39,9 +39,10 @@ use tokio::sync::mpsc;
 use tokio::time::{Instant, interval};
 use tracing::{debug, info, warn};
 
-use crate::api::shares::index_file;
+use crate::api::shares::{file_mtime_secs, index_file};
 use crate::db::{self, Db};
 use crate::node::messages::NodeCmd;
+use rucio_core::protocol::hashing::collect_files;
 
 /// How long to wait after the last event for a path before indexing it.
 const DEBOUNCE_MS: u64 = 500;
@@ -342,6 +343,90 @@ async fn on_file_remove(path: &Path, db: &Db, node_tx: &mpsc::Sender<NodeCmd>) {
         }
         Ok(_) => {}
         Err(e) => warn!(path = %path.display(), "Watcher: DB error on remove: {e}"),
+    }
+}
+
+/// Reconcile every shared directory against the index, catching changes made
+/// while the daemon (and thus inotify) was not running.
+///
+/// For each watched directory the on-disk file set is compared with the index:
+/// files missing from the index are hashed and announced, files gone from disk
+/// are de-indexed, and files whose `size` or `mtime` differ are re-hashed.
+/// Unchanged files are skipped, so on a stable library this is just a directory
+/// walk + `stat` (no hashing). Run at startup and then on a long interval.
+pub async fn reconcile_shares(db: &Db, node_tx: &mpsc::Sender<NodeCmd>) {
+    let dirs = match db::shared_dirs::list(db).await {
+        Ok(d) => d,
+        Err(e) => {
+            warn!("Share rescan: cannot list shared dirs: {e}");
+            return;
+        }
+    };
+    // Index snapshot: path -> (size, mtime).
+    let db_by_path: HashMap<String, (i64, i64)> = db::shares::list(db)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|f| (f.path, (f.size, f.mtime)))
+        .collect();
+
+    let (mut added, mut changed, mut removed) = (0u64, 0u64, 0u64);
+
+    for d in &dirs {
+        let dir = PathBuf::from(&d.path);
+        // Walk + stat off the async worker threads.
+        let disk: HashMap<String, (i64, i64)> = {
+            let dir = dir.clone();
+            tokio::task::spawn_blocking(move || {
+                let mut m = HashMap::new();
+                if let Ok(files) = collect_files(&dir) {
+                    for p in files {
+                        let size = std::fs::metadata(&p)
+                            .map(|md| md.len() as i64)
+                            .unwrap_or(-1);
+                        m.insert(
+                            p.to_string_lossy().into_owned(),
+                            (size, file_mtime_secs(&p)),
+                        );
+                    }
+                }
+                m
+            })
+            .await
+            .unwrap_or_default()
+        };
+
+        // New or changed files → (re)index.
+        for (path, &(disk_size, disk_mtime)) in &disk {
+            match db_by_path.get(path) {
+                None => {
+                    on_file_upsert(Path::new(path), db, node_tx).await;
+                    added += 1;
+                }
+                Some(&(db_size, db_mtime)) if db_size != disk_size || db_mtime != disk_mtime => {
+                    on_file_upsert(Path::new(path), db, node_tx).await;
+                    changed += 1;
+                }
+                Some(_) => {} // unchanged
+            }
+        }
+
+        // Indexed files under this dir no longer on disk → de-index.
+        for path in db_by_path.keys() {
+            if Path::new(path).starts_with(&dir) && !disk.contains_key(path) {
+                on_file_remove(Path::new(path), db, node_tx).await;
+                removed += 1;
+            }
+        }
+    }
+
+    if added + changed + removed > 0 {
+        info!(
+            added,
+            changed, removed, "Share rescan reconciled offline changes"
+        );
+    } else {
+        debug!("Share rescan: index already in sync with disk");
     }
 }
 

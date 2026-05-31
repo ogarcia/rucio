@@ -28,7 +28,8 @@ CREATE TABLE IF NOT EXISTS shared_files (
     mime_type   TEXT,
     path        TEXT    NOT NULL,          -- absolute path on disk
     chunk_size  INTEGER NOT NULL DEFAULT 4194304,  -- 4 MiB
-    added_at    INTEGER NOT NULL           -- Unix seconds
+    added_at    INTEGER NOT NULL,          -- Unix seconds
+    mtime       INTEGER NOT NULL DEFAULT 0 -- file mtime (Unix seconds); change signal for the rescan
 );
 
 -- ---------------------------------------------------------------------------

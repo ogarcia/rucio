@@ -16,6 +16,9 @@ pub struct SharedFileRow {
     pub path: String,
     pub chunk_size: i64,
     pub added_at: i64,
+    /// File modification time (Unix seconds) at index time. The rescan compares
+    /// it (with `size`) against disk to detect files changed while offline.
+    pub mtime: i64,
     pub chunk_count: i64,
 }
 
@@ -28,6 +31,8 @@ pub struct NewSharedFile<'a> {
     pub path: &'a str,
     pub chunk_size: u32,
     pub added_at: u64,
+    /// File modification time (Unix seconds); change signal for the rescan.
+    pub mtime: i64,
     /// (idx, hash, size)
     pub chunks: &'a [(u32, [u8; 32], u32)],
 }
@@ -38,8 +43,8 @@ pub async fn insert(db: &Db, f: NewSharedFile<'_>) -> Result<i64> {
     let mut tx = db.begin().await?;
 
     let file_id: i64 = sqlx::query(
-        "INSERT INTO shared_files (root_hash, name, size, mime_type, path, chunk_size, added_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO shared_files (root_hash, name, size, mime_type, path, chunk_size, added_at, mtime)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
     )
     .bind(f.root_hash.as_slice())
     .bind(f.name)
@@ -48,6 +53,7 @@ pub async fn insert(db: &Db, f: NewSharedFile<'_>) -> Result<i64> {
     .bind(f.path)
     .bind(f.chunk_size as i64)
     .bind(f.added_at as i64)
+    .bind(f.mtime)
     .execute(&mut *tx)
     .await?
     .last_insert_rowid();
@@ -70,7 +76,7 @@ pub async fn insert(db: &Db, f: NewSharedFile<'_>) -> Result<i64> {
 pub async fn list(db: &Db) -> Result<Vec<SharedFileRow>> {
     let rows = sqlx::query(
         "SELECT sf.id, sf.root_hash, sf.name, sf.size, sf.mime_type, sf.path,
-                sf.chunk_size, sf.added_at,
+                sf.chunk_size, sf.added_at, sf.mtime,
                 COUNT(c.id) AS chunk_count
          FROM shared_files sf
          LEFT JOIN chunks c ON c.shared_file_id = sf.id
@@ -91,6 +97,7 @@ pub async fn list(db: &Db) -> Result<Vec<SharedFileRow>> {
             path: r.get("path"),
             chunk_size: r.get("chunk_size"),
             added_at: r.get("added_at"),
+            mtime: r.get("mtime"),
             chunk_count: r.get("chunk_count"),
         })
         .collect())
@@ -100,7 +107,7 @@ pub async fn list(db: &Db) -> Result<Vec<SharedFileRow>> {
 pub async fn get_by_hash(db: &Db, root_hash: &[u8; 32]) -> Result<Option<SharedFileRow>> {
     let row = sqlx::query(
         "SELECT sf.id, sf.root_hash, sf.name, sf.size, sf.mime_type, sf.path,
-                sf.chunk_size, sf.added_at,
+                sf.chunk_size, sf.added_at, sf.mtime,
                 COUNT(c.id) AS chunk_count
          FROM shared_files sf
          LEFT JOIN chunks c ON c.shared_file_id = sf.id
@@ -120,6 +127,7 @@ pub async fn get_by_hash(db: &Db, root_hash: &[u8; 32]) -> Result<Option<SharedF
         path: r.get("path"),
         chunk_size: r.get("chunk_size"),
         added_at: r.get("added_at"),
+        mtime: r.get("mtime"),
         chunk_count: r.get("chunk_count"),
     }))
 }
@@ -240,6 +248,7 @@ mod tests {
                 path: "/tmp/hello.txt",
                 chunk_size: 4096,
                 added_at: 1_000_000,
+                mtime: 0,
                 chunks: &chunks,
             },
         )
@@ -269,6 +278,7 @@ mod tests {
                 path: "/tmp/file.bin",
                 chunk_size: 4096,
                 added_at: 1_000_000,
+                mtime: 0,
                 chunks: &[],
             },
         )
@@ -308,6 +318,7 @@ mod tests {
                     path,
                     chunk_size: 4096,
                     added_at: 1_000_000,
+                    mtime: 0,
                     chunks: &[],
                 },
             )
@@ -339,6 +350,7 @@ mod tests {
                     path,
                     chunk_size: 4096,
                     added_at: 1_000_000,
+                    mtime: 0,
                     chunks: &[],
                 },
             )
@@ -370,6 +382,7 @@ mod tests {
                 path: "/tmp/big.bin",
                 chunk_size: 4096,
                 added_at: 1_000_000,
+                mtime: 0,
                 chunks: &chunks,
             },
         )
