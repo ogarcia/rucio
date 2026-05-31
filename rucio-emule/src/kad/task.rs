@@ -26,8 +26,8 @@
 
 use super::packet::{
     self, Contact, KadId, KadPacket, decode, encode_bootstrap_req, encode_bootstrap_res,
-    encode_hello_req, encode_hello_res, encode_hello_res_ack, encode_pong, encode_req, encode_res,
-    kad_id_from_hash,
+    encode_firewalled_req, encode_hello_req, encode_hello_res, encode_hello_res_ack, encode_pong,
+    encode_req, encode_res, kad_id_from_hash,
 };
 use super::routing::RoutingTable;
 use super::search::{ActiveSearch, ObfuscMode, OutPacket};
@@ -391,6 +391,10 @@ async fn run_task(
                         if Instant::now() >= keepalive_tick {
                             keepalive_tick = Instant::now() + cfg.keepalive_interval;
                             send_keepalive(&socket, our_id, our_udp_key, our_external_ip, &cfg, &routing_table, &last_seeds).await;
+                            // Keep probing for our external IP until we know it.
+                            if our_external_ip.is_unspecified() {
+                                send_firewall_checks(&socket, &cfg, &routing_table, our_external_ip).await;
+                            }
                         }
                     }
                 }
@@ -408,6 +412,8 @@ async fn run_task(
                             our_external_ip = ip;
                             info!(external_ip = %ip, "External IP learned during Kad bootstrap");
                         }
+                        // Ask a few contacts to connect back and report our IP.
+                        send_firewall_checks(&socket, &cfg, &routing_table, our_external_ip).await;
                         let _ = reply.send(count);
                     }
                     KadCommand::SearchSources { hash, file_size, reply } => {
@@ -480,6 +486,37 @@ async fn run_task(
 }
 
 // ── Packet handler ────────────────────────────────────────────────────────────
+
+/// Send `KADEMLIA_FIREWALLED_REQ` to a few contacts so they connect back and
+/// report our external IP (firewall-check phase 1a — IP discovery).
+///
+/// Prefers contacts that advertised a UDP key: they have completed a handshake
+/// with us, so they know our key and can obfuscate the `FIREWALLED_RES` reply
+/// back to us. Cheap and idempotent — safe to call periodically.
+async fn send_firewall_checks(
+    socket: &UdpSocket,
+    cfg: &KadTaskConfig,
+    routing_table: &Arc<RwLock<RoutingTable>>,
+    our_external_ip: std::net::Ipv4Addr,
+) {
+    let contacts: Vec<Contact> = {
+        let rt = routing_table.read().await;
+        rt.all_contacts()
+            .filter(|c| c.udp_key.is_some())
+            .take(4)
+            .cloned()
+            .collect()
+    };
+    if contacts.is_empty() {
+        return;
+    }
+    let req = encode_firewalled_req(cfg.tcp_port);
+    for c in &contacts {
+        let addr = SocketAddr::V4(c.socket_addr_udp());
+        send_kad_pkt(socket, &req, addr, c.udp_key, our_external_ip).await;
+    }
+    debug!(probes = contacts.len(), "Sent Kad firewall-check requests");
+}
 
 /// Send a Kad2 packet, obfuscating it if `recv_key` is known.
 /// Falls back to plain if our external IP is not yet known (can't obfuscate).
@@ -636,16 +673,16 @@ async fn handle_packet(
 
         // ── Hello response: ack + insert into routing table ────────────────
         KadPacket::HelloRes(hello) => {
+            let mut learned_ip = None;
             if let Some(ip) = src_v4_ip {
                 if let Some(key) = hello.udp_key {
                     trace!(%src, udp_key = key, "Got UDPKey from HelloRes");
                 }
-                // Always report the IP so the caller can tally votes across
-                // peers; the gate used to be first-write-wins and never updated.
+                // Report the IP so the caller can tally votes across peers.
                 if let Some(our_ip) = hello.sender_ip
                     && !our_ip.is_unspecified()
                 {
-                    return Some(our_ip);
+                    learned_ip = Some(our_ip);
                 }
                 let contact = Contact {
                     id: hello.id,
@@ -659,6 +696,9 @@ async fn handle_packet(
             }
             let ack = encode_hello_res_ack(&our_id);
             let _ = socket.send_to(&ack, src).await;
+            if learned_ip.is_some() {
+                return learned_ip;
+            }
         }
 
         // ── Ping: respond with Pong ────────────────────────────────────────
@@ -712,6 +752,24 @@ async fn handle_packet(
                 // from the socket's local address if it's not 0.0.0.0.
                 let _ = ip; // used below for external IP learning
             }
+        }
+
+        // ── Firewall check response: our external IP as a peer sees us ─────
+        // The most reliable external-IP source: real eMule sends this in reply
+        // to our FIREWALLED_REQ regardless of whether its TCP callback succeeds.
+        KadPacket::FirewalledRes { ip } if !ip.is_unspecified() => {
+            debug!(%src, %ip, "Got FIREWALLED_RES — our external IP");
+            return Some(ip);
+        }
+
+        // ── Firewall check request from a peer ─────────────────────────────
+        // Responding (TCP connect-back + RES) is phase 1b; for now just note it.
+        KadPacket::FirewalledReq { tcp_port } => {
+            trace!(%src, tcp_port, "Got FIREWALLED_REQ (responder pending)");
+        }
+
+        KadPacket::FirewalledAck => {
+            trace!(%src, "Got FIREWALLED_ACK");
         }
 
         KadPacket::Unknown { opcode, payload } => {

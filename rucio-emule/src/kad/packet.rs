@@ -63,6 +63,15 @@ pub enum Opcode {
     PublishSourceReq = 0x44,
     /// Publish response.
     PublishRes = 0x4b,
+    /// Firewall check request — payload: our TCP port (u16). Asks the peer to
+    /// open a TCP connection back to us (callback) and tell us our external IP.
+    FirewalledReq = 0x50,
+    /// Firewall check response — payload: our external IPv4 (u32), as the peer
+    /// sees us. Sent regardless of whether the TCP callback succeeded.
+    FirewalledRes = 0x58,
+    /// Firewall check ack — no payload. Sent by the checked node once it has
+    /// received the TCP callback, so the checker knows its probe was useful.
+    FirewalledAck = 0x59,
 }
 
 impl Opcode {
@@ -82,6 +91,9 @@ impl Opcode {
             0x61 => Some(Self::Pong),
             0x44 => Some(Self::PublishSourceReq),
             0x4b => Some(Self::PublishRes),
+            0x50 => Some(Self::FirewalledReq),
+            0x58 => Some(Self::FirewalledRes),
+            0x59 => Some(Self::FirewalledAck),
             _ => None,
         }
     }
@@ -240,6 +252,17 @@ pub enum KadPacket {
     },
     Ping,
     Pong(u16), // external UDP port echoed back
+    /// Firewall check request from a peer — it wants us to TCP-connect back to
+    /// `src_ip:tcp_port` and tell it its external IP.
+    FirewalledReq {
+        tcp_port: u16,
+    },
+    /// Firewall check response — our external IPv4 as the peer sees us.
+    FirewalledRes {
+        ip: std::net::Ipv4Addr,
+    },
+    /// Firewall check ack from a node we probed.
+    FirewalledAck,
     Unknown {
         opcode: u8,
         payload: Vec<u8>,
@@ -546,6 +569,26 @@ pub fn decode(data: &[u8]) -> Result<KadPacket, PacketError> {
 
         Some(Opcode::Ping) => KadPacket::Ping,
 
+        Some(Opcode::FirewalledReq) => {
+            // Payload: TCP port (u16 LE). Some senders append extra bytes; we
+            // only need the port.
+            let port = read_u16(&mut cur).unwrap_or(0);
+            KadPacket::FirewalledReq { tcp_port: port }
+        }
+        Some(Opcode::FirewalledRes) => {
+            // Payload: our external IPv4 (u32). Encode/decode mirror so a value
+            // we write round-trips; real eMule sends it the same way.
+            match read_u32(&mut cur) {
+                Ok(raw) => KadPacket::FirewalledRes {
+                    ip: std::net::Ipv4Addr::from(raw.to_be_bytes()),
+                },
+                Err(_) => KadPacket::Unknown {
+                    opcode,
+                    payload: Vec::new(),
+                },
+            }
+        }
+        Some(Opcode::FirewalledAck) => KadPacket::FirewalledAck,
         Some(Opcode::Pong) => {
             let port = if payload.len() >= 2 {
                 read_u16(&mut cur).unwrap_or(0)
@@ -934,6 +977,26 @@ pub fn encode_search_source_req(target: &KadId, file_size: u64) -> Vec<u8> {
     buf
 }
 
+/// Build a `KADEMLIA_FIREWALLED_REQ` (0x50): asks the peer to TCP-connect back
+/// to us on `tcp_port` and report our external IP. Payload is the port (u16 LE).
+pub fn encode_firewalled_req(tcp_port: u16) -> Vec<u8> {
+    let mut buf = vec![KAD2_PROTO, Opcode::FirewalledReq as u8];
+    write_u16(&mut buf, tcp_port).unwrap();
+    buf
+}
+
+/// Build a `KADEMLIA_FIREWALLED_RES` (0x58): tells the peer its external IPv4.
+pub fn encode_firewalled_res(ip: std::net::Ipv4Addr) -> Vec<u8> {
+    let mut buf = vec![KAD2_PROTO, Opcode::FirewalledRes as u8];
+    write_u32(&mut buf, u32::from_be_bytes(ip.octets())).unwrap();
+    buf
+}
+
+/// Build a `KADEMLIA_FIREWALLED_ACK_RES` (0x59): no payload.
+pub fn encode_firewalled_ack() -> Vec<u8> {
+    vec![KAD2_PROTO, Opcode::FirewalledAck as u8]
+}
+
 /// Build a `KADEMLIA2_PING` packet.
 pub fn encode_ping() -> Vec<u8> {
     vec![KAD2_PROTO, Opcode::Ping as u8]
@@ -1044,6 +1107,33 @@ mod tests {
         let pkt = encode_ping();
         let decoded = decode(&pkt).unwrap();
         assert!(matches!(decoded, KadPacket::Ping));
+    }
+
+    #[test]
+    fn test_firewalled_req_roundtrip() {
+        let pkt = encode_firewalled_req(4662);
+        assert_eq!(pkt[1], Opcode::FirewalledReq as u8); // 0x50
+        let decoded = decode(&pkt).unwrap();
+        assert!(matches!(
+            decoded,
+            KadPacket::FirewalledReq { tcp_port: 4662 }
+        ));
+    }
+
+    #[test]
+    fn test_firewalled_res_roundtrip() {
+        let ip = std::net::Ipv4Addr::new(203, 0, 113, 7);
+        let pkt = encode_firewalled_res(ip);
+        assert_eq!(pkt[1], Opcode::FirewalledRes as u8); // 0x58
+        let decoded = decode(&pkt).unwrap();
+        assert!(matches!(decoded, KadPacket::FirewalledRes { ip: got } if got == ip));
+    }
+
+    #[test]
+    fn test_firewalled_ack_roundtrip() {
+        let pkt = encode_firewalled_ack();
+        assert_eq!(pkt[1], Opcode::FirewalledAck as u8); // 0x59
+        assert!(matches!(decode(&pkt).unwrap(), KadPacket::FirewalledAck));
     }
 
     #[test]
