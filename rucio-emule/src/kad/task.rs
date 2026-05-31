@@ -26,8 +26,8 @@
 
 use super::packet::{
     self, Contact, KadId, KadPacket, decode, encode_bootstrap_req, encode_bootstrap_res,
-    encode_firewalled_req, encode_hello_req, encode_hello_res, encode_hello_res_ack, encode_pong,
-    encode_req, encode_res, kad_id_from_hash,
+    encode_firewalled_req, encode_firewalled_res, encode_hello_req, encode_hello_res,
+    encode_hello_res_ack, encode_pong, encode_req, encode_res, kad_id_from_hash,
 };
 use super::routing::RoutingTable;
 use super::search::{ActiveSearch, ObfuscMode, OutPacket};
@@ -763,9 +763,40 @@ async fn handle_packet(
         }
 
         // ── Firewall check request from a peer ─────────────────────────────
-        // Responding (TCP connect-back + RES) is phase 1b; for now just note it.
+        // Be the checker: tell the peer its external IP and open a TCP
+        // connection back to its advertised port so it can confirm it is
+        // reachable (not firewalled). We only ever dial the UDP packet's source
+        // IP — never an address from the payload — so we can't be turned into
+        // an amplifier against a third party.
         KadPacket::FirewalledReq { tcp_port } => {
-            trace!(%src, tcp_port, "Got FIREWALLED_REQ (responder pending)");
+            if let Some(ip) = src_v4_ip {
+                // Reply with the peer's IP (obfuscated with its key if we know it).
+                let recv_key = if let SocketAddr::V4(v4) = src {
+                    routing_table
+                        .read()
+                        .await
+                        .find_by_addr(&v4)
+                        .and_then(|c| c.udp_key)
+                } else {
+                    None
+                };
+                let res = encode_firewalled_res(ip);
+                send_kad_pkt(socket, &res, src, recv_key, our_external_ip).await;
+
+                // The TCP callback: a short, best-effort connect is enough — the
+                // peer's listener counts the inbound connection on accept.
+                if tcp_port != 0 {
+                    let target = SocketAddr::V4(std::net::SocketAddrV4::new(ip, tcp_port));
+                    tokio::spawn(async move {
+                        let _ = timeout(
+                            Duration::from_secs(5),
+                            tokio::net::TcpStream::connect(target),
+                        )
+                        .await;
+                    });
+                    trace!(%ip, tcp_port, "Firewall-check callback: dialled peer's TCP port");
+                }
+            }
         }
 
         KadPacket::FirewalledAck => {
