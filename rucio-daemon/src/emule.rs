@@ -131,14 +131,10 @@ struct ProgressState {
 /// - The user cancels it (detected by polling the DB status).
 /// - A hard infrastructure error occurs (cannot read nodes.dat, cannot create
 ///   temp directory, I/O error on the completed file, etc.).
-// A span carries the file name (filled once the link is parsed) so every log
-// line from this download identifies its file, instead of repeating
-// `name = %link.name` on each one. `dl` is the download id for cross-referencing.
+// Every log line in this function carries `dl = download_id` so it is clear
+// which download it belongs to; the "Starting eMule download" line additionally
+// logs the name + hash, so `dl` can be mapped to a file from a single line.
 #[allow(clippy::too_many_arguments)]
-#[tracing::instrument(
-    skip_all,
-    fields(dl = download_id, name = tracing::field::Empty)
-)]
 pub async fn run_ed2k_download(
     link_str: &str,
     download_id: i64,
@@ -153,15 +149,14 @@ pub async fn run_ed2k_download(
 ) -> Result<()> {
     // 1. Parse the link.
     let link = Ed2kLink::parse(link_str).with_context(|| format!("parse ed2k link: {link_str}"))?;
-    tracing::Span::current().record("name", tracing::field::display(&link.name));
-    info!(size = link.size, hash = %link.hash, "Starting eMule download");
+    info!(dl = download_id, name = %link.name, size = link.size, hash = %link.hash, "Starting eMule download");
 
     // 2. Bootstrap if the routing table is thin.
     let contact_count = kad.contact_count().await;
     if contact_count < 4 {
         info!(
-            contact_count,
-            "Routing table thin — re-bootstrapping from cached/bootstrap contacts"
+            dl = download_id,
+            contact_count, "Routing table thin — re-bootstrapping from cached/bootstrap contacts"
         );
         let seeds = load_kad_seeds(config, 200);
         if seeds.is_empty() {
@@ -171,14 +166,14 @@ pub async fn run_ed2k_download(
             anyhow::bail!("{msg}");
         }
         let after = kad.bootstrap(seeds).await;
-        info!(contacts = after, "Kad2 re-bootstrap done");
+        info!(dl = download_id, contacts = after, "Kad2 re-bootstrap done");
     } else {
         // Per-download check of the shared routing table — at info this prints
         // once per concurrent download (all identical). The single
         // "Kad2 initial bootstrap done" already reports readiness.
         debug!(
-            contact_count,
-            "Kad2 routing table ready, skipping bootstrap"
+            dl = download_id,
+            contact_count, "Kad2 routing table ready, skipping bootstrap"
         );
     }
 
@@ -229,7 +224,7 @@ pub async fn run_ed2k_download(
     loop {
         // Check for user-requested stop (cancel / pause) before doing any work.
         if let Some(reason) = stop_reason(db, download_id).await {
-            info!(status = %reason, "eMule download stopped by user");
+            info!(dl = download_id, status = %reason, "eMule download stopped by user");
             active_downloads.write().await.remove(&hash_key);
             live_stats.write().await.remove(&live_key);
             return Ok(());
@@ -250,7 +245,10 @@ pub async fn run_ed2k_download(
             .sum();
 
         if bytes_done > 0 {
-            info!(bytes_done, "Resuming from previous progress");
+            info!(
+                dl = download_id,
+                bytes_done, "Resuming from previous progress"
+            );
             let _ = crate::db::emule_downloads::set_bytes_done(db, download_id, bytes_done).await;
         }
 
@@ -265,7 +263,7 @@ pub async fn run_ed2k_download(
                 "finding_providers",
             )
             .await;
-            info!("Searching Kad2 for sources");
+            info!(dl = download_id, "Searching Kad2 for sources");
             // Race the search against a pause/cancel: if the user stops the
             // download while it's queued for or running a Kad search, abandon
             // the search (dropping the future leaves the gate's queue / releases
@@ -273,7 +271,7 @@ pub async fn run_ed2k_download(
             let fresh = tokio::select! {
                 res = kad.search_sources(link.hash, link.size) => res,
                 reason = wait_for_stop(db, download_id) => {
-                    info!(status = %reason, "stopped while searching for sources");
+                    info!(dl = download_id, status = %reason, "stopped while searching for sources");
                     active_downloads.write().await.remove(&hash_key);
                     live_stats.write().await.remove(&live_key);
                     return Ok(());
@@ -291,8 +289,10 @@ pub async fn run_ed2k_download(
             last_search_at = Some(Instant::now());
         } else {
             info!(
+                dl = download_id,
                 count = cached_sources.len(),
-                cache_age_secs, "Reusing cached sources from previous round"
+                cache_age_secs,
+                "Reusing cached sources from previous round"
             );
         }
 
@@ -321,7 +321,7 @@ pub async fn run_ed2k_download(
             }
             let delay = retry_delay_secs(retry_count);
             retry_count += 1;
-            info!(
+            info!(dl = download_id,
                 hash = %link.hash,
                 retry_in_secs = delay,
                 status,
@@ -331,6 +331,7 @@ pub async fn run_ed2k_download(
             continue;
         }
         info!(
+            dl = download_id,
             count = cached_sources.len(),
             "Proceeding with eMule sources"
         );
@@ -342,7 +343,10 @@ pub async fn run_ed2k_download(
         // park as `queued` with the sources cached until one frees up.
         if slot.is_none() {
             if download_slots.available_permits() == 0 {
-                info!("Have sources — waiting for a download slot (queued)");
+                info!(
+                    dl = download_id,
+                    "Have sources — waiting for a download slot (queued)"
+                );
                 let _ =
                     crate::db::emule_downloads::set_status_if_running(db, download_id, "queued")
                         .await;
@@ -358,7 +362,7 @@ pub async fn run_ed2k_download(
             }
             // The user may have paused/cancelled while we waited for the slot.
             if let Some(reason) = stop_reason(db, download_id).await {
-                info!(status = %reason, "stopped while waiting for a slot");
+                info!(dl = download_id, status = %reason, "stopped while waiting for a slot");
                 active_downloads.write().await.remove(&hash_key);
                 live_stats.write().await.remove(&live_key);
                 return Ok(());
@@ -372,7 +376,7 @@ pub async fn run_ed2k_download(
         // All slices complete already (shouldn't happen since the file would
         // have been renamed, but be robust).
         if done_count == num_slices {
-            info!("All slices already complete");
+            info!(dl = download_id, "All slices already complete");
             break;
         }
 
@@ -425,6 +429,7 @@ pub async fn run_ed2k_download(
             .min(num_remaining);
 
         info!(
+            dl = download_id,
             workers = max_workers,
             remaining_slices = num_remaining,
             sources = valid_sources.len(),
@@ -497,7 +502,6 @@ pub async fn run_ed2k_download(
             let db_w = db.clone();
             let hash = link.hash;
             let file_size = link.size;
-            let file_name = link.name.clone();
             let metrics_w = metrics.clone();
             let progress_w = progress.clone();
             let throttle_w = download_throttle.clone();
@@ -532,7 +536,7 @@ pub async fn run_ed2k_download(
                     let mut file = match file {
                         Ok(f) => f,
                         Err(e) => {
-                            warn!(%peer, slice = slice_idx, error = %e, "Failed to open part file");
+                            warn!(dl = download_id, %peer, slice = slice_idx, error = %e, "Failed to open part file");
                             work.lock()
                                 .unwrap()
                                 .push_front((slice_idx, slice_start, slice_end));
@@ -540,7 +544,7 @@ pub async fn run_ed2k_download(
                         }
                     };
                     if let Err(e) = file.seek(std::io::SeekFrom::Start(slice_start)).await {
-                        warn!(%peer, slice = slice_idx, error = %e, "Failed to seek part file");
+                        warn!(dl = download_id, %peer, slice = slice_idx, error = %e, "Failed to seek part file");
                         work.lock()
                             .unwrap()
                             .push_front((slice_idx, slice_start, slice_end));
@@ -550,20 +554,20 @@ pub async fn run_ed2k_download(
                     // Connect and perform the eMule handshake.
                     let mut on_connect = |ev: DownloadEvent| match ev {
                         DownloadEvent::Connected => {
-                            info!(%peer, file = %file_name, "Connected to eMule peer")
+                            info!(dl = download_id, %peer, "Connected to eMule peer")
                         }
                         DownloadEvent::Queued { rank } => {
-                            info!(%peer, file = %file_name, rank, "Queued at eMule peer")
+                            info!(dl = download_id, %peer, rank, "Queued at eMule peer")
                         }
                         DownloadEvent::Started => {
-                            info!(%peer, file = %file_name, "Peer granted upload slot — transfer starting")
+                            info!(dl = download_id, %peer, "Peer granted upload slot — transfer starting")
                         }
                         _ => {}
                     };
                     let mut session = match Session::connect(peer, &opts, &mut on_connect).await {
                         Ok(s) => s,
                         Err(e) => {
-                            debug!(%peer, slice = slice_idx, error = %e,
+                            debug!(dl = download_id, %peer, slice = slice_idx, error = %e,
                                        "Failed to connect to eMule peer");
                             work.lock()
                                 .unwrap()
@@ -604,7 +608,7 @@ pub async fn run_ed2k_download(
                             metrics_cb.record_download_bytes(delta);
                         }
                         DownloadEvent::ChunkFailed { part_index } => {
-                            warn!(part_index, "eMule chunk verification failed");
+                            warn!(dl = download_id, part_index, "eMule chunk verification failed");
                             metrics_cb.record_rejected();
                         }
                         _ => {}
@@ -615,7 +619,7 @@ pub async fn run_ed2k_download(
                         .await
                     {
                         Ok(_) => {
-                            info!(%peer, slice = slice_idx, "Slice downloaded successfully");
+                            info!(dl = download_id, %peer, slice = slice_idx, "Slice downloaded successfully");
                             // Mark slice as done and persist progress.
                             let snapshot = {
                                 let mut d = done.lock().unwrap();
@@ -666,7 +670,7 @@ pub async fn run_ed2k_download(
                             });
                         }
                         Err(e) => {
-                            debug!(%peer, slice = slice_idx, error = %e,
+                            debug!(dl = download_id, %peer, slice = slice_idx, error = %e,
                                    "Slice download failed — retrying");
                             // Roll back this slice's partial progress: it will be
                             // re-fetched from the start, so its bytes must not
@@ -730,7 +734,7 @@ pub async fn run_ed2k_download(
                 crate::db::emule_downloads::set_status_if_running(db, download_id, status).await;
             let delay = retry_delay_secs(retry_count);
             retry_count += 1;
-            info!(
+            info!(dl = download_id,
                 hash = %link.hash,
                 new_slices,
                 retry_in_secs = delay,
@@ -771,7 +775,7 @@ pub async fn run_ed2k_download(
     )
     .await;
 
-    info!(
+    info!(dl = download_id,
         blake3 = %blake3_hex,
         "eMule download complete — file ready in download directory"
     );
