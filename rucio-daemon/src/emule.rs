@@ -165,7 +165,10 @@ pub async fn run_ed2k_download(
         let after = kad.bootstrap(seeds).await;
         info!(contacts = after, "Kad2 re-bootstrap done");
     } else {
-        info!(
+        // Per-download check of the shared routing table — at info this prints
+        // once per concurrent download (all identical). The single
+        // "Kad2 initial bootstrap done" already reports readiness.
+        debug!(
             contact_count,
             "Kad2 routing table ready, skipping bootstrap"
         );
@@ -254,7 +257,7 @@ pub async fn run_ed2k_download(
                 "finding_providers",
             )
             .await;
-            info!("Searching Kad2 for sources");
+            info!(name = %link.name, "Searching Kad2 for sources");
             // Race the search against a pause/cancel: if the user stops the
             // download while it's queued for or running a Kad search, abandon
             // the search (dropping the future leaves the gate's queue / releases
