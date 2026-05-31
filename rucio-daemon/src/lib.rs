@@ -521,14 +521,13 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     // --- Main loop ----------------------------------------------------------
     let mut manifest_tick = tokio::time::interval(tokio::time::Duration::from_secs(2));
     let mut provider_refresh_tick = tokio::time::interval(tokio::time::Duration::from_secs(60));
-    // Re-announce shared files to Kademlia every 6h to keep provider records
-    // fresh before the 24h TTL (4x margin). libp2p also republishes the
-    // provided set on its own, so this is mostly belt-and-suspenders + the
-    // post-restart repopulation from the DB; the old 22-minute cadence was
-    // arbitrary and far too aggressive for large libraries. The first tick
-    // fires immediately (t=0) but we already re-announced at startup, so skip.
-    let mut reprovide_tick = tokio::time::interval(tokio::time::Duration::from_secs(6 * 3600));
-    reprovide_tick.tick().await; // consume the immediate first tick
+    // No periodic re-announce timer: libp2p republishes our provided keys on its
+    // own (~12h, before the 24h TTL) and re-replicates them to the current
+    // closest peers, which handles freshness and churn. We only need to populate
+    // libp2p's in-RAM provided set, which we do from the DB on startup and once
+    // a peer connects (below), plus per-file as the watcher indexes new shares.
+    // De-publishing deleted files is StopProviding's job (watcher + rescan), not
+    // a re-announce concern.
     // Re-bootstrap libp2p Kademlia every 10 minutes if we have no peers.
     // This recovers from a failed initial bootstrap (e.g. no internet at startup).
     let mut libp2p_bootstrap_tick =
@@ -623,12 +622,6 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
             }
             _ = provider_refresh_tick.tick() => {
                 engine.tick_provider_refresh().await;
-            }
-            _ = reprovide_tick.tick() => {
-                let announced = reannounce_shares(&db, &handle.cmd_tx).await;
-                if announced > 0 {
-                    debug!("Re-announced {announced} share(s) to Kademlia");
-                }
             }
             _ = libp2p_bootstrap_tick.tick() => {
                 let peers = node_status.read().await.connected_peers;
