@@ -26,6 +26,34 @@ use tracing::{debug, info, warn};
 use rucio_core::api::ws::WsEvent;
 use rucio_core::protocol::search::{SearchQuery, SearchResult};
 
+/// Resolves when the process should shut down: Ctrl-C / SIGINT, or SIGTERM
+/// (what a service manager like systemd sends on `stop`). Handling SIGTERM is
+/// essential — without it `systemctl stop` kills the daemon outright, skipping
+/// the graceful shutdown (final metrics flush, Kad cache save, clean DB close,
+/// which is what lets SQLite remove its `-wal`/`-shm` files).
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = term.recv() => {}
+                }
+            }
+            // If we can't install the SIGTERM handler, still honour Ctrl-C.
+            Err(_) => {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
 /// Entry point for the daemon logic.
 pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     rucio_core::logging::init(
@@ -537,8 +565,8 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     let mut reannounced_after_connect = false;
     loop {
         tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
-                info!("Received Ctrl-C, shutting down");
+            _ = shutdown_signal() => {
+                info!("Received shutdown signal, shutting down");
                 let _ = handle.cmd_tx.send(node::messages::NodeCmd::Shutdown).await;
                 // Flush remaining metric deltas to DB before exiting.
                 let delta = session_metrics.take_delta();
@@ -550,6 +578,16 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                 #[cfg(feature = "emule-compat")]
                 if config.emule.enabled {
                     emule::save_kad_cache(&config, &kad_handle).await;
+                }
+                // Close the SQLite pool cleanly as the last DB action: this
+                // checkpoints and lets SQLite remove its -wal/-shm files,
+                // confirming we shut the database down properly. Bounded so a
+                // background task still holding a connection can't hang exit.
+                if tokio::time::timeout(std::time::Duration::from_secs(5), db.close())
+                    .await
+                    .is_err()
+                {
+                    warn!("Timed out closing the database pool on shutdown");
                 }
                 break;
             }

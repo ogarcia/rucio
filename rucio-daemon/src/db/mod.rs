@@ -70,3 +70,31 @@ pub(crate) async fn apply_schema(pool: &Db) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A clean pool close must drop the last SQLite connection properly, which
+    /// in WAL mode lets SQLite remove its `-wal`/`-shm` sidecar files. Guards
+    /// the graceful-shutdown path (which calls `db.close()`).
+    #[tokio::test]
+    async fn close_removes_wal_and_shm() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        let db = open(&path).await.unwrap();
+        // Force WAL activity so the sidecar files exist while open.
+        sqlx::query("CREATE TABLE probe (x INTEGER)")
+            .execute(&db)
+            .await
+            .unwrap();
+        let wal = dir.path().join("t.db-wal");
+        let shm = dir.path().join("t.db-shm");
+        assert!(wal.exists(), "-wal should exist while the DB is open");
+
+        db.close().await;
+
+        assert!(!wal.exists(), "-wal should be gone after a clean close");
+        assert!(!shm.exists(), "-shm should be gone after a clean close");
+    }
+}
