@@ -119,6 +119,31 @@ struct Args {
     identity_count: Option<u8>,
 }
 
+/// Resolves on Ctrl-C / SIGINT, or SIGTERM (sent by a service manager like
+/// systemd on `stop`). Handling SIGTERM lets the node shut down gracefully —
+/// notably closing the indexer's SQLite pool so it removes its `-wal`/`-shm`.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = term.recv() => {}
+                }
+            }
+            Err(_) => {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     rucio_core::logging::init(
@@ -336,10 +361,20 @@ async fn main() -> Result<()> {
 
     loop {
         tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
-                info!("Received Ctrl-C — shutting down");
+            _ = shutdown_signal() => {
+                info!("Received shutdown signal — shutting down");
                 for tx in &all_cmd_txs {
                     tx.send(NodeCmd::Shutdown).await.ok();
+                }
+                // Close the indexer's SQLite pool cleanly so SQLite removes its
+                // -wal/-shm files. Bounded so a stuck query can't hang exit.
+                #[cfg(feature = "indexer")]
+                if let Some(ix) = indexer.as_ref()
+                    && tokio::time::timeout(Duration::from_secs(5), ix.close())
+                        .await
+                        .is_err()
+                {
+                    warn!("Timed out closing the indexer database on shutdown");
                 }
                 break;
             }

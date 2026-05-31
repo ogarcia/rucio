@@ -150,6 +150,12 @@ impl Indexer {
         })
     }
 
+    /// Close the SQLite pool cleanly on shutdown so SQLite checkpoints and
+    /// removes its `-wal`/`-shm` sidecar files.
+    pub async fn close(&self) {
+        self.db.close().await;
+    }
+
     /// Record an observed provider announcement, then (if enabled) kick off
     /// enrichment of the hash.
     pub async fn record(&self, hash: &[u8], provider: &PeerId) {
