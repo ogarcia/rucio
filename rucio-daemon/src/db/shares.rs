@@ -103,6 +103,18 @@ pub async fn list(db: &Db) -> Result<Vec<SharedFileRow>> {
         .collect())
 }
 
+/// List just the root hashes of every shared file.
+///
+/// Lightweight counterpart to [`list`] for the periodic Kademlia re-announce,
+/// which only needs the hashes: no `chunks` join, no metadata columns. Matters
+/// on very large libraries where the re-provide runs over every file.
+pub async fn list_root_hashes(db: &Db) -> Result<Vec<Vec<u8>>> {
+    let rows = sqlx::query("SELECT root_hash FROM shared_files")
+        .fetch_all(db)
+        .await?;
+    Ok(rows.iter().map(|r| r.get("root_hash")).collect())
+}
+
 /// Fetch a single shared file by its root hash. Returns `None` if not found.
 pub async fn get_by_hash(db: &Db, root_hash: &[u8; 32]) -> Result<Option<SharedFileRow>> {
     let row = sqlx::query(

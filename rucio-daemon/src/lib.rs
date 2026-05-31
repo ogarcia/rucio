@@ -521,11 +521,13 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     // --- Main loop ----------------------------------------------------------
     let mut manifest_tick = tokio::time::interval(tokio::time::Duration::from_secs(2));
     let mut provider_refresh_tick = tokio::time::interval(tokio::time::Duration::from_secs(60));
-    // Re-announce shared files to Kademlia every 22 minutes so provider
-    // records stay fresh before the 24h TTL expires.  The first tick fires
-    // immediately (at t=0) but we already did a full re-announce at startup,
-    // so skip it.
-    let mut reprovide_tick = tokio::time::interval(tokio::time::Duration::from_secs(22 * 60));
+    // Re-announce shared files to Kademlia every 6h to keep provider records
+    // fresh before the 24h TTL (4x margin). libp2p also republishes the
+    // provided set on its own, so this is mostly belt-and-suspenders + the
+    // post-restart repopulation from the DB; the old 22-minute cadence was
+    // arbitrary and far too aggressive for large libraries. The first tick
+    // fires immediately (t=0) but we already re-announced at startup, so skip.
+    let mut reprovide_tick = tokio::time::interval(tokio::time::Duration::from_secs(6 * 3600));
     reprovide_tick.tick().await; // consume the immediate first tick
     // Re-bootstrap libp2p Kademlia every 10 minutes if we have no peers.
     // This recovers from a failed initial bootstrap (e.g. no internet at startup).
@@ -1100,44 +1102,35 @@ async fn sample_download_speeds(
     samples.retain(|id, _| active_ids.contains(id));
 }
 
-/// Re-announce all shared files that still exist on disk to Kademlia.
+/// Re-announce every shared file's provider record to Kademlia, read straight
+/// from the DB.
 ///
-/// Files whose path no longer exists are silently removed from the DB so
-/// they are not announced as available when the data is gone.
-/// Returns the number of files successfully re-announced.
+/// Pure re-provide: it does not touch the filesystem, so its cost is one light
+/// `SELECT root_hash` plus a `StartProviding` per file — important on large
+/// libraries. Reconciling the index with disk (pruning files that vanished,
+/// picking up new ones) is the job of the live watcher and the periodic share
+/// rescan, not of this hot path.
+///
+/// Returns the number of files re-announced.
 async fn reannounce_shares(
     db: &db::Db,
     cmd_tx: &tokio::sync::mpsc::Sender<node::messages::NodeCmd>,
 ) -> usize {
-    let shares = match db::shares::list(db).await {
-        Ok(s) => s,
+    let hashes = match db::shares::list_root_hashes(db).await {
+        Ok(h) => h,
         Err(e) => {
             warn!("Could not load shares for re-announcement: {e}");
             return 0;
         }
     };
 
-    let mut announced = 0;
-    for share in &shares {
-        if !std::path::Path::new(&share.path).exists() {
-            info!(
-                path = %share.path,
-                hash = hex::encode(&share.root_hash),
-                "Shared file no longer on disk — removing from DB"
-            );
-            if let Err(e) = db::shares::delete_by_path_prefix(db, &share.path).await {
-                warn!("Failed to remove stale share {}: {e}", share.path);
-            }
-            continue;
-        }
+    let count = hashes.len();
+    for hash in hashes {
         let _ = cmd_tx
-            .send(node::messages::NodeCmd::StartProviding(
-                share.root_hash.clone(),
-            ))
+            .send(node::messages::NodeCmd::StartProviding(hash))
             .await;
-        announced += 1;
     }
-    announced
+    count
 }
 
 /// Return `true` if any of the peer's advertised addresses is publicly routable.
