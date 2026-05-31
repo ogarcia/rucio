@@ -1,0 +1,32 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", ":dependencyDashboard", ":semanticCommits"],
+  "labels": ["dependencies"],
+  "schedule": ["before 6am on monday"],
+  "prConcurrentLimit": 5,
+  "ignorePaths": ["Dockerfile"],
+  "packageRules": [
+    {
+      "description": "Batch routine crate updates into one weekly PR; majors stay separate.",
+      "matchManagers": ["cargo"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "rust crates (non-major)"
+    },
+    {
+      "description": "Group GitHub Actions bumps together.",
+      "matchManagers": ["github-actions"],
+      "groupName": "github actions"
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Keep the trunk version pinned in the Containerfile and container.yml current.",
+      "fileMatch": ["(^|/)Containerfile$", "^\\.github/workflows/container\\.yml$"],
+      "matchStrings": ["TRUNK_VERSION[=:]\\s*\"?(?<currentValue>[0-9][0-9.]*)\"?"],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "trunk-rs/trunk",
+      "extractVersionTemplate": "^v?(?<version>.+)$"
+    }
+  ]
+}
