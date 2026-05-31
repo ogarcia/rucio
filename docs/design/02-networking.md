@@ -46,15 +46,34 @@ may be literal IPs or `/dns4` / `/dns6` names — the transport is built
 `.with_dns()` so domains resolve, which lets the infrastructure survive IP
 changes. Once connected, it runs a random walk to populate its routing table.
 
-**Re-announcement timing** — the startup re-announce runs *before* any peer is
-connected, so its provider-publication queries reach nobody (they only register
-the keys locally). To actually publish into the DHT, the daemon re-announces
-once more ~5 s after the **first peer connects** (Kad bootstrap has populated
-the routing table by then). After that, a 22-minute tick keeps provider records
-fresh (DHT records expire after roughly 24–48 hours).
+**Re-announcement & republication** — libp2p republishes our provided keys on
+its own (~12 h, before the ~24 h provider-record TTL) and re-replicates them to
+the *current* closest peers, which keeps records fresh and heals DHT churn.
+There is therefore **no periodic re-announce timer**; the daemon only has to
+populate libp2p's in-RAM *provided set*, which it does:
 
-**Stale share pruning** — during re-announcement, any file path that no longer
-exists on disk is removed from the database and not re-announced.
+1. from the database **on startup** (registers the keys locally — these queries
+   reach nobody yet because no peer is connected),
+2. once more **~5 s after the first peer connects** (Kad bootstrap has populated
+   the routing table by then, so this is the publication that actually lands),
+3. **per file** as the watcher indexes a new share.
+
+After that, libp2p owns freshness. (Earlier versions ran a 22-minute re-announce
+tick; it duplicated libp2p's republication and spiked CPU proportionally to the
+share count, so it was removed.)
+
+**De-publishing** — to stop providing a removed file it must be `StopProviding`'d
+so libp2p drops it from the in-RAM provided set; **deleting it from the database
+alone is not enough**, because republication reads the provided set, not the DB.
+Every removal path pairs the DB delete with `StopProviding`: the live watcher
+(inotify), the periodic share rescan, and the `share remove` API.
+
+**Share rescan** — inotify only sees changes while the daemon runs, so a rescan
+reconciles the index with disk at **startup and every 24 h**: it hashes new
+files, de-indexes (and `StopProviding`s) vanished ones, and re-hashes those whose
+`size` or `mtime` changed. On a stable library it only walks + `stat`s (no
+hashing). This is what catches changes made while the daemon — or inotify — was
+not running.
 
 **Re-bootstrap** — the main event loop runs a 10-minute tick that re-adds
 bootstrap peers and triggers a new random walk if the node has no connected
@@ -81,6 +100,20 @@ single point of failure since a file's real providers answer `GET_PROVIDERS`
 themselves. Moving the DHT store to disk (a SQLite-backed `RecordStore`) was
 deliberately deferred — see the `indexer` module docs for the cost/options
 hierarchy.
+
+**Memory model of shares** — RAM scales ~linearly with the **number** of shared
+files, not with their size, and the per-file cost is tiny:
+
+- Each shared file adds one entry to Kademlia's in-RAM provided set (the key +
+  bookkeeping, tens of bytes), capped at `kad_max_provided_keys` — order of tens
+  of MB even at ~1M files.
+- The authoritative index (`shared_files` + `chunks`) lives **on disk** in
+  SQLite and is read on demand; there is **no resident in-memory map of all
+  shares** in the daemon. The `chunks` table grows on disk with the total bytes
+  shared, but not in RAM (SQLite's page cache is bounded).
+- File **content** is never held in RAM — chunks are read from disk when serving.
+- Allocations that are proportional to the file count (the hash list built for a
+  re-announce, the rescan's disk-vs-index maps) are transient and freed after use.
 
 ### Gossipsub
 
