@@ -7,6 +7,11 @@
   "ignorePaths": ["Dockerfile"],
   "packageRules": [
     {
+      "description": "Respect the version ranges written in Cargo.toml: update Cargo.lock only, leaving e.g. `tokio = \"1\"` untouched. A major (out of range) still edits the manifest, since it must.",
+      "matchManagers": ["cargo"],
+      "rangeStrategy": "update-lockfile"
+    },
+    {
       "description": "Batch routine crate updates into one weekly PR; majors stay separate.",
       "matchManagers": ["cargo"],
       "matchUpdateTypes": ["minor", "patch"],
