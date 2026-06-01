@@ -121,6 +121,27 @@ fn session_key_legacy(udp_key: u32, peer_ip: Ipv4Addr) -> [u8; 16] {
     h.finalize().into()
 }
 
+/// Compute the UDP verify key for a given target IP from our secret, mirroring
+/// eMule's `CPrefs::GetUDPVerifyKey`: `MD5((secret << 32) | targetIP)` folded by
+/// XOR into a non-zero `u32`.
+///
+/// This is the per-peer key we hand out as the SenderVerifyKey (so a peer can
+/// later obfuscate replies to us with the RecvKey scheme) and recompute on
+/// receipt to derive the decryption key and verify echoed ReceiverVerifyKeys.
+/// Only ever computed by us from our own `secret`, so the exact formula need
+/// only be self-consistent — we follow eMule's for clarity.
+pub fn udp_verify_key(secret: u32, target_ip: Ipv4Addr) -> u32 {
+    let buf = ((secret as u64) << 32) | (u32::from(target_ip) as u64);
+    let mut h = Md5::new();
+    h.update(buf.to_le_bytes());
+    let d: [u8; 16] = h.finalize().into();
+    let folded = u32::from_le_bytes(d[0..4].try_into().unwrap())
+        ^ u32::from_le_bytes(d[4..8].try_into().unwrap())
+        ^ u32::from_le_bytes(d[8..12].try_into().unwrap())
+        ^ u32::from_le_bytes(d[12..16].try_into().unwrap());
+    (folded % 0xFFFF_FFFE) + 1
+}
+
 /// Build the 8-byte obfuscation header and return an RC4 cipher ready for payload.
 /// The marker byte has bits[1:0] set according to the key type:
 /// - 0b00: Kad + NodeID key (kad_id provided)
@@ -179,12 +200,25 @@ fn build_header(
 /// - `plain`: unencrypted Kad packet starting with `0xe4`.
 /// - `kad_id`: the 16-byte Kademlia ID of the recipient node.
 /// - `random_key_part`: 2 random bytes (unique per packet).
-pub fn obfuscate_kad_id(plain: &[u8], kad_id: &[u8; 16], random_key_part: u16) -> Vec<u8> {
+pub fn obfuscate_kad_id(
+    plain: &[u8],
+    kad_id: &[u8; 16],
+    random_key_part: u16,
+    sender_verify_key: u32,
+) -> Vec<u8> {
     let key = session_key_kad_id(kad_id, random_key_part);
     let mut rc4 = Rc4::new(&key);
 
-    // Kad packets always include 8 bytes of verify keys (even if zero).
-    let mut out = build_header(&mut rc4, 0x00, random_key_part, Some(0), Some(0));
+    // KadID scheme: we don't know the receiver's verify key yet, so
+    // ReceiverVerifyKey is 0. SenderVerifyKey lets the peer learn our key and
+    // reply with the (cheaper, verified) RecvKey scheme next time.
+    let mut out = build_header(
+        &mut rc4,
+        0x00,
+        random_key_part,
+        Some(0),
+        Some(sender_verify_key),
+    );
 
     let mut encrypted = plain.to_vec();
     rc4.apply(&mut encrypted);
@@ -197,30 +231,30 @@ pub fn obfuscate_kad_id(plain: &[u8], kad_id: &[u8; 16], random_key_part: u16) -
 /// - `plain`: unencrypted Kad packet starting with `0xe4`.
 /// - `recv_key`: the UDPKey announced by the recipient in their HELLO.
 /// - `random_key_part`: 2 random bytes.
-pub fn obfuscate_recv_key(plain: &[u8], recv_key: u32, random_key_part: u16) -> Vec<u8> {
+pub fn obfuscate_recv_key(
+    plain: &[u8],
+    recv_key: u32,
+    random_key_part: u16,
+    sender_verify_key: u32,
+) -> Vec<u8> {
     let key = session_key_recv_key(recv_key, random_key_part);
     let mut rc4 = Rc4::new(&key);
 
-    // Kad packets always include 8 bytes of verify keys (even if zero).
-    let mut out = build_header(&mut rc4, 0x02, random_key_part, Some(0), Some(0));
+    // RecvKey scheme: `recv_key` is the key the peer gave us, so we echo it as
+    // ReceiverVerifyKey (proving we received their packets) and include our own
+    // SenderVerifyKey.
+    let mut out = build_header(
+        &mut rc4,
+        0x02,
+        random_key_part,
+        Some(recv_key),
+        Some(sender_verify_key),
+    );
 
     let mut encrypted = plain.to_vec();
     rc4.apply(&mut encrypted);
     out.extend_from_slice(&encrypted);
     out
-}
-
-/// Wrap a plain Kad2 packet in obfuscation.
-///
-/// If `recv_key` is `Some`, uses the RecvKey scheme (preferred when available).
-/// Otherwise falls back to the KadID scheme using `kad_id`.
-///
-/// `our_ip` is no longer used (kept for API stability, may be removed later).
-pub fn obfuscate(plain: &[u8], recv_key: u32, _our_ip: Ipv4Addr, seed: [u8; 4]) -> Vec<u8> {
-    // Legacy path: called from send_kad_pkt with a recv_key derived from KadID.
-    // Use the RecvKey scheme; random_key_part comes from the first 2 bytes of seed.
-    let random_key_part = u16::from_le_bytes([seed[0], seed[1]]);
-    obfuscate_recv_key(plain, recv_key, random_key_part)
 }
 
 /// Result of a successful deobfuscation.
@@ -241,18 +275,22 @@ pub struct Deobfuscated {
 /// over [`deobfuscate_keyed`] for callers that don't need the peer's UDP key.
 pub fn deobfuscate(
     data: &[u8],
-    our_udp_key: u32,
+    our_secret: u32,
     sender_ip: Ipv4Addr,
     our_kad_id: Option<&[u8; 16]>,
 ) -> Option<Vec<u8>> {
-    deobfuscate_keyed(data, our_udp_key, sender_ip, our_kad_id).map(|d| d.payload)
+    deobfuscate_keyed(data, our_secret, sender_ip, our_kad_id).map(|d| d.payload)
 }
 
 /// Like [`deobfuscate`], but also returns the `SenderVerifyKey` from the
 /// obfuscation header so the caller can learn the peer's UDP key.
+///
+/// `our_secret` is our persistent Kad UDP secret: the RecvKey scheme derives
+/// the per-peer key as `udp_verify_key(our_secret, sender_ip)`, matching the
+/// SenderVerifyKey we previously handed that peer.
 pub fn deobfuscate_keyed(
     data: &[u8],
-    our_udp_key: u32,
+    our_secret: u32,
     sender_ip: Ipv4Addr,
     our_kad_id: Option<&[u8; 16]>,
 ) -> Option<Deobfuscated> {
@@ -313,9 +351,10 @@ pub fn deobfuscate_keyed(
         }
     }
 
-    // Try RecvKey scheme (v6+ nodes that know our UDPKey).
+    // Try RecvKey scheme: the peer encrypted with the key we handed them, which
+    // is our per-peer udp_verify_key — recompute it from our secret + their IP.
     {
-        let key = session_key_recv_key(our_udp_key, random_key_part);
+        let key = session_key_recv_key(udp_verify_key(our_secret, sender_ip), random_key_part);
         if let Some((payload, sender_verify_key)) = try_key(&key, true) {
             return Some(Deobfuscated {
                 payload,
@@ -326,7 +365,7 @@ pub fn deobfuscate_keyed(
 
     // Try legacy IP-based scheme (older nodes).
     {
-        let key = session_key_legacy(our_udp_key, sender_ip);
+        let key = session_key_legacy(our_secret, sender_ip);
         let mut rc4 = Rc4::new(&key);
         // Legacy format: bytes 0-3 = seed, bytes 4-7 = recv_key XOR KEY_MAGIC, bytes 8+ = RC4(plain)
         if data.len() >= 9 {
@@ -370,7 +409,8 @@ pub fn random_key_part() -> u16 {
     h.finish() as u16
 }
 
-/// Generate a random u32 UDPKey using OS-level entropy.
+/// Generate a random u32 Kad UDP secret. Kept private to this node and fed to
+/// [`udp_verify_key`] to derive per-peer verify keys; never sent on the wire.
 pub fn random_udp_key() -> u32 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -405,7 +445,7 @@ mod tests {
         let kad_id = [1u8; 16];
         let rkp: u16 = 0x1234;
 
-        let obfuscated = obfuscate_kad_id(&plain, &kad_id, rkp);
+        let obfuscated = obfuscate_kad_id(&plain, &kad_id, rkp, 0);
         // header(8) + verify_keys(8) + payload = 16 + payload bytes
         assert!(obfuscated.len() > 16);
 
@@ -439,7 +479,7 @@ mod tests {
         let recv_key = 0xDEADBEEFu32;
         let rkp: u16 = 0xABCD;
 
-        let obfuscated = obfuscate_recv_key(&plain, recv_key, rkp);
+        let obfuscated = obfuscate_recv_key(&plain, recv_key, rkp, 0);
 
         // Verify with manual decrypt.
         let key = session_key_recv_key(recv_key, rkp);
@@ -471,7 +511,7 @@ mod tests {
         let sender_ip: std::net::Ipv4Addr = "1.2.3.4".parse().unwrap();
         let our_udp_key: u32 = 0;
 
-        let obfuscated = obfuscate_kad_id(&plain, &kad_id, rkp);
+        let obfuscated = obfuscate_kad_id(&plain, &kad_id, rkp, 0);
 
         // deobfuscate using our KadID (the sender encrypted using the recipient's KadID)
         let recovered = deobfuscate(&obfuscated, our_udp_key, sender_ip, Some(&kad_id)).unwrap();
@@ -481,18 +521,21 @@ mod tests {
         );
     }
 
-    /// Full roundtrip: obfuscate_recv_key → deobfuscate should recover the plain packet.
+    /// Full roundtrip for the RecvKey scheme: a peer encrypts with the key we
+    /// handed them (`udp_verify_key(our_secret, sender_ip)`), and deobfuscate
+    /// recovers it by recomputing that key from our secret + their IP.
     #[test]
     fn test_full_deobfuscate_recv_key_roundtrip() {
         let plain = vec![0xe4u8, 0x19, 0x01, 0x02, 0x03];
-        let recv_key: u32 = 0xBEEFCAFE;
+        let our_secret: u32 = 0xBEEFCAFE;
         let rkp: u16 = 0x1A2B;
         let sender_ip: std::net::Ipv4Addr = "5.6.7.8".parse().unwrap();
+        // The peer obfuscates to us with the key we gave them for our IP pair.
+        let recv_key = udp_verify_key(our_secret, sender_ip);
 
-        let obfuscated = obfuscate_recv_key(&plain, recv_key, rkp);
+        let obfuscated = obfuscate_recv_key(&plain, recv_key, rkp, 0);
 
-        // deobfuscate using our UDPKey (the sender encrypted using our published UDPKey)
-        let recovered = deobfuscate(&obfuscated, recv_key, sender_ip, None).unwrap();
+        let recovered = deobfuscate(&obfuscated, our_secret, sender_ip, None).unwrap();
         assert_eq!(
             recovered, plain,
             "deobfuscate must recover the original packet"
@@ -505,26 +548,44 @@ mod tests {
     #[test]
     fn test_deobfuscate_keyed_extracts_sender_verify_key() {
         let plain = vec![0xe4u8, 0x19, 0xAA, 0xBB];
-        let recv_key: u32 = 0xBEEFCAFE;
+        let our_secret: u32 = 0xBEEFCAFE;
         let rkp: u16 = 0x1234;
         let sender_ip: std::net::Ipv4Addr = "9.9.9.9".parse().unwrap();
         let peer_sender_key: u32 = 0x0BADF00D;
 
-        // Build a RecvKey-scheme packet carrying a non-zero SenderVerifyKey,
-        // mirroring what an eMule peer puts in the obfuscation header.
+        // A peer obfuscates to us with the key we handed them for our IP pair,
+        // and carries its own SenderVerifyKey in the header.
+        let recv_key = udp_verify_key(our_secret, sender_ip);
         let key = session_key_recv_key(recv_key, rkp);
         let mut rc4 = Rc4::new(&key);
-        let mut out = build_header(&mut rc4, 0x02, rkp, Some(0), Some(peer_sender_key));
+        let mut out = build_header(&mut rc4, 0x02, rkp, Some(recv_key), Some(peer_sender_key));
         let mut enc = plain.clone();
         rc4.apply(&mut enc);
         out.extend_from_slice(&enc);
 
-        let d = deobfuscate_keyed(&out, recv_key, sender_ip, None).unwrap();
+        let d = deobfuscate_keyed(&out, our_secret, sender_ip, None).unwrap();
         assert_eq!(d.payload, plain, "payload must round-trip");
         assert_eq!(
             d.sender_verify_key,
             Some(peer_sender_key),
             "must extract the peer's SenderVerifyKey from the header"
         );
+    }
+
+    /// The SenderVerifyKey we put in an outgoing packet (so the peer can reply
+    /// via RecvKey) must equal the key we recompute to decrypt that reply — the
+    /// core self-consistency of the verify-key scheme.
+    #[test]
+    fn test_verify_key_send_recv_consistency() {
+        let our_secret: u32 = 0x1357_9BDF;
+        let peer_ip: std::net::Ipv4Addr = "203.0.113.7".parse().unwrap();
+
+        // What we hand the peer as our SenderVerifyKey...
+        let handed_out = udp_verify_key(our_secret, peer_ip);
+        // ...is exactly what we recompute (from secret + their source IP) to
+        // derive the RecvKey-scheme decryption key for their reply.
+        let recomputed = udp_verify_key(our_secret, peer_ip);
+        assert_eq!(handed_out, recomputed);
+        assert_ne!(handed_out, 0, "verify keys are always non-zero");
     }
 }

@@ -952,17 +952,15 @@ pub fn keyword_target(keyword: &str) -> KadId {
 /// Build a `KADEMLIA2_HELLO_REQ` advertising our node details, including our UDPKey.
 ///
 /// `our_udp_key`: our u32 obfuscation key (advertised so peers can send us obfuscated packets).
-pub fn encode_hello_req(our_id: &KadId, tcp_port: u16, our_udp_key: u32) -> Vec<u8> {
+pub fn encode_hello_req(our_id: &KadId, tcp_port: u16) -> Vec<u8> {
     let mut buf = vec![KAD2_PROTO, Opcode::HelloReq as u8];
     our_id.write_to(&mut buf).unwrap();
     write_u16(&mut buf, tcp_port).unwrap();
     buf.push(KAD_VERSION);
-    // 1 tag: TAG_UDPKEY (type=TAGTYPE_UINT32=0x03, name=uint16(1)+[0x08])
-    buf.push(1); // tag count
-    buf.push(0x03); // type = TAGTYPE_UINT32
-    write_u16(&mut buf, 1).unwrap(); // name length = 1 (as uint16 per aMule wire format)
-    buf.push(0x08); // name = TAG_UDPKEY
-    write_u32(&mut buf, our_udp_key).unwrap();
+    // No tags. Our UDP key is never advertised here — it is our secret. Peers
+    // learn the per-peer SenderVerifyKey from the obfuscation header instead
+    // (eMule does the same; KADEMLIA2_HELLO carries no UDP-key tag).
+    buf.push(0); // tag count
     buf
 }
 

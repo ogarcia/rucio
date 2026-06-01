@@ -282,6 +282,8 @@ pub fn spawn(socket: Arc<UdpSocket>, our_id: KadId, cfg: KadTaskConfig) -> KadHa
     let external_ip = Arc::new(AtomicU32::new(0));
     let ip_clone = Arc::clone(&external_ip);
     let (cmd_tx, cmd_rx) = mpsc::channel(64);
+    // Our persistent (per-session) Kad UDP secret. Never sent on the wire; used
+    // to derive per-peer verify keys (see `obfuscation::udp_verify_key`).
     let our_udp_key = super::obfuscation::random_udp_key();
 
     tokio::spawn(run_task(
@@ -327,11 +329,14 @@ async fn run_task(
     // across the IPs peers report back to us (TAG_SENDER_IP / bootstrap).
     let mut our_external_ip = cfg.initial_external_ip;
     let mut ip_votes = ExternalIpVotes::default();
+    // Latches once we first decode an obfuscated incoming packet, so we log
+    // "obfuscation active" a single time instead of per packet.
+    let mut obfusc_logged = false;
     if !our_external_ip.is_unspecified() {
         info!(%our_external_ip, "Using configured external IP for Kad2 obfuscation");
     }
 
-    info!(udp_key = our_udp_key, "Kad2 task started");
+    info!("Kad2 task started");
 
     loop {
         // Publish the current external IP so `KadHandle::external_ip` can read
@@ -374,6 +379,7 @@ async fn run_task(
                             &cfg,
                             &routing_table,
                             &mut active_search,
+                            &mut obfusc_logged,
                         ).await
                             && let Some(ip) = ip_votes.record(reported)
                         {
@@ -407,7 +413,7 @@ async fn run_task(
                             if fw_due {
                                 fw_check_tick = Instant::now() + FW_CHECK_INTERVAL;
                             }
-                            send_firewall_checks(&socket, &cfg, &routing_table).await;
+                            send_firewall_checks(&socket, &cfg, &routing_table, our_udp_key).await;
                         }
                     }
                 }
@@ -426,7 +432,7 @@ async fn run_task(
                             info!(external_ip = %ip, "External IP learned during Kad bootstrap");
                         }
                         // Ask a few contacts to connect back and report our IP.
-                        send_firewall_checks(&socket, &cfg, &routing_table).await;
+                        send_firewall_checks(&socket, &cfg, &routing_table, our_udp_key).await;
                         let _ = reply.send(count);
                     }
                     KadCommand::SearchSources { hash, file_size, reply } => {
@@ -451,7 +457,7 @@ async fn run_task(
                             &initial_candidates, cfg.alpha, reply,
                         );
                         debug!(sent = pkts.len(), %target, "Started Kad2 source search");
-                        send_out_packets(&socket, pkts).await;
+                        send_out_packets(&socket, pkts, our_udp_key).await;
                         active_search = Some(search);
                     }
                     KadCommand::SearchKeyword { keyword, reply } => {
@@ -476,7 +482,7 @@ async fn run_task(
                             &initial_candidates, cfg.alpha, reply,
                         );
                         info!(keyword, %target, sent = pkts.len(), "Started Kad2 keyword search");
-                        send_out_packets(&socket, pkts).await;
+                        send_out_packets(&socket, pkts, our_udp_key).await;
                         active_search = Some(search);
                     }
                     KadCommand::Status { reply } => {
@@ -511,6 +517,7 @@ async fn send_firewall_checks(
     socket: &UdpSocket,
     cfg: &KadTaskConfig,
     routing_table: &Arc<RwLock<RoutingTable>>,
+    our_udp_key: u32,
 ) {
     let contacts: Vec<Contact> = {
         let rt = routing_table.read().await;
@@ -534,9 +541,19 @@ async fn send_firewall_checks(
     let req = encode_firewalled_req(cfg.tcp_port);
     for c in &contacts {
         let addr = SocketAddr::V4(c.socket_addr_udp());
-        send_kad_pkt(socket, &req, addr, c.udp_key).await;
+        send_kad_pkt(socket, &req, addr, c.udp_key, our_udp_key).await;
     }
     debug!(probes = contacts.len(), "Sent Kad firewall-check requests");
+}
+
+/// Our SenderVerifyKey for a given peer, derived from our secret and the peer's
+/// IP. Included in obfuscated packets so the peer can store our key and reply
+/// with the verified RecvKey scheme. Zero for non-IPv4 peers (we only speak v4).
+fn sender_verify_key(addr: SocketAddr, our_secret: u32) -> u32 {
+    match addr {
+        SocketAddr::V4(v4) => super::obfuscation::udp_verify_key(our_secret, *v4.ip()),
+        SocketAddr::V6(_) => 0,
+    }
 }
 
 /// Send a Kad2 packet, obfuscating it if `recv_key` is known.
@@ -549,10 +566,12 @@ async fn send_kad_pkt(
     plain: &[u8],
     addr: SocketAddr,
     recv_key: Option<u32>,
+    our_secret: u32,
 ) -> bool {
     if let Some(key) = recv_key {
         let rkp = super::obfuscation::random_key_part();
-        let obfuscated = super::obfuscation::obfuscate_recv_key(plain, key, rkp);
+        let svk = sender_verify_key(addr, our_secret);
+        let obfuscated = super::obfuscation::obfuscate_recv_key(plain, key, rkp, svk);
         let _ = socket.send_to(&obfuscated, addr).await;
         return true;
     }
@@ -568,9 +587,11 @@ async fn send_kad_pkt_kad_id(
     plain: &[u8],
     addr: SocketAddr,
     kad_id: &[u8; 16],
+    our_secret: u32,
 ) -> bool {
     let rkp = super::obfuscation::random_key_part();
-    let obfuscated = super::obfuscation::obfuscate_kad_id(plain, kad_id, rkp);
+    let svk = sender_verify_key(addr, our_secret);
+    let obfuscated = super::obfuscation::obfuscate_kad_id(plain, kad_id, rkp, svk);
     let _ = socket.send_to(&obfuscated, addr).await;
     true
 }
@@ -587,6 +608,7 @@ async fn handle_packet(
     cfg: &KadTaskConfig,
     routing_table: &Arc<RwLock<RoutingTable>>,
     active_search: &mut Option<ActiveSearch>,
+    obfusc_logged: &mut bool,
 ) -> Option<std::net::Ipv4Addr> {
     // Try plain decode first; if that fails and the packet doesn't start with
     // 0xe4/0xe5, attempt to deobfuscate using our UDPKey.
@@ -613,7 +635,13 @@ async fn handle_packet(
                     ) {
                         match decode(&d.payload) {
                             Ok(p) => {
-                                trace!("Kad2 deobfuscated packet from {src}");
+                                if !*obfusc_logged {
+                                    *obfusc_logged = true;
+                                    info!(
+                                        "Kad2: obfuscated UDP communication active — peers are encrypting traffic to us"
+                                    );
+                                }
+                                trace!(%src, "Kad2 deobfuscated (encrypted) packet");
                                 (p, d.sender_verify_key)
                             }
                             Err(e) => {
@@ -678,7 +706,7 @@ async fn handle_packet(
                     udp_port: src.port(),
                     tcp_port: hello.tcp_port,
                     version: hello.version,
-                    udp_key: sender_verify_key.or(hello.udp_key),
+                    udp_key: sender_verify_key.filter(|&k| k != 0).or(hello.udp_key),
                 };
                 routing_table.write().await.insert(contact);
             }
@@ -709,7 +737,7 @@ async fn handle_packet(
                     udp_port: src.port(),
                     tcp_port: hello.tcp_port,
                     version: hello.version,
-                    udp_key: sender_verify_key.or(hello.udp_key),
+                    udp_key: sender_verify_key.filter(|&k| k != 0).or(hello.udp_key),
                 };
                 routing_table.write().await.insert_or_update_key(contact);
             }
@@ -748,7 +776,7 @@ async fn handle_packet(
 
             if let (Some(s), SocketAddr::V4(sender)) = (active_search.as_mut(), src) {
                 let pkts = s.on_res(&res, sender, cfg.alpha);
-                send_out_packets(socket, pkts).await;
+                send_out_packets(socket, pkts, our_udp_key).await;
             }
         }
 
@@ -800,7 +828,7 @@ async fn handle_packet(
                     None
                 };
                 let res = encode_firewalled_res(ip);
-                send_kad_pkt(socket, &res, src, recv_key).await;
+                send_kad_pkt(socket, &res, src, recv_key, our_udp_key).await;
 
                 // The TCP callback: a short, best-effort connect is enough — the
                 // peer's listener counts the inbound connection on accept.
@@ -863,7 +891,7 @@ async fn do_bootstrap(
     // ── Round 0: send BOOTSTRAP_REQ + HELLO_REQ to all seeds ─────────────
     let mut recv_buf = [0u8; 4096];
     let pkt = encode_bootstrap_req();
-    let hello0 = encode_hello_req(&our_id, cfg.tcp_port, our_udp_key);
+    let hello0 = encode_hello_req(&our_id, cfg.tcp_port);
     let mut sent = 0usize;
     for seed in &seeds {
         let addr = SocketAddr::V4(seed.socket_addr_udp());
@@ -1006,14 +1034,14 @@ async fn do_bootstrap(
             round = round + 1,
             "Starting next bootstrap round"
         );
-        let hello = encode_hello_req(&our_id, cfg.tcp_port, our_udp_key);
+        let hello = encode_hello_req(&our_id, cfg.tcp_port);
         for c in &new_contacts {
             let addr = SocketAddr::V4(c.socket_addr_udp());
             already_queried.insert(c.socket_addr_udp());
             let _ = socket.send_to(&pkt, addr).await;
             // Send HELLO_REQ: use the peer's known UDPKey if available, otherwise plain.
             // (key_from_kad_id doesn't work in practice — peers don't implement it)
-            send_kad_pkt(socket, &hello, addr, c.udp_key).await;
+            send_kad_pkt(socket, &hello, addr, c.udp_key, our_udp_key).await;
         }
     }
 
@@ -1063,7 +1091,7 @@ async fn do_find_node(
         for c in &candidates {
             let addr = SocketAddr::V4(c.socket_addr_udp());
             queried.insert(c.socket_addr_udp());
-            send_kad_pkt(socket, &req, addr, c.udp_key).await;
+            send_kad_pkt(socket, &req, addr, c.udp_key, our_udp_key).await;
         }
         debug!(sent = candidates.len(), round, "Kad2 find_node round");
 
@@ -1168,7 +1196,7 @@ async fn send_keepalive(
     // same three entries at the front of bucket 0.
     let all: Vec<_> = routing_table.read().await.all_contacts().cloned().collect();
     let n = all.len();
-    let hello = encode_hello_req(&our_id, cfg.tcp_port, our_udp_key);
+    let hello = encode_hello_req(&our_id, cfg.tcp_port);
     if n > 0 {
         // Derive a pseudo-random offset from wall-clock nanoseconds — no
         // external dependency needed, and sufficient for non-security use.
@@ -1185,7 +1213,7 @@ async fn send_keepalive(
             // Stride of 31 (prime) to spread the three picks across the table.
             let c = &all[(offset + i * 31) % n];
             let addr = SocketAddr::V4(c.socket_addr_udp());
-            send_kad_pkt(socket, &hello, addr, c.udp_key).await;
+            send_kad_pkt(socket, &hello, addr, c.udp_key, our_udp_key).await;
         }
     }
     debug!(routing_table = count, "Kad2 keepalive sent");
@@ -1194,17 +1222,17 @@ async fn send_keepalive(
 // ── Search packet sender ──────────────────────────────────────────────────────
 
 /// Dispatch a batch of packets produced by [`ActiveSearch`].
-async fn send_out_packets(socket: &UdpSocket, packets: Vec<OutPacket>) {
+async fn send_out_packets(socket: &UdpSocket, packets: Vec<OutPacket>, our_udp_key: u32) {
     for p in packets {
         match p.obfusc {
             ObfuscMode::Plain => {
                 let _ = socket.send_to(&p.bytes, p.addr).await;
             }
             ObfuscMode::RecvKey(key) => {
-                send_kad_pkt(socket, &p.bytes, p.addr, Some(key)).await;
+                send_kad_pkt(socket, &p.bytes, p.addr, Some(key), our_udp_key).await;
             }
             ObfuscMode::KadId(id) => {
-                send_kad_pkt_kad_id(socket, &p.bytes, p.addr, &id).await;
+                send_kad_pkt_kad_id(socket, &p.bytes, p.addr, &id, our_udp_key).await;
             }
         }
     }
