@@ -11,7 +11,8 @@ use gloo_timers::future::sleep;
 use crate::icons::{self, Icon};
 use crate::types::{
     DownloadDetailResponse, DownloadPiecesResponse, DownloadResponse, DownloadState, PieceState,
-    TempLimitRequest, TempLimitStatus, format_eta, format_size, format_speed, is_streamed_state,
+    RenameDownloadRequest, TempLimitRequest, TempLimitStatus, format_eta, format_size,
+    format_speed, is_streamed_state,
 };
 
 /// Toggle the daemon's temporary speed limit; returns the resulting state.
@@ -129,6 +130,18 @@ async fn api_pause(id: i64) {
     let _ = gloo_net::http::Request::post(&format!("/api/v1/downloads/{id}/pause"))
         .send()
         .await;
+}
+
+/// Rename an in-progress download. Returns `true` on success (HTTP 2xx).
+async fn api_rename(id: i64, name: String) -> bool {
+    let body = RenameDownloadRequest { name };
+    if let Ok(req) =
+        gloo_net::http::Request::post(&format!("/api/v1/downloads/{id}/rename")).json(&body)
+        && let Ok(resp) = req.send().await
+    {
+        return resp.ok();
+    }
+    false
 }
 
 async fn api_resume(id: i64) {
@@ -806,6 +819,8 @@ fn DownloadInfoOverlay(
         .name
         .clone()
         .unwrap_or_else(|| format!("{}…", &detail.root_hash[..16]));
+    // Title is reactive so a successful rename updates it without reopening.
+    let display_name = RwSignal::new(name);
 
     let pct = detail.size.map(|total| {
         if total == 0 {
@@ -815,11 +830,18 @@ fn DownloadInfoOverlay(
         }
     });
 
+    // Renaming changes the name the file is saved as on completion; only allowed
+    // while the download is unfinished (a completed file already belongs to the
+    // user). Pre-fill with the current name.
+    let renamable = !is_terminal(&detail.state);
+    let name_input = RwSignal::new(detail.name.clone().unwrap_or_default());
+    let saving = RwSignal::new(false);
+
     view! {
         <div class="overlay-backdrop" on:click=move |_| on_close()>
             <div class="overlay overlay-wide" on:click=move |e| e.stop_propagation()>
                 <div class="overlay-header">
-                    <span class="overlay-title">{name}</span>
+                    <span class="overlay-title">{move || display_name.get()}</span>
                     <button class="overlay-close" on:click=move |_| on_close()>
                         <Icon paths=icons::X/>
                     </button>
@@ -879,6 +901,41 @@ fn DownloadInfoOverlay(
                             <dd class="mono">{l}</dd>
                         })}
                     </dl>
+
+                    {renamable.then(|| view! {
+                        <div class="dl-rename" style="display:flex; gap:8px; margin:14px 0;">
+                            <input
+                                class="config-input"
+                                style="flex:1;"
+                                type="text"
+                                placeholder="File name"
+                                prop:value=move || name_input.get()
+                                on:input=move |e| name_input.set(event_target_value(&e))
+                            />
+                            <button
+                                class="btn-sm btn-primary"
+                                style="min-width: 5.5rem;"
+                                disabled=move || saving.get()
+                                on:click=move |_| {
+                                    let new = name_input.get_untracked().trim().to_string();
+                                    if new.is_empty() || saving.get_untracked() {
+                                        return;
+                                    }
+                                    saving.set(true);
+                                    spawn_local(async move {
+                                        if api_rename(id, new.clone()).await {
+                                            // Keep the modal open; reflect the new
+                                            // name in the title and input.
+                                            display_name.set(new);
+                                        }
+                                        saving.set(false);
+                                    });
+                                }
+                            >
+                                {move || if saving.get() { "Renaming…" } else { "Rename" }}
+                            </button>
+                        </div>
+                    })}
 
                     <div class="piece-map-wrap">
                         <span class="section-label">"Pieces"</span>

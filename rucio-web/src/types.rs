@@ -256,6 +256,11 @@ pub struct TempLimitStatus {
 }
 
 #[derive(Serialize)]
+pub struct RenameDownloadRequest {
+    pub name: String,
+}
+
+#[derive(Serialize)]
 pub struct TempLimitRequest {
     pub active: bool,
 }
