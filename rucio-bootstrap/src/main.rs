@@ -33,7 +33,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use libp2p::{Multiaddr, PeerId};
 use tokio::sync::mpsc;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use rucio_net::{BehaviourConfig, NetConfig, NodeCmd, NodeEvent};
 
@@ -401,7 +401,9 @@ async fn main() -> Result<()> {
                         announce(addr, &peer_id);
                     }
                     NodeEvent::ObservedAddr { ref addr, .. } if swarm_idx == 0 => {
-                        info!("Observed public address: {addr}/p2p/{peer_id}");
+                        // Our own external address as a peer sees us — useful for
+                        // diagnostics but noisy, so keep it at debug level.
+                        debug!("Observed our own public address: {addr}/p2p/{peer_id}");
                     }
                     NodeEvent::PeerConnected { peer_id: pid } => {
                         *peer_conns.entry(pid).or_insert(0) += 1;
