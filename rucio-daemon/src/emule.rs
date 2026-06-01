@@ -417,14 +417,16 @@ pub async fn run_ed2k_download(
                 .await
                 .unwrap_or_else(|| "cancelled".to_string());
             info!(dl = download_id, status = %reason, "eMule download stopped by user");
-            if reason == "cancelled" {
-                // Discard the partial file so a later re-add starts clean.
-                let _ = tokio::fs::remove_file(&part_path).await;
-                let _ = tokio::fs::remove_file(&met_path).await;
-                debug!(dl = download_id, "Removed .part/.part.met after cancel");
-            }
-            active_downloads.write().await.remove(&hash_key);
-            live_stats.write().await.remove(&live_key);
+            cleanup_on_stop(
+                &reason,
+                &part_path,
+                &met_path,
+                active_downloads,
+                &hash_key,
+                live_stats,
+                live_key,
+            )
+            .await;
             return Ok(());
         }
 
@@ -470,8 +472,7 @@ pub async fn run_ed2k_download(
                 res = kad.search_sources(link.hash, link.size) => res,
                 reason = wait_for_stop(db, download_id) => {
                     info!(dl = download_id, status = %reason, "stopped while searching for sources");
-                    active_downloads.write().await.remove(&hash_key);
-                    live_stats.write().await.remove(&live_key);
+                    cleanup_on_stop(&reason, &part_path, &met_path, active_downloads, &hash_key, live_stats, live_key).await;
                     return Ok(());
                 }
             };
@@ -525,7 +526,7 @@ pub async fn run_ed2k_download(
                 status,
                 "No Kad2 sources found — will retry"
             );
-            tokio::time::sleep(Duration::from_secs(delay)).await;
+            sleep_or_cancel(delay, &cancel).await;
             continue;
         }
         info!(
@@ -552,17 +553,34 @@ pub async fn run_ed2k_download(
             match download_slots.clone().acquire_owned().await {
                 Ok(permit) => slot = Some(permit),
                 Err(_) => {
-                    // Semaphore closed — daemon shutting down.
-                    active_downloads.write().await.remove(&hash_key);
-                    live_stats.write().await.remove(&live_key);
+                    // Semaphore closed — daemon shutting down. Keep the .part for
+                    // resume (not a cancel), just drop the in-memory entries.
+                    cleanup_on_stop(
+                        "shutdown",
+                        &part_path,
+                        &met_path,
+                        active_downloads,
+                        &hash_key,
+                        live_stats,
+                        live_key,
+                    )
+                    .await;
                     return Ok(());
                 }
             }
             // The user may have paused/cancelled while we waited for the slot.
             if let Some(reason) = stop_reason(db, download_id).await {
                 info!(dl = download_id, status = %reason, "stopped while waiting for a slot");
-                active_downloads.write().await.remove(&hash_key);
-                live_stats.write().await.remove(&live_key);
+                cleanup_on_stop(
+                    &reason,
+                    &part_path,
+                    &met_path,
+                    active_downloads,
+                    &hash_key,
+                    live_stats,
+                    live_key,
+                )
+                .await;
                 return Ok(());
             }
         }
@@ -1009,7 +1027,7 @@ pub async fn run_ed2k_download(
                 status,
                 "Not all slices complete — retrying"
             );
-            tokio::time::sleep(Duration::from_secs(delay)).await;
+            sleep_or_cancel(delay, &cancel).await;
             continue;
         }
 
@@ -1124,6 +1142,41 @@ async fn stop_reason(db: &Db, download_id: i64) -> Option<String> {
         Ok(Some(s)) if s == "cancelled" || s == "paused" => Some(s),
         _ => None,
     }
+}
+
+/// Sleep for `secs`, returning early if the cancel flag is raised, so a
+/// pause/cancel during the retry backoff is acted on promptly (the caller loops
+/// back to its stop check) instead of after the full delay.
+async fn sleep_or_cancel(secs: u64, cancel: &AtomicBool) {
+    tokio::select! {
+        _ = tokio::time::sleep(Duration::from_secs(secs)) => {}
+        _ = async {
+            while !cancel.load(Ordering::Relaxed) {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        } => {}
+    }
+}
+
+/// Tear down a download that is stopping. Drops the upload-whitelist and
+/// live-stats entries, and — only on `"cancelled"` (not a pause or a shutdown) —
+/// deletes the partial files so a later re-add starts clean. Called from every
+/// stop/return path so the `.part` cleanup can never be missed.
+async fn cleanup_on_stop(
+    reason: &str,
+    part_path: &std::path::Path,
+    met_path: &std::path::Path,
+    active_downloads: &ActiveDownloads,
+    hash_key: &[u8; 16],
+    live_stats: &crate::live_stats::LiveStatsMap,
+    live_key: i64,
+) {
+    if reason == "cancelled" {
+        let _ = tokio::fs::remove_file(part_path).await;
+        let _ = tokio::fs::remove_file(met_path).await;
+    }
+    active_downloads.write().await.remove(hash_key);
+    live_stats.write().await.remove(&live_key);
 }
 
 /// Resolve once the download is paused/cancelled. Used to race against a Kad
