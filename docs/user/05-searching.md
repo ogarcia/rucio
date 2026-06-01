@@ -57,6 +57,13 @@ word that actually appears in the file name (e.g. `1x01` instead of `1x`).
 rucio skips the (guaranteed-empty) eMule lookup for such short keywords, so
 these searches also finish a little faster.
 
+**Accents matter on the eMule network, but not on rucio.** rucio normalizes
+diacritics, so `camion` and `camión` return the same rucio results. The
+eMule/Kad network only lowercases keywords — it does **not** fold accents — so
+`camión` and `camion` are distinct entries in its index and return different
+results. To get eMule matches, type the keyword with the same accents it has in
+the file name.
+
 **Results depend on connected peers.** If the network is small or your node has
 few connections, results may be sparse. Check `rucio node status` to see how many
 peers you are connected to.
