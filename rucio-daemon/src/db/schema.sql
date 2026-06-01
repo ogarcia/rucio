@@ -117,6 +117,7 @@ CREATE TABLE IF NOT EXISTS emule_shared_files (
     size        INTEGER NOT NULL,
     path        TEXT    NOT NULL,         -- absolute path of the final file on disk
     mtime       INTEGER NOT NULL,         -- file mtime in Unix seconds (change signal)
+    hashset     BLOB    NOT NULL DEFAULT X'',  -- ed2k part-hash set, 16 bytes per part (empty for single-part files)
     added_at    INTEGER NOT NULL
 );
 

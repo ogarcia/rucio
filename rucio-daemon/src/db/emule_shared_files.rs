@@ -21,9 +21,13 @@ pub struct EmuleSharedFile {
     pub path: String,
     /// File mtime in Unix seconds, the change signal for the rescan.
     pub mtime: i64,
+    /// ed2k part-hash set (concatenated 16-byte MD4 part hashes); empty for
+    /// single-part files (or shares recorded before hashset support).
+    pub hashset: Vec<u8>,
 }
 
 /// Register (or refresh) a completed eMule download as a shared file.
+#[allow(clippy::too_many_arguments)]
 pub async fn upsert(
     db: &Db,
     ed2k_hash: &[u8; 16],
@@ -31,20 +35,22 @@ pub async fn upsert(
     size: u64,
     path: &str,
     mtime: i64,
+    hashset: &[u8],
     now: u64,
 ) -> Result<()> {
     sqlx::query(
-        "INSERT INTO emule_shared_files (ed2k_hash, name, size, path, mtime, added_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+        "INSERT INTO emule_shared_files (ed2k_hash, name, size, path, mtime, hashset, added_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
          ON CONFLICT(ed2k_hash) DO UPDATE SET \
              name = excluded.name, size = excluded.size, path = excluded.path, \
-             mtime = excluded.mtime",
+             mtime = excluded.mtime, hashset = excluded.hashset",
     )
     .bind(ed2k_hash.as_slice())
     .bind(name)
     .bind(size as i64)
     .bind(path)
     .bind(mtime)
+    .bind(hashset)
     .bind(now as i64)
     .execute(db)
     .await?;
@@ -54,7 +60,7 @@ pub async fn upsert(
 /// List every shared eMule file.
 pub async fn list(db: &Db) -> Result<Vec<EmuleSharedFile>> {
     let rows = sqlx::query(
-        "SELECT ed2k_hash, name, size, path, mtime FROM emule_shared_files ORDER BY added_at",
+        "SELECT ed2k_hash, name, size, path, mtime, hashset FROM emule_shared_files ORDER BY added_at",
     )
     .fetch_all(db)
     .await?;
@@ -66,6 +72,7 @@ pub async fn list(db: &Db) -> Result<Vec<EmuleSharedFile>> {
             size: r.get("size"),
             path: r.get("path"),
             mtime: r.get("mtime"),
+            hashset: r.get("hashset"),
         })
         .collect())
 }
@@ -82,7 +89,7 @@ pub async fn delete_by_hash(db: &Db, ed2k_hash: &[u8]) -> Result<bool> {
 /// Look up a shared file by its on-disk path, if present.
 pub async fn get_by_path(db: &Db, path: &str) -> Result<Option<EmuleSharedFile>> {
     let row = sqlx::query(
-        "SELECT ed2k_hash, name, size, path, mtime FROM emule_shared_files WHERE path = ?1",
+        "SELECT ed2k_hash, name, size, path, mtime, hashset FROM emule_shared_files WHERE path = ?1",
     )
     .bind(path)
     .fetch_optional(db)
@@ -93,5 +100,6 @@ pub async fn get_by_path(db: &Db, path: &str) -> Result<Option<EmuleSharedFile>>
         size: r.get("size"),
         path: r.get("path"),
         mtime: r.get("mtime"),
+        hashset: r.get("hashset"),
     }))
 }

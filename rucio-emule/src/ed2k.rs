@@ -119,6 +119,49 @@ pub fn hash_reader<R: std::io::Read>(mut reader: R) -> std::io::Result<Ed2kHash>
     Ok(hash)
 }
 
+/// Build the ed2k part-hash set ("hashset") to serve to peers, from the list of
+/// per-`CHUNK_SIZE` MD4 chunk hashes of a file, following eMule's conventions:
+///
+/// - A file smaller than one chunk has an **empty** hashset (its ed2k hash is
+///   simply `MD4(data)`, so no part hashes are exchanged).
+/// - When the size is an **exact multiple** of `CHUNK_SIZE`, eMule appends an
+///   MD4 of a zero-length chunk (the "null chunk") to the list.
+///
+/// The result is verified against `target` (the file's known ed2k hash):
+/// `MD4` of the concatenated part hashes must reproduce it (trying with and
+/// without the null chunk for exact multiples, to tolerate either convention).
+/// Returns the concatenated 16-byte part hashes (ready to store/serve), or an
+/// empty vec when the file is single-part or no convention reproduces `target`
+/// — in which case the caller serves no hashset.
+pub fn finalize_hashset(chunk_hashes: &[[u8; 16]], size: u64, target: &Ed2kHash) -> Vec<u8> {
+    if size < CHUNK_SIZE as u64 || chunk_hashes.is_empty() {
+        return Vec::new();
+    }
+    let mut candidates: Vec<Vec<[u8; 16]>> = Vec::new();
+    if size.is_multiple_of(CHUNK_SIZE as u64) {
+        // eMule appends a null chunk for exact multiples; try that first, then
+        // fall back to the plain list for older clients that did not.
+        let null_chunk: [u8; 16] = Md4::digest(b"").into();
+        let mut with_null = chunk_hashes.to_vec();
+        with_null.push(null_chunk);
+        candidates.push(with_null);
+        candidates.push(chunk_hashes.to_vec());
+    } else {
+        candidates.push(chunk_hashes.to_vec());
+    }
+    for parts in candidates {
+        let mut concat = Vec::with_capacity(parts.len() * 16);
+        for p in &parts {
+            concat.extend_from_slice(p);
+        }
+        let root: [u8; 16] = Md4::digest(&concat).into();
+        if &root == target.as_bytes() {
+            return concat;
+        }
+    }
+    Vec::new()
+}
+
 // ── Link parsing ─────────────────────────────────────────────────────────────
 
 /// A parsed `ed2k://|file|…|…|…|/` link.
@@ -248,5 +291,46 @@ mod tests {
         let expected = hash_bytes(&data);
         let computed = hash_reader(std::io::Cursor::new(&data)).unwrap();
         assert_eq!(expected, computed);
+    }
+
+    #[test]
+    fn test_finalize_hashset_single_part_is_empty() {
+        // A file smaller than one chunk carries no hashset.
+        let parts = [[9u8; 16]];
+        let target = Ed2kHash::from_bytes([9u8; 16]);
+        assert!(finalize_hashset(&parts, 1234, &target).is_empty());
+    }
+
+    #[test]
+    fn test_finalize_hashset_multipart_verifies() {
+        // Non-exact multiple: two part hashes, no null chunk; root = MD4(concat).
+        let parts = [[1u8; 16], [2u8; 16]];
+        let mut concat = Vec::new();
+        concat.extend_from_slice(&parts[0]);
+        concat.extend_from_slice(&parts[1]);
+        let target = Ed2kHash::from_bytes(Md4::digest(&concat).into());
+        let hs = finalize_hashset(&parts, CHUNK_SIZE as u64 + 10, &target);
+        assert_eq!(hs, concat);
+    }
+
+    #[test]
+    fn test_finalize_hashset_exact_multiple_appends_null_chunk() {
+        // Exact multiple: eMule appends MD4("") so root = MD4(chunk || null).
+        let chunk = [7u8; 16];
+        let null_chunk: [u8; 16] = Md4::digest(b"").into();
+        let mut concat = Vec::new();
+        concat.extend_from_slice(&chunk);
+        concat.extend_from_slice(&null_chunk);
+        let target = Ed2kHash::from_bytes(Md4::digest(&concat).into());
+        let hs = finalize_hashset(&[chunk], CHUNK_SIZE as u64, &target);
+        assert_eq!(hs, concat);
+    }
+
+    #[test]
+    fn test_finalize_hashset_unverifiable_is_empty() {
+        // If no convention reproduces the target, serve nothing.
+        let parts = [[1u8; 16], [2u8; 16]];
+        let target = Ed2kHash::from_bytes([0xABu8; 16]);
+        assert!(finalize_hashset(&parts, CHUNK_SIZE as u64 + 10, &target).is_empty());
     }
 }

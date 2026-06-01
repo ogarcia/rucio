@@ -102,6 +102,10 @@ const OP_ACCEPTUPLOAD_REQ: u8 = 0x55;
 const OP_ENDOFDOWNLOAD: u8 = 0x48;
 const OP_QUEUE_RANK: u8 = 0x5c;
 const OP_QUEUE_FULL: u8 = 0x93;
+/// Hashset request — payload: 16-byte file hash.
+const OP_HASHSETREQUEST: u8 = 0x51;
+/// Hashset answer — payload: file_hash(16) + part_count(u16 LE) + part_hash(16)*N.
+const OP_HASHSETANSWER: u8 = 0x52;
 
 // ── Framing ───────────────────────────────────────────────────────────────────
 
@@ -826,6 +830,10 @@ pub struct UploadInfo {
     /// `true` once fully downloaded: every slice is available and there is no
     /// `.part.met`, so the status bitmap is all-complete.
     pub complete: bool,
+    /// ed2k part-hash set: the per-chunk MD4 hashes concatenated (16 bytes
+    /// each), served on `OP_HASHSETREQUEST` so a peer can verify chunks.
+    /// Empty for single-part files (no hashset) or while still downloading.
+    pub hashset: Vec<u8>,
 }
 
 /// Live map of files currently being downloaded, keyed by their MD4 hash.
@@ -1025,6 +1033,28 @@ async fn handle_incoming(mut stream: TcpStream, peer: SocketAddr, ctx: Arc<Uploa
     }
 }
 
+/// Reply to `OP_HASHSETREQUEST` with the file's ed2k part-hash set so the peer
+/// can verify the chunks it downloads. Layout: `file_hash(16) + count(u16 LE) +
+/// part_hash(16)*count`. No-op when we have no hashset (single-part file, still
+/// downloading, or one that did not verify) — the peer gets it from another
+/// source.
+async fn send_hashset_answer(
+    stream: &mut TcpStream,
+    cipher: &mut Option<Rc4>,
+    hash: &[u8; 16],
+    info: &UploadInfo,
+) -> io::Result<()> {
+    if info.hashset.is_empty() {
+        return Ok(());
+    }
+    let count = (info.hashset.len() / 16) as u16;
+    let mut payload = Vec::with_capacity(18 + info.hashset.len());
+    payload.extend_from_slice(hash);
+    payload.extend_from_slice(&count.to_le_bytes());
+    payload.extend_from_slice(&info.hashset);
+    write_frame(stream, cipher, OP_HASHSETANSWER, &payload).await
+}
+
 /// Run the upload phase: STARTUPLOADREQ → ACCEPTUPLOAD → serve REQUESTPARTS.
 async fn run_upload_session(
     stream: &mut TcpStream,
@@ -1044,6 +1074,8 @@ async fn run_upload_session(
         match opcode {
             OP_STARTUPLOAD_REQ => break,
             OP_ENDOFDOWNLOAD => return Ok(()),
+            // A peer often asks for the hashset before starting the transfer.
+            OP_HASHSETREQUEST => send_hashset_answer(stream, cipher, hash, info).await?,
             _ => debug!("ignoring 0x{opcode:02x} waiting for STARTUPLOADREQ"),
         }
     }
@@ -1064,6 +1096,7 @@ async fn run_upload_session(
 
         match opcode {
             OP_ENDOFDOWNLOAD => break,
+            OP_HASHSETREQUEST => send_hashset_answer(stream, cipher, hash, info).await?,
             OP_REQUESTPARTS => {
                 if payload.len() < 40 {
                     break;

@@ -92,6 +92,7 @@ pub async fn load_shared_files(db: &Db, active_downloads: &ActiveDownloads) {
                 num_slices,
                 path,
                 complete: true,
+                hashset: row.hashset,
             },
         );
         loaded += 1;
@@ -375,6 +376,8 @@ pub async fn run_ed2k_download(
             // While downloading we serve the partial slices from the .part file.
             path: part_path.clone(),
             complete: false,
+            // No hashset yet — we serve it only once the file is complete.
+            hashset: Vec::new(),
         },
     );
 
@@ -1029,16 +1032,45 @@ pub async fn run_ed2k_download(
     // Clean up progress file.
     let _ = tokio::fs::remove_file(&met_path).await;
 
+    // Single pass over the finished file: BLAKE3 (rucio identity) and the ed2k
+    // per-chunk MD4 hashes (for the Kad hashset we serve) in the same read, so
+    // large files are not read twice.
     let path_clone = final_path.clone();
-    let blake3_hex = tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
-        let mut file = std::fs::File::open(&path_clone)?;
-        let mut hasher = blake3::Hasher::new();
-        std::io::copy(&mut file, &mut hasher)?;
-        Ok(hasher.finalize().to_hex().to_string())
-    })
-    .await
-    .context("spawn_blocking for BLAKE3")?
-    .with_context(|| format!("BLAKE3 hash of {}", final_path.display()))?;
+    let (blake3_hex, chunk_hashes) =
+        tokio::task::spawn_blocking(move || -> anyhow::Result<(String, Vec<[u8; 16]>)> {
+            use md4::{Digest, Md4};
+            use std::io::Read;
+            let mut file = std::fs::File::open(&path_clone)?;
+            let mut hasher = blake3::Hasher::new();
+            let mut chunk_hashes: Vec<[u8; 16]> = Vec::new();
+            let mut buf = vec![0u8; CHUNK_SIZE];
+            loop {
+                // Fill a full CHUNK_SIZE block (or up to EOF).
+                let mut filled = 0usize;
+                while filled < CHUNK_SIZE {
+                    match file.read(&mut buf[filled..])? {
+                        0 => break,
+                        n => filled += n,
+                    }
+                }
+                if filled == 0 {
+                    break;
+                }
+                hasher.update(&buf[..filled]);
+                chunk_hashes.push(Md4::digest(&buf[..filled]).into());
+                if filled < CHUNK_SIZE {
+                    break;
+                }
+            }
+            Ok((hasher.finalize().to_hex().to_string(), chunk_hashes))
+        })
+        .await
+        .context("spawn_blocking for file hashing")?
+        .with_context(|| format!("hashing {}", final_path.display()))?;
+
+    // ed2k hashset to serve on OP_HASHSETREQUEST (empty for single-part files or
+    // if no convention reproduces the known ed2k hash — then we serve none).
+    let hashset = rucio_emule::ed2k::finalize_hashset(&chunk_hashes, link.size, &link.hash);
 
     let _ = crate::db::emule_downloads::set_completed(
         db,
@@ -1069,6 +1101,7 @@ pub async fn run_ed2k_download(
         link.size,
         final_path.to_string_lossy().as_ref(),
         mtime,
+        &hashset,
         now,
     )
     .await
@@ -1081,6 +1114,7 @@ pub async fn run_ed2k_download(
     if let Some(info) = active_downloads.write().await.get_mut(&hash_key) {
         info.path = final_path.clone();
         info.complete = true;
+        info.hashset = hashset;
     }
     live_stats.write().await.remove(&live_key);
     Ok(())
