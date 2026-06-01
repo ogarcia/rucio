@@ -354,8 +354,14 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     if config.emule.enabled {
         // Reload completed eMule downloads we keep seeding into the upload
         // whitelist (dropping any whose file changed/vanished) before the
-        // upload server starts accepting peers.
+        // upload server starts accepting peers, then watch the downloads dir so
+        // a file that is later modified/removed stops being shared immediately.
         crate::emule::load_shared_files(&db, &active_downloads).await;
+        crate::emule::spawn_shared_files_watcher(
+            db.clone(),
+            active_downloads.clone(),
+            config.storage.download_dir.clone(),
+        );
         let tcp_port = config.emule.tcp_port;
         match crate::emule::start_emule_tcp_listener(&config).await {
             Ok(listener) => {

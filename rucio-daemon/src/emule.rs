@@ -101,6 +101,73 @@ pub async fn load_shared_files(db: &Db, active_downloads: &ActiveDownloads) {
     }
 }
 
+/// Watch the downloads directory and stop sharing any seeded eMule file the
+/// moment it is modified or removed on disk.
+///
+/// On each filesystem event we look the path up in `emule_shared_files` and, if
+/// it is one of our shares, re-validate it against the recorded size+mtime
+/// (exactly as the startup reconcile does). Comparing against the stored record
+/// — rather than trusting the event kind — means our own just-completed file
+/// (which matches what we just stored) is never dropped, while a real
+/// modification/removal is. Independent of the rucio share watcher and only
+/// touches files present in `emule_shared_files`.
+pub fn spawn_shared_files_watcher(
+    db: Db,
+    active_downloads: ActiveDownloads,
+    downloads_dir: std::path::PathBuf,
+) {
+    use notify::{EventKind, RecursiveMode, Watcher};
+
+    tokio::spawn(async move {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<notify::Result<notify::Event>>(128);
+        let mut watcher = match notify::recommended_watcher(move |res| {
+            let _ = tx.blocking_send(res);
+        }) {
+            Ok(w) => w,
+            Err(e) => {
+                warn!("eMule share watcher: cannot create: {e}");
+                return;
+            }
+        };
+        // Ensure the directory exists so the watch succeeds on a fresh install
+        // (downloads complete into it later).
+        let _ = std::fs::create_dir_all(&downloads_dir);
+        if let Err(e) = watcher.watch(&downloads_dir, RecursiveMode::Recursive) {
+            warn!(dir = %downloads_dir.display(), "eMule share watcher: cannot watch: {e}");
+            return;
+        }
+        info!(dir = %downloads_dir.display(), "Watching downloads dir for eMule share changes");
+
+        while let Some(ev) = rx.recv().await {
+            let Ok(ev) = ev else { continue };
+            // Access/open events never change content; skip the DB lookups.
+            if matches!(ev.kind, EventKind::Access(_)) {
+                continue;
+            }
+            for path in &ev.paths {
+                let path_str = path.to_string_lossy().into_owned();
+                let row = match crate::db::emule_shared_files::get_by_path(&db, &path_str).await {
+                    Ok(Some(r)) => r,
+                    _ => continue, // not one of our shares (or DB error) — ignore
+                };
+                let disk_size = std::fs::metadata(path)
+                    .map(|m| m.len() as i64)
+                    .unwrap_or(-1);
+                let unchanged =
+                    disk_size == row.size && crate::api::shares::file_mtime_secs(path) == row.mtime;
+                if unchanged {
+                    continue; // genuine no-op (or our own completion) — keep sharing
+                }
+                let _ = crate::db::emule_shared_files::delete_by_hash(&db, &row.ed2k_hash).await;
+                if let Ok(hash) = <[u8; 16]>::try_from(row.ed2k_hash.as_slice()) {
+                    active_downloads.write().await.remove(&hash);
+                }
+                info!(path = %path.display(), "eMule shared file changed/removed — stopped sharing");
+            }
+        }
+    });
+}
+
 /// The `.part` and `.part.met` paths for an eMule download identified by its raw
 /// 16-byte ed2k hash. Single source of truth for the temp-file naming, shared
 /// by the download task and the API (cancel/delete cleanup).
