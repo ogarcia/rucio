@@ -376,7 +376,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     }
 
     // --- UPnP port mapping --------------------------------------------------
-    let external_ip = if config.network.upnp {
+    let (external_ip, mut upnp_handle) = if config.network.upnp {
         let upnp_cfg = upnp::UpnpConfig {
             tcp_port: config.p2p_tcp_port().unwrap_or(4321),
             #[cfg(feature = "emule-compat")]
@@ -396,10 +396,11 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
             #[cfg(not(feature = "emule-compat"))]
             emule_tcp_port: None,
         };
-        upnp::spawn(upnp_cfg)
+        let handle = upnp::spawn(upnp_cfg);
+        (Arc::clone(&handle.external_ip), Some(handle))
     } else {
         info!("UPnP disabled by configuration");
-        Arc::new(tokio::sync::RwLock::new(None))
+        (Arc::new(tokio::sync::RwLock::new(None)), None)
     };
 
     let app_state = api::AppState {
@@ -569,6 +570,12 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
             _ = shutdown_signal() => {
                 info!("Received shutdown signal, shutting down");
                 let _ = handle.cmd_tx.send(node::messages::NodeCmd::Shutdown).await;
+                // Remove UPnP mappings while the network is still up (best-effort,
+                // bounded). Leases would expire on their own, but cleaning up is
+                // good etiquette towards the gateway.
+                if let Some(upnp) = upnp_handle.take() {
+                    upnp.shutdown().await;
+                }
                 // Flush remaining metric deltas to DB before exiting.
                 let delta = session_metrics.take_delta();
                 if let Err(e) = db::metrics::add(&db, &delta).await {
