@@ -362,6 +362,11 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
             active_downloads.clone(),
             config.storage.download_dir.clone(),
         );
+        // Our persistent eMule user hash (credit identity), generated once and
+        // reused so seeding credit accrues to a stable identity.
+        let emule_user_hash = crate::db::emule_identity::get_or_create(&db)
+            .await
+            .unwrap_or([0u8; 16]);
         let tcp_port = config.emule.tcp_port;
         match crate::emule::start_emule_tcp_listener(&config).await {
             Ok(listener) => {
@@ -376,6 +381,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                     slots: emule_upload_slots.clone(),
                     temp_dir: config.emule.temp_dir.clone(),
                     tcp_port,
+                    user_hash: emule_user_hash,
                     downloads: active_downloads.clone(),
                     inbound_connections: emule_inbound_connections.clone(),
                     last_inbound_at: emule_last_inbound_at.clone(),

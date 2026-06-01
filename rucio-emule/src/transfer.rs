@@ -249,6 +249,8 @@ pub struct DownloadOptions {
     /// Our listening TCP port to advertise in HELLO packets.
     /// Set to 0 if not listening (Low-ID mode).
     pub our_tcp_port: u16,
+    /// Our persistent eMule user hash (credit identity) to advertise in HELLO.
+    pub our_user_hash: [u8; 16],
 }
 
 impl Default for DownloadOptions {
@@ -262,6 +264,7 @@ impl Default for DownloadOptions {
             start_offset: 0,
             peer_hash: None,
             our_tcp_port: 0,
+            our_user_hash: [0u8; 16],
         }
     }
 }
@@ -337,7 +340,7 @@ impl Session {
     where
         F: FnMut(DownloadEvent),
     {
-        let our_hash = our_client_hash();
+        let our_hash = opts.our_user_hash;
         let mut cipher: Option<Rc4> = None;
 
         let mut stream = timeout(opts.op_timeout, TcpStream::connect(peer))
@@ -367,7 +370,7 @@ impl Session {
         F: FnMut(DownloadEvent),
     {
         let peer_hash = opts.peer_hash.as_ref().unwrap();
-        let our_hash = our_client_hash();
+        let our_hash = opts.our_user_hash;
 
         let mut stream = timeout(opts.op_timeout, TcpStream::connect(peer))
             .await
@@ -714,15 +717,6 @@ where
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Fixed client hash used in HELLO packets.  Not secret — identifies us as a
-/// Rucio client on the eMule network.
-fn our_client_hash() -> [u8; 16] {
-    [
-        0x52, 0x75, 0x63, 0x69, 0x6f, 0x52, 0x75, 0x63, 0x69, 0x6f, 0x52, 0x75, 0x63, 0x69, 0x6f,
-        0x00,
-    ]
-}
-
 /// Send a `REQUESTPARTS` message for up to 3 consecutive 180 KB windows.
 async fn send_request_parts(
     stream: &mut TcpStream,
@@ -858,6 +852,8 @@ pub struct UploadContext {
     pub temp_dir: PathBuf,
     /// Our TCP port to advertise in HELLO packets.
     pub tcp_port: u16,
+    /// Our persistent eMule user hash (credit identity) advertised in HELLO.
+    pub user_hash: [u8; 16],
     /// Files currently being downloaded — the upload whitelist.
     pub downloads: ActiveDownloads,
     /// Counter of inbound TCP connections accepted since startup.
@@ -908,7 +904,7 @@ pub async fn serve_incoming(listener: TcpListener, ctx: Arc<UploadContext>) {
 /// Handle one incoming eMule TCP connection.
 async fn handle_incoming(mut stream: TcpStream, peer: SocketAddr, ctx: Arc<UploadContext>) {
     debug!(%peer, "Incoming eMule TCP connection");
-    let our_hash = our_client_hash();
+    let our_hash = ctx.user_hash;
     let mut cipher: Option<Rc4> = None;
     const OP_TIMEOUT: Duration = Duration::from_secs(30);
 

@@ -399,6 +399,13 @@ pub async fn run_ed2k_download(
     let mut cached_sources: Vec<KadSource> = Vec::new();
     let mut last_search_at: Option<Instant> = None;
     let mut retry_count: u32 = 0;
+
+    // Our persistent eMule user hash, advertised in the download HELLO so a peer
+    // sees the same identity whether it uploads to or downloads from us.
+    let our_user_hash = crate::db::emule_identity::get_or_create(db)
+        .await
+        .unwrap_or([0u8; 16]);
+
     loop {
         // Check for user-requested stop (cancel / pause) before doing any work.
         // The in-memory `cancel` flag makes the round abort promptly; the DB
@@ -756,6 +763,7 @@ pub async fn run_ed2k_download(
                             start_offset: 0,
                             peer_hash: Some(source.user_hash),
                             our_tcp_port,
+                            our_user_hash,
                         };
 
                         // Open part file seeked to this slice's start offset.
