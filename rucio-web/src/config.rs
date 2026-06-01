@@ -353,6 +353,20 @@ pub fn ConfigModal(
                                             on:input=move |e| f_em_nick.set(event_target_value(&e))/>
                                     </div>
                                     <div class="config-field">
+                                        <label class="config-label">"Temp directory"</label>
+                                        <input class="config-input" type="text"
+                                            disabled=em_locked
+                                            prop:value=move || f_em_temp.get()
+                                            on:input=move |e| f_em_temp.set(event_target_value(&e))/>
+                                    </div>
+                                    <div class="config-field">
+                                        <label class="config-label">"External IP (blank = auto)"</label>
+                                        <input class="config-input" type="text"
+                                            disabled=em_locked
+                                            prop:value=move || f_em_extip.get()
+                                            on:input=move |e| f_em_extip.set(event_target_value(&e))/>
+                                    </div>
+                                    <div class="config-field">
                                         <label class="config-label">"TCP port"</label>
                                         <input class="config-input config-input-sm" type="text"
                                             disabled=em_locked
@@ -365,20 +379,6 @@ pub fn ConfigModal(
                                             disabled=em_locked
                                             prop:value=move || f_em_udp.get()
                                             on:input=move |e| f_em_udp.set(event_target_value(&e))/>
-                                    </div>
-                                    <div class="config-field">
-                                        <label class="config-label">"External IP (blank = auto)"</label>
-                                        <input class="config-input" type="text"
-                                            disabled=em_locked
-                                            prop:value=move || f_em_extip.get()
-                                            on:input=move |e| f_em_extip.set(event_target_value(&e))/>
-                                    </div>
-                                    <div class="config-field">
-                                        <label class="config-label">"Temp directory"</label>
-                                        <input class="config-input" type="text"
-                                            disabled=em_locked
-                                            prop:value=move || f_em_temp.get()
-                                            on:input=move |e| f_em_temp.set(event_target_value(&e))/>
                                     </div>
                                     <div class="config-field">
                                         <label class="config-label">"Download slots per file"</label>
