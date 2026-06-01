@@ -792,13 +792,17 @@ pub async fn run_ed2k_download(
                             break false;
                         }
 
-                        // Connect and perform the eMule handshake.
+                        // Connect and perform the eMule handshake. Connected and
+                        // Queued are transient (Connected even fires twice per
+                        // attempt — plain then the obfuscated retry — and once
+                        // per source retry), so they stay at debug; only an
+                        // actual transfer start is logged at info.
                         let mut on_connect = |ev: DownloadEvent| match ev {
                             DownloadEvent::Connected => {
-                                info!(dl = download_id, %peer, "Connected to eMule peer")
+                                debug!(dl = download_id, %peer, "Connected to eMule peer")
                             }
                             DownloadEvent::Queued { rank } => {
-                                info!(dl = download_id, %peer, rank, "Queued at eMule peer")
+                                debug!(dl = download_id, %peer, rank, "Queued at eMule peer")
                             }
                             DownloadEvent::Started => {
                                 info!(dl = download_id, %peer, slice = slice_idx, "Peer granted upload slot — transfer starting")
