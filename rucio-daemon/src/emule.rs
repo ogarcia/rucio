@@ -666,7 +666,7 @@ pub async fn run_ed2k_download(
                                 info!(dl = download_id, %peer, rank, "Queued at eMule peer")
                             }
                             DownloadEvent::Started => {
-                                info!(dl = download_id, %peer, "Peer granted upload slot — transfer starting")
+                                info!(dl = download_id, %peer, slice = slice_idx, "Peer granted upload slot — transfer starting")
                             }
                             _ => {}
                         };
