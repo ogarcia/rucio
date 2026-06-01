@@ -399,6 +399,25 @@ fn spawn_kad2_search(state: &AppState, search_id: u64, keywords: Vec<String>) {
         .unwrap_or_else(|| lowercase_keyword(&keywords[0]));
 
     tokio::spawn(async move {
+        // eMule's Kad index only holds keywords of >= 3 UTF-8 bytes — real
+        // clients never publish shorter tokens — so a sub-3-byte primary
+        // keyword can only ever come back empty there. Skip the Kad2 leg (the
+        // native rucio search still runs the query, where short keywords like
+        // "1x" are valid) and mark it done so the search closes after the short
+        // Gossipsub window instead of waiting out the full Kad2 timeout.
+        if main_keyword.len() < 3 {
+            tracing::debug!(
+                search_id,
+                main_keyword,
+                "Primary keyword < 3 bytes — skipping eMule Kad2 leg (rucio leg still runs)"
+            );
+            let mut reg = reg_clone.write().await;
+            if let Some(record) = reg.records.get_mut(&search_id) {
+                record.kad2_done = true;
+            }
+            return;
+        }
+
         // Surface the "waiting for a Kad turn" phase. Kad runs one search at a
         // time; if another holds the slot, mark this search queued so the UI
         // can show it, then clear the flag once we acquire our turn.

@@ -48,6 +48,15 @@ search, previous row numbers refer to the new results.
 word is matched against file names announced by peers. A search for
 `"great expectations"` will match files whose name contains both words.
 
+**Very short keywords only search the rucio network.** Searches also query the
+eMule/Kad2 network in parallel, but eMule indexes only whole words of **3 or
+more characters** — so a 1–2 character keyword such as `1x` returns results
+from rucio peers but never from eMule (its index has no entry for it, and there
+is no partial-word search in Kad). To get eMule results too, search a longer
+word that actually appears in the file name (e.g. `1x01` instead of `1x`).
+rucio skips the (guaranteed-empty) eMule lookup for such short keywords, so
+these searches also finish a little faster.
+
 **Results depend on connected peers.** If the network is small or your node has
 few connections, results may be sparse. Check `rucio node status` to see how many
 peers you are connected to.
