@@ -198,6 +198,16 @@ pub struct EmuleConfig {
     /// separate user hash. Default: "rucio". Override via `RUCIOD_EMULE_NICK`.
     #[serde(default = "EmuleConfig::default_nick")]
     pub nick: String,
+
+    /// Minimum sustained per-source download speed, in KiB/s. A source that
+    /// holds an upload slot but transfers below this rate for a full window is
+    /// dropped in favour of another source — but only when other untried
+    /// sources remain in the pool, so a slow source is never dropped when it is
+    /// the only one. `0` disables the check.
+    ///
+    /// Default: 2.  Override via `RUCIOD_EMULE_MIN_SOURCE_SPEED_KIB_S`.
+    #[serde(default = "EmuleConfig::default_min_source_speed_kib_s")]
+    pub min_source_speed_kib_s: u32,
 }
 
 impl EmuleConfig {
@@ -224,6 +234,10 @@ impl EmuleConfig {
     fn default_max_concurrent_downloads() -> usize {
         3
     }
+
+    fn default_min_source_speed_kib_s() -> u32 {
+        2
+    }
 }
 
 impl Default for EmuleConfig {
@@ -238,6 +252,7 @@ impl Default for EmuleConfig {
             max_upload_slots: Self::default_max_upload_slots(),
             max_concurrent_downloads: Self::default_max_concurrent_downloads(),
             nick: Self::default_nick(),
+            min_source_speed_kib_s: Self::default_min_source_speed_kib_s(),
         }
     }
 }
@@ -478,6 +493,7 @@ impl Config {
     /// | `RUCIOD_EMULE_DOWNLOAD_SLOTS_PER_FILE` | `emule.download_slots_per_file` | integer 1-50 |
     /// | `RUCIOD_EMULE_MAX_UPLOAD_SLOTS` | `emule.max_upload_slots` | integer 1-50       |
     /// | `RUCIOD_EMULE_MAX_CONCURRENT_DOWNLOADS` | `emule.max_concurrent_downloads` | integer 1-50 |
+    /// | `RUCIOD_EMULE_MIN_SOURCE_SPEED_KIB_S` | `emule.min_source_speed_kib_s` | integer (0 = off) |
     /// | `RUCIOD_UPNP`               | `network.upnp`               | `true`/`false`     |
     pub fn apply_env_overrides(&mut self) {
         if let Ok(v) = std::env::var("RUCIOD_API_LISTEN")
@@ -601,6 +617,12 @@ impl Config {
             && (1..=50).contains(&n)
         {
             self.emule.max_concurrent_downloads = n;
+        }
+        if let Ok(v) = std::env::var("RUCIOD_EMULE_MIN_SOURCE_SPEED_KIB_S")
+            && !v.is_empty()
+            && let Ok(n) = v.parse::<u32>()
+        {
+            self.emule.min_source_speed_kib_s = n;
         }
         // RUCIOD_UPNP=false / 0 / no disables UPnP; any other non-empty value enables it.
         if let Ok(v) = std::env::var("RUCIOD_UPNP")

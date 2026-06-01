@@ -335,6 +335,8 @@ pub struct EmuleConfig {
     pub max_concurrent_downloads: usize,
     #[serde(default)]
     pub nick: String,
+    #[serde(default)]
+    pub min_source_speed_kib_s: u32,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]

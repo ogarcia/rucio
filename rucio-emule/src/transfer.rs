@@ -66,7 +66,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{RwLock, Semaphore, TryAcquireError};
@@ -238,6 +238,28 @@ impl std::fmt::Display for PeerClosedBeforeHello {
 
 impl std::error::Error for PeerClosedBeforeHello {}
 
+/// Returned by [`Session::download_range`] when a peer sustains a transfer rate
+/// below the configured minimum for a full check window. The caller can drop
+/// this source in favour of another — but only when other sources remain in the
+/// pool, since a slow source is still better than none.
+#[derive(Debug)]
+pub struct SlowPeer {
+    /// Observed rate over the offending window, in bytes per second.
+    pub rate_bytes_per_sec: u64,
+}
+
+impl std::fmt::Display for SlowPeer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "peer too slow ({} B/s sustained below the minimum)",
+            self.rate_bytes_per_sec
+        )
+    }
+}
+
+impl std::error::Error for SlowPeer {}
+
 // ── Download options ──────────────────────────────────────────────────────────
 
 /// Options for [`download_file`] and [`Session::connect`].
@@ -267,6 +289,9 @@ pub struct DownloadOptions {
     pub our_user_hash: [u8; 16],
     /// Our nickname (CT_NAME) to advertise in HELLO. Empty = no name tag.
     pub our_nick: String,
+    /// Minimum sustained transfer rate (bytes/sec) below which a source is
+    /// abandoned mid-slice via [`SlowPeer`]. `0` disables the check.
+    pub min_speed_bytes_per_sec: u64,
 }
 
 impl Default for DownloadOptions {
@@ -282,6 +307,7 @@ impl Default for DownloadOptions {
             our_tcp_port: 0,
             our_user_hash: [0u8; 16],
             our_nick: String::new(),
+            min_speed_bytes_per_sec: 0,
         }
     }
 }
@@ -315,6 +341,8 @@ pub struct Session {
     file_size: u64,
     /// RC4 cipher for obfuscated connections; `None` for plain connections.
     cipher: Option<Rc4>,
+    /// Minimum sustained rate (bytes/sec); `0` disables the slow-peer check.
+    min_speed_bytes_per_sec: u64,
 }
 
 impl Session {
@@ -374,6 +402,7 @@ impl Session {
             hash: opts.hash,
             file_size: opts.file_size,
             cipher,
+            min_speed_bytes_per_sec: opts.min_speed_bytes_per_sec,
         })
     }
 
@@ -426,6 +455,7 @@ impl Session {
             hash: opts.hash,
             file_size: opts.file_size,
             cipher,
+            min_speed_bytes_per_sec: opts.min_speed_bytes_per_sec,
         })
     }
 
@@ -552,6 +582,16 @@ impl Session {
         // Reassembles fragmented OP_PACKEDPART blocks (see `PackedReassembler`).
         let mut packed = PackedReassembler::default();
 
+        // Slow-peer detection. After an initial grace period (TCP slow-start /
+        // upload-slot warm-up), measure the rate over fixed windows; if a full
+        // window stays below `min_speed_bytes_per_sec`, abandon the source via
+        // `SlowPeer` so the caller can try another. `0` disables the check.
+        const SLOW_GRACE: Duration = Duration::from_secs(20);
+        const SLOW_WINDOW: Duration = Duration::from_secs(15);
+        let slice_started_at = Instant::now();
+        let mut window_started_at = slice_started_at;
+        let mut window_start_bytes = bytes_received;
+
         send_request_parts(
             &mut self.stream,
             &mut self.cipher,
@@ -565,6 +605,26 @@ impl Session {
         loop {
             if bytes_received >= end {
                 break;
+            }
+
+            // Drop the source if it is sustaining too low a rate (only once past
+            // the grace period and after a full window has elapsed).
+            if self.min_speed_bytes_per_sec > 0 {
+                let now = Instant::now();
+                if now.duration_since(slice_started_at) >= SLOW_GRACE
+                    && now.duration_since(window_started_at) >= SLOW_WINDOW
+                {
+                    let elapsed = now.duration_since(window_started_at).as_secs_f64();
+                    let moved = bytes_received - window_start_bytes;
+                    let rate = (moved as f64 / elapsed) as u64;
+                    if rate < self.min_speed_bytes_per_sec {
+                        return Err(anyhow::Error::new(SlowPeer {
+                            rate_bytes_per_sec: rate,
+                        }));
+                    }
+                    window_started_at = now;
+                    window_start_bytes = bytes_received;
+                }
             }
             let (_proto, opcode, payload) = timeout(
                 self.op_timeout,

@@ -79,6 +79,10 @@ pub struct EmuleConfig {
     /// Nickname advertised to eMule peers (cosmetic; not the credit identity).
     #[serde(default)]
     pub nick: String,
+    /// Minimum sustained per-source download speed (KiB/s); `0` disables the
+    /// slow-source drop.
+    #[serde(default)]
+    pub min_source_speed_kib_s: u32,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]

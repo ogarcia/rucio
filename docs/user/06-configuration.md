@@ -363,6 +363,26 @@ rucio config set emule.max_concurrent_downloads 3
 
 ---
 
+### `emule.min_source_speed_kib_s`
+
+Minimum sustained per-source download speed, in KiB/s. A peer that grants you
+an upload slot but then transfers below this rate for a full window is dropped
+mid-transfer in favour of another source, so a single slow peer cannot tie up
+one of your `emule.download_slots_per_file` workers.
+
+The drop only happens when **other sources are available**: if a file has a
+single source, it is never dropped (a slow transfer still beats none). A short
+grace period at the start of each piece avoids penalising TCP slow-start.
+
+```sh
+rucio config set emule.min_source_speed_kib_s 2
+```
+
+**Default:** `2`  (set to `0` to disable the check; override at runtime with
+`RUCIOD_EMULE_MIN_SOURCE_SPEED_KIB_S`)
+
+---
+
 ## Configuration file
 
 The configuration is stored as TOML and is loaded at daemon startup.
@@ -416,6 +436,7 @@ udp_port           = 4672
 download_slots_per_file  = 5
 max_upload_slots         = 4
 max_concurrent_downloads = 3
+min_source_speed_kib_s   = 2
 # temp_dir     = "~/.cache/rucio/emule-tmp"  # platform default
 # external_ip  = "1.2.3.4"                   # auto-detected via UPnP or peer responses
 ```
@@ -453,6 +474,7 @@ the file value untouched.
 | `RUCIOD_EMULE_DOWNLOAD_SLOTS_PER_FILE` | `emule.download_slots_per_file` | `5` | integer 1–50 |
 | `RUCIOD_EMULE_MAX_UPLOAD_SLOTS` | `emule.max_upload_slots` | `4` | integer 1–50 |
 | `RUCIOD_EMULE_MAX_CONCURRENT_DOWNLOADS` | `emule.max_concurrent_downloads` | `3` | integer 1–50 |
+| `RUCIOD_EMULE_MIN_SOURCE_SPEED_KIB_S` | `emule.min_source_speed_kib_s` | `2` | integer (`0` = off) |
 
 ### Docker / container example
 

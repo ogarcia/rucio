@@ -94,6 +94,7 @@ pub fn ConfigModal(
     let f_em_upslots = RwSignal::new(String::new());
     let f_em_maxconc = RwSignal::new(String::new());
     let f_em_nick = RwSignal::new(String::new());
+    let f_em_minspeed = RwSignal::new(String::new());
 
     // Load once on open.
     Effect::new(move |_| {
@@ -125,6 +126,7 @@ pub fn ConfigModal(
                 f_em_upslots.set(snap.emule.max_upload_slots.to_string());
                 f_em_maxconc.set(snap.emule.max_concurrent_downloads.to_string());
                 f_em_nick.set(snap.emule.nick.clone());
+                f_em_minspeed.set(snap.emule.min_source_speed_kib_s.to_string());
                 base.set(Some(snap));
                 loaded.set(true);
             }
@@ -173,6 +175,9 @@ pub fn ConfigModal(
             snap.emule.max_concurrent_downloads = n.clamp(1, 50);
         }
         snap.emule.nick = f_em_nick.get_untracked().trim().to_string();
+        if let Ok(n) = f_em_minspeed.get_untracked().trim().parse::<u32>() {
+            snap.emule.min_source_speed_kib_s = n;
+        }
 
         // Mirror the limits into the menu's quick-settings signals.
         let (dl, ul, tdl, tul) = (
@@ -400,6 +405,13 @@ pub fn ConfigModal(
                                             disabled=em_locked
                                             prop:value=move || f_em_maxconc.get()
                                             on:input=move |e| f_em_maxconc.set(event_target_value(&e))/>
+                                    </div>
+                                    <div class="config-field">
+                                        <label class="config-label">"Min source speed (KiB/s, 0 = off)"</label>
+                                        <input class="config-input config-input-sm" type="text"
+                                            disabled=em_locked
+                                            prop:value=move || f_em_minspeed.get()
+                                            on:input=move |e| f_em_minspeed.set(event_target_value(&e))/>
                                     </div>
                                 </div>
                             }.into_any(),

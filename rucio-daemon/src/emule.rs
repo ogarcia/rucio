@@ -708,6 +708,16 @@ pub async fn run_ed2k_download(
 
         let our_tcp_port = config.emule.tcp_port;
 
+        // Minimum sustained per-source speed (bytes/sec). Only enforced when
+        // there is more than one source: dropping a slow peer only helps if
+        // another can pick up its slices, so with a single source we keep it
+        // (a slow transfer beats none) by leaving the check disabled.
+        let min_speed_bytes: u64 = if valid_sources.len() > 1 {
+            config.emule.min_source_speed_kib_s as u64 * 1024
+        } else {
+            0
+        };
+
         // Shared pool of every usable source, each paired with a per-round
         // failure count. Workers are NOT pinned to a single peer: a worker keeps
         // its source while it keeps serving slices, but the moment that peer
@@ -734,6 +744,7 @@ pub async fn run_ed2k_download(
             let cancel_w = cancel.clone();
             let pool = source_pool.clone();
             let nick_w = our_nick.clone();
+            let min_speed = min_speed_bytes;
 
             join_set.spawn(async move {
                 // Work one source at a time: connect once, then download as many
@@ -763,6 +774,7 @@ pub async fn run_ed2k_download(
                         our_tcp_port,
                         our_user_hash,
                         our_nick: nick_w.clone(),
+                        min_speed_bytes_per_sec: min_speed,
                     };
 
                     // Connect once: HELLO + file request + upload-slot wait.
@@ -924,8 +936,8 @@ pub async fn run_ed2k_download(
                                 // Keep the session; fetch the next slice over it.
                             }
                             Err(e) => {
-                                debug!(dl = download_id, %peer, slice = slice_idx, error = %e,
-                                    "Slice download failed — dropping connection, will retry");
+                                let too_slow =
+                                    e.is::<rucio_emule::transfer::SlowPeer>();
                                 // Roll back this slice's partial progress: it will
                                 // be re-fetched from the start, so its bytes must
                                 // not linger in the shared total.
@@ -937,11 +949,21 @@ pub async fn run_ed2k_download(
                                 }
                                 // Return the slice for any worker to pick up.
                                 work.lock().unwrap().push_front((slice_idx, slice_start, slice_end));
-                                // The connection is broken; the source may have just
-                                // glitched, so retry it later unless exhausted, then
-                                // reconnect (to it or another source).
-                                if attempts + 1 < MAX_SOURCE_ATTEMPTS {
-                                    pool.lock().unwrap().push_back((source, attempts + 1));
+                                if too_slow {
+                                    // Deliberately drop this source: another one
+                                    // will serve the slice faster. (Only reached
+                                    // when >1 source exists — see `min_speed_bytes`.)
+                                    info!(dl = download_id, %peer, error = %e,
+                                        "Source too slow — dropped in favour of another");
+                                } else {
+                                    debug!(dl = download_id, %peer, slice = slice_idx, error = %e,
+                                        "Slice download failed — dropping connection, will retry");
+                                    // The connection is broken; the source may have just
+                                    // glitched, so retry it later unless exhausted, then
+                                    // reconnect (to it or another source).
+                                    if attempts + 1 < MAX_SOURCE_ATTEMPTS {
+                                        pool.lock().unwrap().push_back((source, attempts + 1));
+                                    }
                                 }
                                 continue 'sources;
                             }
