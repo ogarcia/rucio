@@ -41,9 +41,17 @@ tag is the complete client — daemon, CLI, embedded web panel and eMule support
 docker run -d --name rucio \
   -e RUCIOD_API_LISTEN=0.0.0.0:3003 \
   -v rucio-data:/var/lib/rucio \
-  -p 4321:4321/tcp -p 3003:3003/tcp \
+  -p 3003:3003/tcp \
+  -p 4321:4321/tcp \
+  -p 4662:4662/tcp \
+  -p 4672:4672/udp \
   ghcr.io/ogarcia/rucio:latest
 ```
+
+Ports: `3003` web panel + API, `4321/tcp` the rucio libp2p network, and
+`4662/tcp` + `4672/udp` eMule/Kad2. Map the eMule ports so the node is reachable
+(High-ID) — without them eMule still works but downloads are much slower
+(Low-ID), and you can drop them entirely if you don't use eMule.
 
 Then open `http://localhost:3003/` for the panel. Other flavors are available —
 `latest-headless` (daemon only), `latest-cli` (standalone client) and
