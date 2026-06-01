@@ -103,8 +103,8 @@ docker run -d --name rucio \
   -e RUCIOD_API_LISTEN=0.0.0.0:3003 \
   -e RUCIOD_UPNP=false \
   -v rucio-data:/var/lib/rucio \
-  -p 4321:4321/tcp \
   -p 3003:3003/tcp \
+  -p 4321:4321/tcp \
   -p 4662:4662/tcp \
   -p 4672:4672/udp \
   ghcr.io/ogarcia/rucio:latest
