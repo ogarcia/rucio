@@ -354,7 +354,11 @@ async fn on_file_remove(path: &Path, db: &Db, node_tx: &mpsc::Sender<NodeCmd>) {
 /// are de-indexed, and files whose `size` or `mtime` differ are re-hashed.
 /// Unchanged files are skipped, so on a stable library this is just a directory
 /// walk + `stat` (no hashing). Run at startup and then on a long interval.
-pub async fn reconcile_shares(db: &Db, node_tx: &mpsc::Sender<NodeCmd>) {
+pub async fn reconcile_shares(
+    db: &Db,
+    node_tx: &mpsc::Sender<NodeCmd>,
+    indexing_count: &AtomicUsize,
+) {
     let dirs = match db::shared_dirs::list(db).await {
         Ok(d) => d,
         Err(e) => {
@@ -371,6 +375,11 @@ pub async fn reconcile_shares(db: &Db, node_tx: &mpsc::Sender<NodeCmd>) {
         .collect();
 
     let (mut added, mut changed, mut removed) = (0u64, 0u64, 0u64);
+    // Files that need (re)hashing, collected first so we can surface an accurate
+    // pending count and decrement it as each completes — the same progress the
+    // indexing-status endpoint shows for `share add` and live watcher events.
+    // Without this, a restart's reconcile re-indexes silently (pending stays 0).
+    let mut to_upsert: Vec<PathBuf> = Vec::new();
 
     for d in &dirs {
         let dir = PathBuf::from(&d.path);
@@ -396,15 +405,15 @@ pub async fn reconcile_shares(db: &Db, node_tx: &mpsc::Sender<NodeCmd>) {
             .unwrap_or_default()
         };
 
-        // New or changed files → (re)index.
+        // New or changed files → (re)index (queued, indexed below).
         for (path, &(disk_size, disk_mtime)) in &disk {
             match db_by_path.get(path) {
                 None => {
-                    on_file_upsert(Path::new(path), db, node_tx).await;
+                    to_upsert.push(PathBuf::from(path));
                     added += 1;
                 }
                 Some(&(db_size, db_mtime)) if db_size != disk_size || db_mtime != disk_mtime => {
-                    on_file_upsert(Path::new(path), db, node_tx).await;
+                    to_upsert.push(PathBuf::from(path));
                     changed += 1;
                 }
                 Some(_) => {} // unchanged
@@ -418,6 +427,14 @@ pub async fn reconcile_shares(db: &Db, node_tx: &mpsc::Sender<NodeCmd>) {
                 removed += 1;
             }
         }
+    }
+
+    // (Re)index the collected files, tracking progress so the work is visible
+    // after a restart — not only for runtime `share add` / live watcher events.
+    indexing_count.fetch_add(to_upsert.len(), Ordering::Relaxed);
+    for path in &to_upsert {
+        on_file_upsert(path, db, node_tx).await;
+        indexing_count.fetch_sub(1, Ordering::Relaxed);
     }
 
     if added + changed + removed > 0 {

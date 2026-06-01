@@ -259,11 +259,12 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     {
         let db = db.clone();
         let node_tx = handle.cmd_tx.clone();
+        let indexing_count = indexing_count.clone();
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(24 * 3600));
             loop {
                 tick.tick().await; // fires immediately on the first iteration
-                watcher::reconcile_shares(&db, &node_tx).await;
+                watcher::reconcile_shares(&db, &node_tx, &indexing_count).await;
             }
         });
     }
