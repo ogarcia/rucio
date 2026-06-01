@@ -718,56 +718,75 @@ pub async fn run_ed2k_download(
             let nick_w = our_nick.clone();
 
             join_set.spawn(async move {
-                // The source this worker is currently bound to — kept across
-                // slices while it serves us, replaced from the pool on failure.
-                let mut current: Option<KadSource> = None;
-
-                loop {
-                    // Stop pulling new slices the moment a pause/cancel arrives.
+                // Work one source at a time: connect once, then download as many
+                // slices as it will serve over that single connection before
+                // moving on. The connection (and its granted upload slot) is
+                // reused across slices instead of reconnecting per slice.
+                'sources: loop {
                     if cancel_w.load(Ordering::Relaxed) {
                         break;
                     }
-                    // Claim the next incomplete slice.
-                    let (slice_idx, slice_start, slice_end) = match work.lock().unwrap().pop_front()
-                    {
-                        None => break,
-                        Some(s) => s,
+                    // Take the next source from the shared pool.
+                    let (source, attempts) = match pool.lock().unwrap().pop_front() {
+                        Some(pair) => pair,
+                        None => break, // no sources left — worker done
+                    };
+                    let peer = std::net::SocketAddrV4::new(source.ip, source.tcp_port);
+                    let opts = DownloadOptions {
+                        timeout: Duration::from_secs(3600),
+                        op_timeout: Duration::from_secs(30),
+                        // Short queue wait per knock (~10 s): when a peer's slots
+                        // are full we move on and re-knock it later via the pool.
+                        max_queue_waits: 2,
+                        file_size,
+                        hash,
+                        start_offset: 0,
+                        peer_hash: Some(source.user_hash),
+                        our_tcp_port,
+                        our_user_hash,
+                        our_nick: nick_w.clone(),
                     };
 
-                    // Try sources until one delivers this slice (or the pool runs
-                    // dry). A peer that fails to connect or queues us is dropped
-                    // and the next source is tried.
-                    let delivered = loop {
-                        if cancel_w.load(Ordering::Relaxed) {
-                            break false;
+                    // Connect once: HELLO + file request + upload-slot wait.
+                    // Connected and Queued are transient (Connected even fires
+                    // twice per attempt — plain then the obfuscated retry), so
+                    // they stay at debug; only an actual transfer start is info.
+                    let mut on_connect = |ev: DownloadEvent| match ev {
+                        DownloadEvent::Connected => {
+                            debug!(dl = download_id, %peer, "Connected to eMule peer")
                         }
-                        // Prefer the source we're already bound to (it just
-                        // served us, so attempts = 0); otherwise take the next
-                        // from the pool with its accumulated failure count.
-                        let (source, attempts) = match current.take() {
-                            Some(s) => (s, 0u32),
-                            None => match pool.lock().unwrap().pop_front() {
-                                Some(pair) => pair,
-                                None => break false, // no sources left to try this slice
-                            },
-                        };
-                        let peer = std::net::SocketAddrV4::new(source.ip, source.tcp_port);
-                        let opts = DownloadOptions {
-                            timeout: Duration::from_secs(3600),
-                            op_timeout: Duration::from_secs(30),
-                            // Short queue wait per knock (~10 s): when a peer's
-                            // slots are full we'd rather move on and re-knock it
-                            // later (it goes back into the pool) than block this
-                            // worker for ~25 s on a single peer.
-                            max_queue_waits: 2,
-                            file_size,
-                            hash,
-                            start_offset: 0,
-                            peer_hash: Some(source.user_hash),
-                            our_tcp_port,
-                            our_user_hash,
-                            our_nick: nick_w.clone(),
-                        };
+                        DownloadEvent::Queued { rank } => {
+                            debug!(dl = download_id, %peer, rank, "Queued at eMule peer")
+                        }
+                        DownloadEvent::Started => {
+                            info!(dl = download_id, %peer, "Peer granted upload slot — transfer starting")
+                        }
+                        _ => {}
+                    };
+                    let mut session = match Session::connect(peer, &opts, &mut on_connect).await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            debug!(dl = download_id, %peer, error = %e,
+                                "Peer unavailable — trying another source");
+                            // It may be momentarily full — retry later unless exhausted.
+                            if attempts + 1 < MAX_SOURCE_ATTEMPTS {
+                                pool.lock().unwrap().push_back((source, attempts + 1));
+                            }
+                            continue 'sources;
+                        }
+                    };
+
+                    // Download slices over this one connection until the queue is
+                    // empty, we're cancelled, or the session breaks.
+                    loop {
+                        if cancel_w.load(Ordering::Relaxed) {
+                            break 'sources;
+                        }
+                        let (slice_idx, slice_start, slice_end) =
+                            match work.lock().unwrap().pop_front() {
+                                Some(s) => s,
+                                None => break 'sources, // all slices taken — worker done
+                            };
 
                         // Open part file seeked to this slice's start offset.
                         let mut file = match tokio::fs::OpenOptions::new()
@@ -779,50 +798,18 @@ pub async fn run_ed2k_download(
                         {
                             Ok(f) => f,
                             Err(e) => {
-                                // Filesystem error, not the peer's fault — keep
-                                // the source and stop working this slice for now.
+                                // Filesystem error, not the peer's fault — return
+                                // the slice and stop this worker.
                                 warn!(dl = download_id, %peer, slice = slice_idx, error = %e, "Failed to open part file");
-                                current = Some(source);
-                                break false;
+                                work.lock().unwrap().push_front((slice_idx, slice_start, slice_end));
+                                break 'sources;
                             }
                         };
                         if let Err(e) = file.seek(std::io::SeekFrom::Start(slice_start)).await {
                             warn!(dl = download_id, %peer, slice = slice_idx, error = %e, "Failed to seek part file");
-                            current = Some(source);
-                            break false;
+                            work.lock().unwrap().push_front((slice_idx, slice_start, slice_end));
+                            break 'sources;
                         }
-
-                        // Connect and perform the eMule handshake. Connected and
-                        // Queued are transient (Connected even fires twice per
-                        // attempt — plain then the obfuscated retry — and once
-                        // per source retry), so they stay at debug; only an
-                        // actual transfer start is logged at info.
-                        let mut on_connect = |ev: DownloadEvent| match ev {
-                            DownloadEvent::Connected => {
-                                debug!(dl = download_id, %peer, "Connected to eMule peer")
-                            }
-                            DownloadEvent::Queued { rank } => {
-                                debug!(dl = download_id, %peer, rank, "Queued at eMule peer")
-                            }
-                            DownloadEvent::Started => {
-                                info!(dl = download_id, %peer, slice = slice_idx, "Peer granted upload slot — transfer starting")
-                            }
-                            _ => {}
-                        };
-                        let mut session = match Session::connect(peer, &opts, &mut on_connect).await
-                        {
-                            Ok(s) => s,
-                            Err(e) => {
-                                debug!(dl = download_id, %peer, slice = slice_idx, error = %e,
-                                    "Peer unavailable — trying another source");
-                                // Retry this peer later (it may be momentarily
-                                // full) unless it has exhausted its attempts.
-                                if attempts + 1 < MAX_SOURCE_ATTEMPTS {
-                                    pool.lock().unwrap().push_back((source, attempts + 1));
-                                }
-                                continue;
-                            }
-                        };
 
                         // Update the shared ProgressState so every in-flight slice
                         // is reflected at once. The in-flight publisher mirrors the
@@ -916,13 +903,11 @@ pub async fn run_ed2k_download(
                                     )
                                     .await;
                                 });
-                                // This source works — keep it for the next slice.
-                                current = Some(source);
-                                break true;
+                                // Keep the session; fetch the next slice over it.
                             }
                             Err(e) => {
                                 debug!(dl = download_id, %peer, slice = slice_idx, error = %e,
-                                    "Slice download failed — trying another source");
+                                    "Slice download failed — dropping connection, will retry");
                                 // Roll back this slice's partial progress: it will
                                 // be re-fetched from the start, so its bytes must
                                 // not linger in the shared total.
@@ -932,24 +917,17 @@ pub async fn run_ed2k_download(
                                     p.total -= prev;
                                     p.per_slice[slice_idx] = 0;
                                 }
-                                // It granted us a slot once, so it may just have
-                                // glitched — retry it later unless exhausted.
+                                // Return the slice for any worker to pick up.
+                                work.lock().unwrap().push_front((slice_idx, slice_start, slice_end));
+                                // The connection is broken; the source may have just
+                                // glitched, so retry it later unless exhausted, then
+                                // reconnect (to it or another source).
                                 if attempts + 1 < MAX_SOURCE_ATTEMPTS {
                                     pool.lock().unwrap().push_back((source, attempts + 1));
                                 }
-                                continue;
+                                continue 'sources;
                             }
                         }
-                    };
-
-                    if !delivered {
-                        // No source could deliver this slice (pool exhausted or a
-                        // stop/fs error). Return it for another worker or the next
-                        // round and stop this worker.
-                        work.lock()
-                            .unwrap()
-                            .push_front((slice_idx, slice_start, slice_end));
-                        break;
                     }
                 }
             });
