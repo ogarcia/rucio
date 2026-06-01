@@ -115,6 +115,29 @@ files, not with their size, and the per-file cost is tiny:
 - Allocations that are proportional to the file count (the hash list built for a
   re-announce, the rescan's disk-vs-index maps) are transient and freed after use.
 
+**Observed RAM footprint** — in practice the dominant term is *not* our own
+provided keys (those cost tens of bytes each) but the `kad_max_records` store of
+*other* peers' provider records, and **announcing shares is what fills it**:
+
+- A daemon with an empty database (no shares) sits at ~28 MB RSS even while
+  connected — it is a near-passive DHT participant that almost nobody sends
+  `AddProvider` to.
+- Once it announces shared files it becomes visible in peers' routing tables,
+  they start sending it their provider records (`InboundRequest::AddProvider`,
+  which the node re-stores to serve as a DHT server), and the `MemoryStore`
+  fills toward its `kad_max_records` cap. At the default 100k that arena reaches
+  ~70 MB (~700 B/record), so a sharing node settles around ~100 MB RSS.
+- This growth is **not stepwise with indexing**: announcing a file costs only a
+  few KB, so the rise is the inbound third-party DHT traffic that arrives in a
+  burst once the node is visible — driven by how reachable/active the node is,
+  not by how many files it indexed.
+
+This is expected, bounded (it plateaus at the cap, it is not a leak), and
+independent of the eMule feature. ~100 MB is considered acceptable for a full
+node, so `kad_max_records` is deliberately left at 100k rather than trimmed;
+lowering it (e.g. to 5k–10k) is the lever to shrink a client's DHT-server
+footprint without affecting its own announces, search, or downloads.
+
 ### Gossipsub
 
 Gossipsub is a publish/subscribe protocol used for keyword search.
