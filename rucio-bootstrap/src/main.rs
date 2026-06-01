@@ -400,10 +400,17 @@ async fn main() -> Result<()> {
                     NodeEvent::ListenAddrAdded(ref addr) if swarm_idx == 0 => {
                         announce(addr, &peer_id);
                     }
-                    NodeEvent::ObservedAddr { ref addr, .. } if swarm_idx == 0 => {
+                    NodeEvent::ObservedAddr {
+                        ref addr,
+                        reported_by,
+                    } if swarm_idx == 0 => {
                         // Our own external address as a peer sees us — useful for
-                        // diagnostics but noisy, so keep it at debug level.
-                        debug!("Observed our own public address: {addr}/p2p/{peer_id}");
+                        // diagnostics but noisy, so keep it at debug level. Name
+                        // the reporting peer so repeated observations can be told
+                        // apart.
+                        debug!(
+                            "Observed our own public address: {addr}/p2p/{peer_id} (reported by {reported_by})"
+                        );
                     }
                     NodeEvent::PeerConnected { peer_id: pid } => {
                         *peer_conns.entry(pid).or_insert(0) += 1;
