@@ -9,6 +9,10 @@ search (Gossipsub), and transferred directly between peers. A web control panel
 and a full command-line client ship in the box, and rucio can optionally bridge
 to the **eMule / Kad2** network to download `ed2k://` files.
 
+<p align="center">
+  <img src="docs/images/panel.png" alt="rucio web control panel" width="820">
+</p>
+
 ## Features
 
 - **Fully decentralized** — peers discover each other via mDNS (local network)
@@ -40,6 +44,7 @@ tag is the complete client — daemon, CLI, embedded web panel and eMule support
 ```sh
 docker run -d --name rucio \
   -e RUCIOD_API_LISTEN=0.0.0.0:3003 \
+  -e RUCIOD_UPNP=false \
   -v rucio-data:/var/lib/rucio \
   -p 3003:3003/tcp \
   -p 4321:4321/tcp \
