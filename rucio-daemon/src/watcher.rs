@@ -443,7 +443,7 @@ pub async fn reconcile_shares(
             changed, removed, "Share rescan reconciled offline changes"
         );
     } else {
-        debug!("Share rescan: index already in sync with disk");
+        info!("Share rescan complete: index already in sync with disk");
     }
 }
 
