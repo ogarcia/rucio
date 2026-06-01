@@ -6,6 +6,7 @@
 
 pub mod downloads;
 pub mod emule_downloads;
+pub mod emule_shared_files;
 pub mod metrics;
 pub mod peers;
 pub mod shared_dirs;

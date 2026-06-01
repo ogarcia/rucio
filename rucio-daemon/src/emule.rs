@@ -50,6 +50,57 @@ impl Drop for RegistryGuard {
     }
 }
 
+/// Load persisted eMule shared files into the upload whitelist at startup,
+/// dropping any whose on-disk file has changed or vanished.
+///
+/// These are completed downloads we keep seeding (good-citizen policy). The
+/// share lives in `emule_shared_files`, independent of the downloads list, so
+/// clearing completed downloads does not stop sharing. A file is only kept if
+/// its size and mtime still match what we recorded — otherwise the user has
+/// modified/replaced it and we stop sharing (and forget it).
+pub async fn load_shared_files(db: &Db, active_downloads: &ActiveDownloads) {
+    let rows = match crate::db::emule_shared_files::list(db).await {
+        Ok(r) => r,
+        Err(e) => {
+            warn!("Cannot list eMule shared files: {e}");
+            return;
+        }
+    };
+    let (mut loaded, mut dropped) = (0usize, 0usize);
+    for row in rows {
+        let path = std::path::PathBuf::from(&row.path);
+        let disk_size = std::fs::metadata(&path)
+            .map(|m| m.len() as i64)
+            .unwrap_or(-1);
+        let unchanged =
+            disk_size == row.size && crate::api::shares::file_mtime_secs(&path) == row.mtime;
+        if !unchanged {
+            let _ = crate::db::emule_shared_files::delete_by_hash(db, &row.ed2k_hash).await;
+            dropped += 1;
+            continue;
+        }
+        let Ok(hash) = <[u8; 16]>::try_from(row.ed2k_hash.as_slice()) else {
+            continue;
+        };
+        let size = row.size as u64;
+        let num_slices = size.div_ceil(CHUNK_SIZE as u64) as usize;
+        active_downloads.write().await.insert(
+            hash,
+            UploadInfo {
+                name: row.name,
+                total_size: size,
+                num_slices,
+                path,
+                complete: true,
+            },
+        );
+        loaded += 1;
+    }
+    if loaded + dropped > 0 {
+        info!(loaded, dropped, "Loaded eMule shared files for seeding");
+    }
+}
+
 /// The `.part` and `.part.met` paths for an eMule download identified by its raw
 /// 16-byte ed2k hash. Single source of truth for the temp-file naming, shared
 /// by the download task and the API (cancel/delete cleanup).
@@ -254,6 +305,9 @@ pub async fn run_ed2k_download(
             name: link.name.clone(),
             total_size: link.size,
             num_slices,
+            // While downloading we serve the partial slices from the .part file.
+            path: part_path.clone(),
+            complete: false,
         },
     );
 
@@ -930,7 +984,37 @@ pub async fn run_ed2k_download(
         blake3 = %blake3_hex,
         "eMule download complete — file ready in download directory"
     );
-    active_downloads.write().await.remove(&hash_key);
+
+    // Keep seeding the finished file to the Kad network (good-citizen policy),
+    // decoupled from the downloads list: record it as a shared file and repoint
+    // the upload whitelist entry at the final file instead of removing it. It is
+    // served until the file is modified/removed on disk (checked at startup and
+    // by the filesystem watcher).
+    let mtime = crate::api::shares::file_mtime_secs(&final_path);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if let Err(e) = crate::db::emule_shared_files::upsert(
+        db,
+        link.hash.as_bytes(),
+        &link.name,
+        link.size,
+        final_path.to_string_lossy().as_ref(),
+        mtime,
+        now,
+    )
+    .await
+    {
+        warn!(
+            dl = download_id,
+            "Failed to register completed file for sharing: {e}"
+        );
+    }
+    if let Some(info) = active_downloads.write().await.get_mut(&hash_key) {
+        info.path = final_path.clone();
+        info.complete = true;
+    }
     live_stats.write().await.remove(&live_key);
     Ok(())
 }

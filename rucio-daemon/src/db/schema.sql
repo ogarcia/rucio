@@ -103,6 +103,24 @@ CREATE TABLE IF NOT EXISTS download_chunks (
 CREATE INDEX IF NOT EXISTS idx_dl_chunks_status ON download_chunks(download_id, status);
 
 -- ---------------------------------------------------------------------------
+-- emule_shared_files
+-- Files downloaded from eMule that we keep serving to the Kad network after the
+-- download finishes (good-citizen seeding). Decoupled from emule_downloads on
+-- purpose: clearing the completed-downloads list must NOT stop sharing. A file
+-- is shared until it is modified or removed on disk (size/mtime change),
+-- detected at startup and via the filesystem watcher.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS emule_shared_files (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ed2k_hash   BLOB    NOT NULL UNIQUE,  -- 16 bytes MD4, canonical identifier
+    name        TEXT    NOT NULL,
+    size        INTEGER NOT NULL,
+    path        TEXT    NOT NULL,         -- absolute path of the final file on disk
+    mtime       INTEGER NOT NULL,         -- file mtime in Unix seconds (change signal)
+    added_at    INTEGER NOT NULL
+);
+
+-- ---------------------------------------------------------------------------
 -- metrics
 -- Single-row table holding cumulative lifetime counters.
 -- Updated periodically from the in-memory session counters.

@@ -810,7 +810,8 @@ impl PackedReassembler {
 
 // ── Upload context ────────────────────────────────────────────────────────────
 
-/// Metadata about a file currently being downloaded, exposed for upload.
+/// Metadata about a file we can serve to peers — either an in-progress download
+/// or a completed eMule download we keep seeding.
 #[derive(Debug, Clone)]
 pub struct UploadInfo {
     /// Display name (original filename from the ed2k link).
@@ -819,6 +820,12 @@ pub struct UploadInfo {
     pub total_size: u64,
     /// Total number of 9.28 MB slices.
     pub num_slices: usize,
+    /// File to read bytes from: the `.part` while downloading, the final file
+    /// once the download has completed and we keep seeding it.
+    pub path: PathBuf,
+    /// `true` once fully downloaded: every slice is available and there is no
+    /// `.part.met`, so the status bitmap is all-complete.
+    pub complete: bool,
 }
 
 /// Live map of files currently being downloaded, keyed by their MD4 hash.
@@ -953,9 +960,14 @@ async fn handle_incoming(mut stream: TcpStream, peer: SocketAddr, ctx: Arc<Uploa
                 Err(TryAcquireError::Closed) => break,
             };
 
-            // Load the chunk completion bitmap from .part.met.
-            let met_path = ctx.temp_dir.join(format!("{}.part.met", hex::encode(hash)));
-            let done = crate::progress::load_progress(&met_path, info.num_slices);
+            // Completed shares have every slice; in-progress downloads load the
+            // completion bitmap from their .part.met.
+            let done = if info.complete {
+                vec![true; info.num_slices]
+            } else {
+                let met_path = ctx.temp_dir.join(format!("{}.part.met", hex::encode(hash)));
+                crate::progress::load_progress(&met_path, info.num_slices)
+            };
 
             // ── FILEREQANSWER ─────────────────────────────────────────────────
             let mut ans = Vec::with_capacity(16 + 2 + info.name.len());
@@ -1018,7 +1030,7 @@ async fn run_upload_session(
     stream: &mut TcpStream,
     cipher: &mut Option<Rc4>,
     hash: &[u8; 16],
-    _info: &UploadInfo,
+    info: &UploadInfo,
     done: &[bool],
     ctx: &UploadContext,
     op_timeout: Duration,
@@ -1038,7 +1050,9 @@ async fn run_upload_session(
 
     write_frame(stream, cipher, OP_ACCEPTUPLOAD_REQ, &[]).await?;
 
-    let part_path = ctx.temp_dir.join(format!("{}.part", hex::encode(hash)));
+    // Serve from the file the whitelist entry points at: the `.part` for an
+    // in-progress download, the final file for a completed share.
+    let part_path = info.path.clone();
 
     // Serve REQUESTPARTS until the peer signals done or disconnects.
     loop {
