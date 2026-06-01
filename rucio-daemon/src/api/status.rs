@@ -71,6 +71,12 @@ pub async fn get_peers(State(state): State<AppState>) -> Json<PeersResponse> {
         .into_iter()
         .map(|r| {
             let addrs: Vec<String> = serde_json::from_str(&r.addrs).unwrap_or_default();
+            // Peers advertise all of their listen addresses, including ones that
+            // are meaningless to anyone else — drop those from the listing.
+            let addrs: Vec<String> = addrs
+                .into_iter()
+                .filter(|a| !is_unreachable_addr(a))
+                .collect();
             PeerResponse {
                 peer_id: r.peer_id,
                 addresses: addrs,
@@ -84,4 +90,48 @@ pub async fn get_peers(State(state): State<AppState>) -> Json<PeersResponse> {
         .collect();
 
     Json(PeersResponse { peers })
+}
+
+/// Whether a multiaddr points at a loopback or link-local IP. Such addresses
+/// only make sense on the peer's own machine (loopback) or its own link
+/// (link-local — IPv6 `fe80::/10` is interface-scoped and an IPv4 `169.254/16`
+/// is APIPA), so a remote peer advertising them gives us nothing dialable. We
+/// hide them from the peer listing. Unparseable or non-IP addrs are kept.
+fn is_unreachable_addr(addr: &str) -> bool {
+    use libp2p::multiaddr::Protocol;
+    let Ok(ma) = addr.parse::<libp2p::Multiaddr>() else {
+        return false;
+    };
+    ma.iter().any(|p| match p {
+        Protocol::Ip4(ip) => ip.is_loopback() || ip.is_link_local(),
+        // No stable `is_unicast_link_local`; fe80::/10 = top 10 bits 1111111010.
+        Protocol::Ip6(ip) => ip.is_loopback() || (ip.segments()[0] & 0xffc0) == 0xfe80,
+        _ => false,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_unreachable_addr;
+
+    #[test]
+    fn hides_loopback_and_link_local() {
+        // Loopback.
+        assert!(is_unreachable_addr("/ip4/127.0.0.1/tcp/4321"));
+        assert!(is_unreachable_addr("/ip6/::1/tcp/4321"));
+        // Link-local: IPv6 fe80::/10 and IPv4 169.254/16.
+        assert!(is_unreachable_addr("/ip6/fe80::1/tcp/4321"));
+        assert!(is_unreachable_addr("/ip4/169.254.1.2/tcp/4321"));
+    }
+
+    #[test]
+    fn keeps_routable_and_unknown() {
+        // Public / private-LAN / ULA addresses stay (reachable somewhere).
+        assert!(!is_unreachable_addr("/ip4/203.0.113.7/tcp/4321"));
+        assert!(!is_unreachable_addr("/ip4/192.168.1.50/tcp/4321"));
+        assert!(!is_unreachable_addr("/ip6/2a05:f480::10/tcp/4321"));
+        // Non-IP or unparseable: keep rather than hide silently.
+        assert!(!is_unreachable_addr("/dns4/example.com/tcp/4321"));
+        assert!(!is_unreachable_addr("garbage"));
+    }
 }
