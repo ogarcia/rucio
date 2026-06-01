@@ -356,7 +356,6 @@ pub async fn run_ed2k_download(
     std::fs::create_dir_all(emule_temp)
         .with_context(|| format!("create emule temp dir: {}", emule_temp.display()))?;
     let (part_path, met_path) = part_paths(config, link.hash.as_bytes());
-    let final_path = config.storage.download_dir.join(&link.name);
 
     // Number of ed2k slices (one per CHUNK_SIZE block).
     let num_slices = link.size.div_ceil(CHUNK_SIZE as u64) as usize;
@@ -1057,6 +1056,13 @@ pub async fn run_ed2k_download(
     }
 
     // --- Download succeeded: move to final destination and compute BLAKE3 ---
+    // Re-read the (possibly renamed) name from the DB so a rename applied while
+    // the download was in progress takes effect; fall back to the link name.
+    let final_name = match crate::db::emule_downloads::get(db, download_id).await {
+        Ok(Some(r)) if !r.name.trim().is_empty() => r.name,
+        _ => link.name.clone(),
+    };
+    let final_path = config.storage.download_dir.join(&final_name);
     std::fs::create_dir_all(config.storage.download_dir.as_path())
         .context("create download dir")?;
     tokio::fs::rename(&part_path, &final_path)
@@ -1130,7 +1136,7 @@ pub async fn run_ed2k_download(
     if let Err(e) = crate::db::emule_shared_files::upsert(
         db,
         link.hash.as_bytes(),
-        &link.name,
+        &final_name,
         link.size,
         final_path.to_string_lossy().as_ref(),
         mtime,
@@ -1145,6 +1151,7 @@ pub async fn run_ed2k_download(
         );
     }
     if let Some(info) = active_downloads.write().await.get_mut(&hash_key) {
+        info.name = final_name.clone();
         info.path = final_path.clone();
         info.complete = true;
         info.hashset = hashset;

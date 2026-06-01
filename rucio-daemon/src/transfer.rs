@@ -829,6 +829,77 @@ impl DownloadEngine {
         self.rehydrate_row(row).await;
     }
 
+    /// Rename an in-progress download: move its `.part` to `<new_name>.part`
+    /// and repoint the in-memory state plus the DB `dest_path` so it completes
+    /// under the new name. The `name` column itself is updated by the API
+    /// handler; completed downloads are never renamed (the handler rejects
+    /// them — the file already belongs to the user).
+    ///
+    /// `new_name` is a bare, already-sanitised file name.
+    pub async fn rename(&mut self, download_id: i64, new_name: String) {
+        let new_part = self.temp_dir.join(format!("{new_name}.part"));
+
+        // Active in memory (manifest already arrived): repoint live state too.
+        let active_hash = self
+            .active
+            .iter()
+            .find(|(_, dl)| dl.download_id == download_id)
+            .map(|(h, _)| *h);
+
+        if let Some(h) = active_hash {
+            let old_part = self.active[&h].dest_path.clone();
+            if old_part != new_part {
+                if let Err(e) = tokio::fs::rename(&old_part, &new_part).await
+                    && e.kind() != std::io::ErrorKind::NotFound
+                {
+                    warn!(download_id, old = %old_part.display(), new = %new_part.display(),
+                        "Could not move .part on rename: {e}");
+                    return;
+                }
+                self.active.get_mut(&h).unwrap().dest_path = new_part.clone();
+                if let Err(e) = db::downloads::set_dest_path(
+                    &self.db,
+                    download_id,
+                    new_part.to_string_lossy().as_ref(),
+                )
+                .await
+                {
+                    warn!(download_id, "Could not update dest_path on rename: {e}");
+                }
+            }
+            info!(download_id, name = %new_name, "Download renamed");
+            return;
+        }
+
+        // Not active in memory (finding providers / queued / paused-not-rehydrated):
+        // rename the .part on disk if the DB already points at one. If there is
+        // no .part yet, only the `name` column matters — `on_manifest` reads it
+        // to create the .part under the new name.
+        if let Ok(Some(row)) = db::downloads::get(&self.db, download_id).await
+            && !row.dest_path.is_empty()
+        {
+            let old_part = PathBuf::from(&row.dest_path);
+            if old_part != new_part {
+                if let Err(e) = tokio::fs::rename(&old_part, &new_part).await
+                    && e.kind() != std::io::ErrorKind::NotFound
+                {
+                    warn!(download_id, "Could not move .part on rename: {e}");
+                    return;
+                }
+                if let Err(e) = db::downloads::set_dest_path(
+                    &self.db,
+                    download_id,
+                    new_part.to_string_lossy().as_ref(),
+                )
+                .await
+                {
+                    warn!(download_id, "Could not update dest_path on rename: {e}");
+                }
+            }
+        }
+        info!(download_id, name = %new_name, "Download renamed (not active in engine)");
+    }
+
     // -----------------------------------------------------------------------
     // Manifest received
     // -----------------------------------------------------------------------
@@ -859,21 +930,31 @@ impl DownloadEngine {
                     }
                 };
 
+                // Prefer the name already chosen by the user — the magnet's
+                // name, or a rename applied while finding providers — over
+                // whatever the remote peer declares. The hash is the identity;
+                // the name is a local choice. Fall back to the peer's name only
+                // if the row somehow has none.
+                let dl_id = pending.db_id;
+                let chosen_name = match db::downloads::get(&self.db, dl_id).await {
+                    Ok(Some(r)) if !r.name.trim().is_empty() => r.name,
+                    _ => name.clone(),
+                };
+
                 // In-progress downloads go to temp_dir as <name>.part
-                let dest_path = self.temp_dir.join(format!("{name}.part"));
+                let dest_path = self.temp_dir.join(format!("{chosen_name}.part"));
 
                 let chunk_tuples: Vec<(u32, [u8; 32], u32)> =
                     chunks.iter().map(|c| (c.idx, c.hash, c.size)).collect();
 
                 // Use the placeholder row created at start(), updating it with
                 // the real manifest data and inserting chunk rows.
-                let dl_id = pending.db_id;
                 if let Err(e) = db::downloads::finalize_pending(
                     &self.db,
                     dl_id,
-                    &name,
+                    &chosen_name,
                     total_size,
-                    dest_path.to_str().unwrap_or(&name),
+                    dest_path.to_str().unwrap_or(&chosen_name),
                     now,
                     &chunk_tuples,
                 )

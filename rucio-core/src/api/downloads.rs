@@ -127,6 +127,14 @@ pub struct StartEd2kDownloadRequest {
     pub link: String,
 }
 
+/// Request body for POST /api/v1/downloads/{id}/rename.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+pub struct RenameDownloadRequest {
+    /// New file name the download will be saved as on completion. Only the
+    /// final path component is kept; directory separators are stripped.
+    pub name: String,
+}
+
 /// Response for POST /api/v1/downloads/ed2k.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct StartEd2kDownloadResponse {

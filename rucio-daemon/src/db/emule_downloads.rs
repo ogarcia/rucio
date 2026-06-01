@@ -223,6 +223,19 @@ pub async fn set_completed(db: &Db, id: i64, dest_path: &str) -> Result<()> {
     Ok(())
 }
 
+/// Rename the file: change the `name` the download will be saved as. Only
+/// meaningful while the download is in progress; the finalising task reads this
+/// column to build the final destination path.
+pub async fn set_name(db: &Db, id: i64, name: &str) -> Result<()> {
+    sqlx::query("UPDATE emule_downloads SET name = ?1, updated_at = ?2 WHERE id = ?3")
+        .bind(name)
+        .bind(now_secs() as i64)
+        .bind(id)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
 /// Accumulate downloaded bytes into `bytes_done`.
 pub async fn add_bytes(db: &Db, id: i64, bytes: u64) -> Result<()> {
     sqlx::query(

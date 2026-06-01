@@ -90,6 +90,7 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         downloads::cancel_download,
         downloads::pause_download,
         downloads::resume_download,
+        downloads::rename_download,
         downloads::delete_download,
         downloads::clear_history,
         searches::post_search,
@@ -120,6 +121,7 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         rucio_core::api::shares::SharedDirsResponse,
         rucio_core::api::downloads::StartDownloadRequest,
         rucio_core::api::downloads::StartEd2kDownloadRequest,
+        rucio_core::api::downloads::RenameDownloadRequest,
         rucio_core::api::downloads::StartEd2kDownloadResponse,
         rucio_core::api::downloads::DownloadState,
         rucio_core::api::downloads::DownloadResponse,
@@ -308,6 +310,13 @@ pub enum DownloadRequest {
     },
     /// Resume a previously paused download by re-hydrating it from the DB.
     Resume { download_id: i64 },
+    /// Rename an in-progress download: move its `.part` to `<new_name>.part`
+    /// and repoint the in-memory + DB paths so it completes under the new name.
+    Rename {
+        download_id: i64,
+        /// New file name (already sanitised to a bare file name by the handler).
+        new_name: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -448,6 +457,10 @@ fn v1_router() -> Router<AppState> {
         .route(
             "/downloads/{id}/resume",
             routing::post(downloads::resume_download),
+        )
+        .route(
+            "/downloads/{id}/rename",
+            routing::post(downloads::rename_download),
         )
         // unified searches
         .route("/searches", routing::post(searches::post_search))

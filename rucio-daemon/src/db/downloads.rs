@@ -265,6 +265,20 @@ pub async fn set_dest_path(db: &Db, download_id: i64, dest_path: &str) -> Result
     Ok(())
 }
 
+/// Rename the file: change the `name` the download will be saved as. The
+/// `.part` file and the final destination are updated by the transfer engine
+/// (it owns the in-memory path); this only updates the `name` column so the
+/// API/list reflect it immediately.
+pub async fn set_name(db: &Db, download_id: i64, name: &str) -> Result<()> {
+    sqlx::query("UPDATE downloads SET name = ?1, updated_at = ?2 WHERE id = ?3")
+        .bind(name)
+        .bind(now_secs() as i64)
+        .bind(download_id)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
 /// Return the current status string for a download, or `None` if not found.
 pub async fn get_status(db: &Db, download_id: i64) -> Result<Option<String>> {
     let row = sqlx::query("SELECT status FROM downloads WHERE id = ?1")

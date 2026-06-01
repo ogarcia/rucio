@@ -808,6 +808,9 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                         api::DownloadRequest::Resume { download_id } => {
                             engine.resume(download_id).await;
                         }
+                        api::DownloadRequest::Rename { download_id, new_name } => {
+                            engine.rename(download_id, new_name).await;
+                        }
                         api::DownloadRequest::StartEd2k { link, download_id } => {
                             #[cfg(feature = "emule-compat")]
                             {

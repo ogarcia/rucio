@@ -7,7 +7,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use rucio_core::api::downloads::{
     DownloadDetailResponse, DownloadResponse, DownloadState, DownloadsResponse,
-    StartDownloadRequest,
+    RenameDownloadRequest, StartDownloadRequest,
 };
 
 use rucio_core::protocol::chunk::Hash;
@@ -747,6 +747,111 @@ pub async fn resume_download(State(state): State<AppState>, Path(id): Path<i64>)
             }
         }
     }
+}
+
+/// Reduce a user-supplied name to a safe bare file name: keep only the final
+/// path component (so `/`, `\` and `..` cannot escape the download directory)
+/// and reject empty / `.` / `..` results.
+fn sanitize_download_name(raw: &str) -> Option<String> {
+    std::path::Path::new(raw.trim())
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty() && s != "." && s != "..")
+}
+
+/// Rename an in-progress download
+///
+/// Changes the file name an **unfinished** download will be saved as on completion. The new name
+/// is sanitised to a bare file name (directory separators and `..` are stripped). For libp2p
+/// downloads the in-progress `.part` is moved to match; for eMule downloads the `.part` is keyed
+/// by hash, so only the final name changes. Completed downloads cannot be renamed — the file is
+/// already on disk and belongs to the user.
+///
+/// Use **negative IDs** (e.g. `-3`) for eMule downloads as returned by `GET /api/v1/downloads`.
+#[utoipa::path(
+    post,
+    path = "/api/v1/downloads/{id}/rename",
+    params(
+        ("id" = i64, Path, description = "Numeric download ID from `GET /api/v1/downloads`. Negative = eMule download.")
+    ),
+    request_body = RenameDownloadRequest,
+    responses(
+        (status = 204, description = "Download renamed."),
+        (status = 400, description = "The supplied name is empty or invalid."),
+        (status = 404, description = "No download with that ID."),
+        (status = 409, description = "Download is already completed and cannot be renamed.")
+    )
+)]
+pub async fn rename_download(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<RenameDownloadRequest>,
+) -> StatusCode {
+    let Some(new_name) = sanitize_download_name(&req.name) else {
+        return StatusCode::BAD_REQUEST;
+    };
+
+    if id < 0 {
+        // eMule download.
+        #[cfg(feature = "emule-compat")]
+        {
+            let emule_id = -id;
+            let row = match crate::db::emule_downloads::get(&state.db, emule_id).await {
+                Ok(Some(r)) => r,
+                Ok(None) => return StatusCode::NOT_FOUND,
+                Err(e) => {
+                    tracing::error!("DB error fetching emule download {emule_id}: {e}");
+                    return StatusCode::INTERNAL_SERVER_ERROR;
+                }
+            };
+            if row.status == "completed" {
+                return StatusCode::CONFLICT;
+            }
+            if let Err(e) =
+                crate::db::emule_downloads::set_name(&state.db, emule_id, &new_name).await
+            {
+                tracing::error!("DB error renaming emule download {emule_id}: {e}");
+                return StatusCode::INTERNAL_SERVER_ERROR;
+            }
+            // Reflect the new name in what we advertise while still serving the
+            // partial file. The finalising task re-reads the name from the DB.
+            if let Ok(hash) = <[u8; 16]>::try_from(row.ed2k_hash.as_slice())
+                && let Some(info) = state.emule_active_downloads.write().await.get_mut(&hash)
+            {
+                info.name = new_name;
+            }
+            return StatusCode::NO_CONTENT;
+        }
+        #[cfg(not(feature = "emule-compat"))]
+        return StatusCode::NOT_FOUND;
+    }
+
+    // libp2p download.
+    let row = match crate::db::downloads::get(&state.db, id).await {
+        Ok(Some(r)) => r,
+        Ok(None) => return StatusCode::NOT_FOUND,
+        Err(e) => {
+            tracing::error!("DB error fetching download {id}: {e}");
+            return StatusCode::INTERNAL_SERVER_ERROR;
+        }
+    };
+    if row.status == "completed" {
+        return StatusCode::CONFLICT;
+    }
+    if let Err(e) = crate::db::downloads::set_name(&state.db, id, &new_name).await {
+        tracing::error!("DB error renaming download {id}: {e}");
+        return StatusCode::INTERNAL_SERVER_ERROR;
+    }
+    // Hand the physical .part move / in-memory repoint to the transfer engine.
+    let _ = state
+        .download_tx
+        .send(DownloadRequest::Rename {
+            download_id: id,
+            new_name,
+        })
+        .await;
+    StatusCode::NO_CONTENT
 }
 
 /// Remove a download from history
