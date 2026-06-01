@@ -12,6 +12,9 @@ rucio includes an opt-in compatible Kad2 client that can:
 2. Search for ed2k sources for a given MD4 hash.
 3. Download files via ed2k links, verify chunks with MD4, and register
    completed files in the rucio DHT using their BLAKE3 hash.
+4. Keep seeding completed eMule downloads back to the network — including
+   serving the ed2k hashset — as a good Kad citizen (see
+   [Seeding completed downloads](#seeding-completed-downloads)).
 
 The implementation lives in the `rucio-emule` crate. It has no dependency on
 `rucio-daemon` — the two communicate exclusively via `KadHandle`, a
@@ -49,6 +52,10 @@ rucio node emule status
 | `kad::packet` | Encoder/decoder for all Kad2 opcodes; handles packed (`0xe5`) zlib packets |
 | `kad::routing` | In-memory routing table; `parse_nodes_dat` for bootstrap seed loading |
 | `kad::task` | `KadTask`, `KadHandle`, `KadTaskConfig`, `spawn()` |
+| `kad::obfuscation` | Kad2 UDP obfuscation (RC4) and per-peer verify keys |
+| `transfer` | eMule client-to-client TCP: download sessions and the upload server (serving chunks + the hashset) |
+| `ed2k` | ed2k link parsing, the MD4 file hash, and hashset computation (`finalize_hashset`) |
+| `progress` | `.part.met` slice-completion bitmap (resume support) |
 
 ---
 
@@ -217,12 +224,78 @@ Connect to source via eMule TCP protocol
 Fetch chunks, verify each with MD4
     │
     ▼
-All chunks done → compute BLAKE3 of complete file
+All chunks done → compute BLAKE3 + ed2k hashset (single read of the file)
                 → announce to rucio DHT
+                → record in emule_shared_files (keep seeding to eMule)
                 → state: completed
 ```
 
 The download appears in `rucio download list` and supports `--watch` throughout.
+
+---
+
+## Seeding completed downloads
+
+Once a download completes, rucio keeps serving the file to the eMule network
+(good-citizen policy) instead of dropping it the moment the transfer finishes.
+
+- Completed files are recorded in the `emule_shared_files` table (`ed2k_hash`,
+  `name`, `size`, `path`, `mtime`, `hashset`), **decoupled from the downloads
+  list on purpose**: clearing completed downloads must not stop sharing.
+- A file is seeded until it is **modified or removed on disk**, enforced two ways:
+  - **At startup**, `load_shared_files` re-validates each entry's size + mtime
+    against disk, drops any that changed/vanished, and loads the survivors into
+    the upload whitelist.
+  - **At runtime**, a dedicated inotify watcher on the downloads directory drops
+    a share the moment its file changes/disappears. It re-validates against the
+    recorded size + mtime (rather than trusting the event kind), so a
+    just-completed file is never self-invalidated.
+- The upload whitelist (`ActiveDownloads`) holds both in-progress downloads
+  (served from the `.part` file) and completed shares (served from the final
+  file in the downloads dir); `UploadInfo` carries the serving `path` and a
+  `complete` flag, and the status bitmap is all-complete for finished shares.
+
+### Serving the hashset
+
+Files larger than one 9,728,000-byte chunk have an MD4 **hashset** (one MD4 per
+chunk; the ed2k file hash is the MD4 of their concatenation). A downloading peer
+requests it via `OP_HASHSETREQUEST` (`0x51`) and we answer with
+`OP_HASHSETANSWER` (`0x52`):
+
+```
+file_hash(16) | part_count(u16 LE) | part_hash(16) * part_count
+```
+
+- The hashset is computed in the **same pass** as the completion BLAKE3 hash
+  (one read of the file) and persisted in the `hashset` column — never
+  recomputed, survives restarts.
+- `ed2k::finalize_hashset` follows eMule's **null-chunk convention** (a trailing
+  MD4 of a zero-length chunk when the size is an exact multiple of the chunk
+  size) and verifies `MD4(concat(parts))` reproduces the file's ed2k hash before
+  serving, so we never hand a peer a hashset that would fail verification.
+- Single-chunk files have no hashset (their ed2k hash is `MD4(data)`).
+
+---
+
+## Identity: user hash and nickname
+
+Two distinct identifiers, easily confused:
+
+| Identifier | Purpose | Visible to users? | Storage |
+|---|---|---|---|
+| **User hash** | Credit identity — eMule's credit system keys a peer's standing by this 16-byte hash | No (internal) | `emule_identity` table (generated once) |
+| **Nickname** | Cosmetic name shown in peers' transfer lists | Yes | `emule.nick` config (default `rucio`) |
+
+- The **user hash** is generated once per node (random, with the eMule client
+  markers `[5] = 14`, `[14] = 111` that real clients check) and persisted, so
+  the upload credit we earn accrues to one stable identity across restarts. It
+  is advertised in both HELLO directions (serving and downloading).
+- The **nickname** is sent as a `CT_NAME` tag in HELLO; purely cosmetic, settable
+  via `emule.nick` (or `RUCIOD_EMULE_NICK`), and shown in the web settings.
+- Full RSA **secure identification** (anti-spoofing of the user hash) is
+  intentionally *not* implemented: peers grant credit to unidentified clients
+  keyed by the user hash, so it is not required for credit to accrue — it would
+  only prevent another client from impersonating our hash.
 
 ---
 
