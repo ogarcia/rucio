@@ -133,6 +133,13 @@ pub async fn start_kad_task(config: &Config) -> Result<KadHandle> {
 /// after roughly 15 minutes.  The download keeps retrying regardless.
 const STALL_AFTER_ROUNDS: u32 = 5;
 
+/// How many times a single source is tried within one download round before it
+/// is dropped from the pool. A peer that is briefly queueing us (slots full) or
+/// glitches mid-transfer is returned to the back of the pool and retried this
+/// many times — interleaved with other sources — instead of being lost for the
+/// whole round on the first failure.
+const MAX_SOURCE_ATTEMPTS: u32 = 3;
+
 /// Exponential back-off for source-search retries.
 /// Sequence: 30 s, 60 s, 2 min, 4 min, 8 min, 16 min, 30 min (cap), …
 fn retry_delay_secs(attempt: u32) -> u64 {
@@ -551,9 +558,19 @@ pub async fn run_ed2k_download(
 
         let our_tcp_port = config.emule.tcp_port;
 
-        for source in valid_sources.into_iter().take(max_workers) {
-            let peer = std::net::SocketAddrV4::new(source.ip, source.tcp_port);
-            let peer_hash = source.user_hash;
+        // Shared pool of every usable source, each paired with a per-round
+        // failure count. Workers are NOT pinned to a single peer: a worker keeps
+        // its source while it keeps serving slices, but the moment that peer
+        // fails to connect or queues us past patience, the worker returns it to
+        // the back of the pool (until MAX_SOURCE_ATTEMPTS) and pulls the next
+        // one. This cycles through all discovered sources — and keeps knocking
+        // on peers that are momentarily full — instead of freezing a worker on,
+        // or permanently dropping, the first few sources.
+        let source_pool: Arc<Mutex<VecDeque<(KadSource, u32)>>> = Arc::new(Mutex::new(
+            valid_sources.into_iter().map(|s| (s, 0)).collect(),
+        ));
+
+        for _ in 0..max_workers {
             let work = work_queue.clone();
             let done = done_vec.clone();
             let met = met_path.clone();
@@ -565,18 +582,12 @@ pub async fn run_ed2k_download(
             let progress_w = progress.clone();
             let throttle_w = download_throttle.clone();
             let cancel_w = cancel.clone();
+            let pool = source_pool.clone();
 
             join_set.spawn(async move {
-                let opts = DownloadOptions {
-                    timeout: Duration::from_secs(3600),
-                    op_timeout: Duration::from_secs(30),
-                    max_queue_waits: 5,
-                    file_size,
-                    hash,
-                    start_offset: 0,
-                    peer_hash: Some(peer_hash),
-                    our_tcp_port,
-                };
+                // The source this worker is currently bound to — kept across
+                // slices while it serves us, replaced from the pool on failure.
+                let mut current: Option<KadSource> = None;
 
                 loop {
                     // Stop pulling new slices the moment a pause/cancel arrives.
@@ -584,172 +595,222 @@ pub async fn run_ed2k_download(
                         break;
                     }
                     // Claim the next incomplete slice.
-                    let slice_opt = { work.lock().unwrap().pop_front() };
-                    let (slice_idx, slice_start, slice_end) = match slice_opt {
+                    let (slice_idx, slice_start, slice_end) = match work.lock().unwrap().pop_front()
+                    {
                         None => break,
                         Some(s) => s,
                     };
 
-                    // Open part file seeked to this slice's start offset.
-                    let file = tokio::fs::OpenOptions::new()
-                        .write(true)
-                        .create(true)
-                        .truncate(false)
-                        .open(&part)
-                        .await;
-                    let mut file = match file {
-                        Ok(f) => f,
-                        Err(e) => {
-                            warn!(dl = download_id, %peer, slice = slice_idx, error = %e, "Failed to open part file");
-                            work.lock()
-                                .unwrap()
-                                .push_front((slice_idx, slice_start, slice_end));
-                            break;
+                    // Try sources until one delivers this slice (or the pool runs
+                    // dry). A peer that fails to connect or queues us is dropped
+                    // and the next source is tried.
+                    let delivered = loop {
+                        if cancel_w.load(Ordering::Relaxed) {
+                            break false;
+                        }
+                        // Prefer the source we're already bound to (it just
+                        // served us, so attempts = 0); otherwise take the next
+                        // from the pool with its accumulated failure count.
+                        let (source, attempts) = match current.take() {
+                            Some(s) => (s, 0u32),
+                            None => match pool.lock().unwrap().pop_front() {
+                                Some(pair) => pair,
+                                None => break false, // no sources left to try this slice
+                            },
+                        };
+                        let peer = std::net::SocketAddrV4::new(source.ip, source.tcp_port);
+                        let opts = DownloadOptions {
+                            timeout: Duration::from_secs(3600),
+                            op_timeout: Duration::from_secs(30),
+                            // Short queue wait per knock (~10 s): when a peer's
+                            // slots are full we'd rather move on and re-knock it
+                            // later (it goes back into the pool) than block this
+                            // worker for ~25 s on a single peer.
+                            max_queue_waits: 2,
+                            file_size,
+                            hash,
+                            start_offset: 0,
+                            peer_hash: Some(source.user_hash),
+                            our_tcp_port,
+                        };
+
+                        // Open part file seeked to this slice's start offset.
+                        let mut file = match tokio::fs::OpenOptions::new()
+                            .write(true)
+                            .create(true)
+                            .truncate(false)
+                            .open(&part)
+                            .await
+                        {
+                            Ok(f) => f,
+                            Err(e) => {
+                                // Filesystem error, not the peer's fault — keep
+                                // the source and stop working this slice for now.
+                                warn!(dl = download_id, %peer, slice = slice_idx, error = %e, "Failed to open part file");
+                                current = Some(source);
+                                break false;
+                            }
+                        };
+                        if let Err(e) = file.seek(std::io::SeekFrom::Start(slice_start)).await {
+                            warn!(dl = download_id, %peer, slice = slice_idx, error = %e, "Failed to seek part file");
+                            current = Some(source);
+                            break false;
+                        }
+
+                        // Connect and perform the eMule handshake.
+                        let mut on_connect = |ev: DownloadEvent| match ev {
+                            DownloadEvent::Connected => {
+                                info!(dl = download_id, %peer, "Connected to eMule peer")
+                            }
+                            DownloadEvent::Queued { rank } => {
+                                info!(dl = download_id, %peer, rank, "Queued at eMule peer")
+                            }
+                            DownloadEvent::Started => {
+                                info!(dl = download_id, %peer, "Peer granted upload slot — transfer starting")
+                            }
+                            _ => {}
+                        };
+                        let mut session = match Session::connect(peer, &opts, &mut on_connect).await
+                        {
+                            Ok(s) => s,
+                            Err(e) => {
+                                debug!(dl = download_id, %peer, slice = slice_idx, error = %e,
+                                    "Peer unavailable — trying another source");
+                                // Retry this peer later (it may be momentarily
+                                // full) unless it has exhausted its attempts.
+                                if attempts + 1 < MAX_SOURCE_ATTEMPTS {
+                                    pool.lock().unwrap().push_back((source, attempts + 1));
+                                }
+                                continue;
+                            }
+                        };
+
+                        // Update the shared ProgressState so every in-flight slice
+                        // is reflected at once. The in-flight publisher mirrors the
+                        // running total into live_stats once a second, and the main
+                        // loop's ws_tick is the sole emitter of DownloadProgress —
+                        // keeping a single, monotonic source of the byte count
+                        // instead of competing with the persisted (DB) figure.
+                        let metrics_cb = metrics_w.clone();
+                        let progress_cb = progress_w.clone();
+                        let mut on_progress = move |ev: DownloadEvent| match ev {
+                            DownloadEvent::Progress { bytes_received, .. } => {
+                                // bytes_received is an absolute file offset; subtract
+                                // slice_start for the bytes fetched within this slice.
+                                let cur = bytes_received.saturating_sub(slice_start);
+                                let delta = {
+                                    let mut p = progress_cb.lock().unwrap();
+                                    let prev = p.per_slice[slice_idx];
+                                    let d = if cur >= prev {
+                                        let d = cur - prev;
+                                        p.total += d;
+                                        d
+                                    } else {
+                                        p.total -= prev - cur;
+                                        0
+                                    };
+                                    p.per_slice[slice_idx] = cur;
+                                    d
+                                };
+                                // Feed the speed window incrementally so the session
+                                // rate stays live instead of spiking once per slice.
+                                metrics_cb.record_download_bytes(delta);
+                            }
+                            DownloadEvent::ChunkFailed { part_index } => {
+                                warn!(dl = download_id, part_index, "eMule chunk verification failed");
+                                metrics_cb.record_rejected();
+                            }
+                            _ => {}
+                        };
+
+                        match session
+                            .download_range(slice_start, slice_end, &mut file, &mut on_progress)
+                            .await
+                        {
+                            Ok(_) => {
+                                info!(dl = download_id, %peer, slice = slice_idx, "Slice downloaded successfully");
+                                // Mark slice as done and persist progress.
+                                let snapshot = {
+                                    let mut d = done.lock().unwrap();
+                                    d[slice_idx] = true;
+                                    d.clone()
+                                };
+                                // Reconcile the shared total to the exact slice
+                                // length — the last Progress event may have stopped
+                                // short of the slice end — and account that tail in
+                                // the session metrics plus the completed chunk.
+                                let remainder = {
+                                    let slice_len = slice_end - slice_start;
+                                    let mut p = progress_w.lock().unwrap();
+                                    let prev = p.per_slice[slice_idx];
+                                    let rem = slice_len - prev;
+                                    p.total += rem;
+                                    p.per_slice[slice_idx] = slice_len;
+                                    rem
+                                };
+                                metrics_w.record_download_bytes(remainder);
+                                metrics_w.record_download_chunk();
+                                // Charge this slice against the download cap. With
+                                // the cap off this is instant; otherwise the worker
+                                // waits here before fetching its next slice, which
+                                // bounds the aggregate download rate.
+                                throttle_w.acquire(slice_end - slice_start).await;
+                                save_progress(&met, &snapshot);
+                                // Update DB with the true cumulative total so it
+                                // never regresses when slices are downloaded out of
+                                // file order.
+                                let cumulative: u64 = snapshot
+                                    .iter()
+                                    .enumerate()
+                                    .filter(|&(_, &d)| d)
+                                    .map(|(i, _)| {
+                                        let s = i as u64 * CHUNK_SIZE as u64;
+                                        (s + CHUNK_SIZE as u64).min(file_size) - s
+                                    })
+                                    .sum();
+                                let db_upd = db_w.clone();
+                                tokio::spawn(async move {
+                                    let _ = crate::db::emule_downloads::set_bytes_done(
+                                        &db_upd,
+                                        download_id,
+                                        cumulative,
+                                    )
+                                    .await;
+                                });
+                                // This source works — keep it for the next slice.
+                                current = Some(source);
+                                break true;
+                            }
+                            Err(e) => {
+                                debug!(dl = download_id, %peer, slice = slice_idx, error = %e,
+                                    "Slice download failed — trying another source");
+                                // Roll back this slice's partial progress: it will
+                                // be re-fetched from the start, so its bytes must
+                                // not linger in the shared total.
+                                {
+                                    let mut p = progress_w.lock().unwrap();
+                                    let prev = p.per_slice[slice_idx];
+                                    p.total -= prev;
+                                    p.per_slice[slice_idx] = 0;
+                                }
+                                // It granted us a slot once, so it may just have
+                                // glitched — retry it later unless exhausted.
+                                if attempts + 1 < MAX_SOURCE_ATTEMPTS {
+                                    pool.lock().unwrap().push_back((source, attempts + 1));
+                                }
+                                continue;
+                            }
                         }
                     };
-                    if let Err(e) = file.seek(std::io::SeekFrom::Start(slice_start)).await {
-                        warn!(dl = download_id, %peer, slice = slice_idx, error = %e, "Failed to seek part file");
+
+                    if !delivered {
+                        // No source could deliver this slice (pool exhausted or a
+                        // stop/fs error). Return it for another worker or the next
+                        // round and stop this worker.
                         work.lock()
                             .unwrap()
                             .push_front((slice_idx, slice_start, slice_end));
                         break;
-                    }
-
-                    // Connect and perform the eMule handshake.
-                    let mut on_connect = |ev: DownloadEvent| match ev {
-                        DownloadEvent::Connected => {
-                            info!(dl = download_id, %peer, "Connected to eMule peer")
-                        }
-                        DownloadEvent::Queued { rank } => {
-                            info!(dl = download_id, %peer, rank, "Queued at eMule peer")
-                        }
-                        DownloadEvent::Started => {
-                            info!(dl = download_id, %peer, "Peer granted upload slot — transfer starting")
-                        }
-                        _ => {}
-                    };
-                    let mut session = match Session::connect(peer, &opts, &mut on_connect).await {
-                        Ok(s) => s,
-                        Err(e) => {
-                            debug!(dl = download_id, %peer, slice = slice_idx, error = %e,
-                                       "Failed to connect to eMule peer");
-                            work.lock()
-                                .unwrap()
-                                .push_front((slice_idx, slice_start, slice_end));
-                            break;
-                        }
-                    };
-
-                    // Update the shared ProgressState so every in-flight slice
-                    // is reflected at once. The in-flight publisher mirrors the
-                    // running total into live_stats once a second, and the main
-                    // loop's ws_tick is the sole emitter of DownloadProgress —
-                    // keeping a single, monotonic source of the byte count
-                    // instead of competing with the persisted (DB) figure.
-                    let metrics_cb = metrics_w.clone();
-                    let progress_cb = progress_w.clone();
-                    let mut on_progress = move |ev: DownloadEvent| match ev {
-                        DownloadEvent::Progress { bytes_received, .. } => {
-                            // bytes_received is an absolute file offset; subtract
-                            // slice_start for the bytes fetched within this slice.
-                            let cur = bytes_received.saturating_sub(slice_start);
-                            let delta = {
-                                let mut p = progress_cb.lock().unwrap();
-                                let prev = p.per_slice[slice_idx];
-                                let d = if cur >= prev {
-                                    let d = cur - prev;
-                                    p.total += d;
-                                    d
-                                } else {
-                                    p.total -= prev - cur;
-                                    0
-                                };
-                                p.per_slice[slice_idx] = cur;
-                                d
-                            };
-                            // Feed the speed window incrementally so the session
-                            // rate stays live instead of spiking once per slice.
-                            metrics_cb.record_download_bytes(delta);
-                        }
-                        DownloadEvent::ChunkFailed { part_index } => {
-                            warn!(dl = download_id, part_index, "eMule chunk verification failed");
-                            metrics_cb.record_rejected();
-                        }
-                        _ => {}
-                    };
-
-                    match session
-                        .download_range(slice_start, slice_end, &mut file, &mut on_progress)
-                        .await
-                    {
-                        Ok(_) => {
-                            info!(dl = download_id, %peer, slice = slice_idx, "Slice downloaded successfully");
-                            // Mark slice as done and persist progress.
-                            let snapshot = {
-                                let mut d = done.lock().unwrap();
-                                d[slice_idx] = true;
-                                d.clone()
-                            };
-                            // Reconcile the shared total to the exact slice
-                            // length — the last Progress event may have stopped
-                            // short of the slice end — and account that tail in
-                            // the session metrics plus the completed chunk.
-                            let remainder = {
-                                let slice_len = slice_end - slice_start;
-                                let mut p = progress_w.lock().unwrap();
-                                let prev = p.per_slice[slice_idx];
-                                let rem = slice_len - prev;
-                                p.total += rem;
-                                p.per_slice[slice_idx] = slice_len;
-                                rem
-                            };
-                            metrics_w.record_download_bytes(remainder);
-                            metrics_w.record_download_chunk();
-                            // Charge this slice against the download cap. With
-                            // the cap off this is instant; otherwise the worker
-                            // waits here before fetching its next slice, which
-                            // bounds the aggregate download rate.
-                            throttle_w.acquire(slice_end - slice_start).await;
-                            save_progress(&met, &snapshot);
-                            // Update DB with the true cumulative total so it
-                            // never regresses when slices are downloaded out of
-                            // file order.
-                            let cumulative: u64 = snapshot
-                                .iter()
-                                .enumerate()
-                                .filter(|&(_, &d)| d)
-                                .map(|(i, _)| {
-                                    let s = i as u64 * CHUNK_SIZE as u64;
-                                    (s + CHUNK_SIZE as u64).min(file_size) - s
-                                })
-                                .sum();
-                            let db_upd = db_w.clone();
-                            tokio::spawn(async move {
-                                let _ = crate::db::emule_downloads::set_bytes_done(
-                                    &db_upd,
-                                    download_id,
-                                    cumulative,
-                                )
-                                .await;
-                            });
-                        }
-                        Err(e) => {
-                            debug!(dl = download_id, %peer, slice = slice_idx, error = %e,
-                                   "Slice download failed — retrying");
-                            // Roll back this slice's partial progress: it will be
-                            // re-fetched from the start, so its bytes must not
-                            // linger in the shared total.
-                            {
-                                let mut p = progress_w.lock().unwrap();
-                                let prev = p.per_slice[slice_idx];
-                                p.total -= prev;
-                                p.per_slice[slice_idx] = 0;
-                            }
-                            work.lock()
-                                .unwrap()
-                                .push_front((slice_idx, slice_start, slice_end));
-                            break;
-                        }
                     }
                 }
             });
