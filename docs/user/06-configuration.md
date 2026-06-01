@@ -330,11 +330,13 @@ rucio config set emule.download_slots_per_file 5
 
 Maximum number of simultaneous eMule upload connections.
 
-Rucio serves partially-downloaded eMule files back to other peers on the
-network to build upload credit, which improves its queue priority and results
-in faster download speeds.  This setting caps how many peers can download from
-us at the same time.  When all slots are busy, incoming peers receive a queue
-position message and retry automatically.
+Rucio serves eMule files back to other peers — both while downloading and, as
+a good Kad citizen, after a download completes — to build upload credit, which
+improves its queue priority and results in faster download speeds.  Completed
+files keep being shared until they are modified or removed on disk.  This
+setting caps how many peers can download from us at the same time.  When all
+slots are busy, incoming peers receive a queue position message and retry
+automatically.
 
 ```sh
 rucio config set emule.max_upload_slots 4
