@@ -93,6 +93,7 @@ pub fn ConfigModal(
     let f_em_slots = RwSignal::new(String::new());
     let f_em_upslots = RwSignal::new(String::new());
     let f_em_maxconc = RwSignal::new(String::new());
+    let f_em_nick = RwSignal::new(String::new());
 
     // Load once on open.
     Effect::new(move |_| {
@@ -123,6 +124,7 @@ pub fn ConfigModal(
                 f_em_slots.set(snap.emule.download_slots_per_file.to_string());
                 f_em_upslots.set(snap.emule.max_upload_slots.to_string());
                 f_em_maxconc.set(snap.emule.max_concurrent_downloads.to_string());
+                f_em_nick.set(snap.emule.nick.clone());
                 base.set(Some(snap));
                 loaded.set(true);
             }
@@ -170,6 +172,7 @@ pub fn ConfigModal(
         if let Ok(n) = f_em_maxconc.get_untracked().trim().parse::<usize>() {
             snap.emule.max_concurrent_downloads = n.clamp(1, 50);
         }
+        snap.emule.nick = f_em_nick.get_untracked().trim().to_string();
 
         // Mirror the limits into the menu's quick-settings signals.
         let (dl, ul, tdl, tul) = (
@@ -342,6 +345,13 @@ pub fn ConfigModal(
                                     <p class="config-hint">
                                         "Changes apply after a daemon restart. The fields below are read-only until eMule is enabled."
                                     </p>
+                                    <div class="config-field">
+                                        <label class="config-label">"Nickname"</label>
+                                        <input class="config-input" type="text"
+                                            disabled=em_locked
+                                            prop:value=move || f_em_nick.get()
+                                            on:input=move |e| f_em_nick.set(event_target_value(&e))/>
+                                    </div>
                                     <div class="config-field">
                                         <label class="config-label">"TCP port"</label>
                                         <input class="config-input config-input-sm" type="text"

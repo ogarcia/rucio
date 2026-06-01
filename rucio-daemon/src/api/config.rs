@@ -111,6 +111,7 @@ fn build_snapshot(
             download_slots_per_file: cfg.emule.download_slots_per_file,
             max_upload_slots: cfg.emule.max_upload_slots,
             max_concurrent_downloads: cfg.emule.max_concurrent_downloads,
+            nick: cfg.emule.nick.clone(),
         },
     }
 }
@@ -176,6 +177,7 @@ pub async fn put_config(
     new_cfg.emule.download_slots_per_file = c.emule.download_slots_per_file.clamp(1, 50);
     new_cfg.emule.max_upload_slots = c.emule.max_upload_slots.clamp(1, 50);
     new_cfg.emule.max_concurrent_downloads = c.emule.max_concurrent_downloads.clamp(1, 50);
+    new_cfg.emule.nick = c.emule.nick.trim().to_string();
     // identity_path and api.listen intentionally not writable at runtime
 
     match new_cfg.save() {

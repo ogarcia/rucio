@@ -76,6 +76,9 @@ pub struct EmuleConfig {
     pub max_upload_slots: usize,
     /// Maximum number of eMule downloads that run concurrently.
     pub max_concurrent_downloads: usize,
+    /// Nickname advertised to eMule peers (cosmetic; not the credit identity).
+    #[serde(default)]
+    pub nick: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]

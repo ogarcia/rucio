@@ -333,6 +333,8 @@ pub struct EmuleConfig {
     pub download_slots_per_file: usize,
     pub max_upload_slots: usize,
     pub max_concurrent_downloads: usize,
+    #[serde(default)]
+    pub nick: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
