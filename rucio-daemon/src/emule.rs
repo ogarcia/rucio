@@ -13,9 +13,10 @@ use rucio_emule::kad::search::KadSource;
 use rucio_emule::kad::task::{KadHandle, KadTaskConfig};
 use rucio_emule::progress::{load_progress, save_progress};
 use rucio_emule::transfer::{ActiveDownloads, DownloadEvent, DownloadOptions, Session, UploadInfo};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tokio::io::AsyncSeekExt;
 use tokio::net::UdpSocket;
@@ -25,6 +26,44 @@ use tracing::{debug, info, warn};
 
 use crate::config::Config;
 use crate::db::Db;
+
+/// Registry of running eMule download tasks: `download_id` → stop flag.
+///
+/// Unlike rucio downloads (driven synchronously by the main-loop engine), each
+/// eMule download runs in its own spawned task. This registry lets the API stop
+/// a running task promptly (set its flag) and lets the main loop avoid spawning
+/// a duplicate task for an id that is already running.
+pub type EmuleCancelRegistry = Arc<Mutex<HashMap<i64, Arc<AtomicBool>>>>;
+
+/// Removes a download from the cancel registry when its task ends — on every
+/// exit path (success, user stop, or error) via `Drop`.
+struct RegistryGuard {
+    registry: EmuleCancelRegistry,
+    download_id: i64,
+}
+
+impl Drop for RegistryGuard {
+    fn drop(&mut self) {
+        if let Ok(mut reg) = self.registry.lock() {
+            reg.remove(&self.download_id);
+        }
+    }
+}
+
+/// The `.part` and `.part.met` paths for an eMule download identified by its raw
+/// 16-byte ed2k hash. Single source of truth for the temp-file naming, shared
+/// by the download task and the API (cancel/delete cleanup).
+pub fn part_paths(
+    config: &Config,
+    ed2k_hash: &[u8; 16],
+) -> (std::path::PathBuf, std::path::PathBuf) {
+    let hash = rucio_emule::ed2k::Ed2kHash::from_bytes(*ed2k_hash);
+    let temp = &config.emule.temp_dir;
+    (
+        temp.join(format!("{hash}.part")),
+        temp.join(format!("{hash}.part.met")),
+    )
+}
 
 /// Bind the persistent Kad2 UDP socket on the configured port and spawn the
 /// Kad2 background task.
@@ -146,7 +185,16 @@ pub async fn run_ed2k_download(
     live_stats: &crate::live_stats::LiveStatsMap,
     metrics: &Arc<crate::metrics::Metrics>,
     download_throttle: &Arc<crate::throttle::TokenBucket>,
+    cancel: Arc<AtomicBool>,
+    cancel_registry: EmuleCancelRegistry,
 ) -> Result<()> {
+    // Deregister from the cancel registry on every exit path (the flag was
+    // inserted by the spawn site before this task started).
+    let _registry_guard = RegistryGuard {
+        registry: cancel_registry,
+        download_id,
+    };
+
     // 1. Parse the link.
     let link = Ed2kLink::parse(link_str).with_context(|| format!("parse ed2k link: {link_str}"))?;
     info!(dl = download_id, name = %link.name, size = link.size, hash = %link.hash, "Starting eMule download");
@@ -181,8 +229,7 @@ pub async fn run_ed2k_download(
     let emule_temp = &config.emule.temp_dir;
     std::fs::create_dir_all(emule_temp)
         .with_context(|| format!("create emule temp dir: {}", emule_temp.display()))?;
-    let part_path = emule_temp.join(format!("{}.part", link.hash));
-    let met_path = emule_temp.join(format!("{}.part.met", link.hash));
+    let (part_path, met_path) = part_paths(config, link.hash.as_bytes());
     let final_path = config.storage.download_dir.join(&link.name);
 
     // Number of ed2k slices (one per CHUNK_SIZE block).
@@ -223,8 +270,20 @@ pub async fn run_ed2k_download(
     let mut retry_count: u32 = 0;
     loop {
         // Check for user-requested stop (cancel / pause) before doing any work.
-        if let Some(reason) = stop_reason(db, download_id).await {
+        // The in-memory `cancel` flag makes the round abort promptly; the DB
+        // status tells us *why* (pause keeps the partial file, cancel discards
+        // it). Re-read the DB even when only the flag is set, to classify.
+        if cancel.load(Ordering::Relaxed) || stop_reason(db, download_id).await.is_some() {
+            let reason = stop_reason(db, download_id)
+                .await
+                .unwrap_or_else(|| "cancelled".to_string());
             info!(dl = download_id, status = %reason, "eMule download stopped by user");
+            if reason == "cancelled" {
+                // Discard the partial file so a later re-add starts clean.
+                let _ = tokio::fs::remove_file(&part_path).await;
+                let _ = tokio::fs::remove_file(&met_path).await;
+                debug!(dl = download_id, "Removed .part/.part.met after cancel");
+            }
             active_downloads.write().await.remove(&hash_key);
             live_stats.write().await.remove(&live_key);
             return Ok(());
@@ -505,6 +564,7 @@ pub async fn run_ed2k_download(
             let metrics_w = metrics.clone();
             let progress_w = progress.clone();
             let throttle_w = download_throttle.clone();
+            let cancel_w = cancel.clone();
 
             join_set.spawn(async move {
                 let opts = DownloadOptions {
@@ -519,6 +579,10 @@ pub async fn run_ed2k_download(
                 };
 
                 loop {
+                    // Stop pulling new slices the moment a pause/cancel arrives.
+                    if cancel_w.load(Ordering::Relaxed) {
+                        break;
+                    }
                     // Claim the next incomplete slice.
                     let slice_opt = { work.lock().unwrap().pop_front() };
                     let (slice_idx, slice_start, slice_end) = match slice_opt {
@@ -691,8 +755,27 @@ pub async fn run_ed2k_download(
             });
         }
 
-        // Wait for all workers to finish.
-        while join_set.join_next().await.is_some() {}
+        // Wait for all workers to finish, but abort them promptly if the user
+        // pauses/cancels mid-round. Aborting mid-slice is safe: an unfinished
+        // slice is never marked done in .part.met, so it is simply re-fetched.
+        loop {
+            tokio::select! {
+                res = join_set.join_next() => {
+                    if res.is_none() {
+                        break;
+                    }
+                }
+                _ = async {
+                    while !cancel.load(Ordering::Relaxed) {
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                    }
+                } => {
+                    join_set.abort_all();
+                    while join_set.join_next().await.is_some() {}
+                    break;
+                }
+            }
+        }
         // Round over: stop deriving in-flight indices and clear the stale set.
         in_flight_publisher.abort();
         {
@@ -700,6 +783,13 @@ pub async fn run_ed2k_download(
             if let Some(e) = s.get_mut(&live_key) {
                 e.in_flight_pieces = Vec::new();
             }
+        }
+
+        // If we aborted due to a pause/cancel, go straight back to the top so
+        // the stop is handled (and partial files cleaned, on cancel) now —
+        // don't fall through into the retry/backoff sleep first.
+        if cancel.load(Ordering::Relaxed) {
+            continue;
         }
 
         // Check if all slices are now done (drop guard before any await).

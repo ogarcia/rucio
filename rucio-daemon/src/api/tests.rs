@@ -96,6 +96,8 @@ async fn test_state() -> (
         emule_inbound_connections: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         #[cfg(feature = "emule-compat")]
         emule_last_inbound_at: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        #[cfg(feature = "emule-compat")]
+        emule_cancel: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         external_ip: Arc::new(tokio::sync::RwLock::new(None)),
         live_stats: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
     };

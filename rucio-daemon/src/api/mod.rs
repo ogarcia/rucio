@@ -364,6 +364,10 @@ pub struct AppState {
     /// (`0` = none). Drives the recent-reachability connectivity verdict.
     #[cfg(feature = "emule-compat")]
     pub emule_last_inbound_at: Arc<std::sync::atomic::AtomicU64>,
+    /// Registry of running eMule download tasks (download_id → stop flag), used
+    /// by pause/cancel/resume to stop a task promptly without polling the DB.
+    #[cfg(feature = "emule-compat")]
+    pub emule_cancel: crate::emule::EmuleCancelRegistry,
     /// External IP address as reported by UPnP gateway.  `None` when no gateway found.
     pub external_ip: crate::upnp::ExternalIp,
     /// Per-download live statistics (sources, pieces in flight, speed).

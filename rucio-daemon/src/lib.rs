@@ -303,6 +303,13 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
         config.emule.max_concurrent_downloads.clamp(1, 50),
     ));
 
+    // Registry of running eMule download tasks (download_id → stop flag), so
+    // pause/cancel can stop a task promptly and the spawn site never launches a
+    // duplicate task for an id that is already running.
+    #[cfg(feature = "emule-compat")]
+    let emule_cancel: crate::emule::EmuleCancelRegistry =
+        std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+
     // --- Kad2 background task (emule-compat) --------------------------------
     #[cfg(feature = "emule-compat")]
     let kad_handle = if !config.emule.enabled {
@@ -429,6 +436,8 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
         emule_inbound_connections: emule_inbound_connections.clone(),
         #[cfg(feature = "emule-compat")]
         emule_last_inbound_at: emule_last_inbound_at.clone(),
+        #[cfg(feature = "emule-compat")]
+        emule_cancel: emule_cancel.clone(),
         external_ip,
         live_stats: Arc::clone(&live_stats),
     };
@@ -489,6 +498,10 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                 "Resuming interrupted eMule downloads"
             );
             for row in emule_rows {
+                // Register a stop flag so these resumed downloads can be
+                // paused/cancelled like any other.
+                let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                emule_cancel.lock().unwrap().insert(row.id, cancel.clone());
                 let config = config.clone();
                 let db = db.clone();
                 let kad = kad_handle.clone();
@@ -497,6 +510,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                 let ls = live_stats.clone();
                 let met = Arc::clone(&session_metrics);
                 let dt = Arc::clone(&download_throttle);
+                let reg = emule_cancel.clone();
                 tokio::spawn(async move {
                     if let Err(e) = crate::emule::run_ed2k_download(
                         &row.ed2k_link,
@@ -509,6 +523,8 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                         &ls,
                         &met,
                         &dt,
+                        cancel,
+                        reg,
                     )
                     .await
                     {
@@ -780,24 +796,53 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                                 if !config.emule.enabled {
                                     warn!("Received StartEd2k request but eMule is disabled (emule.enabled = false)");
                                 } else {
-                                    let config = config.clone();
-                                    let db = db.clone();
-                                    let kad = kad_handle.clone();
-                                    let ad = active_downloads.clone();
-                                    let slots = emule_download_slots.clone();
-                                    let ls = live_stats.clone();
-                                    let met = Arc::clone(&session_metrics);
-                                    let dt = Arc::clone(&download_throttle);
-                                    tokio::spawn(async move {
-                                        if let Err(e) = crate::emule::run_ed2k_download(
-                                            &link, download_id, &config, &db, &kad, &ad,
-                                            &slots, &ls, &met, &dt,
-                                        )
-                                        .await
-                                        {
-                                            warn!("eMule download failed: {e}");
+                                    // Register a stop flag for this id. If one already
+                                    // exists, a task is already running (e.g. a resume
+                                    // that raced an unfinished task) — don't spawn a
+                                    // duplicate; the live task will observe the new
+                                    // status. This prevents two tasks racing on the
+                                    // same .part file.
+                                    let cancel = {
+                                        use std::collections::hash_map::Entry;
+                                        let mut reg = emule_cancel.lock().unwrap();
+                                        match reg.entry(download_id) {
+                                            Entry::Occupied(_) => None,
+                                            Entry::Vacant(e) => {
+                                                let flag = Arc::new(
+                                                    std::sync::atomic::AtomicBool::new(false),
+                                                );
+                                                e.insert(flag.clone());
+                                                Some(flag)
+                                            }
                                         }
-                                    });
+                                    };
+                                    match cancel {
+                                        None => info!(
+                                            dl = download_id,
+                                            "eMule download task already running — not spawning a duplicate"
+                                        ),
+                                        Some(cancel) => {
+                                            let config = config.clone();
+                                            let db = db.clone();
+                                            let kad = kad_handle.clone();
+                                            let ad = active_downloads.clone();
+                                            let slots = emule_download_slots.clone();
+                                            let ls = live_stats.clone();
+                                            let met = Arc::clone(&session_metrics);
+                                            let dt = Arc::clone(&download_throttle);
+                                            let reg = emule_cancel.clone();
+                                            tokio::spawn(async move {
+                                                if let Err(e) = crate::emule::run_ed2k_download(
+                                                    &link, download_id, &config, &db, &kad, &ad,
+                                                    &slots, &ls, &met, &dt, cancel, reg,
+                                                )
+                                                .await
+                                                {
+                                                    warn!("eMule download failed: {e}");
+                                                }
+                                            });
+                                        }
+                                    }
                                 }
                             }
                             #[cfg(not(feature = "emule-compat"))]

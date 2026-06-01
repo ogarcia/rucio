@@ -511,28 +511,31 @@ pub async fn start_download(
 )]
 pub async fn cancel_download(State(state): State<AppState>, Path(id): Path<i64>) -> StatusCode {
     if id < 0 {
-        // eMule download — cancel by setting status to 'cancelled'.
-        // The run_ed2k_download loop polls and exits on next iteration.
+        // eMule download — set status to 'cancelled' and stop the task.
         #[cfg(feature = "emule-compat")]
         {
             let emule_id = -id;
-            match crate::db::emule_downloads::get_status(&state.db, emule_id).await {
+            let row = match crate::db::emule_downloads::get(&state.db, emule_id).await {
+                Ok(Some(r)) => r,
                 Ok(None) => return StatusCode::NOT_FOUND,
                 Err(e) => {
                     tracing::error!("DB error fetching emule download {emule_id}: {e}");
                     return StatusCode::INTERNAL_SERVER_ERROR;
                 }
-                Ok(Some(_)) => {}
-            }
-            match crate::db::emule_downloads::set_status(&state.db, emule_id, "cancelled", None)
-                .await
+            };
+            if let Err(e) =
+                crate::db::emule_downloads::set_status(&state.db, emule_id, "cancelled", None).await
             {
-                Ok(()) => StatusCode::NO_CONTENT,
-                Err(e) => {
-                    tracing::error!("DB error cancelling emule download {emule_id}: {e}");
-                    StatusCode::INTERNAL_SERVER_ERROR
-                }
+                tracing::error!("DB error cancelling emule download {emule_id}: {e}");
+                return StatusCode::INTERNAL_SERVER_ERROR;
             }
+            // Stop the running task promptly. It deletes the partial files when
+            // it observes the 'cancelled' status; if no task is running, clean
+            // them up here.
+            if !signal_emule_stop(&state, emule_id) {
+                remove_emule_partials(&state.config, &row.ed2k_hash).await;
+            }
+            StatusCode::NO_CONTENT
         }
         #[cfg(not(feature = "emule-compat"))]
         StatusCode::NOT_FOUND
@@ -605,7 +608,11 @@ pub async fn pause_download(State(state): State<AppState>, Path(id): Path<i64>) 
             }
             match crate::db::emule_downloads::set_status(&state.db, emule_id, "paused", None).await
             {
-                Ok(()) => StatusCode::NO_CONTENT,
+                Ok(()) => {
+                    // Stop the running task promptly (it keeps the partial file).
+                    signal_emule_stop(&state, emule_id);
+                    StatusCode::NO_CONTENT
+                }
                 Err(e) => {
                     tracing::error!("DB error pausing emule download {emule_id}: {e}");
                     StatusCode::INTERNAL_SERVER_ERROR
@@ -696,6 +703,12 @@ pub async fn resume_download(State(state): State<AppState>, Path(id): Path<i64>)
                 tracing::error!("DB error resuming emule download {emule_id}: {e}");
                 return StatusCode::INTERNAL_SERVER_ERROR;
             }
+            // Clear any pending stop flag: if a task from the pause is still
+            // shutting down, this lets it continue instead of exiting. If it has
+            // already exited, the StartEd2k below spawns a fresh one.
+            if let Some(flag) = state.emule_cancel.lock().unwrap().get(&emule_id) {
+                flag.store(false, std::sync::atomic::Ordering::Relaxed);
+            }
             let dl_req = DownloadRequest::StartEd2k {
                 link: row.ed2k_link,
                 download_id: emule_id,
@@ -765,15 +778,20 @@ pub async fn delete_download(State(state): State<AppState>, Path(id): Path<i64>)
             let rows = crate::db::emule_downloads::list(&state.db)
                 .await
                 .unwrap_or_default();
-            match rows.iter().find(|r| r.id == emule_id) {
+            let ed2k_hash = match rows.iter().find(|r| r.id == emule_id) {
                 None => return StatusCode::NOT_FOUND,
                 Some(r) if matches!(r.status.as_str(), "finding_providers" | "downloading") => {
                     return StatusCode::CONFLICT;
                 }
-                _ => {}
-            }
+                Some(r) => r.ed2k_hash.clone(),
+            };
             match crate::db::emule_downloads::delete(&state.db, emule_id).await {
-                Ok(true) => StatusCode::NO_CONTENT,
+                Ok(true) => {
+                    // Drop any leftover partial files (paused/stalled/error rows
+                    // still have them; cancelled ones were already cleaned).
+                    remove_emule_partials(&state.config, &ed2k_hash).await;
+                    StatusCode::NO_CONTENT
+                }
                 Ok(false) => StatusCode::NOT_FOUND,
                 Err(e) => {
                     tracing::error!("DB error deleting emule download {emule_id}: {e}");
@@ -985,6 +1003,30 @@ fn is_pausable(status: &str) -> bool {
         status,
         "finding_providers" | "queued" | "downloading" | "stalled"
     )
+}
+
+/// Signal a running eMule download task to stop. Returns `true` if a live task
+/// was found and signalled, `false` if none is running for this id.
+#[cfg(feature = "emule-compat")]
+fn signal_emule_stop(state: &AppState, emule_id: i64) -> bool {
+    if let Some(flag) = state.emule_cancel.lock().unwrap().get(&emule_id) {
+        flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        true
+    } else {
+        false
+    }
+}
+
+/// Delete the `.part` and `.part.met` files for an eMule download by its raw
+/// ed2k hash. Best-effort: missing files are ignored.
+#[cfg(feature = "emule-compat")]
+async fn remove_emule_partials(config: &crate::config::Config, ed2k_hash: &[u8]) {
+    let Ok(hash) = <[u8; 16]>::try_from(ed2k_hash) else {
+        return;
+    };
+    let (part, met) = crate::emule::part_paths(config, &hash);
+    let _ = tokio::fs::remove_file(&part).await;
+    let _ = tokio::fs::remove_file(&met).await;
 }
 
 #[cfg(test)]
