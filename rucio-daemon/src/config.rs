@@ -192,11 +192,21 @@ pub struct EmuleConfig {
     /// Default: 3.  Range: 1–50.  Override via `RUCIOD_EMULE_MAX_CONCURRENT_DOWNLOADS`.
     #[serde(default = "EmuleConfig::default_max_concurrent_downloads")]
     pub max_concurrent_downloads: usize,
+
+    /// Nickname advertised to eMule peers — the name shown in their transfer
+    /// lists ("downloading from <nick>"). Cosmetic; the credit identity is the
+    /// separate user hash. Default: "rucio". Override via `RUCIOD_EMULE_NICK`.
+    #[serde(default = "EmuleConfig::default_nick")]
+    pub nick: String,
 }
 
 impl EmuleConfig {
     fn default_enabled() -> bool {
         true
+    }
+
+    fn default_nick() -> String {
+        "rucio".to_string()
     }
 
     fn default_tcp_port() -> u16 {
@@ -227,6 +237,7 @@ impl Default for EmuleConfig {
             download_slots_per_file: Self::default_download_slots_per_file(),
             max_upload_slots: Self::default_max_upload_slots(),
             max_concurrent_downloads: Self::default_max_concurrent_downloads(),
+            nick: Self::default_nick(),
         }
     }
 }
@@ -564,6 +575,11 @@ impl Config {
             && let Ok(ip) = v.parse::<std::net::Ipv4Addr>()
         {
             self.emule.external_ip = Some(ip);
+        }
+        if let Ok(v) = std::env::var("RUCIOD_EMULE_NICK")
+            && !v.trim().is_empty()
+        {
+            self.emule.nick = v.trim().to_string();
         }
         if let Ok(v) = std::env::var("RUCIOD_EMULE_DOWNLOAD_SLOTS_PER_FILE")
             && !v.is_empty()

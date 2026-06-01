@@ -170,13 +170,27 @@ async fn write_frame(
 /// Build a HELLO / HELLOANSWER payload advertising ourselves.
 ///
 /// `tcp_port` is our listening TCP port; pass 0 if not listening (Low-ID).
-fn build_hello(our_hash: &[u8; 16], tcp_port: u16) -> Vec<u8> {
+fn build_hello(our_hash: &[u8; 16], tcp_port: u16, nick: &str) -> Vec<u8> {
     let mut p = Vec::new();
     p.push(16u8);
     p.extend_from_slice(our_hash);
     p.extend_from_slice(&0u32.to_le_bytes()); // client ID = 0 (low-ID until server assigns one)
     p.extend_from_slice(&tcp_port.to_le_bytes());
-    p.extend_from_slice(&0u32.to_le_bytes()); // tag count = 0
+    // Tags: advertise our nickname (CT_NAME) so peers display a name for us.
+    // Cap to a sane char length and keep UTF-8 boundaries intact.
+    let nick: String = nick.trim().chars().take(60).collect();
+    if nick.is_empty() {
+        p.extend_from_slice(&0u32.to_le_bytes()); // tag count = 0
+    } else {
+        p.extend_from_slice(&1u32.to_le_bytes()); // tag count = 1
+        // CT_NAME string tag, universal new-ed2k form:
+        //   [TAGTYPE_STRING(0x02) | 0x80 special-name][name=CT_NAME(0x01)][len u16 LE][bytes]
+        let bytes = nick.as_bytes();
+        p.push(0x02 | 0x80);
+        p.push(0x01); // CT_NAME
+        p.extend_from_slice(&(bytes.len() as u16).to_le_bytes());
+        p.extend_from_slice(bytes);
+    }
     p.extend_from_slice(&0u32.to_le_bytes()); // server IP (unused)
     p.extend_from_slice(&0u16.to_le_bytes()); // server port (unused)
     p
@@ -251,6 +265,8 @@ pub struct DownloadOptions {
     pub our_tcp_port: u16,
     /// Our persistent eMule user hash (credit identity) to advertise in HELLO.
     pub our_user_hash: [u8; 16],
+    /// Our nickname (CT_NAME) to advertise in HELLO. Empty = no name tag.
+    pub our_nick: String,
 }
 
 impl Default for DownloadOptions {
@@ -265,6 +281,7 @@ impl Default for DownloadOptions {
             peer_hash: None,
             our_tcp_port: 0,
             our_user_hash: [0u8; 16],
+            our_nick: String::new(),
         }
     }
 }
@@ -426,7 +443,7 @@ impl Session {
         F: FnMut(DownloadEvent),
     {
         // ── HELLO ────────────────────────────────────────────────────────────
-        let hello_payload = build_hello(our_hash, opts.our_tcp_port);
+        let hello_payload = build_hello(our_hash, opts.our_tcp_port, &opts.our_nick);
         write_frame(stream, cipher, OP_HELLO, &hello_payload)
             .await
             .context("send HELLO")?;
@@ -854,6 +871,8 @@ pub struct UploadContext {
     pub tcp_port: u16,
     /// Our persistent eMule user hash (credit identity) advertised in HELLO.
     pub user_hash: [u8; 16],
+    /// Our nickname (CT_NAME) advertised in HELLO. Empty = no name tag.
+    pub nick: String,
     /// Files currently being downloaded — the upload whitelist.
     pub downloads: ActiveDownloads,
     /// Counter of inbound TCP connections accepted since startup.
@@ -916,7 +935,7 @@ async fn handle_incoming(mut stream: TcpStream, peer: SocketAddr, ctx: Arc<Uploa
                     .await
                     .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "hello timeout"))??;
             if opcode == OP_HELLO {
-                let answer = build_hello(&our_hash, ctx.tcp_port);
+                let answer = build_hello(&our_hash, ctx.tcp_port, &ctx.nick);
                 write_frame(&mut stream, &mut cipher, OP_HELLOANSWER, &answer).await?;
                 break;
             }
@@ -1177,9 +1196,23 @@ mod tests {
 
     #[test]
     fn test_build_hello_length() {
-        let h = build_hello(&[0u8; 16], 0);
+        // No nickname → no tags: 1+16+4+2 + 4(tagcount) + 4(ip) + 2(port) = 33.
+        let h = build_hello(&[0u8; 16], 0, "");
         assert_eq!(h.len(), 33);
         assert_eq!(h[0], 16u8);
+    }
+
+    #[test]
+    fn test_build_hello_name_tag() {
+        // With a nickname, one CT_NAME string tag is appended:
+        //   [0x82][0x01][len u16 LE][bytes]  ("rucio" = 5 bytes → +9 bytes).
+        let h = build_hello(&[0u8; 16], 0, "rucio");
+        assert_eq!(h.len(), 33 + 1 + 1 + 2 + 5);
+        assert_eq!(&h[23..27], &1u32.to_le_bytes()); // tag count = 1
+        assert_eq!(h[27], 0x02 | 0x80); // TAGTYPE_STRING, special 1-byte name
+        assert_eq!(h[28], 0x01); // CT_NAME
+        assert_eq!(&h[29..31], &5u16.to_le_bytes()); // string length
+        assert_eq!(&h[31..36], b"rucio");
     }
 
     #[test]

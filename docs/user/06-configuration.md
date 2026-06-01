@@ -294,6 +294,20 @@ rucio config set emule.udp_port 4672
 
 ---
 
+### `emule.nick`
+
+The nickname advertised to eMule peers — the name other clients show for you in
+their transfer lists ("downloading from <nick>"). Purely cosmetic; your credit
+identity is a separate internal user hash, not the nick.
+
+```sh
+rucio config set emule.nick "rucio"
+```
+
+**Default:** `rucio`  (override at runtime with `RUCIOD_EMULE_NICK`)
+
+---
+
 ### `emule.download_slots_per_file`
 
 Number of simultaneous peer connections opened per eMule download.

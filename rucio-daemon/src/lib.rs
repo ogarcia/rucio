@@ -382,6 +382,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                     temp_dir: config.emule.temp_dir.clone(),
                     tcp_port,
                     user_hash: emule_user_hash,
+                    nick: config.emule.nick.clone(),
                     downloads: active_downloads.clone(),
                     inbound_connections: emule_inbound_connections.clone(),
                     last_inbound_at: emule_last_inbound_at.clone(),

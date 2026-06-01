@@ -405,6 +405,7 @@ pub async fn run_ed2k_download(
     let our_user_hash = crate::db::emule_identity::get_or_create(db)
         .await
         .unwrap_or([0u8; 16]);
+    let our_nick = config.emule.nick.clone();
 
     loop {
         // Check for user-requested stop (cancel / pause) before doing any work.
@@ -714,6 +715,7 @@ pub async fn run_ed2k_download(
             let throttle_w = download_throttle.clone();
             let cancel_w = cancel.clone();
             let pool = source_pool.clone();
+            let nick_w = our_nick.clone();
 
             join_set.spawn(async move {
                 // The source this worker is currently bound to — kept across
@@ -764,6 +766,7 @@ pub async fn run_ed2k_download(
                             peer_hash: Some(source.user_hash),
                             our_tcp_port,
                             our_user_hash,
+                            our_nick: nick_w.clone(),
                         };
 
                         // Open part file seeked to this slice's start offset.
