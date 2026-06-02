@@ -528,16 +528,18 @@ async fn on_swarm_event(
                 // reachable where it advertised (connection refused, timed out,
                 // host unreachable, reset) — routine churn in a P2P swarm.
                 DialNoise::Expected => {
-                    debug!(%error, "Outgoing connection error (expected: peer unreachable)")
+                    debug!(error = %dial_error_line(&error), "Outgoing connection error (expected: peer unreachable)")
                 }
                 // ENETUNREACH on a public address: the OS has no route for
                 // that address family (typically IPv6 not configured). Logged
                 // at INFO so a legitimate routing change stays visible without
                 // producing alarm-level noise on hosts without IPv6.
                 DialNoise::Unreachable => {
-                    info!(%error, "Outgoing connection error (network unreachable — expected if this address family is not available on this host)")
+                    info!(error = %dial_error_line(&error), "Outgoing connection error (network unreachable — expected if this address family is not available on this host)")
                 }
-                DialNoise::Real => warn!(%error, "Outgoing connection error"),
+                DialNoise::Real => {
+                    warn!(error = %dial_error_line(&error), "Outgoing connection error")
+                }
             }
             // Schedule a retry for known peers so that simultaneous-open
             // handshake collisions (both nodes dial each other at the same
@@ -1071,6 +1073,21 @@ enum DialNoise {
     Unreachable,
     /// Any other failure — genuinely unexpected. → WARN
     Real,
+}
+
+/// Render a `DialError` as a single log line.
+///
+/// libp2p folds several failed dial attempts into one error whose `Display`
+/// ("Multiple dial errors occurred: …") spans multiple lines separated by blank
+/// lines and ` - ` bullets. That breaks one-event-per-line log parsing, so
+/// collapse every run of whitespace (the embedded newlines included) into a
+/// single space.
+fn dial_error_line(error: &DialError) -> String {
+    error
+        .to_string()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Classify a `DialError` for log-level selection.
