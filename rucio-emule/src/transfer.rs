@@ -377,6 +377,11 @@ impl Session {
         }
     }
 
+    /// Whether this session negotiated RC4 obfuscation (vs a plain stream).
+    pub fn is_obfuscated(&self) -> bool {
+        self.cipher.is_some()
+    }
+
     /// Attempt a plain (unencrypted) TCP connection and handshake.
     async fn connect_plain<F>(
         peer: SocketAddrV4,
@@ -395,7 +400,7 @@ impl Session {
             .context("connect to peer")?;
         on_event(DownloadEvent::Connected);
 
-        Self::do_handshake(&mut stream, &mut cipher, opts, &our_hash, on_event).await?;
+        Self::do_handshake(peer, &mut stream, &mut cipher, opts, &our_hash, on_event).await?;
 
         Ok(Self {
             stream,
@@ -447,9 +452,8 @@ impl Session {
 
         let mut cipher = Some(rc4);
 
-        Self::do_handshake(&mut stream, &mut cipher, opts, &our_hash, on_event).await?;
+        Self::do_handshake(peer, &mut stream, &mut cipher, opts, &our_hash, on_event).await?;
 
-        info!(%peer, "eMule TCP obfuscation established");
         Ok(Self {
             stream,
             op_timeout: opts.op_timeout,
@@ -464,6 +468,7 @@ impl Session {
     /// both plain and obfuscated paths.  Returns a `PeerClosedBeforeHello`
     /// sentinel if the peer closes before HELLOANSWER.
     async fn do_handshake<F>(
+        peer: SocketAddrV4,
         stream: &mut TcpStream,
         cipher: &mut Option<Rc4>,
         opts: &DownloadOptions,
@@ -493,9 +498,17 @@ impl Session {
                 Ok(Ok(frame)) => frame,
             };
             if opcode == OP_HELLOANSWER {
+                // First decrypted frame back: proves the transport works. For the
+                // obfuscated path this confirms the RC4 key is correct, even if
+                // the peer later queues us instead of granting a slot.
+                debug!(
+                    %peer,
+                    obfuscated = cipher.is_some(),
+                    "eMule transport handshake OK (HELLOANSWER received)"
+                );
                 break;
             }
-            debug!("skipping opcode 0x{opcode:02x} during hello handshake");
+            debug!(%peer, "skipping opcode 0x{opcode:02x} during hello handshake");
         }
 
         // ── FILEREQUEST ──────────────────────────────────────────────────────

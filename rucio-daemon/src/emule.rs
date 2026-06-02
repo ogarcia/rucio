@@ -881,12 +881,19 @@ pub async fn run_ed2k_download(
                             debug!(dl = download_id, %peer, rank, "Queued at eMule peer")
                         }
                         DownloadEvent::Started => {
-                            info!(dl = download_id, %peer, "Peer granted upload slot — transfer starting")
+                            debug!(dl = download_id, %peer, "Peer granted upload slot")
                         }
                         _ => {}
                     };
                     let mut session = match Session::connect(peer, &opts, &mut on_connect).await {
-                        Ok(s) => s,
+                        Ok(s) => {
+                            info!(
+                                dl = download_id, %peer,
+                                obfuscated = s.is_obfuscated(),
+                                "Peer granted upload slot — transfer starting"
+                            );
+                            s
+                        }
                         Err(e) => {
                             debug!(dl = download_id, %peer, error = %e,
                                 "Peer unavailable — trying another source");
