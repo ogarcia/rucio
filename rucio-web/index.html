@@ -14,7 +14,10 @@
     <link data-trunk rel="copy-file" href="icon-192.png"/>
     <link data-trunk rel="copy-file" href="icon-512.png"/>
     <link data-trunk rel="copy-file" href="apple-touch-icon.png"/>
-    <link rel="manifest" href="/manifest.webmanifest"/>
+    <!-- use-credentials: send the basic-auth/cookie credentials when fetching
+         the manifest, else a proxy with HTTP auth in front returns 401 and the
+         app is not installable. -->
+    <link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials"/>
     <meta name="theme-color" content="#4f6ef7"/>
     <meta name="mobile-web-app-capable" content="yes"/>
     <meta name="apple-mobile-web-app-capable" content="yes"/>

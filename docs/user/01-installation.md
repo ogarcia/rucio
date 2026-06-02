@@ -306,6 +306,12 @@ browser chrome.
 > [Option D](#option-d--behind-your-own-web-server-nginx). A plain
 > `http://<lan-ip>:3003` will load the panel but won't offer to install it.
 
+It works through the Option D **basic-auth** gate: the manifest link uses
+`crossorigin="use-credentials"`, so the browser sends the credentials when
+fetching it. (Without that the manifest request returns `401` and the browser
+silently treats the app as non-installable — the usual reason an HTTPS PWA
+behind basic auth won't install.)
+
 - **Android (Chrome):** open the panel, then menu → **Install app** /
   **Add to Home screen**.
 - **iOS (Safari):** **Share** → **Add to Home Screen**.
