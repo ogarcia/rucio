@@ -419,7 +419,11 @@ impl Session {
                     %peer,
                     "Plain TCP rejected — retrying with RC4 obfuscation"
                 );
-                Self::connect_obfuscated(peer, opts, on_event).await
+                let r = Self::connect_obfuscated(peer, opts, on_event).await;
+                if let Err(ref e) = r {
+                    debug!(%peer, error = %e, "Obfuscated retry failed");
+                }
+                r
             }
             Err(e) => Err(e),
         }
@@ -482,7 +486,12 @@ impl Session {
         // different magic byte per direction).
         let rand = random_tcp_key();
         let mut send = Rc4::new(&tcp_obf_rc4_key(peer_hash, MAGIC_REQUESTER, &rand));
-        let recv = Rc4::new(&tcp_obf_rc4_key(peer_hash, MAGIC_SERVER, &rand));
+        let mut recv = Rc4::new(&tcp_obf_rc4_key(peer_hash, MAGIC_SERVER, &rand));
+        // eMule's RC4CreateKey discards the first 1024 keystream bytes for TCP
+        // (the UDP/Kad path skips this). Without it the keystream is misaligned
+        // and the peer rejects our sync magic.
+        send.discard(1024);
+        recv.discard(1024);
 
         // Negotiation request:
         //   marker[1] + rand[4]            (plaintext)

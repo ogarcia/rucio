@@ -58,6 +58,18 @@ impl Rc4 {
         Self { s, i: 0, j: 0 }
     }
 
+    /// Advance the keystream by `n` bytes without producing output. eMule's
+    /// `RC4CreateKey` discards the first 1024 bytes for TCP streams (the
+    /// `bSkipDiscard = false` default); the Kad UDP path passes `true` and skips
+    /// this, which is why it is not done in `new`.
+    pub(crate) fn discard(&mut self, n: usize) {
+        for _ in 0..n {
+            self.i = self.i.wrapping_add(1);
+            self.j = self.j.wrapping_add(self.s[self.i as usize]);
+            self.s.swap(self.i as usize, self.j as usize);
+        }
+    }
+
     /// XOR-encrypt/decrypt `data` in place.
     pub(crate) fn apply(&mut self, data: &mut [u8]) {
         for byte in data.iter_mut() {
