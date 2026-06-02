@@ -110,7 +110,18 @@ pub enum KadCommand {
         keyword: String,
         reply: oneshot::Sender<Vec<KeywordHit>>,
     },
+    /// Publish ourselves as a source for an ed2k file (good-citizen seeding).
+    /// Replies with the number of nodes that acknowledged the store.
+    PublishSource {
+        hash: Ed2kHash,
+        file_size: u64,
+        reply: oneshot::Sender<usize>,
+    },
 }
+
+/// Number of nodes to store ourselves on per source publish (eMule's
+/// `SEARCHSTOREFILE_TOTAL`). Once this many acknowledge, the publish stops.
+const PUBLISH_STORE_TARGET: usize = 10;
 
 /// Handle to the running `KadTask`.  Cheap to clone.
 #[derive(Clone)]
@@ -193,6 +204,24 @@ impl KadHandle {
             .send(KadCommand::SearchKeyword { keyword, reply: tx })
             .await;
         rx.await.unwrap_or_default()
+    }
+
+    /// Publish ourselves as a source for `hash` to the Kad nodes closest to it,
+    /// so other clients can discover us by the canonical route. Returns how many
+    /// nodes acknowledged the store. Low priority: yields to user keyword
+    /// searches and download source lookups for the single search slot.
+    pub async fn publish_source(&self, hash: Ed2kHash, file_size: u64) -> usize {
+        let _permit = self.search_gate.acquire(super::gate::Priority::Low).await;
+        let (tx, rx) = oneshot::channel();
+        let _ = self
+            .tx
+            .send(KadCommand::PublishSource {
+                hash,
+                file_size,
+                reply: tx,
+            })
+            .await;
+        rx.await.unwrap_or(0)
     }
 
     /// Number of contacts currently in the routing table.
@@ -316,6 +345,11 @@ async fn run_task(
     mut cmd_rx: mpsc::Receiver<KadCommand>,
 ) {
     let mut recv_buf = [0u8; 4096];
+    // Our local Kad UDP port, advertised as SOURCEUPORT when we publish sources.
+    let our_udp_port = socket
+        .local_addr()
+        .map(|a| a.port())
+        .unwrap_or(cfg.tcp_port);
     let mut active_search: Option<ActiveSearch> = None;
     let mut keepalive_tick = Instant::now() + cfg.keepalive_interval;
     // Re-run the firewall check periodically so an open node keeps receiving
@@ -482,6 +516,32 @@ async fn run_task(
                             &initial_candidates, cfg.alpha, reply,
                         );
                         info!(keyword, %target, sent = pkts.len(), "Started Kad2 keyword search");
+                        send_out_packets(&socket, pkts, our_udp_key).await;
+                        active_search = Some(search);
+                    }
+                    KadCommand::PublishSource { hash, file_size, reply } => {
+                        if active_search.is_some() {
+                            warn!("Kad2 search already in progress, dropping publish request");
+                            let _ = reply.send(0);
+                            continue;
+                        }
+                        let target = kad_id_from_hash(hash.as_bytes());
+                        let initial_candidates: Vec<_> = {
+                            let rt = routing_table.read().await;
+                            rt.closest_to(&target, cfg.alpha)
+                        };
+                        if initial_candidates.is_empty() {
+                            debug!(%target, "Kad2 not bootstrapped, cannot publish source");
+                            let _ = reply.send(0);
+                            continue;
+                        }
+                        let deadline = Instant::now() + cfg.search_timeout;
+                        let (search, pkts) = ActiveSearch::new_publish(
+                            target, our_id, cfg.tcp_port, our_udp_port, file_size,
+                            crate::transfer::TCP_CONNECT_OPTIONS, deadline,
+                            PUBLISH_STORE_TARGET, &initial_candidates, cfg.alpha, reply,
+                        );
+                        debug!(sent = pkts.len(), %target, "Started Kad2 source publish");
                         send_out_packets(&socket, pkts, our_udp_key).await;
                         active_search = Some(search);
                     }
@@ -785,6 +845,13 @@ async fn handle_packet(
             debug!(%src, raw_len = raw.len(), "Got SearchRes packet");
             if let Some(s) = active_search.as_mut() {
                 s.on_search_res(&raw, src);
+            }
+        }
+
+        // ── Publish result: count one acknowledged source store ────────────
+        KadPacket::PublishRes { load, .. } => {
+            if let Some(s) = active_search.as_mut() {
+                s.on_publish_res(load);
             }
         }
 

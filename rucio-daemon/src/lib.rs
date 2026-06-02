@@ -460,6 +460,18 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
         live_stats: Arc::clone(&live_stats),
     };
 
+    // --- eMule: republish our shared files as Kad sources (good citizen) ----
+    #[cfg(feature = "emule-compat")]
+    if config.emule.enabled {
+        crate::emule::spawn_source_republisher(
+            db.clone(),
+            kad_handle.clone(),
+            Arc::clone(&config),
+            emule_last_inbound_at.clone(),
+            app_state.external_ip.clone(),
+        );
+    }
+
     let listen_addr = config.api.listen.clone();
     let app_state_for_serve = app_state.clone();
     tokio::spawn(async move {

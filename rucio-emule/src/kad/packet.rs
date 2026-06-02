@@ -268,6 +268,12 @@ pub enum KadPacket {
     },
     /// Firewall check ack from a node we probed.
     FirewalledAck,
+    /// Response to a source publish — the indexing node's current load factor
+    /// (0–100) for the key we stored. We only count it as a successful store.
+    PublishRes {
+        file_id: KadId,
+        load: u8,
+    },
     Unknown {
         opcode: u8,
         payload: Vec<u8>,
@@ -600,6 +606,14 @@ pub fn decode(data: &[u8]) -> Result<KadPacket, PacketError> {
             }
         }
         Some(Opcode::FirewalledAck) => KadPacket::FirewalledAck,
+        Some(Opcode::PublishRes) => {
+            // Payload: file id (16) + load (1). An optional trailing options
+            // byte (ACK request) is ignored — we never request the ACK.
+            let file_id = KadId::read_from(&mut cur)?;
+            let mut b = [0u8];
+            let load = cur.read_exact(&mut b).map(|_| b[0]).unwrap_or(0);
+            KadPacket::PublishRes { file_id, load }
+        }
         Some(Opcode::Pong) => {
             let port = if payload.len() >= 2 {
                 read_u16(&mut cur).unwrap_or(0)
@@ -986,6 +1000,76 @@ pub fn encode_search_source_req(target: &KadId, file_size: u64) -> Vec<u8> {
     buf
 }
 
+/// Build a `KADEMLIA2_PUBLISH_SOURCE_REQ` (0x44) announcing ourselves as a
+/// source of `file_target`.
+///
+/// Wire format (eMule `CKademliaUDPListener::SendPublishSourcePacket`, v≥4):
+///   target file id (16) + our client id (16) + tag list
+/// The tag list mirrors eMule's open / High-ID `STOREFILE` case
+/// (`Search.cpp`): SOURCETYPE, SOURCEPORT, SOURCEUPORT, FILESIZE, ENCRYPTION.
+/// The indexing node reads our IP from the UDP packet source, so no SOURCEIP
+/// tag is sent (and it rejects a source whose IP/TCP/UDP port is zero).
+///
+/// Tag names and types are from eMule `opcodes.h`:
+///   SOURCETYPE=0xFF, ENCRYPTION=0xF3, SOURCEUPORT=0xFC, SOURCEPORT=0xFD,
+///   FILESIZE=0x02; TAGTYPE_UINT8=0x09, _UINT16=0x08, _UINT32=0x03, _UINT64=0x0B.
+/// Each tag is `type(1) + name_len(2 LE) + name(1) + value`.
+pub fn encode_publish_source_req(
+    file_target: &KadId,
+    our_id: &KadId,
+    tcp_port: u16,
+    udp_port: u16,
+    file_size: u64,
+    connect_options: u8,
+) -> Vec<u8> {
+    const TAG_FILESIZE: u8 = 0x02;
+    const TAG_ENCRYPTION: u8 = 0xf3;
+    const TAG_SOURCEUPORT: u8 = 0xfc;
+    const TAG_SOURCEPORT: u8 = 0xfd;
+    const TAG_SOURCETYPE: u8 = 0xff;
+    const TAGTYPE_UINT32: u8 = 0x03;
+    const TAGTYPE_UINT16: u8 = 0x08;
+    const TAGTYPE_UINT8: u8 = 0x09;
+    const TAGTYPE_UINT64: u8 = 0x0b;
+
+    let mut buf = vec![KAD2_PROTO, Opcode::PublishSourceReq as u8];
+    file_target.write_to(&mut buf).unwrap();
+    our_id.write_to(&mut buf).unwrap();
+
+    // Write a tag header: value type, then the 1-byte tag name (uint16 length).
+    fn tag_header(buf: &mut Vec<u8>, value_type: u8, name: u8) {
+        buf.push(value_type);
+        write_u16(buf, 1).unwrap();
+        buf.push(name);
+    }
+
+    let large = file_size > u32::MAX as u64;
+    buf.push(5); // tag count
+
+    // SOURCETYPE: 1 = HighID source, 4 = HighID source of a >4GB file.
+    tag_header(&mut buf, TAGTYPE_UINT8, TAG_SOURCETYPE);
+    buf.push(if large { 4 } else { 1 });
+    // SOURCEPORT: our TCP port.
+    tag_header(&mut buf, TAGTYPE_UINT16, TAG_SOURCEPORT);
+    write_u16(&mut buf, tcp_port).unwrap();
+    // SOURCEUPORT: our Kad UDP port.
+    tag_header(&mut buf, TAGTYPE_UINT16, TAG_SOURCEUPORT);
+    write_u16(&mut buf, udp_port).unwrap();
+    // FILESIZE.
+    if large {
+        tag_header(&mut buf, TAGTYPE_UINT64, TAG_FILESIZE);
+        buf.extend_from_slice(&file_size.to_le_bytes());
+    } else {
+        tag_header(&mut buf, TAGTYPE_UINT32, TAG_FILESIZE);
+        write_u32(&mut buf, file_size as u32).unwrap();
+    }
+    // ENCRYPTION: our connect options (obfuscation supported/requested).
+    tag_header(&mut buf, TAGTYPE_UINT8, TAG_ENCRYPTION);
+    buf.push(connect_options);
+
+    buf
+}
+
 /// Build a `KADEMLIA_FIREWALLED_REQ` (0x50): asks the peer to TCP-connect back
 /// to us on `tcp_port` and report our external IP. Payload is the port (u16 LE).
 pub fn encode_firewalled_req(tcp_port: u16) -> Vec<u8> {
@@ -1116,6 +1200,53 @@ mod tests {
         let pkt = encode_ping();
         let decoded = decode(&pkt).unwrap();
         assert!(matches!(decoded, KadPacket::Ping));
+    }
+
+    #[test]
+    fn test_publish_source_req_wire_format() {
+        let target = KadId::from_bytes([0xaa; 16]);
+        let our_id = KadId::from_bytes([0xbb; 16]);
+        let pkt = encode_publish_source_req(&target, &our_id, 4662, 4672, 734_003_200, 0x03);
+
+        // Header: proto + opcode, then the two 128-bit IDs.
+        assert_eq!(pkt[0], KAD2_PROTO);
+        assert_eq!(pkt[1], Opcode::PublishSourceReq as u8); // 0x44
+        assert_eq!(&pkt[2..18], &[0xaa; 16]); // target file id
+        assert_eq!(&pkt[18..34], &[0xbb; 16]); // our client id
+        assert_eq!(pkt[34], 5); // tag count
+
+        // First tag: SOURCETYPE = 1 (UINT8). type, name_len(2 LE), name, value.
+        assert_eq!(&pkt[35..40], &[0x09, 0x01, 0x00, 0xff, 0x01]);
+        // Next: SOURCEPORT = 4662 (UINT16).
+        assert_eq!(&pkt[40..46], &[0x08, 0x01, 0x00, 0xfd, 0x36, 0x12]);
+        // Next: SOURCEUPORT = 4672 (UINT16).
+        assert_eq!(&pkt[46..52], &[0x08, 0x01, 0x00, 0xfc, 0x40, 0x12]);
+        // Next: FILESIZE = 734003200 (fits in u32, UINT32). Header then value.
+        assert_eq!(&pkt[52..56], &[0x03, 0x01, 0x00, 0x02]);
+        assert_eq!(&pkt[56..60], &734_003_200u32.to_le_bytes());
+        // Last: ENCRYPTION = 0x03 (UINT8).
+        assert_eq!(&pkt[60..65], &[0x09, 0x01, 0x00, 0xf3, 0x03]);
+        assert_eq!(pkt.len(), 65);
+    }
+
+    #[test]
+    fn test_publish_source_req_large_file() {
+        // A >4GB file uses SOURCETYPE 4 and a UINT64 FILESIZE tag.
+        let id = KadId::from_bytes([0; 16]);
+        let size = (u32::MAX as u64) + 1;
+        let pkt = encode_publish_source_req(&id, &id, 4662, 4672, size, 0x03);
+        assert_eq!(pkt[35..40], [0x09, 0x01, 0x00, 0xff, 0x04]); // SOURCETYPE = 4
+        // FILESIZE tag is now UINT64 (0x0b) with an 8-byte value.
+        assert!(pkt.windows(4).any(|w| w == [0x0b, 0x01, 0x00, 0x02]));
+    }
+
+    #[test]
+    fn test_publish_res_decode() {
+        let mut pkt = vec![KAD2_PROTO, Opcode::PublishRes as u8];
+        pkt.extend_from_slice(&[0xcc; 16]); // file id
+        pkt.push(42); // load
+        let decoded = decode(&pkt).unwrap();
+        assert!(matches!(decoded, KadPacket::PublishRes { load: 42, .. }));
     }
 
     #[test]

@@ -16,7 +16,7 @@ use rucio_emule::transfer::{ActiveDownloads, DownloadEvent, DownloadOptions, Ses
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::io::AsyncSeekExt;
 use tokio::net::UdpSocket;
@@ -165,6 +165,99 @@ pub fn spawn_shared_files_watcher(
                 }
                 info!(path = %path.display(), "eMule shared file changed/removed — stopped sharing");
             }
+        }
+    });
+}
+
+/// How long between rounds of re-announcing our shared files as Kad sources.
+/// Hardcoded by design — eMule republishes sources roughly every 5 hours and
+/// there is nothing user-tunable worth exposing here.
+const SOURCE_REPUBLISH_INTERVAL: Duration = Duration::from_secs(5 * 60 * 60);
+/// Shorter retry when we can't publish because the port looks firewalled, so a
+/// node that becomes reachable starts seeding without waiting a full round.
+const SOURCE_REPUBLISH_RETRY: Duration = Duration::from_secs(20 * 60);
+/// Delay before the first round so bootstrap and the first Kad firewall checks
+/// can run and the reachability verdict can settle.
+const SOURCE_REPUBLISH_WARMUP: Duration = Duration::from_secs(5 * 60);
+/// Spacing between individual publishes within a round, so a large share list
+/// does not monopolise the single Kad search slot.
+const SOURCE_PUBLISH_SPACING: Duration = Duration::from_secs(10);
+/// A peer connecting to us within this window is current proof the eMule TCP
+/// port is open. Mirrors the status page's "Open" verdict window.
+const PUBLISH_REACHABLE_WINDOW_SECS: u64 = 20 * 60;
+
+/// Whether the eMule TCP port looks reachable enough to publish ourselves as a
+/// source. We only publish when High-ID: a recent inbound connection is direct
+/// proof, and a UPnP mapping or a user-configured external IP are firm promises.
+/// Publishing a firewalled source (no buddy support) would just litter the DHT
+/// with an entry nobody can reach — the opposite of good citizenship.
+async fn publish_reachable(
+    config: &Config,
+    last_inbound_at: &AtomicU64,
+    upnp_external_ip: &tokio::sync::RwLock<Option<String>>,
+) -> bool {
+    let last = last_inbound_at.load(Ordering::Relaxed);
+    if last != 0 {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        if now.saturating_sub(last) <= PUBLISH_REACHABLE_WINDOW_SECS {
+            return true;
+        }
+    }
+    if config.network.upnp && upnp_external_ip.read().await.is_some() {
+        return true;
+    }
+    config.emule.external_ip.is_some()
+}
+
+/// Periodically announce the files we seed (`emule_shared_files`) to the Kad DHT
+/// as sources, so other clients can discover us by the canonical route instead
+/// of only through client-to-client source exchange. Runs only while the eMule
+/// TCP port looks reachable (see [`publish_reachable`]).
+pub fn spawn_source_republisher(
+    db: Db,
+    kad: KadHandle,
+    config: Arc<Config>,
+    last_inbound_at: Arc<AtomicU64>,
+    upnp_external_ip: Arc<tokio::sync::RwLock<Option<String>>>,
+) {
+    tokio::spawn(async move {
+        tokio::time::sleep(SOURCE_REPUBLISH_WARMUP).await;
+        loop {
+            if !publish_reachable(&config, &last_inbound_at, &upnp_external_ip).await {
+                debug!("Skipping eMule source publish — TCP port not reachable yet");
+                tokio::time::sleep(SOURCE_REPUBLISH_RETRY).await;
+                continue;
+            }
+            let files = match crate::db::emule_shared_files::list(&db).await {
+                Ok(f) => f,
+                Err(e) => {
+                    warn!("Source republish: cannot list shared files: {e}");
+                    Vec::new()
+                }
+            };
+            if !files.is_empty() {
+                info!(
+                    count = files.len(),
+                    "Republishing eMule shared files as Kad sources"
+                );
+                for row in files {
+                    let Ok(bytes) = <[u8; 16]>::try_from(row.ed2k_hash.as_slice()) else {
+                        continue;
+                    };
+                    let hash = rucio_emule::ed2k::Ed2kHash::from_bytes(bytes);
+                    let stored = kad.publish_source(hash, row.size.max(0) as u64).await;
+                    debug!(
+                        hash = %hex::encode(row.ed2k_hash),
+                        stored,
+                        "Published eMule source to Kad"
+                    );
+                    tokio::time::sleep(SOURCE_PUBLISH_SPACING).await;
+                }
+            }
+            tokio::time::sleep(SOURCE_REPUBLISH_INTERVAL).await;
         }
     });
 }

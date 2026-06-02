@@ -81,7 +81,8 @@ const PROTO_ED2K: u8 = 0xe3;
 // Magic value for TCP obfuscation handshake (0x12345678 in LE).
 const MAGIC_TCP: [u8; 4] = [0x78, 0x56, 0x34, 0x12];
 // Obfuscation supported + requested (not required, so we still accept plain peers).
-const TCP_CONNECT_OPTIONS: u8 = 0x03;
+// Also published as the ENCRYPTION tag when we announce ourselves as a Kad source.
+pub(crate) const TCP_CONNECT_OPTIONS: u8 = 0x03;
 
 // ── Opcodes ───────────────────────────────────────────────────────────────────
 

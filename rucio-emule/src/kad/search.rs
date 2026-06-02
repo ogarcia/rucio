@@ -7,7 +7,8 @@
 //! [`super::task`].
 
 use super::packet::{
-    self, Contact, KadId, ResPayload, encode_req, encode_search_key_req, encode_search_source_req,
+    self, Contact, KadId, ResPayload, encode_publish_source_req, encode_req, encode_search_key_req,
+    encode_search_source_req,
 };
 use std::collections::{HashMap, HashSet};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
@@ -66,6 +67,19 @@ enum SearchMode {
     Keyword {
         reply: oneshot::Sender<Vec<KeywordHit>>,
         hits: Vec<KeywordHit>,
+    },
+    /// Announce ourselves as a source of `target` to the closest nodes. The
+    /// two-phase lookup is identical to a source search; only the phase-2
+    /// packet differs (PUBLISH_SOURCE_REQ instead of SEARCH_SOURCE_REQ).
+    Publish {
+        our_id: KadId,
+        tcp_port: u16,
+        udp_port: u16,
+        file_size: u64,
+        connect_options: u8,
+        /// Number of nodes that acknowledged the store (PUBLISH_RES received).
+        published: usize,
+        reply: oneshot::Sender<usize>,
     },
 }
 
@@ -135,6 +149,42 @@ impl ActiveSearch {
         (search, out)
     }
 
+    /// Begin a source publish.  Returns the state and the initial REQ packets.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_publish(
+        target: KadId,
+        our_id: KadId,
+        tcp_port: u16,
+        udp_port: u16,
+        file_size: u64,
+        connect_options: u8,
+        deadline: Instant,
+        max_stores: usize,
+        initial_candidates: &[Contact],
+        alpha: usize,
+        reply: oneshot::Sender<usize>,
+    ) -> (Self, Vec<OutPacket>) {
+        let (queried, queried_ids, out) = initial_reqs(&target, initial_candidates, alpha);
+        let search = Self {
+            target,
+            deadline,
+            max_results: max_stores,
+            queried,
+            queried_ids,
+            searched: HashSet::new(),
+            mode: SearchMode::Publish {
+                our_id,
+                tcp_port,
+                udp_port,
+                file_size,
+                connect_options,
+                published: 0,
+                reply,
+            },
+        };
+        (search, out)
+    }
+
     pub fn queried_count(&self) -> usize {
         self.queried.len()
     }
@@ -144,6 +194,7 @@ impl ActiveSearch {
         let n = match &self.mode {
             SearchMode::Sources { sources, .. } => sources.len(),
             SearchMode::Keyword { hits, .. } => hits.len(),
+            SearchMode::Publish { published, .. } => *published,
         };
         n >= self.max_results || Instant::now() >= self.deadline
     }
@@ -160,6 +211,12 @@ impl ActiveSearch {
             SearchMode::Keyword { hits, reply } => {
                 debug!(hits = hits.len(), queried, %target, "Kad2 keyword search finished");
                 let _ = reply.send(hits);
+            }
+            SearchMode::Publish {
+                published, reply, ..
+            } => {
+                debug!(published, queried, %target, "Kad2 source publish finished");
+                let _ = reply.send(published);
             }
         }
     }
@@ -266,6 +323,17 @@ impl ActiveSearch {
                 Ok(_) => {}
                 Err(e) => trace!(%src, error = %e, "Failed to parse SearchRes as keywords"),
             },
+            // A publish never issues a SEARCH, so it gets PUBLISH_RES instead of
+            // SEARCH_RES; this path is unreachable for it.
+            SearchMode::Publish { .. } => {}
+        }
+    }
+
+    /// Handle an incoming KADEMLIA2_PUBLISH_RES: count one acknowledged store.
+    /// `load` is the node's index saturation (0–100); we don't act on it.
+    pub fn on_publish_res(&mut self, _load: u8) {
+        if let SearchMode::Publish { published, .. } = &mut self.mode {
+            *published += 1;
         }
     }
 
@@ -275,6 +343,21 @@ impl ActiveSearch {
                 encode_search_source_req(&self.target, *file_size)
             }
             SearchMode::Keyword { .. } => encode_search_key_req(&self.target),
+            SearchMode::Publish {
+                our_id,
+                tcp_port,
+                udp_port,
+                file_size,
+                connect_options,
+                ..
+            } => encode_publish_source_req(
+                &self.target,
+                our_id,
+                *tcp_port,
+                *udp_port,
+                *file_size,
+                *connect_options,
+            ),
         }
     }
 }
