@@ -298,7 +298,10 @@ impl ActiveSearch {
                                 ip: s.ip,
                                 tcp_port: s.tcp_port,
                                 udp_port: s.udp_port,
-                                user_hash: *s.id.as_bytes(),
+                                // The source ID is the peer's user hash in
+                                // CUInt128 wire (word-swapped) order; recover the
+                                // raw form the TCP-obfuscation RC4 key needs.
+                                user_hash: packet::user_hash_from_source_id(&s.id),
                             });
                         }
                     }

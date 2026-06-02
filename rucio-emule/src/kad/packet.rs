@@ -948,6 +948,19 @@ pub fn kad_id_from_hash(hash: &[u8; 16]) -> KadId {
     KadId::from_bytes(bytes)
 }
 
+/// Recover a peer's raw 16-byte user hash from the `CUInt128` client ID carried
+/// in a Kad source result.
+///
+/// eMule stores 128-bit values word-swapped on the wire (see
+/// [`kad_id_from_hash`]); `CUInt128::ToByteArray` undoes that swap to get the
+/// raw user hash, which is what eMule feeds into the TCP-obfuscation RC4 key
+/// (`DownloadQueue.cpp`: `pcontactID->ToByteArray(cID); SetUserHash(cID)`). So
+/// the bytes a source advertises are the *swapped* hash; reuse the same
+/// involutive swap to recover the raw form used for the obfuscation key.
+pub fn user_hash_from_source_id(id: &KadId) -> [u8; 16] {
+    *kad_id_from_hash(id.as_bytes()).as_bytes()
+}
+
 /// Compute the Kad target for a keyword search: `MD4(keyword_utf8)`.
 ///
 /// **The caller is responsible for normalizing `keyword` first** (lowercase
@@ -1238,6 +1251,27 @@ mod tests {
         assert_eq!(pkt[35..40], [0x09, 0x01, 0x00, 0xff, 0x04]); // SOURCETYPE = 4
         // FILESIZE tag is now UINT64 (0x0b) with an 8-byte value.
         assert!(pkt.windows(4).any(|w| w == [0x0b, 0x01, 0x00, 0x02]));
+    }
+
+    #[test]
+    fn test_user_hash_from_source_id() {
+        // The source ID is word-swapped on the wire; the raw user hash reverses
+        // each 4-byte chunk. e.g. wire 00 01 02 03 ... -> raw 03 02 01 00 ...
+        let wire: [u8; 16] = [
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
+            0x0e, 0x0f,
+        ];
+        let raw = user_hash_from_source_id(&KadId::from_bytes(wire));
+        assert_eq!(
+            raw,
+            [
+                0x03, 0x02, 0x01, 0x00, 0x07, 0x06, 0x05, 0x04, 0x0b, 0x0a, 0x09, 0x08, 0x0f, 0x0e,
+                0x0d, 0x0c
+            ]
+        );
+        // The transform is its own inverse.
+        let back = user_hash_from_source_id(&KadId::from_bytes(raw));
+        assert_eq!(back, wire);
     }
 
     #[test]
