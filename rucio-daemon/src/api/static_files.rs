@@ -19,6 +19,12 @@ fn mime_for_path(path: &str) -> &'static str {
         "image/x-icon"
     } else if path.ends_with(".svg") {
         "image/svg+xml"
+    } else if path.ends_with(".png") {
+        "image/png"
+    } else if path.ends_with(".webmanifest") {
+        "application/manifest+json"
+    } else if path.ends_with(".json") {
+        "application/json"
     } else {
         "application/octet-stream"
     }
