@@ -30,18 +30,26 @@
 //! When `DownloadOptions::peer_hash` is set and a plain connection is
 //! rejected, `Session::connect` automatically retries using RC4.
 //!
-//! Wire format (outgoing obfuscated handshake):
+//! Wire format (outgoing obfuscated handshake), per eMule
+//! `CEncryptedStreamSocket::StartNegotiation`:
 //! ```text
-//! [4]  random_key    — plaintext
-//! [4]  RC4(0x12345678 LE)   — magic confirming key agreement
-//! [1]  RC4(connect_options) — 0x03 = supported | requested
-//! [1]  RC4(pad_len)  — 0 (no padding)
-//! ...  RC4(eMule frames)    — HELLO and all subsequent data
+//! [1]  marker        — plaintext, any non-protocol byte (≠ 0xE3/0xD4/0xC5)
+//! [4]  random_key    — plaintext (LE)
+//! [4]  RC4send(0x835E6FC4 LE)  — MAGICVALUE_SYNC, confirms key agreement
+//! [1]  RC4send(0x00) — supported method (ENM_OBFUSCATION)
+//! [1]  RC4send(0x00) — preferred method (ENM_OBFUSCATION)
+//! [1]  RC4send(pad_len) — 0 (no padding)
+//! ...  RC4send(eMule frames)   — HELLO and all subsequent sent data
 //! ```
+//! The peer replies, RC4-encrypted with its own send key:
+//! `MAGICVALUE_SYNC(4) + method(1) + pad_len(1) + padding`.
 //!
-//! RC4 key = `MD5(peer_hash[16] || random_key[4])`.
-//! Both directions (send and receive) share a single RC4 cipher instance
-//! because the eMule TCP protocol is strictly sequential (request → response).
+//! Two **separate** RC4 streams are used, with different magic bytes mixed into
+//! the key (eMule's requester/server distinction):
+//! ```text
+//! send key (we encrypt) = MD5(peer_hash[16] || 0x22 || random_key[4])
+//! recv key (we decrypt) = MD5(peer_hash[16] || 0xCB || random_key[4])
+//! ```
 //!
 //! ## Chunk / part layout
 //!
@@ -78,10 +86,17 @@ use tracing::{debug, info, warn};
 /// Protocol header byte for standard ed2k TCP messages.
 const PROTO_ED2K: u8 = 0xe3;
 
-// Magic value for TCP obfuscation handshake (0x12345678 in LE).
-const MAGIC_TCP: [u8; 4] = [0x78, 0x56, 0x34, 0x12];
+// eMule TCP obfuscation handshake constants (CEncryptedStreamSocket).
+/// `MAGICVALUE_SYNC` — confirms a working encrypted stream (sent encrypted).
+const MAGICVALUE_SYNC: u32 = 0x835E_6FC4;
+/// `MAGICVALUE_REQUESTER` — mixed into the requester's send key (= server's recv key).
+const MAGIC_REQUESTER: u8 = 34;
+/// `MAGICVALUE_SERVER` — mixed into the server's send key (= requester's recv key).
+const MAGIC_SERVER: u8 = 203;
+/// `ENM_OBFUSCATION` — the only encryption method we (and modern eMule) speak.
+const ENM_OBFUSCATION: u8 = 0x00;
 // Obfuscation supported + requested (not required, so we still accept plain peers).
-// Also published as the ENCRYPTION tag when we announce ourselves as a Kad source.
+// Published as the ENCRYPTION tag when we announce ourselves as a Kad source.
 pub(crate) const TCP_CONNECT_OPTIONS: u8 = 0x03;
 
 // ── Opcodes ───────────────────────────────────────────────────────────────────
@@ -121,15 +136,32 @@ fn build_message(opcode: u8, payload: &[u8]) -> Vec<u8> {
     msg
 }
 
-/// Read one eMule TCP frame, applying RC4 decryption if a cipher is active.
-/// Returns `(protocol, opcode, payload)`.
+/// RC4 stream pair for a connection. eMule uses **two independent** RC4 streams
+/// with different keys — one for each direction — so a single shared cipher
+/// cannot work. `None` on both fields means a plain (unencrypted) connection.
+#[derive(Default)]
+struct ObfCiphers {
+    /// Encrypts data we send.
+    send: Option<Rc4>,
+    /// Decrypts data we receive.
+    recv: Option<Rc4>,
+}
+
+impl ObfCiphers {
+    fn is_obfuscated(&self) -> bool {
+        self.send.is_some()
+    }
+}
+
+/// Read one eMule TCP frame, applying RC4 decryption with the receive key if the
+/// connection is obfuscated. Returns `(protocol, opcode, payload)`.
 async fn read_frame(
     stream: &mut TcpStream,
-    cipher: &mut Option<Rc4>,
+    ciphers: &mut ObfCiphers,
 ) -> io::Result<(u8, u8, Vec<u8>)> {
     let mut hdr = [0u8; 6];
     stream.read_exact(&mut hdr).await?;
-    if let Some(rc4) = cipher {
+    if let Some(rc4) = ciphers.recv.as_mut() {
         rc4.apply(&mut hdr);
     }
     let proto = hdr[0];
@@ -145,22 +177,23 @@ async fn read_frame(
     let mut payload = vec![0u8; payload_len];
     if payload_len > 0 {
         stream.read_exact(&mut payload).await?;
-        if let Some(rc4) = cipher {
+        if let Some(rc4) = ciphers.recv.as_mut() {
             rc4.apply(&mut payload);
         }
     }
     Ok((proto, opcode, payload))
 }
 
-/// Write a framed eMule message, applying RC4 encryption if a cipher is active.
+/// Write a framed eMule message, applying RC4 encryption with the send key if
+/// the connection is obfuscated.
 async fn write_frame(
     stream: &mut TcpStream,
-    cipher: &mut Option<Rc4>,
+    ciphers: &mut ObfCiphers,
     opcode: u8,
     payload: &[u8],
 ) -> io::Result<()> {
     let mut msg = build_message(opcode, payload);
-    if let Some(rc4) = cipher {
+    if let Some(rc4) = ciphers.send.as_mut() {
         rc4.apply(&mut msg);
     }
     stream.write_all(&msg).await
@@ -199,13 +232,27 @@ fn build_hello(our_hash: &[u8; 16], tcp_port: u16, nick: &str) -> Vec<u8> {
 
 // ── Obfuscation helpers ───────────────────────────────────────────────────────
 
-/// Derive the RC4 session key for an obfuscated TCP connection:
-/// `MD5(peer_hash[16] || rand[4])`
-fn tcp_obf_rc4_key(peer_hash: &[u8; 16], rand: &[u8; 4]) -> [u8; 16] {
+/// Derive an RC4 key for an obfuscated TCP connection:
+/// `MD5(peer_hash[16] || magic || rand[4])`. The `magic` byte
+/// ([`MAGIC_REQUESTER`]/[`MAGIC_SERVER`]) yields a distinct key per direction.
+fn tcp_obf_rc4_key(peer_hash: &[u8; 16], magic: u8, rand: &[u8; 4]) -> [u8; 16] {
     let mut h = Md5::new();
     h.update(peer_hash);
+    h.update([magic]);
     h.update(rand);
     h.finalize().into()
+}
+
+/// Pick a plaintext handshake marker byte that is not a protocol header byte
+/// (eMule's `GetSemiRandomNotProtocolMarker`): the receiver uses the first byte
+/// to tell an obfuscated stream from a plain one.
+fn obf_marker_byte() -> u8 {
+    let [b, ..] = random_tcp_key();
+    match b {
+        // OP_EDONKEYPROT / OP_PACKEDPROT / OP_EMULEPROT — would read as plain.
+        0xe3 | 0xd4 | 0xc5 => 0x01,
+        other => other,
+    }
 }
 
 /// Generate 4 pseudo-random bytes for the obfuscation key exchange.
@@ -340,8 +387,9 @@ pub struct Session {
     op_timeout: Duration,
     hash: Ed2kHash,
     file_size: u64,
-    /// RC4 cipher for obfuscated connections; `None` for plain connections.
-    cipher: Option<Rc4>,
+    /// RC4 stream pair (send/recv) for obfuscated connections; both `None` for
+    /// plain connections.
+    ciphers: ObfCiphers,
     /// Minimum sustained rate (bytes/sec); `0` disables the slow-peer check.
     min_speed_bytes_per_sec: u64,
 }
@@ -379,7 +427,7 @@ impl Session {
 
     /// Whether this session negotiated RC4 obfuscation (vs a plain stream).
     pub fn is_obfuscated(&self) -> bool {
-        self.cipher.is_some()
+        self.ciphers.is_obfuscated()
     }
 
     /// Attempt a plain (unencrypted) TCP connection and handshake.
@@ -392,7 +440,7 @@ impl Session {
         F: FnMut(DownloadEvent),
     {
         let our_hash = opts.our_user_hash;
-        let mut cipher: Option<Rc4> = None;
+        let mut ciphers = ObfCiphers::default();
 
         let mut stream = timeout(opts.op_timeout, TcpStream::connect(peer))
             .await
@@ -400,14 +448,14 @@ impl Session {
             .context("connect to peer")?;
         on_event(DownloadEvent::Connected);
 
-        Self::do_handshake(peer, &mut stream, &mut cipher, opts, &our_hash, on_event).await?;
+        Self::do_handshake(peer, &mut stream, &mut ciphers, opts, &our_hash, on_event).await?;
 
         Ok(Self {
             stream,
             op_timeout: opts.op_timeout,
             hash: opts.hash,
             file_size: opts.file_size,
-            cipher,
+            ciphers,
             min_speed_bytes_per_sec: opts.min_speed_bytes_per_sec,
         })
     }
@@ -430,38 +478,84 @@ impl Session {
             .context("connect to peer (obfuscated)")?;
         on_event(DownloadEvent::Connected);
 
-        // Send obfuscation header:
-        //   rand[4] (plain) + RC4(magic[4] + connect_opts[1] + pad_len[1])
+        // Derive the two RC4 streams from the same random key (eMule mixes a
+        // different magic byte per direction).
         let rand = random_tcp_key();
-        let rc4_key = tcp_obf_rc4_key(peer_hash, &rand);
-        let mut rc4 = Rc4::new(&rc4_key);
+        let mut send = Rc4::new(&tcp_obf_rc4_key(peer_hash, MAGIC_REQUESTER, &rand));
+        let recv = Rc4::new(&tcp_obf_rc4_key(peer_hash, MAGIC_SERVER, &rand));
 
-        let mut obf_header = Vec::with_capacity(10);
-        obf_header.extend_from_slice(&rand); // plaintext
-        let mut enc = [0u8; 6];
-        enc[..4].copy_from_slice(&MAGIC_TCP);
-        enc[4] = TCP_CONNECT_OPTIONS;
-        enc[5] = 0; // no padding
-        rc4.apply(&mut enc);
-        obf_header.extend_from_slice(&enc);
-
+        // Negotiation request:
+        //   marker[1] + rand[4]            (plaintext)
+        //   RC4send( SYNC[4] + method[1] + method[1] + pad_len[1] )
+        let mut header = Vec::with_capacity(12);
+        header.push(obf_marker_byte());
+        header.extend_from_slice(&rand);
+        let mut enc = Vec::with_capacity(7);
+        enc.extend_from_slice(&MAGICVALUE_SYNC.to_le_bytes());
+        enc.push(ENM_OBFUSCATION); // supported method
+        enc.push(ENM_OBFUSCATION); // preferred method
+        enc.push(0); // no padding
+        send.apply(&mut enc);
+        header.extend_from_slice(&enc);
         stream
-            .write_all(&obf_header)
+            .write_all(&header)
             .await
-            .context("send obfuscation header")?;
+            .context("send obfuscation negotiation")?;
 
-        let mut cipher = Some(rc4);
+        let mut ciphers = ObfCiphers {
+            send: Some(send),
+            recv: Some(recv),
+        };
 
-        Self::do_handshake(peer, &mut stream, &mut cipher, opts, &our_hash, on_event).await?;
+        // Read and validate the peer's negotiation response (encrypted with its
+        // send key = our recv key): SYNC[4] + method[1] + pad_len[1] + padding.
+        Self::read_obf_response(&mut stream, &mut ciphers, opts.op_timeout).await?;
+
+        Self::do_handshake(peer, &mut stream, &mut ciphers, opts, &our_hash, on_event).await?;
 
         Ok(Self {
             stream,
             op_timeout: opts.op_timeout,
             hash: opts.hash,
             file_size: opts.file_size,
-            cipher,
+            ciphers,
             min_speed_bytes_per_sec: opts.min_speed_bytes_per_sec,
         })
+    }
+
+    /// Read the peer's obfuscation-negotiation response and verify the sync magic
+    /// value, advancing the receive RC4 stream. Fails (so the source is dropped)
+    /// if the magic does not match — the sign of a wrong key / non-obfuscated peer.
+    async fn read_obf_response(
+        stream: &mut TcpStream,
+        ciphers: &mut ObfCiphers,
+        op_timeout: Duration,
+    ) -> Result<()> {
+        let recv = ciphers
+            .recv
+            .as_mut()
+            .expect("obfuscated session has recv key");
+        // SYNC(4) + method(1) + pad_len(1)
+        let mut head = [0u8; 6];
+        timeout(op_timeout, stream.read_exact(&mut head))
+            .await
+            .context("obfuscation response timeout")?
+            .context("read obfuscation response")?;
+        recv.apply(&mut head);
+        let magic = u32::from_le_bytes([head[0], head[1], head[2], head[3]]);
+        if magic != MAGICVALUE_SYNC {
+            bail!("obfuscation handshake failed: bad sync magic 0x{magic:08x}");
+        }
+        let pad_len = head[5] as usize;
+        if pad_len > 0 {
+            let mut pad = vec![0u8; pad_len];
+            timeout(op_timeout, stream.read_exact(&mut pad))
+                .await
+                .context("obfuscation padding timeout")?
+                .context("read obfuscation padding")?;
+            recv.apply(&mut pad); // discarded, but keeps the keystream aligned
+        }
+        Ok(())
     }
 
     /// Shared handshake logic (HELLO → FILEREQUEST → STARTUPLOAD), used by
@@ -470,7 +564,7 @@ impl Session {
     async fn do_handshake<F>(
         peer: SocketAddrV4,
         stream: &mut TcpStream,
-        cipher: &mut Option<Rc4>,
+        ciphers: &mut ObfCiphers,
         opts: &DownloadOptions,
         our_hash: &[u8; 16],
         on_event: &mut F,
@@ -480,12 +574,12 @@ impl Session {
     {
         // ── HELLO ────────────────────────────────────────────────────────────
         let hello_payload = build_hello(our_hash, opts.our_tcp_port, &opts.our_nick);
-        write_frame(stream, cipher, OP_HELLO, &hello_payload)
+        write_frame(stream, ciphers, OP_HELLO, &hello_payload)
             .await
             .context("send HELLO")?;
 
         loop {
-            let frame = timeout(opts.op_timeout, read_frame(stream, cipher)).await;
+            let frame = timeout(opts.op_timeout, read_frame(stream, ciphers)).await;
             let (_proto, opcode, _payload) = match frame {
                 Err(_timeout) => return Err(anyhow::Error::new(PeerClosedBeforeHello)),
                 Ok(Err(e))
@@ -503,7 +597,7 @@ impl Session {
                 // the peer later queues us instead of granting a slot.
                 debug!(
                     %peer,
-                    obfuscated = cipher.is_some(),
+                    obfuscated = ciphers.is_obfuscated(),
                     "eMule transport handshake OK (HELLOANSWER received)"
                 );
                 break;
@@ -512,12 +606,12 @@ impl Session {
         }
 
         // ── FILEREQUEST ──────────────────────────────────────────────────────
-        write_frame(stream, cipher, OP_FILEREQUEST, opts.hash.as_bytes())
+        write_frame(stream, ciphers, OP_FILEREQUEST, opts.hash.as_bytes())
             .await
             .context("send FILEREQUEST")?;
 
         loop {
-            let (_proto, opcode, _payload) = timeout(opts.op_timeout, read_frame(stream, cipher))
+            let (_proto, opcode, _payload) = timeout(opts.op_timeout, read_frame(stream, ciphers))
                 .await
                 .context("FILEREQUEST_ANSWER timeout")?
                 .context("read FILEREQUEST_ANSWER")?;
@@ -529,13 +623,13 @@ impl Session {
         }
 
         // ── STARTUPLOAD_REQ ──────────────────────────────────────────────────
-        write_frame(stream, cipher, OP_STARTUPLOAD_REQ, opts.hash.as_bytes())
+        write_frame(stream, ciphers, OP_STARTUPLOAD_REQ, opts.hash.as_bytes())
             .await
             .context("send STARTUPLOAD_REQ")?;
 
         let mut queue_waits = 0;
         loop {
-            let (_proto, opcode, payload) = timeout(opts.op_timeout, read_frame(stream, cipher))
+            let (_proto, opcode, payload) = timeout(opts.op_timeout, read_frame(stream, ciphers))
                 .await
                 .context("ACCEPTUPLOAD timeout")?
                 .context("read ACCEPTUPLOAD")?;
@@ -556,7 +650,7 @@ impl Session {
                         bail!("exceeded max queue waits ({rank})");
                     }
                     tokio::time::sleep(Duration::from_secs(5)).await;
-                    write_frame(stream, cipher, OP_STARTUPLOAD_REQ, opts.hash.as_bytes())
+                    write_frame(stream, ciphers, OP_STARTUPLOAD_REQ, opts.hash.as_bytes())
                         .await
                         .context("re-send STARTUPLOAD_REQ")?;
                 }
@@ -608,7 +702,7 @@ impl Session {
 
         send_request_parts(
             &mut self.stream,
-            &mut self.cipher,
+            &mut self.ciphers,
             self.hash.as_bytes(),
             start,
             end,
@@ -642,7 +736,7 @@ impl Session {
             }
             let (_proto, opcode, payload) = timeout(
                 self.op_timeout,
-                read_frame(&mut self.stream, &mut self.cipher),
+                read_frame(&mut self.stream, &mut self.ciphers),
             )
             .await
             .context("data receive timeout")?
@@ -686,7 +780,7 @@ impl Session {
                     if bytes_received >= batch_end && bytes_received < end {
                         send_request_parts(
                             &mut self.stream,
-                            &mut self.cipher,
+                            &mut self.ciphers,
                             self.hash.as_bytes(),
                             bytes_received,
                             end,
@@ -757,7 +851,7 @@ impl Session {
                     if bytes_received >= batch_end && bytes_received < end {
                         send_request_parts(
                             &mut self.stream,
-                            &mut self.cipher,
+                            &mut self.ciphers,
                             self.hash.as_bytes(),
                             bytes_received,
                             end,
@@ -811,7 +905,7 @@ where
 /// Send a `REQUESTPARTS` message for up to 3 consecutive 180 KB windows.
 async fn send_request_parts(
     stream: &mut TcpStream,
-    cipher: &mut Option<Rc4>,
+    ciphers: &mut ObfCiphers,
     file_hash: &[u8; 16],
     offset: u64,
     max_end: u64,
@@ -838,7 +932,7 @@ async fn send_request_parts(
     for e in &ends {
         payload.extend_from_slice(&e.to_le_bytes());
     }
-    write_frame(stream, cipher, OP_REQUESTPARTS, &payload)
+    write_frame(stream, ciphers, OP_REQUESTPARTS, &payload)
         .await
         .context("send REQUESTPARTS")
 }
@@ -998,19 +1092,21 @@ pub async fn serve_incoming(listener: TcpListener, ctx: Arc<UploadContext>) {
 async fn handle_incoming(mut stream: TcpStream, peer: SocketAddr, ctx: Arc<UploadContext>) {
     debug!(%peer, "Incoming eMule TCP connection");
     let our_hash = ctx.user_hash;
-    let mut cipher: Option<Rc4> = None;
+    // Inbound connections are served plain only (we don't yet negotiate
+    // obfuscation as the receiver); an obfuscation-requiring peer will fail here.
+    let mut ciphers = ObfCiphers::default();
     const OP_TIMEOUT: Duration = Duration::from_secs(30);
 
     let result: io::Result<()> = async {
         // ── HELLO handshake ───────────────────────────────────────────────────
         loop {
             let (_proto, opcode, _payload) =
-                timeout(OP_TIMEOUT, read_frame(&mut stream, &mut cipher))
+                timeout(OP_TIMEOUT, read_frame(&mut stream, &mut ciphers))
                     .await
                     .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "hello timeout"))??;
             if opcode == OP_HELLO {
                 let answer = build_hello(&our_hash, ctx.tcp_port, &ctx.nick);
-                write_frame(&mut stream, &mut cipher, OP_HELLOANSWER, &answer).await?;
+                write_frame(&mut stream, &mut ciphers, OP_HELLOANSWER, &answer).await?;
                 break;
             }
         }
@@ -1020,7 +1116,7 @@ async fn handle_incoming(mut stream: TcpStream, peer: SocketAddr, ctx: Arc<Uploa
         // reject each one before the connection is closed.
         loop {
             let (_proto, opcode, payload) =
-                match timeout(OP_TIMEOUT, read_frame(&mut stream, &mut cipher)).await {
+                match timeout(OP_TIMEOUT, read_frame(&mut stream, &mut ciphers)).await {
                     Ok(Ok(f)) => f,
                     _ => break,
                 };
@@ -1038,7 +1134,7 @@ async fn handle_incoming(mut stream: TcpStream, peer: SocketAddr, ctx: Arc<Uploa
             // Look up in the active-download whitelist.
             let info = ctx.downloads.read().await.get(&hash).cloned();
             let Some(info) = info else {
-                write_frame(&mut stream, &mut cipher, OP_FILENOTFOUND, &hash).await?;
+                write_frame(&mut stream, &mut ciphers, OP_FILENOTFOUND, &hash).await?;
                 debug!(%peer, hash = %hex::encode(hash), "FILENOTFOUND (not downloading)");
                 continue;
             };
@@ -1049,8 +1145,13 @@ async fn handle_incoming(mut stream: TcpStream, peer: SocketAddr, ctx: Arc<Uploa
                 Err(TryAcquireError::NoPermits) => {
                     // Tell the peer to try again later — standard eMule behaviour.
                     let rank = 50u32;
-                    write_frame(&mut stream, &mut cipher, OP_QUEUE_RANK, &rank.to_le_bytes())
-                        .await?;
+                    write_frame(
+                        &mut stream,
+                        &mut ciphers,
+                        OP_QUEUE_RANK,
+                        &rank.to_le_bytes(),
+                    )
+                    .await?;
                     debug!(%peer, "upload slots full — sent QUEUE_RANK 50");
                     break;
                 }
@@ -1071,7 +1172,7 @@ async fn handle_incoming(mut stream: TcpStream, peer: SocketAddr, ctx: Arc<Uploa
             ans.extend_from_slice(&hash);
             ans.extend_from_slice(&(info.name.len() as u16).to_le_bytes());
             ans.extend_from_slice(info.name.as_bytes());
-            write_frame(&mut stream, &mut cipher, OP_FILEREQUEST_ANSWER, &ans).await?;
+            write_frame(&mut stream, &mut ciphers, OP_FILEREQUEST_ANSWER, &ans).await?;
 
             // ── FILESTATUS ────────────────────────────────────────────────────
             // Bitmap: one bit per 9.28 MB slice, 1 = available.
@@ -1085,7 +1186,7 @@ async fn handle_incoming(mut stream: TcpStream, peer: SocketAddr, ctx: Arc<Uploa
                 }
             }
             status.extend_from_slice(&bits);
-            write_frame(&mut stream, &mut cipher, OP_FILESTATUS, &status).await?;
+            write_frame(&mut stream, &mut ciphers, OP_FILESTATUS, &status).await?;
 
             debug!(
                 %peer,
@@ -1098,7 +1199,7 @@ async fn handle_incoming(mut stream: TcpStream, peer: SocketAddr, ctx: Arc<Uploa
             // ── Upload session ────────────────────────────────────────────────
             if let Err(e) = run_upload_session(
                 &mut stream,
-                &mut cipher,
+                &mut ciphers,
                 &hash,
                 &info,
                 &done,
@@ -1129,7 +1230,7 @@ async fn handle_incoming(mut stream: TcpStream, peer: SocketAddr, ctx: Arc<Uploa
 /// source.
 async fn send_hashset_answer(
     stream: &mut TcpStream,
-    cipher: &mut Option<Rc4>,
+    ciphers: &mut ObfCiphers,
     hash: &[u8; 16],
     info: &UploadInfo,
 ) -> io::Result<()> {
@@ -1141,13 +1242,13 @@ async fn send_hashset_answer(
     payload.extend_from_slice(hash);
     payload.extend_from_slice(&count.to_le_bytes());
     payload.extend_from_slice(&info.hashset);
-    write_frame(stream, cipher, OP_HASHSETANSWER, &payload).await
+    write_frame(stream, ciphers, OP_HASHSETANSWER, &payload).await
 }
 
 /// Run the upload phase: STARTUPLOADREQ → ACCEPTUPLOAD → serve REQUESTPARTS.
 async fn run_upload_session(
     stream: &mut TcpStream,
-    cipher: &mut Option<Rc4>,
+    ciphers: &mut ObfCiphers,
     hash: &[u8; 16],
     info: &UploadInfo,
     done: &[bool],
@@ -1157,19 +1258,19 @@ async fn run_upload_session(
     // Wait for STARTUPLOADREQ.
     loop {
         let (_proto, opcode, _payload) =
-            timeout(op_timeout, read_frame(stream, cipher))
+            timeout(op_timeout, read_frame(stream, ciphers))
                 .await
                 .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "STARTUPLOADREQ timeout"))??;
         match opcode {
             OP_STARTUPLOAD_REQ => break,
             OP_ENDOFDOWNLOAD => return Ok(()),
             // A peer often asks for the hashset before starting the transfer.
-            OP_HASHSETREQUEST => send_hashset_answer(stream, cipher, hash, info).await?,
+            OP_HASHSETREQUEST => send_hashset_answer(stream, ciphers, hash, info).await?,
             _ => debug!("ignoring 0x{opcode:02x} waiting for STARTUPLOADREQ"),
         }
     }
 
-    write_frame(stream, cipher, OP_ACCEPTUPLOAD_REQ, &[]).await?;
+    write_frame(stream, ciphers, OP_ACCEPTUPLOAD_REQ, &[]).await?;
 
     // Serve from the file the whitelist entry points at: the `.part` for an
     // in-progress download, the final file for a completed share.
@@ -1177,7 +1278,7 @@ async fn run_upload_session(
 
     // Serve REQUESTPARTS until the peer signals done or disconnects.
     loop {
-        let (_proto, opcode, payload) = match timeout(op_timeout, read_frame(stream, cipher)).await
+        let (_proto, opcode, payload) = match timeout(op_timeout, read_frame(stream, ciphers)).await
         {
             Ok(Ok(f)) => f,
             _ => break,
@@ -1185,7 +1286,7 @@ async fn run_upload_session(
 
         match opcode {
             OP_ENDOFDOWNLOAD => break,
-            OP_HASHSETREQUEST => send_hashset_answer(stream, cipher, hash, info).await?,
+            OP_HASHSETREQUEST => send_hashset_answer(stream, ciphers, hash, info).await?,
             OP_REQUESTPARTS => {
                 if payload.len() < 40 {
                     break;
@@ -1237,7 +1338,7 @@ async fn run_upload_session(
                     if let Some(limiter) = &ctx.upload_limiter {
                         limiter(len as u64).await;
                     }
-                    write_frame(stream, cipher, OP_SENDINGPART, &sp).await?;
+                    write_frame(stream, ciphers, OP_SENDINGPART, &sp).await?;
                     ctx.uploaded_bytes.fetch_add(len as u64, Ordering::Relaxed);
                     ctx.chunks_served.fetch_add(1, Ordering::Relaxed);
                     debug!(start, end, bytes = len, "Sent SENDINGPART");
@@ -1248,7 +1349,7 @@ async fn run_upload_session(
     }
 
     // Tell the peer we are done.
-    let _ = write_frame(stream, cipher, OP_ENDOFDOWNLOAD, &[]).await;
+    let _ = write_frame(stream, ciphers, OP_ENDOFDOWNLOAD, &[]).await;
     Ok(())
 }
 
@@ -1293,29 +1394,41 @@ mod tests {
     fn test_obf_key_derivation() {
         let peer_hash = [0xABu8; 16];
         let rand = [0x01, 0x02, 0x03, 0x04];
-        let key = tcp_obf_rc4_key(&peer_hash, &rand);
+        let send = tcp_obf_rc4_key(&peer_hash, MAGIC_REQUESTER, &rand);
         // Key is a 16-byte MD5 — just verify it's not all zeros.
-        assert_ne!(key, [0u8; 16]);
+        assert_ne!(send, [0u8; 16]);
         // Same inputs → same key (deterministic).
-        assert_eq!(key, tcp_obf_rc4_key(&peer_hash, &rand));
+        assert_eq!(send, tcp_obf_rc4_key(&peer_hash, MAGIC_REQUESTER, &rand));
+        // The per-direction magic byte must yield a *different* key, otherwise
+        // send and receive would share a keystream (the bug this fixes).
+        let recv = tcp_obf_rc4_key(&peer_hash, MAGIC_SERVER, &rand);
+        assert_ne!(send, recv);
     }
 
     #[test]
-    fn test_obf_header_length() {
-        // Obfuscation header: rand(4) + encrypted(magic(4) + opts(1) + pad_len(1)) = 10 bytes.
+    fn test_obf_negotiation_header() {
+        // Negotiation request: marker(1) + rand(4) plaintext, then RC4send over
+        // SYNC(4) + method(1) + method(1) + pad_len(1) = 12 bytes total, no padding.
         let peer_hash = [0u8; 16];
         let rand = random_tcp_key();
-        let rc4_key = tcp_obf_rc4_key(&peer_hash, &rand);
-        let mut rc4 = Rc4::new(&rc4_key);
-        let mut obf_header = Vec::with_capacity(10);
-        obf_header.extend_from_slice(&rand);
-        let mut enc = [0u8; 6];
-        enc[..4].copy_from_slice(&MAGIC_TCP);
-        enc[4] = TCP_CONNECT_OPTIONS;
-        enc[5] = 0;
-        rc4.apply(&mut enc);
-        obf_header.extend_from_slice(&enc);
-        assert_eq!(obf_header.len(), 10);
+        let mut send = Rc4::new(&tcp_obf_rc4_key(&peer_hash, MAGIC_REQUESTER, &rand));
+        let mut header = Vec::new();
+        header.push(obf_marker_byte());
+        header.extend_from_slice(&rand);
+        let mut enc = Vec::new();
+        enc.extend_from_slice(&MAGICVALUE_SYNC.to_le_bytes());
+        enc.push(ENM_OBFUSCATION);
+        enc.push(ENM_OBFUSCATION);
+        enc.push(0);
+        send.apply(&mut enc);
+        header.extend_from_slice(&enc);
+        assert_eq!(header.len(), 12);
+        // The marker must not collide with a protocol header byte.
+        assert!(!matches!(header[0], 0xe3 | 0xd4 | 0xc5));
+        // Decrypting the encrypted tail with the matching key restores the magic.
+        let mut dec = header[5..].to_vec();
+        Rc4::new(&tcp_obf_rc4_key(&peer_hash, MAGIC_REQUESTER, &rand)).apply(&mut dec);
+        assert_eq!(&dec[..4], &MAGICVALUE_SYNC.to_le_bytes());
     }
 
     // ── PackedReassembler ──────────────────────────────────────────────────
