@@ -69,7 +69,7 @@ use leptos::task::spawn_local;
 
 use config::ConfigModal;
 use downloads::{
-    DownloadsTab, any_pausable, any_paused, any_terminal, clear_history, pause_all,
+    DownloadsTab, any_pausable, any_paused, any_terminal, api_add_links, clear_history, pause_all,
     refresh_downloads, resume_all,
 };
 use overlays::{AddressesPanel, NodeStatusPanel, StatsPanel};
@@ -468,6 +468,25 @@ fn App() -> impl IntoView {
     // Full configuration modal open/closed.
     let config_open: RwSignal<bool> = RwSignal::new(false);
     let temp_down: RwSignal<u64> = RwSignal::new(0);
+
+    // PWA protocol handler: when launched via an `ed2k:` link (manifest
+    // `protocol_handlers`), the app opens at `/?handle=<link>`. Add it as a
+    // download, jump to the Downloads tab, and scrub the query so a refresh
+    // doesn't re-add it.
+    if let Some(link) = web_sys::window()
+        .and_then(|w| w.location().search().ok())
+        .and_then(|s| web_sys::UrlSearchParams::new_with_str(&s).ok())
+        .and_then(|p| p.get("handle"))
+        .filter(|l| !l.trim().is_empty())
+    {
+        active_tab.set(Tab::Downloads);
+        if let Some(hist) = web_sys::window().and_then(|w| w.history().ok()) {
+            let _ = hist.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some("/"));
+        }
+        spawn_local(async move {
+            api_add_links(link, downloads).await;
+        });
+    }
 
     // Initial data fetch.
     spawn_local(async move {

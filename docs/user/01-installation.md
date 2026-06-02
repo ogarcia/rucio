@@ -295,6 +295,34 @@ this over HTTPS — basic auth sends the password on every request.
 
 ---
 
+## Install the panel as an app (PWA)
+
+The web panel is a Progressive Web App: it can be installed to a phone home
+screen (or desktop) and launches standalone — its own icon, full screen, no
+browser chrome.
+
+> **Requires HTTPS.** Service workers only run in a secure context, so install
+> works on `localhost` or behind the HTTPS reverse proxy from
+> [Option D](#option-d--behind-your-own-web-server-nginx). A plain
+> `http://<lan-ip>:3003` will load the panel but won't offer to install it.
+
+- **Android (Chrome):** open the panel, then menu → **Install app** /
+  **Add to Home screen**.
+- **iOS (Safari):** **Share** → **Add to Home Screen**.
+- **Desktop (Chrome/Edge):** an install icon appears in the address bar.
+
+Once installed it behaves like an app, but it is **not** offline-capable: every
+download, search and status update comes from the daemon, so the daemon (and the
+proxy) must be reachable. Offline you get the shell, not the data.
+
+### ed2k links open the app
+
+The installed PWA registers as a handler for `ed2k://` links. After installing,
+clicking an `ed2k://…` link (e.g. on a website) can open Rucio and queue the
+download directly. The first time, the browser asks for permission to let Rucio
+handle `ed2k` links. Native `rucio:` magnets are a custom scheme browsers don't
+allow PWAs to claim, so those still go through the **Add downloads** box.
+
 ## Running as a system service (Linux / systemd)
 
 Create `/etc/systemd/system/ruciod.service`:

@@ -231,7 +231,7 @@ async fn api_fetch_pieces(id: i64) -> Option<DownloadPiecesResponse> {
         .ok()
 }
 
-async fn api_add_links(text: String, downloads: RwSignal<Vec<DownloadResponse>>) {
+pub async fn api_add_links(text: String, downloads: RwSignal<Vec<DownloadResponse>>) {
     for line in text.lines() {
         let link = line.trim();
         if link.is_empty() {
