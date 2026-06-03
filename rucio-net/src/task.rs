@@ -482,7 +482,11 @@ async fn on_swarm_event(
                 let _ = event_tx.emit(NodeEvent::ListenAddrRemoved(a.clone())).await;
             }
         }
-        SwarmEvent::ConnectionEstablished { peer_id: pid, .. } => {
+        SwarmEvent::ConnectionEstablished {
+            peer_id: pid,
+            num_established,
+            ..
+        } => {
             debug!(%pid, "Connection established");
             if let Some(gossipsub) = swarm.behaviour_mut().gossipsub.as_mut() {
                 gossipsub.add_explicit_peer(&pid);
@@ -504,22 +508,33 @@ async fn on_swarm_event(
                     Err(e) => debug!("Kademlia bootstrap deferred: {e} (identify pending)"),
                 }
             }
-            let _ = event_tx
-                .emit(NodeEvent::PeerConnected { peer_id: pid })
-                .await;
+            // Count unique peers, not connections: a peer reached over both
+            // IPv4 and IPv6 opens two connections but is one peer. Report the
+            // connect only for the first connection to this peer.
+            if num_established.get() == 1 {
+                let _ = event_tx
+                    .emit(NodeEvent::PeerConnected { peer_id: pid })
+                    .await;
+            }
         }
         SwarmEvent::ConnectionClosed {
             peer_id: pid,
             cause,
+            num_established,
             ..
         } => {
             debug!(%pid, ?cause, "Connection closed");
-            if let Some(gossipsub) = swarm.behaviour_mut().gossipsub.as_mut() {
-                gossipsub.remove_explicit_peer(&pid);
+            // Only when the peer's last connection is gone: drop it from the
+            // gossipsub mesh and report the disconnect (mirrors the unique-peer
+            // count, so closing a redundant duplicate connection isn't a churn).
+            if num_established == 0 {
+                if let Some(gossipsub) = swarm.behaviour_mut().gossipsub.as_mut() {
+                    gossipsub.remove_explicit_peer(&pid);
+                }
+                let _ = event_tx
+                    .emit(NodeEvent::PeerDisconnected { peer_id: pid })
+                    .await;
             }
-            let _ = event_tx
-                .emit(NodeEvent::PeerDisconnected { peer_id: pid })
-                .await;
         }
         SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
             match classify_dial_error(&error) {
