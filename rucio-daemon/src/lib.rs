@@ -1091,15 +1091,25 @@ async fn accumulate_gossip_result(
     if record.cancelled {
         return None;
     }
-    let already_have = record.results.iter().any(|r| {
+    // Merge by content hash: the same file from several peers becomes one entry
+    // whose provider list grows. We re-emit the existing result (same
+    // result_id) so the UI updates the source count in place.
+    let existing = record.results.iter_mut().enumerate().find(|(_, r)| {
         matches!(
             &r.source,
             api::InternalSource::Rucio { root_hash, .. }
             if *root_hash == result.root_hash
         )
     });
-    if already_have {
-        return None;
+    if let Some((index, r)) = existing {
+        if let api::InternalSource::Rucio { providers, .. } = &mut r.source {
+            if providers.contains(&result.provider) {
+                // Same provider re-announcing — nothing new to report.
+                return None;
+            }
+            providers.push(result.provider.clone());
+        }
+        return Some((search_id, record.results[index].to_api(index)));
     }
     record.results.push(api::InternalResult {
         name: result.name.clone(),
@@ -1107,7 +1117,7 @@ async fn accumulate_gossip_result(
         source: api::InternalSource::Rucio {
             root_hash: result.root_hash.clone(),
             magnet: result.magnet.clone(),
-            provider: result.provider.clone(),
+            providers: vec![result.provider.clone()],
         },
     });
     let index = record.results.len() - 1;
@@ -1245,4 +1255,93 @@ fn peer_has_public_addr(addrs: &[libp2p::Multiaddr]) -> bool {
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rucio_core::protocol::search::{QueryId, SearchResult};
+
+    fn gossip_result(root_hash: &str, provider: &str) -> SearchResult {
+        let magnet = SearchResult::magnet_from_parts(root_hash, "movie.mkv", 1234, Some(provider));
+        SearchResult {
+            query_id: QueryId("q1".to_string()),
+            root_hash: root_hash.to_string(),
+            name: "movie.mkv".to_string(),
+            size: 1234,
+            chunk_count: 1,
+            mime_type: None,
+            magnet,
+            provider: provider.to_string(),
+        }
+    }
+
+    fn registry_with_search() -> api::SharedSearchRegistry {
+        let mut reg = api::SearchRegistry::new();
+        reg.records.insert(
+            1,
+            api::SearchRecord {
+                id: 1,
+                keywords: vec!["movie".to_string()],
+                cancelled: false,
+                kad2_done: false,
+                kad2_waiting: false,
+                results: Vec::new(),
+                started_at: std::time::Instant::now(),
+                gossip_query_id: "q1".to_string(),
+            },
+        );
+        reg.gossip_to_id.insert("q1".to_string(), 1);
+        std::sync::Arc::new(tokio::sync::RwLock::new(reg))
+    }
+
+    #[tokio::test]
+    async fn gossip_results_merge_by_hash_into_one_entry() {
+        let reg = registry_with_search();
+        let hash = "a".repeat(64);
+
+        // First provider → new entry, one source.
+        let (_, r1) = accumulate_gossip_result(gossip_result(&hash, "PeerA"), &reg)
+            .await
+            .expect("first result accepted");
+        assert_eq!(r1.peer_count, 1);
+        assert_eq!(
+            r1.providers.as_deref(),
+            Some(["PeerA".to_string()].as_slice())
+        );
+
+        // Second provider, same file → merged into the same result_id, two sources.
+        let (_, r2) = accumulate_gossip_result(gossip_result(&hash, "PeerB"), &reg)
+            .await
+            .expect("second provider merged");
+        assert_eq!(r2.result_id, r1.result_id, "merge keeps the same result_id");
+        assert_eq!(r2.peer_count, 2);
+        let link = r2.download_link.unwrap();
+        assert!(
+            link.contains("provider=PeerA") && link.contains("provider=PeerB"),
+            "download link embeds every provider: {link}"
+        );
+
+        // Only one entry exists in the record.
+        assert_eq!(reg.read().await.records[&1].results.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn duplicate_provider_is_not_re_emitted() {
+        let reg = registry_with_search();
+        let hash = "b".repeat(64);
+        accumulate_gossip_result(gossip_result(&hash, "PeerA"), &reg)
+            .await
+            .unwrap();
+        // Same provider re-announcing the same file → nothing new.
+        assert!(
+            accumulate_gossip_result(gossip_result(&hash, "PeerA"), &reg)
+                .await
+                .is_none()
+        );
+        assert_eq!(
+            reg.read().await.records[&1].results[0].to_api(0).peer_count,
+            1
+        );
+    }
 }

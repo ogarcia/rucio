@@ -396,7 +396,9 @@ pub struct SearchResult {
     #[serde(default)]
     pub download_link: Option<String>,
     #[serde(default)]
-    pub provider: Option<String>,
+    pub providers: Option<Vec<String>>,
+    #[serde(default)]
+    pub peer_count: u32,
 }
 
 #[derive(Deserialize, Clone, Debug)]

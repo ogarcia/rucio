@@ -179,8 +179,12 @@ pub struct InternalResult {
 pub enum InternalSource {
     Rucio {
         root_hash: String,
+        /// Magnet as first received (embeds the first provider). The full
+        /// provider set is rebuilt into the link at `to_api` time.
         magnet: String,
-        provider: String,
+        /// All distinct providers merged for this content hash, first seen
+        /// first. Always non-empty for a Rucio result.
+        providers: Vec<String>,
     },
     Emule {
         hash_hex: String,
@@ -195,22 +199,34 @@ impl InternalResult {
         use rucio_core::api::searches::{ResultSource, SearchResult};
         match &self.source {
             InternalSource::Rucio {
-                magnet, provider, ..
-            } => SearchResult {
-                result_id: index + 1,
-                name: self.name.clone(),
-                size: self.size,
-                source: ResultSource::Rucio,
-                download_link: Some(magnet.clone()),
-                provider: Some(provider.clone()),
-            },
+                magnet, providers, ..
+            } => {
+                // Rebuild the link so it embeds every merged provider, not just
+                // the one from the first gossip result.
+                let link = rucio_core::protocol::magnet::MagnetLink::parse(magnet)
+                    .map(|mut m| {
+                        m.providers = providers.clone();
+                        m.to_string()
+                    })
+                    .unwrap_or_else(|_| magnet.clone());
+                SearchResult {
+                    result_id: index + 1,
+                    name: self.name.clone(),
+                    size: self.size,
+                    source: ResultSource::Rucio,
+                    download_link: Some(link),
+                    providers: Some(providers.clone()),
+                    peer_count: providers.len() as u32,
+                }
+            }
             InternalSource::Emule { ed2k_link, .. } => SearchResult {
                 result_id: index + 1,
                 name: self.name.clone(),
                 size: self.size,
                 source: ResultSource::Emule,
                 download_link: Some(ed2k_link.clone()),
-                provider: None,
+                providers: None,
+                peer_count: 1,
             },
         }
     }

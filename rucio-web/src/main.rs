@@ -367,7 +367,12 @@ fn handle_event(
                 let mut added = false;
                 search.results.update(|m| {
                     let v = m.entry(search_id).or_default();
-                    if !v.iter().any(|r| r.result_id == result.result_id) {
+                    // Merged results re-arrive with the same result_id and an
+                    // updated provider/peer count: replace in place so the
+                    // source count updates live. A genuinely new id is appended.
+                    if let Some(existing) = v.iter_mut().find(|r| r.result_id == result.result_id) {
+                        *existing = result;
+                    } else {
                         v.push(result);
                         added = true;
                     }

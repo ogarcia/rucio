@@ -765,7 +765,7 @@
 
         .result-row {
             display: grid;
-            grid-template-columns: 1fr auto auto 6.5rem;
+            grid-template-columns: 1fr auto auto auto 6.5rem;
             align-items: center; gap: 1rem;
             padding: 0.625rem 0;
             border-bottom: 1px solid var(--raised);
@@ -783,6 +783,11 @@
             min-width: 0;
         }
         .result-size { font-size: 0.75rem; color: var(--text-3); white-space: nowrap; }
+        /* Peer/source count for Rucio results (empty for eMule). */
+        .result-peers {
+            font-size: 0.75rem; color: var(--text-3); white-space: nowrap;
+            font-variant-numeric: tabular-nums; text-align: right;
+        }
 
         .source-badge {
             display: inline-block; padding: 0.1rem 0.4rem;
@@ -805,7 +810,7 @@
            `.result-row` rules so it wins the cascade at this viewport. */
         @media (max-width: 640px) {
             .result-row {
-                grid-template-columns: 1fr auto auto auto;
+                grid-template-columns: 1fr auto auto auto auto;
                 gap: 0.6rem;
             }
         }

@@ -76,12 +76,11 @@ enum DlOutcome {
 /// endpoint; everything else is treated as a Rucio magnet. The HTTP status is
 /// mapped to a [`DlOutcome`] so the row can show real feedback (e.g. the 409
 /// "already have it" case the backend returns for completed/shared content).
-async fn api_start_download(link: String, provider: Option<String>) -> DlOutcome {
+async fn api_start_download(link: String, providers: Vec<String>) -> DlOutcome {
     let builder = if link.starts_with("ed2k://") {
         let body = serde_json::json!({ "link": link });
         gloo_net::http::Request::post("/api/v1/downloads/ed2k").json(&body)
     } else {
-        let providers = provider.into_iter().collect::<Vec<_>>();
         let body = serde_json::json!({ "magnet": link, "providers": providers });
         gloo_net::http::Request::post("/api/v1/downloads").json(&body)
     };
@@ -548,7 +547,7 @@ fn matching_state(link: &str, downloads: &[DownloadResponse]) -> Option<Download
 #[component]
 fn ResultRow(result: SearchResult, downloads: RwSignal<Vec<DownloadResponse>>) -> impl IntoView {
     let link = result.download_link.clone();
-    let provider = result.provider.clone();
+    let providers = result.providers.clone().unwrap_or_default();
     let can_download = link.is_some();
 
     let source_css = match result.source {
@@ -576,9 +575,10 @@ fn ResultRow(result: SearchResult, downloads: RwSignal<Vec<DownloadResponse>>) -
     // the downloads list and `dl_state` takes over the UI. A Callback is used
     // so the reactive action block can invoke it without moving it.
     let trigger = Callback::new(move |()| {
-        let (Some(l), p) = (link.clone(), provider.clone()) else {
+        let Some(l) = link.clone() else {
             return;
         };
+        let p = providers.clone();
         local.set(LocalState::Sending);
         spawn_local(async move {
             let outcome = api_start_download(l, p).await;
@@ -596,6 +596,12 @@ fn ResultRow(result: SearchResult, downloads: RwSignal<Vec<DownloadResponse>>) -
             <span class="result-name">{result.name}</span>
             <span class="result-size">{format_size(result.size)}</span>
             <span class=source_css>{source_label}</span>
+            <span class="result-peers" title="Peers que tienen el fichero">
+            {match result.source {
+                ResultSource::Rucio => format!("{} ⬩", result.peer_count),
+                ResultSource::Emule => String::new(),
+            }}
+            </span>
             <span class="result-action">
             {move || {
                 if !can_download {

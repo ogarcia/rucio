@@ -267,11 +267,17 @@ fn merge_results(
 ) {
     for r in results {
         let link = r.download_link.clone().unwrap_or_default();
-        if let Some(&idx) = link_to_idx.get(&link) {
-            if let Some(p) = &r.provider
-                && !cached[idx].providers.contains(p)
-            {
-                cached[idx].providers.push(p.clone());
+        // The full link now grows as the daemon merges providers into the
+        // magnet, so it can't be the dedup key. Key by the stable part before
+        // '?' (the hash for rucio:, the whole ed2k:// link for eMule).
+        let key = link.split('?').next().unwrap_or(&link).to_string();
+        if let Some(&idx) = link_to_idx.get(&key) {
+            // Refresh with the authoritative merged link and provider set.
+            cached[idx].download_link = link;
+            for p in r.providers.iter().flatten() {
+                if !cached[idx].providers.contains(p) {
+                    cached[idx].providers.push(p.clone());
+                }
             }
         } else {
             let source_str = match r.source {
@@ -279,12 +285,12 @@ fn merge_results(
                 ResultSource::Emule => "emule",
             };
             let idx = cached.len();
-            link_to_idx.insert(link.clone(), idx);
+            link_to_idx.insert(key, idx);
             cached.push(CachedResult {
                 name: r.name.clone(),
                 size: r.size,
                 download_link: link,
-                providers: r.provider.clone().into_iter().collect(),
+                providers: r.providers.clone().unwrap_or_default(),
                 source: source_str.to_string(),
             });
         }

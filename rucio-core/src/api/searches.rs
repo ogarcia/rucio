@@ -87,13 +87,17 @@ pub struct SearchResult {
     /// Which network provided this result.
     pub source: ResultSource,
     /// Download link: a `rucio:` magnet for Rucio results, or an `ed2k://` link
-    /// for eMule results.  Exactly one of `download_link` / `provider` is `Some`.
+    /// for eMule results. For Rucio the magnet embeds every known provider.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub download_link: Option<String>,
-    /// PeerId of the Rucio peer that has this file.  Only present for Rucio
+    /// PeerIds of the Rucio peers known to have this file, merged across all
+    /// gossip results for the same content hash. Only present for Rucio
     /// results; `None` for eMule results.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider: Option<String>,
+    pub providers: Option<Vec<String>>,
+    /// Number of distinct sources for this file (Rucio: merged provider count;
+    /// eMule: 1). Lets the UI show how many peers have the file.
+    pub peer_count: u32,
 }
 
 // ---------------------------------------------------------------------------
