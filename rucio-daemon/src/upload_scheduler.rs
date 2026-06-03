@@ -5,6 +5,7 @@
 //! upload is currently competing for the bandwidth throttle.  When the node
 //! is idle the wait returns immediately, so LowID still gets full throughput.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tokio::sync::Notify;
@@ -31,18 +32,17 @@ impl UploadScheduler {
         }
     }
 
-    /// Called by a HighID task before it acquires the bandwidth throttle.
-    pub fn enter_highid(&self) {
+    /// Mark a HighID upload as active for the lifetime of the returned guard.
+    ///
+    /// The count is decremented automatically when the guard is dropped — on
+    /// normal completion, early return, or panic alike. This RAII shape is
+    /// deliberate: a missing decrement leaks `highid_active` above zero, which
+    /// would block `wait_for_lowid_turn` forever and deadlock every LowID
+    /// download. A guard makes that failure mode unrepresentable.
+    pub fn highid_guard(self: &Arc<Self>) -> HighIdGuard {
         self.highid_active.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Called by a HighID task after the bandwidth throttle has been acquired.
-    /// Wakes any LowID tasks that are waiting.
-    pub fn leave_highid(&self) {
-        let prev = self.highid_active.fetch_sub(1, Ordering::Release);
-        if prev == 1 {
-            // We were the last active HighID upload — let LowIDs proceed.
-            self.lowid_wake.notify_waiters();
+        HighIdGuard {
+            scheduler: Arc::clone(self),
         }
     }
 
@@ -58,6 +58,23 @@ impl UploadScheduler {
                 return;
             }
             notified.await;
+        }
+    }
+}
+
+/// Drop guard that keeps a HighID upload counted as active. Decrements the
+/// scheduler's `highid_active` on drop and wakes waiting LowID tasks when it
+/// was the last one. Obtained from [`UploadScheduler::highid_guard`].
+pub struct HighIdGuard {
+    scheduler: Arc<UploadScheduler>,
+}
+
+impl Drop for HighIdGuard {
+    fn drop(&mut self) {
+        let prev = self.scheduler.highid_active.fetch_sub(1, Ordering::Release);
+        if prev == 1 {
+            // We were the last active HighID upload — let LowIDs proceed.
+            self.scheduler.lowid_wake.notify_waiters();
         }
     }
 }

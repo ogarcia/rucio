@@ -1370,9 +1370,8 @@ impl DownloadEngine {
             if let ChunkResponse::Ok { ref data, .. } = response {
                 let bytes = data.len() as u64;
                 if is_high_id {
-                    scheduler.enter_highid();
+                    let _guard = scheduler.highid_guard();
                     upload_throttle.acquire(bytes).await;
-                    scheduler.leave_highid();
                 } else {
                     scheduler.wait_for_lowid_turn().await;
                     upload_throttle.acquire(bytes).await;

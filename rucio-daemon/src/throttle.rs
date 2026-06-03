@@ -76,6 +76,19 @@ impl Inner {
         if self.tokens >= bytes as f64 {
             self.tokens -= bytes as f64;
             Ok(())
+        } else if bytes as f64 > self.burst as f64 && self.tokens >= self.burst as f64 {
+            // A single request larger than the burst cap can never be covered
+            // by the bucket: `refill` clamps `tokens` to `burst`, so waiting
+            // would loop forever (`tokens` plateaus below `bytes`). Once the
+            // bucket is full, grant it anyway and let the balance go negative.
+            // The deficit is repaid by `refill` before the next acquire
+            // succeeds, so the long-run rate still holds. Without this, a chunk
+            // larger than `rate * BURST_SECS` — e.g. a 4 MiB chunk under any
+            // sub-2 MB/s upload limit — would hang `acquire` forever, stalling
+            // the upload and (via a leaked `highid_active`) starving every
+            // LowID download until the inbound request times out.
+            self.tokens -= bytes as f64;
+            Ok(())
         } else {
             let deficit = bytes as f64 - self.tokens;
             let wait_secs = deficit / self.rate as f64;
@@ -306,5 +319,26 @@ mod tests {
         let tb = TokenBucket::new(0);
         // Should complete without sleeping.
         tb.acquire(1024 * 1024).await;
+    }
+
+    #[test]
+    fn request_larger_than_burst_is_granted_when_full() {
+        // 1 KB/s → burst = 2048 bytes, far smaller than a 4 MiB chunk.
+        let tb = TokenBucket::new(1);
+        let mut g = tb.inner.lock().unwrap();
+        // A fresh bucket is full; the oversized request must be granted rather
+        // than looping forever (the bug that hung uploads under a low limit).
+        assert!(g.try_consume(4 * 1024 * 1024).is_ok());
+        // The balance is now negative, so the next request must wait.
+        assert!(g.tokens < 0.0);
+        assert!(g.try_consume(1).is_err());
+    }
+
+    #[tokio::test]
+    async fn acquire_oversized_completes_on_full_bucket() {
+        // A 4 MiB chunk under a 100 KB/s limit (burst 200 KB) would otherwise
+        // hang forever; on a full bucket it must complete immediately.
+        let tb = TokenBucket::new(100);
+        tb.acquire(4 * 1024 * 1024).await;
     }
 }
