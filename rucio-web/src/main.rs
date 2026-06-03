@@ -76,8 +76,8 @@ use overlays::{AboutPanel, AddressesPanel, NodeStatusPanel, StatsPanel};
 use searches::SearchesTab;
 use shares::SharesTab;
 use types::{
-    DownloadResponse, SearchResult, SearchSummary, SpeedLimits, StatusResponse, TempLimitRequest,
-    TempLimitStatus, WsEvent, format_rate_kbps, is_streamed_state,
+    DownloadResponse, SearchResult, SearchState, SearchSummary, SpeedLimits, StatusResponse,
+    TempLimitRequest, TempLimitStatus, WsEvent, format_rate_kbps, is_streamed_state,
 };
 
 /// Search state shared across the app: the recent-search list, results keyed by
@@ -352,20 +352,33 @@ fn handle_event(
 
         // Live search results (Rucio + eMule) carry their owning search_id.
         WsEvent::SearchResult { search_id, result } => {
-            let mut added = false;
-            search.results.update(|m| {
-                let v = m.entry(search_id).or_default();
-                if !v.iter().any(|r| r.result_id == result.result_id) {
-                    v.push(result);
-                    added = true;
-                }
+            // Drop results for a search that's been deleted (gone from the list)
+            // or cancelled. A fast search leaves a backlog of already-broadcast
+            // results draining over the WebSocket for a few seconds after the
+            // user cancels; without this guard `or_default()` would re-create the
+            // entry and they'd reappear. A just-started search is already in the
+            // list (Running) before results stream in, and load_detail() backfills
+            // any raced early ones, so this never drops legitimate results.
+            let accept = search.list.with_untracked(|list| {
+                list.iter()
+                    .any(|s| s.id == search_id && s.state != SearchState::Cancelled)
             });
-            if added {
-                search.list.update(|list| {
-                    if let Some(s) = list.iter_mut().find(|s| s.id == search_id) {
-                        s.result_count += 1;
+            if accept {
+                let mut added = false;
+                search.results.update(|m| {
+                    let v = m.entry(search_id).or_default();
+                    if !v.iter().any(|r| r.result_id == result.result_id) {
+                        v.push(result);
+                        added = true;
                     }
                 });
+                if added {
+                    search.list.update(|list| {
+                        if let Some(s) = list.iter_mut().find(|s| s.id == search_id) {
+                            s.result_count += 1;
+                        }
+                    });
+                }
             }
         }
         // Lifecycle transition (e.g. window closed → done) with authoritative count.
