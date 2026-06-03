@@ -565,6 +565,44 @@ async fn on_swarm_event(
             }
         }
 
+        // AutoNAT confirmed (a peer dialled us back successfully) or expired one
+        // of our external addresses — the authoritative HighId/LowId signal.
+        SwarmEvent::ExternalAddrConfirmed { address } => {
+            let listen_vec: Vec<Multiaddr> = state.confirmed_addrs.iter().cloned().collect();
+            match state
+                .classifier
+                .record_confirmed_external(address.clone(), true, &listen_vec)
+            {
+                Some(new_class) => {
+                    info!(%address, ?new_class, "External address confirmed (AutoNAT) — node class updated");
+                    let _ = event_tx.emit(NodeEvent::ClassChanged(new_class)).await;
+                }
+                None => debug!(%address, "External address confirmed (AutoNAT)"),
+            }
+        }
+        SwarmEvent::ExternalAddrExpired { address } => {
+            let listen_vec: Vec<Multiaddr> = state.confirmed_addrs.iter().cloned().collect();
+            if let Some(new_class) =
+                state
+                    .classifier
+                    .record_confirmed_external(address.clone(), false, &listen_vec)
+            {
+                info!(%address, ?new_class, "External address expired (AutoNAT) — node class updated");
+                // Lost HighId: fall back to a relay reservation if one is available.
+                if matches!(new_class, NodeClass::LowId)
+                    && !state.relay_reserved
+                    && !state.relay_candidates.is_empty()
+                {
+                    try_relay_reservation(
+                        swarm,
+                        &state.relay_candidates,
+                        &mut state.relay_reserved,
+                    );
+                }
+                let _ = event_tx.emit(NodeEvent::ClassChanged(new_class)).await;
+            }
+        }
+
         SwarmEvent::Behaviour(bev) => match bev {
             RucioBehaviourEvent::Mdns(mdns_event) => {
                 use libp2p::mdns::Event;
@@ -865,6 +903,20 @@ async fn on_swarm_event(
                 } else {
                     debug!(peer = %dcutr_event.remote_peer_id, "DCUtR hole punch failed — relay connection maintained");
                 }
+            }
+            // AutoNAT v2 client: result of probing one of our external-address
+            // candidates. The address confirmation itself arrives separately as
+            // SwarmEvent::ExternalAddrConfirmed; this is just observability.
+            RucioBehaviourEvent::AutonatClient(ev) => {
+                if let Err(e) = &ev.result {
+                    debug!(addr = %ev.tested_addr, server = %ev.server, error = %e, "AutoNAT reachability probe failed");
+                } else {
+                    debug!(addr = %ev.tested_addr, server = %ev.server, "AutoNAT reachability probe succeeded");
+                }
+            }
+            // AutoNAT v2 server: we dial-tested a peer's address on its behalf.
+            RucioBehaviourEvent::AutonatServer(ev) => {
+                debug!(client = %ev.client, addr = %ev.tested_addr, ok = ev.result.is_ok(), "Served an AutoNAT probe for a peer");
             }
             // connection_limits emits no events of its own.
             RucioBehaviourEvent::ConnectionLimits(_) => {}

@@ -24,7 +24,7 @@
 //! - Home user behind NAT with UPnP / port forward → HighId once a WAN
 //!   peer reports the mapped address on our listen port
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 
 use libp2p::multiaddr::Protocol;
@@ -36,6 +36,10 @@ use rucio_core::protocol::node::NodeClass;
 pub struct ClassificationState {
     /// observed_addr → set of peers that reported it
     observations: HashMap<Multiaddr, Vec<PeerId>>,
+    /// External addresses confirmed reachable by AutoNAT (a peer successfully
+    /// dialled them back). Authoritative evidence of `HighId`, independent of
+    /// the observation heuristic.
+    confirmed_external: HashSet<Multiaddr>,
     /// The listen ports this node is bound to (from `NewListenAddr` events).
     listen_ports: Vec<u16>,
     /// Current classification.
@@ -64,11 +68,46 @@ impl ClassificationState {
         }
     }
 
+    /// Record an AutoNAT verdict for an external address: `confirmed = true`
+    /// when a peer dialled it back successfully, `false` when it expired.
+    /// Returns the new class if it changed, `None` if unchanged.
+    pub fn record_confirmed_external(
+        &mut self,
+        addr: Multiaddr,
+        confirmed: bool,
+        listen_addrs: &[Multiaddr],
+    ) -> Option<NodeClass> {
+        self.listen_ports = listen_addrs.iter().filter_map(port_of).collect();
+        if confirmed {
+            self.confirmed_external.insert(addr);
+        } else {
+            self.confirmed_external.remove(&addr);
+        }
+        let new_class = self.classify();
+        if new_class != self.current {
+            self.current = new_class.clone();
+            Some(new_class)
+        } else {
+            None
+        }
+    }
+
     pub fn current(&self) -> &NodeClass {
         &self.current
     }
 
     fn classify(&self) -> NodeClass {
+        // AutoNAT-confirmed reachability is authoritative: if a peer dialled
+        // back a public address on one of our listen ports, we are HighId
+        // regardless of what the (outbound-only) observations suggested.
+        if self
+            .confirmed_external
+            .iter()
+            .any(|addr| is_public_addr(addr) && observed_on_listen_port(addr, &self.listen_ports))
+        {
+            return NodeClass::HighId;
+        }
+
         if self.observations.is_empty() {
             return NodeClass::Unknown;
         }
@@ -218,6 +257,35 @@ mod tests {
         let result = state.record_observation(
             addr("/ip4/192.168.1.10/tcp/4321"),
             peer(),
+            &listen("/ip4/0.0.0.0/tcp/4321"),
+        );
+        assert_eq!(result, Some(NodeClass::LowId));
+    }
+
+    #[test]
+    fn autonat_confirmation_upgrades_lowid_to_highid() {
+        let mut state = ClassificationState::default();
+        // Outbound-only: observed on an ephemeral NAT port → LowId.
+        let result = state.record_observation(
+            addr("/ip4/1.2.3.4/tcp/54321"),
+            peer(),
+            &listen("/ip4/0.0.0.0/tcp/4321"),
+        );
+        assert_eq!(result, Some(NodeClass::LowId));
+
+        // AutoNAT then confirms the translated listen-port address → HighId.
+        let result = state.record_confirmed_external(
+            addr("/ip4/1.2.3.4/tcp/4321"),
+            true,
+            &listen("/ip4/0.0.0.0/tcp/4321"),
+        );
+        assert_eq!(result, Some(NodeClass::HighId));
+        assert_eq!(*state.current(), NodeClass::HighId);
+
+        // Expiry drops us back to LowId (the ephemeral observation remains).
+        let result = state.record_confirmed_external(
+            addr("/ip4/1.2.3.4/tcp/4321"),
+            false,
             &listen("/ip4/0.0.0.0/tcp/4321"),
         );
         assert_eq!(result, Some(NodeClass::LowId));

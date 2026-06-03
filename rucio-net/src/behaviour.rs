@@ -9,7 +9,7 @@
 
 use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::{
-    connection_limits, dcutr, gossipsub, identify, kad, mdns, relay, request_response,
+    autonat, connection_limits, dcutr, gossipsub, identify, kad, mdns, relay, request_response,
     swarm::NetworkBehaviour,
 };
 use std::collections::hash_map::DefaultHasher;
@@ -144,6 +144,16 @@ pub struct RucioBehaviour {
     pub relay_client: relay::client::Behaviour,
     /// DCUtR hole-punching: upgrades relay-mediated connections to direct ones.
     pub dcutr: Toggle<dcutr::Behaviour>,
+    /// AutoNAT v2 client: asks other nodes to dial our external-address
+    /// candidates (which `identify` derives by translating the observed public
+    /// IP onto our listen port). A successful probe confirms the address with
+    /// the swarm, which is how we reliably reach `HighId` — instead of waiting
+    /// for a peer to happen to dial us inbound.
+    pub autonat_client: autonat::v2::client::Behaviour,
+    /// AutoNAT v2 server: performs those dial-back probes for other nodes.
+    /// Mounted on every node (reciprocity); the bootstrap especially needs it so
+    /// a freshly-started public node can get confirmed from a single probe.
+    pub autonat_server: autonat::v2::server::Behaviour,
 }
 
 impl RucioBehaviour {
@@ -226,6 +236,12 @@ impl RucioBehaviour {
 
         let dcutr = cfg.dcutr.then(|| dcutr::Behaviour::new(peer_id));
 
+        // AutoNAT v2: always mounted (client + server). Default config uses an
+        // OS RNG and is fine for our use — no candidates are tested until
+        // identify supplies one, and the server only acts when a peer asks.
+        let autonat_client = autonat::v2::client::Behaviour::default();
+        let autonat_server = autonat::v2::server::Behaviour::default();
+
         Ok(Self {
             connection_limits,
             identify,
@@ -237,6 +253,8 @@ impl RucioBehaviour {
             relay: Toggle::from(relay),
             relay_client,
             dcutr: Toggle::from(dcutr),
+            autonat_client,
+            autonat_server,
         })
     }
 }
