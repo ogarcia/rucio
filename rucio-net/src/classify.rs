@@ -98,12 +98,12 @@ impl ClassificationState {
 
     fn classify(&self) -> NodeClass {
         // AutoNAT-confirmed reachability is authoritative: if a peer dialled
-        // back a public address on one of our listen ports, we are HighId
-        // regardless of what the (outbound-only) observations suggested.
+        // back a *direct* public address on one of our listen ports, we are
+        // HighId regardless of what the (outbound-only) observations suggested.
         if self
             .confirmed_external
             .iter()
-            .any(|addr| is_public_addr(addr) && observed_on_listen_port(addr, &self.listen_ports))
+            .any(|addr| is_direct_public_listen(addr, &self.listen_ports))
         {
             return NodeClass::HighId;
         }
@@ -113,7 +113,7 @@ impl ClassificationState {
         }
 
         for addr in self.observations.keys() {
-            if is_public_addr(addr) && observed_on_listen_port(addr, &self.listen_ports) {
+            if is_direct_public_listen(addr, &self.listen_ports) {
                 return NodeClass::HighId;
             }
         }
@@ -129,16 +129,34 @@ impl ClassificationState {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Whether `addr` proves direct internet reachability (→ HighId): a public IP
+/// on one of our listen ports, reached **directly** (not through a relay).
+///
+/// Relayed (`/p2p-circuit`) addresses are excluded: their IP/port belong to the
+/// *relay*, not to us, so a node reachable only via circuit is exactly a LowId
+/// node using its relay fallback — confirming such an address must not flip it
+/// to HighId. AutoNAT happily confirms circuit addresses (the relay path works),
+/// so without this guard a relayed LowId node would be mis-classified HighId.
+fn is_direct_public_listen(addr: &Multiaddr, listen_ports: &[u16]) -> bool {
+    !is_relayed(addr) && is_public_addr(addr) && observed_on_listen_port(addr, listen_ports)
+}
+
+/// True if the multiaddr is relayed through a circuit (`/p2p-circuit`).
+fn is_relayed(addr: &Multiaddr) -> bool {
+    addr.iter().any(|p| matches!(p, Protocol::P2pCircuit))
+}
+
 /// Return `true` if `addr` is a publicly reachable address on one of the
 /// node's listen ports.
 ///
 /// Used by the network task to decide whether to surface an observed address
 /// as a confirmed external address.  Ephemeral NAT source ports (e.g. the
 /// source port of an outgoing connection as echoed back by `identify`) are
-/// public IPs but on random high ports — this function correctly rejects them.
+/// public IPs but on random high ports — this function correctly rejects them,
+/// as it does relayed (`/p2p-circuit`) addresses.
 pub fn is_stable_external_addr(addr: &Multiaddr, listen_addrs: &[Multiaddr]) -> bool {
     let listen_ports: Vec<u16> = listen_addrs.iter().filter_map(port_of).collect();
-    is_public_addr(addr) && observed_on_listen_port(addr, &listen_ports)
+    is_direct_public_listen(addr, &listen_ports)
 }
 
 /// Extract the TCP or UDP port from a multiaddr.
@@ -289,6 +307,20 @@ mod tests {
             &listen("/ip4/0.0.0.0/tcp/4321"),
         );
         assert_eq!(result, Some(NodeClass::LowId));
+    }
+
+    #[test]
+    fn relayed_confirmed_address_does_not_grant_highid() {
+        let mut state = ClassificationState::default();
+        // A confirmed circuit address is reachable, but its IP/port belong to
+        // the relay — it must NOT count as direct HighId reachability.
+        let result = state.record_confirmed_external(
+            addr("/ip4/1.2.3.4/tcp/4321/p2p-circuit"),
+            true,
+            &listen("/ip4/0.0.0.0/tcp/4321"),
+        );
+        assert_ne!(result, Some(NodeClass::HighId));
+        assert_ne!(*state.current(), NodeClass::HighId);
     }
 
     #[test]
