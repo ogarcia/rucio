@@ -275,3 +275,51 @@ pub fn AddressesPanel(
         </div>
     }
 }
+
+/// Quick reference: version, repository and where to report issues.
+#[component]
+pub fn AboutPanel(active_panel: RwSignal<Option<super::Panel>>) -> impl IntoView {
+    let close = move || active_panel.set(None);
+    const REPO: &str = "https://github.com/ogarcia/rucio";
+
+    view! {
+        <div class="overlay-backdrop" on:click=move |_| close()>
+            <div class="overlay" on:click=move |e| e.stop_propagation()>
+                <div class="overlay-header">
+                    <span class="overlay-title">"About"</span>
+                    <button class="overlay-close" on:click=move |_| close()>
+                        <Icon paths=icons::X/>
+                    </button>
+                </div>
+                <div class="overlay-body" style="text-align: center;">
+                    <svg
+                        viewBox="0 0 24 24" width="72" height="72"
+                        fill="none" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round"
+                        style="color: var(--accent); margin: 0.25rem auto 0.75rem; display: block;"
+                        aria-hidden="true"
+                        inner_html=icons::LOGO
+                    ></svg>
+                    <div style="font-size: 1.3rem; font-weight: 600;">"Rucio"</div>
+                    <div style="color: var(--text-3); margin-top: 0.15rem;">
+                        {format!("v{}", env!("CARGO_PKG_VERSION"))}
+                    </div>
+                    <p style="color: var(--text-2); margin: 0.9rem 0 1.1rem;">
+                        "Peer-to-peer file sharing over libp2p, with eMule/Kad2 compatibility."
+                    </p>
+                    <div style="display: flex; flex-direction: column; gap: 0.6rem;">
+                        <a
+                            href=REPO target="_blank" rel="noopener noreferrer"
+                            style="color: var(--accent);"
+                        >"Source code on GitHub"</a>
+                        <a
+                            href=format!("{REPO}/issues/new")
+                            target="_blank" rel="noopener noreferrer"
+                            style="color: var(--accent);"
+                        >"Report an issue"</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    }
+}

@@ -72,7 +72,7 @@ use downloads::{
     DownloadsTab, any_pausable, any_paused, any_terminal, api_add_links, clear_history, pause_all,
     refresh_downloads, resume_all,
 };
-use overlays::{AddressesPanel, NodeStatusPanel, StatsPanel};
+use overlays::{AboutPanel, AddressesPanel, NodeStatusPanel, StatsPanel};
 use searches::SearchesTab;
 use shares::SharesTab;
 use types::{
@@ -176,6 +176,7 @@ pub enum Panel {
     NodeStatus,
     Addresses,
     Stats,
+    About,
 }
 
 // ── WebSocket ────────────────────────────────────────────────────────────────
@@ -755,6 +756,10 @@ fn App() -> impl IntoView {
                                 config_open.set(true);
                                 menu_open.set(false);
                             }>"Settings"</button>
+                            <button class="dropdown-item" on:click=move |_| {
+                                active_panel.set(Some(Panel::About));
+                                menu_open.set(false);
+                            }>"About"</button>
                         </div>
                     </Show>
                 </div>
@@ -808,6 +813,9 @@ fn App() -> impl IntoView {
             }.into_any(),
             Panel::Stats => view! {
                 <StatsPanel active_panel=active_panel/>
+            }.into_any(),
+            Panel::About => view! {
+                <AboutPanel active_panel=active_panel/>
             }.into_any(),
         })}
 
