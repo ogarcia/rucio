@@ -145,6 +145,12 @@
             min-height: 100vh;
             min-height: 100dvh; /* dvh tracks the mobile browser UI; vh fallback */
             overflow-x: hidden;
+            /* Disable pull-to-refresh: as an installed PWA the gesture reloads
+               the whole WASM app (expensive, and it glitches the standalone
+               viewport, leaving a gap the size of the pulled distance). Live
+               data already streams over the WebSocket, so a manual refresh is
+               not needed. */
+            overscroll-behavior-y: contain;
         }
 
         /* ── Layout ──────────────────────────────────────────────────────── */
