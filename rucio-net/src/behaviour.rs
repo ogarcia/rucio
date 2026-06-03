@@ -219,7 +219,14 @@ impl RucioBehaviour {
         let transfer = cfg.transfer.then(|| {
             request_response::Behaviour::new(
                 vec![(TransferProtocol, request_response::ProtocolSupport::Full)],
-                request_response::Config::default(),
+                // A chunk is up to 4 MiB; the request_response default request
+                // timeout is only 10 s, which covers the full round-trip
+                // including transferring the 4 MiB response. Over a modest or
+                // relayed link — and with several chunk requests sharing the
+                // connection — 10 s is too tight and every request times out.
+                // Give chunk transfers a generous budget.
+                request_response::Config::default()
+                    .with_request_timeout(std::time::Duration::from_secs(60)),
             )
         });
 
