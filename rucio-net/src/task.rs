@@ -1262,6 +1262,13 @@ fn classify_dial_error(error: &DialError) -> DialNoise {
                 if addr_is_private_or_loopback(addr) {
                     continue;
                 }
+                // A failed dial to a relay circuit (`/p2p-circuit`) is always
+                // best-effort churn: the relay's reservation for the destination
+                // may have lapsed, or the destination went away. Never a fault
+                // of ours, so treat it as expected regardless of the inner error.
+                if addr.iter().any(|p| matches!(p, Protocol::P2pCircuit)) {
+                    continue;
+                }
                 // Non-transport errors (e.g. MultiaddrNotSupported) point at an
                 // addressing/config problem — surface them.
                 let TransportError::Other(e) = err else {
@@ -1332,12 +1339,19 @@ fn dial_text_is_benign(text: &str) -> bool {
         "Response from behaviour was canceled",
         "oneshot canceled",
         // Relayed dial to a peer whose reservation on the relay has expired or
-        // who has gone away — stale circuit address, routine churn.
+        // who has gone away — stale circuit address, routine churn. (Circuit
+        // dials are also short-circuited in classify_dial_error, but keep the
+        // markers for the aggregated-error case.)
         "Relay has no reservation for destination",
         "Failed to connect to destination",
         // EACCES on connect: the host blocks this outbound route/address family
         // (e.g. a VPS with no outbound IPv6). Environmental, not actionable.
         "Permission denied",
+        // Relay/transport timeout phrasing distinct from io TimedOut.
+        "Timeout has been reached",
+        // A bare `/p2p/<id>` (peer id known but no dialable transport address)
+        // or any address form we can't dial. Routine — we just lack an address.
+        "Unsupported resolved address",
     ];
     BENIGN.iter().any(|marker| text.contains(marker))
 }
