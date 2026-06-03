@@ -1345,6 +1345,7 @@ impl DownloadEngine {
         let upload_throttle = Arc::clone(&self.upload_throttle);
 
         tokio::spawn(async move {
+            let started = std::time::Instant::now();
             // Hold the permit for the entire pipeline (DB read → throttle → send)
             // to bound the number of tasks competing for disk I/O.
             let _permit = semaphore
@@ -1353,6 +1354,18 @@ impl DownloadEngine {
                 .expect("upload semaphore closed");
 
             let response = read_chunk_from_db(&db, &request, pex_peers).await;
+            let (kind, bytes) = match &response {
+                ChunkResponse::Ok { data, .. } => ("ok", data.len()),
+                ChunkResponse::NotFound => ("not_found", 0),
+                ChunkResponse::Error(_) => ("error", 0),
+            };
+            debug!(
+                chunk_idx = request.chunk_idx,
+                kind,
+                bytes,
+                produced_ms = started.elapsed().as_millis() as u64,
+                "serve_chunk: response produced, handing to node task"
+            );
             // Apply priority scheduling and throttle before sending.
             if let ChunkResponse::Ok { ref data, .. } = response {
                 let bytes = data.len() as u64;

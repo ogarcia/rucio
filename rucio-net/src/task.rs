@@ -1040,7 +1040,11 @@ async fn on_transfer_event(
         request_response::Event::InboundFailure { peer, error, .. } => {
             warn!(%peer, %error, "Inbound chunk request failed");
         }
-        request_response::Event::ResponseSent { .. } => {}
+        request_response::Event::ResponseSent { peer, .. } => {
+            // Confirms the full chunk response was written to the peer — useful
+            // for telling "responder never sent it" from "transfer stalled".
+            debug!(%peer, "Chunk response fully sent");
+        }
     }
 }
 
