@@ -730,10 +730,12 @@ impl DownloadEngine {
     /// discarded by the existing "unknown request" guards.
     pub async fn cancel(&mut self, download_id: i64, root_hash: Vec<u8>) {
         self.live_stats.write().await.remove(&download_id);
-        // Remove a pending manifest (keyed by hash — download_id may be None
-        // at this stage if the manifest hasn't arrived yet).
+
+        // Drop in-memory state and remember the .part path if we had it live.
         let hash_arr: Option<[u8; 32]> = root_hash.try_into().ok();
+        let mut part_path: Option<PathBuf> = None;
         if let Some(h) = hash_arr {
+            // Remove a pending manifest (no .part exists yet at this stage).
             if self.pending_manifests.remove(&h).is_some() {
                 info!(
                     download_id,
@@ -741,47 +743,48 @@ impl DownloadEngine {
                     "Cancelled pending manifest"
                 );
             }
-            // Also remove from active downloads (manifest already arrived).
+            // Remove from active downloads (manifest already arrived).
             if let Some(dl) = self.active.remove(&h) {
-                // Clean up the in-progress .part file.
-                if let Err(e) = tokio::fs::remove_file(&dl.dest_path).await
-                    && e.kind() != std::io::ErrorKind::NotFound
-                {
-                    warn!(
-                        path = %dl.dest_path.display(),
-                        "Could not remove .part file on cancel: {e}"
-                    );
-                }
+                part_path = Some(dl.dest_path);
                 info!(
                     download_id,
                     root_hash = hex::encode(h),
                     "Download cancelled"
                 );
             }
-        } else {
-            // Fallback: search active downloads by download_id.
-            let found = self
-                .active
-                .iter()
-                .find(|(_, dl)| dl.download_id == download_id)
-                .map(|(h, _)| *h);
-            if let Some(h) = found
-                && let Some(dl) = self.active.remove(&h)
-            {
-                if let Err(e) = tokio::fs::remove_file(&dl.dest_path).await
-                    && e.kind() != std::io::ErrorKind::NotFound
-                {
-                    warn!(
-                        path = %dl.dest_path.display(),
-                        "Could not remove .part file on cancel: {e}"
-                    );
-                }
-                info!(
-                    download_id,
-                    root_hash = hex::encode(h),
-                    "Download cancelled"
-                );
-            }
+        } else if let Some(h) = self
+            .active
+            .iter()
+            .find(|(_, dl)| dl.download_id == download_id)
+            .map(|(h, _)| *h)
+            && let Some(dl) = self.active.remove(&h)
+        {
+            part_path = Some(dl.dest_path);
+            info!(
+                download_id,
+                root_hash = hex::encode(h),
+                "Download cancelled"
+            );
+        }
+
+        // If the download wasn't tracked in memory (stalled, paused, or not yet
+        // rehydrated after a restart), fall back to the DB row's dest_path —
+        // otherwise its .part would leak. While downloading, dest_path is the
+        // .part; it only becomes the final file once completed.
+        if part_path.is_none()
+            && let Ok(Some(row)) = db::downloads::get(&self.db, download_id).await
+            && !row.dest_path.is_empty()
+        {
+            part_path = Some(PathBuf::from(row.dest_path));
+        }
+
+        // Only ever delete a `.part`: never a completed file the user owns.
+        if let Some(path) = part_path
+            && path.extension().is_some_and(|e| e == "part")
+            && let Err(e) = tokio::fs::remove_file(&path).await
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            warn!(path = %path.display(), "Could not remove .part file on cancel: {e}");
         }
     }
 
@@ -1923,6 +1926,57 @@ mod tests {
         let (mut engine, _rx, _db_dir) = make_engine(&tmp).await;
         // Should not panic
         engine.cancel(999, vec![0u8; 32]).await;
+    }
+
+    #[tokio::test]
+    async fn cancel_removes_part_of_download_not_in_memory() {
+        // A stalled / not-yet-rehydrated download lives only in the DB. Cancel
+        // must still delete its .part instead of leaking it on disk.
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut engine, _rx, _db_dir) = make_engine(&tmp).await;
+        let hash = [0x07u8; 32];
+        let id = db::downloads::create_pending(&engine.db, &hash, Some("orphan.bin"), 500, false)
+            .await
+            .unwrap()
+            .id();
+        let part = tmp.path().join("orphan.bin.part");
+        tokio::fs::write(&part, b"partial data").await.unwrap();
+        db::downloads::set_dest_path(&engine.db, id, part.to_str().unwrap())
+            .await
+            .unwrap();
+        assert!(!engine.active.contains_key(&hash), "not tracked in memory");
+
+        engine.cancel(id, hash.to_vec()).await;
+
+        assert!(
+            !part.exists(),
+            ".part must be removed even when not in memory"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_never_deletes_a_completed_file() {
+        // If dest_path points at a finished file (not a .part), cancel must not
+        // touch it — the file already belongs to the user.
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut engine, _rx, _db_dir) = make_engine(&tmp).await;
+        let hash = [0x08u8; 32];
+        let id = db::downloads::create_pending(&engine.db, &hash, Some("done.bin"), 500, false)
+            .await
+            .unwrap()
+            .id();
+        let final_file = tmp.path().join("done.bin");
+        tokio::fs::write(&final_file, b"complete").await.unwrap();
+        db::downloads::set_dest_path(&engine.db, id, final_file.to_str().unwrap())
+            .await
+            .unwrap();
+
+        engine.cancel(id, hash.to_vec()).await;
+
+        assert!(
+            final_file.exists(),
+            "a completed file must never be deleted"
+        );
     }
 
     // -----------------------------------------------------------------------
