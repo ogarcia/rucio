@@ -783,8 +783,16 @@ async fn on_swarm_event(
                         // producing spurious WrongPeerId errors. Private LAN
                         // addresses (192.168.x.x, 10.x.x.x) are kept because
                         // they are valid within the local network.
+                        //
+                        // Also skip any address that references our own PeerId —
+                        // our own direct address, or a `/p2p-circuit` relayed
+                        // through *us* (which a peer that reserved a relay on us
+                        // advertises). Dialling those loops back to ourselves
+                        // ("tried to dial local peer id" / circuit cancelled).
+                        let me = *swarm.local_peer_id();
                         for addr in &info.listen_addrs {
-                            if !addr_is_loopback_or_link_local(addr) {
+                            if !addr_is_loopback_or_link_local(addr) && !addr_references(addr, &me)
+                            {
                                 swarm
                                     .behaviour_mut()
                                     .kademlia
@@ -1244,6 +1252,10 @@ fn classify_dial_error(error: &DialError) -> DialNoise {
                 DialNoise::Real
             }
         }
+        // We tried to dial an address that resolves to ourselves (our own
+        // address, or a `/p2p-circuit` relayed through us that a peer
+        // advertised). libp2p refuses it; harmless, not actionable.
+        DialError::LocalPeerId { .. } => DialNoise::Expected,
         DialError::Transport(addrs) if !addrs.is_empty() => {
             let mut has_unreachable = false;
             for (addr, err) in addrs {
@@ -1315,6 +1327,10 @@ fn dial_text_is_benign(text: &str) -> bool {
         "Invalid argument", // e.g. link-local address without a scope id
         "Handshake failed", // transient or loopback handshake noise
         "Failed to negotiate transport",
+        // Relay circuit set-up cancelled (e.g. a circuit relayed through us, or
+        // the relay/behaviour dropping the request) — routine, not a fault.
+        "Response from behaviour was canceled",
+        "oneshot canceled",
     ];
     BENIGN.iter().any(|marker| text.contains(marker))
 }
@@ -1336,6 +1352,15 @@ fn addr_is_loopback_or_link_local(addr: &Multiaddr) -> bool {
         }
         _ => false,
     })
+}
+
+/// Return `true` if `addr` references `me` in any `/p2p/<peer>` component —
+/// either as the address's own terminal peer (our own address) or as a relay
+/// leg (`/p2p/<me>/p2p-circuit/...`, a circuit routed through us). Dialling
+/// such an address loops back to ourselves, so we never store it for a peer.
+fn addr_references(addr: &Multiaddr, me: &PeerId) -> bool {
+    addr.iter()
+        .any(|p| matches!(p, Protocol::P2p(id) if id == *me))
 }
 
 /// Return `true` if every IP component of `addr` is private, loopback, or
