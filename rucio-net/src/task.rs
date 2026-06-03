@@ -1331,6 +1331,13 @@ fn dial_text_is_benign(text: &str) -> bool {
         // the relay/behaviour dropping the request) — routine, not a fault.
         "Response from behaviour was canceled",
         "oneshot canceled",
+        // Relayed dial to a peer whose reservation on the relay has expired or
+        // who has gone away — stale circuit address, routine churn.
+        "Relay has no reservation for destination",
+        "Failed to connect to destination",
+        // EACCES on connect: the host blocks this outbound route/address family
+        // (e.g. a VPS with no outbound IPv6). Environmental, not actionable.
+        "Permission denied",
     ];
     BENIGN.iter().any(|marker| text.contains(marker))
 }
