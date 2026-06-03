@@ -991,6 +991,9 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                     Some(node::messages::NodeEvent::ChunkReceived { request_id, peer, response }) => {
                         engine.on_chunk_received(request_id, peer, response).await;
                     }
+                    Some(node::messages::NodeEvent::ChunkRequestFailed { request_id, peer }) => {
+                        engine.on_chunk_request_failed(request_id, peer).await;
+                    }
                     Some(node::messages::NodeEvent::ChunkRequested { peer, request, channel_id }) => {
                         // Unknown peers default to HighID to avoid accidentally starving them.
                         let is_high_id = peer_classes.get(&peer).copied().unwrap_or(true);

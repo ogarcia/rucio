@@ -124,6 +124,13 @@ pub enum NodeEvent {
         peer: PeerId,
         response: ChunkResponse,
     },
+    /// A chunk request we sent failed at the network level (timeout, EOF,
+    /// connection closed, …). No response will ever arrive, so the daemon must
+    /// free the slot and re-queue the chunk for another provider.
+    ChunkRequestFailed {
+        request_id: OutboundRequestId,
+        peer: PeerId,
+    },
     /// A remote peer sent us a chunk request — we must respond.
     ChunkRequested {
         peer: PeerId,

@@ -57,6 +57,11 @@ const DEFAULT_CHUNK_SIZE: u32 = 256 * 1024; // 256 KiB
 /// How long to wait for a manifest response before trying another peer.
 const MANIFEST_TIMEOUT_SECS: u64 = 10;
 
+/// Consecutive network-level failures after which a provider is evicted from a
+/// download. Transient blips just retry; a peer that keeps timing out is likely
+/// gone, so we stop letting it occupy a slot.
+const MAX_PEER_FAILURES: u32 = 3;
+
 /// Number of fruitless DHT re-queries after which a download is reported as
 /// `stalled` (no providers found).  With the back-off below this is reached
 /// after roughly 14 minutes.  Re-querying continues regardless.
@@ -153,6 +158,9 @@ struct PendingManifest {
 struct PeerState {
     /// chunk_idx values currently in-flight to this peer.
     in_flight: HashSet<u32>,
+    /// Network-level failures in a row (no successful chunk in between).
+    /// Reset to 0 on any verified chunk; drives provider eviction.
+    consecutive_failures: u32,
 }
 
 impl PeerState {
@@ -1201,6 +1209,11 @@ impl DownloadEngine {
                 let chunk_bytes = data.len() as u64;
                 self.metrics.record_download(chunk_bytes);
 
+                // A good chunk clears this peer's failure streak.
+                if let Some(ps) = dl.peer_state.get_mut(&peer) {
+                    ps.consecutive_failures = 0;
+                }
+
                 dl.done.insert(chunk_idx);
                 let dl_id = dl.download_id;
 
@@ -1290,6 +1303,69 @@ impl DownloadEngine {
                 self.dispatch_requests(root_hash).await;
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Chunk request failed at the network level (timeout, EOF, conn closed)
+    // -----------------------------------------------------------------------
+
+    /// A chunk request never got a response. Free the slot, re-queue the chunk
+    /// for another provider, and evict the peer if it keeps failing. Without
+    /// this the chunk stays in-flight forever and the download dead-stalls.
+    pub async fn on_chunk_request_failed(&mut self, request_id: OutboundRequestId, peer: PeerId) {
+        let root_hash = match self
+            .active
+            .iter()
+            .find(|(_, dl)| dl.inflight_map.contains_key(&request_id))
+            .map(|(k, _)| *k)
+        {
+            Some(h) => h,
+            None => {
+                // Already resolved (a late response beat the failure) or the
+                // download was cancelled — nothing to do.
+                debug!(?request_id, "Chunk failure for unknown request — ignoring");
+                return;
+            }
+        };
+
+        let dl = match self.active.get_mut(&root_hash) {
+            Some(d) => d,
+            None => return,
+        };
+
+        let chunk_idx = match dl.inflight_map.remove(&request_id) {
+            Some((_, idx)) => idx,
+            None => return,
+        };
+        dl.in_flight.remove(&chunk_idx);
+
+        let mut evict = false;
+        if let Some(ps) = dl.peer_state.get_mut(&peer) {
+            ps.in_flight.remove(&chunk_idx);
+            ps.consecutive_failures += 1;
+            evict = ps.consecutive_failures >= MAX_PEER_FAILURES;
+        }
+
+        if evict {
+            dl.providers.retain(|&p| p != peer);
+            dl.peer_state.remove(&peer);
+            warn!(
+                %peer,
+                chunk_idx,
+                remaining_providers = dl.providers.len(),
+                "Provider evicted after repeated chunk failures — re-queuing chunk"
+            );
+        } else {
+            warn!(%peer, chunk_idx, "Chunk request failed — re-queuing for another provider");
+        }
+
+        // Re-queue at the front so the missing chunk is retried promptly.
+        dl.queued.push_front(chunk_idx);
+
+        // Try to reassign right away; if no providers are left with capacity
+        // this is a no-op and tick_provider_refresh will re-query the DHT once
+        // in_flight drains.
+        self.dispatch_requests(root_hash).await;
     }
 
     // -----------------------------------------------------------------------
@@ -2134,6 +2210,77 @@ mod tests {
             !dl.done.contains(&0),
             "chunk 0 must not be done after mismatch"
         );
+    }
+
+    #[tokio::test]
+    async fn on_chunk_request_failed_unknown_request_id_is_ignored() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut engine, _rx, _db_dir) = make_engine(&tmp).await;
+        // No active download — must not panic.
+        engine
+            .on_chunk_request_failed(fake_request_id(99), peer(1))
+            .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn chunk_request_failure_requeues_and_evicts_dead_peer() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut engine, rx, _db_dir) = make_engine(&tmp).await;
+        let hash = [0x32u8; 32];
+        let chunk_hash = *blake3::hash(b"some data xx").as_bytes();
+        let magnet = fake_magnet(&hash, "dead.bin", 12);
+        let p = peer(1);
+
+        let (acker_handle, stop_tx) = spawn_acker(rx);
+
+        engine.start(&magnet, vec![p], 0).await.unwrap();
+        engine
+            .on_manifest_received(
+                fake_request_id(1),
+                p,
+                ManifestResponse::Ok {
+                    root_hash: hash,
+                    name: "dead.bin".to_string(),
+                    total_size: 12,
+                    chunk_size: 12,
+                    chunks: vec![ChunkInfo {
+                        idx: 0,
+                        hash: chunk_hash,
+                        size: 12,
+                    }],
+                },
+                0,
+            )
+            .await;
+
+        // chunk 0 is now in-flight to the only provider. Fail it
+        // MAX_PEER_FAILURES times; each failure re-dispatches to the same peer
+        // (so its failure streak grows) until it is finally evicted.
+        for _ in 0..MAX_PEER_FAILURES {
+            let req_id = {
+                let dl = engine.active.get(&hash).unwrap();
+                *dl.inflight_map
+                    .keys()
+                    .next()
+                    .expect("chunk should be in-flight before each failure")
+            };
+            engine.on_chunk_request_failed(req_id, p).await;
+        }
+
+        let _ = stop_tx.send(());
+        let _ = acker_handle.await.unwrap();
+
+        let dl = engine.active.get(&hash).unwrap();
+        assert!(
+            dl.providers.is_empty(),
+            "the only provider should be evicted after repeated failures"
+        );
+        assert!(
+            dl.queued.contains(&0),
+            "chunk must be back in the queue with no provider left to serve it"
+        );
+        assert!(dl.in_flight.is_empty(), "slot must be freed");
+        assert!(!dl.done.contains(&0), "chunk must not be marked done");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

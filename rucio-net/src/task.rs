@@ -1034,8 +1034,18 @@ async fn on_transfer_event(
             }
         }
 
-        request_response::Event::OutboundFailure { peer, error, .. } => {
+        request_response::Event::OutboundFailure {
+            peer,
+            request_id,
+            error,
+            ..
+        } => {
             warn!(%peer, %error, "Outbound chunk request failed");
+            // Propagate so the daemon frees the slot and re-queues the chunk;
+            // otherwise it stays in-flight forever and the download stalls.
+            let _ = event_tx
+                .emit(NodeEvent::ChunkRequestFailed { request_id, peer })
+                .await;
         }
         request_response::Event::InboundFailure { peer, error, .. } => {
             warn!(%peer, %error, "Inbound chunk request failed");
