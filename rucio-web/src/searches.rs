@@ -128,6 +128,7 @@ impl SourceFilter {
 /// Sort order applied to the visible result list.
 #[derive(Clone, Copy, PartialEq)]
 enum SortBy {
+    Sources,
     NameAsc,
     NameDesc,
     SizeDesc,
@@ -138,6 +139,9 @@ impl SortBy {
     fn apply(self, v: &mut [SearchResult]) {
         use std::cmp::Reverse;
         match self {
+            // Most sources first; ties broken by size (largest) so the order is
+            // stable and useful even when many results have a single peer.
+            SortBy::Sources => v.sort_by_key(|r| (Reverse(r.peer_count), Reverse(r.size))),
             SortBy::NameAsc => v.sort_by_key(|r| r.name.to_lowercase()),
             SortBy::NameDesc => v.sort_by_key(|r| Reverse(r.name.to_lowercase())),
             SortBy::SizeDesc => v.sort_by_key(|r| Reverse(r.size)),
@@ -192,7 +196,7 @@ pub fn SearchesTab(
     // Result filter/sort controls (apply to the currently selected search).
     let filter_source: RwSignal<SourceFilter> = RwSignal::new(SourceFilter::All);
     let filter_text: RwSignal<String> = RwSignal::new(String::new());
-    let sort_by: RwSignal<SortBy> = RwSignal::new(SortBy::SizeDesc);
+    let sort_by: RwSignal<SortBy> = RwSignal::new(SortBy::Sources);
 
     // Recent-search dropdown open/closed. A custom dropdown (rather than a
     // native <select>) is used because Firefox/Linux draws the native option
@@ -415,16 +419,18 @@ pub fn SearchesTab(
                     </select>
                     <select
                         class="dl-filter-select"
-                        prop:value="size-desc"
+                        prop:value="sources"
                         on:change=move |e| {
                             sort_by.set(match event_target_value(&e).as_str() {
                                 "name-asc" => SortBy::NameAsc,
                                 "name-desc" => SortBy::NameDesc,
                                 "size-asc" => SortBy::SizeAsc,
-                                _ => SortBy::SizeDesc,
+                                "size-desc" => SortBy::SizeDesc,
+                                _ => SortBy::Sources,
                             });
                         }
                     >
+                        <option value="sources">"Most sources"</option>
                         <option value="size-desc">"Largest first"</option>
                         <option value="size-asc">"Smallest first"</option>
                         <option value="name-asc">"Name (A→Z)"</option>
