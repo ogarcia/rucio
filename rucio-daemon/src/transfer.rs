@@ -1364,7 +1364,7 @@ impl DownloadEngine {
                 kind,
                 bytes,
                 produced_ms = started.elapsed().as_millis() as u64,
-                "serve_chunk: response produced, handing to node task"
+                "serve_chunk: response produced"
             );
             // Apply priority scheduling and throttle before sending.
             if let ChunkResponse::Ok { ref data, .. } = response {
@@ -1379,6 +1379,12 @@ impl DownloadEngine {
                 }
                 metrics.record_upload(bytes);
             }
+            debug!(
+                chunk_idx = request.chunk_idx,
+                is_high_id,
+                total_ms = started.elapsed().as_millis() as u64,
+                "serve_chunk: handing response to node task (past scheduler/throttle)"
+            );
             let _ = cmd_tx
                 .send(NodeCmd::RespondChunk {
                     channel_id,
