@@ -232,6 +232,14 @@ struct LoopState {
     /// Set after the first `start_providing` failure so we warn about a full
     /// provider store only once instead of for every share.
     provider_store_full_warned: bool,
+    /// Keys (root hashes) the daemon wants to provide. We only actually announce
+    /// them while `providing` is true (i.e. while HighId) — see
+    /// [`reconcile_provider_announcements`].
+    wanted_providers: HashSet<Vec<u8>>,
+    /// Whether we are currently announcing `wanted_providers` to the DHT. Tracks
+    /// HighId reachability so we never advertise content a peer could only pull
+    /// through a relay.
+    providing: bool,
 }
 
 impl LoopState {
@@ -251,6 +259,8 @@ impl LoopState {
             relay_candidates: Vec::new(),
             relay_reserved: false,
             provider_store_full_warned: false,
+            wanted_providers: HashSet::new(),
+            providing: false,
         }
     }
 
@@ -330,21 +340,16 @@ async fn run_loop(
                         info!("Bootstrap peers ready — will run Kademlia bootstrap on first connection");
                     }
                     Some(NodeCmd::StartProviding(key)) => {
-                        let record_key = kad::RecordKey::new(&key);
-                        if let Err(e) = swarm.behaviour_mut().kademlia.start_providing(record_key) {
-                            // A full provider store would otherwise log once per
-                            // share; warn a single time and stay quiet after.
-                            if !state.provider_store_full_warned {
-                                warn!(
-                                    "start_providing error: {e} — further occurrences suppressed"
-                                );
-                                state.provider_store_full_warned = true;
-                            } else {
-                                debug!("start_providing error: {e}");
-                            }
+                        // Remember it regardless; only announce now if we are a
+                        // direct (HighId) provider. Otherwise it's announced once
+                        // we reach HighId (see reconcile_provider_announcements).
+                        state.wanted_providers.insert(key.clone());
+                        if state.providing {
+                            announce_provider(&mut swarm, &mut state, &key);
                         }
                     }
                     Some(NodeCmd::StopProviding(key)) => {
+                        state.wanted_providers.remove(&key);
                         let record_key = kad::RecordKey::new(&key);
                         swarm.behaviour_mut().kademlia.stop_providing(&record_key);
                     }
@@ -575,6 +580,7 @@ async fn on_swarm_event(
             {
                 Some(new_class) => {
                     info!(%address, ?new_class, "External address confirmed (AutoNAT) — node class updated");
+                    reconcile_provider_announcements(swarm, state);
                     let _ = event_tx.emit(NodeEvent::ClassChanged(new_class)).await;
                 }
                 None => debug!(%address, "External address confirmed (AutoNAT)"),
@@ -599,6 +605,7 @@ async fn on_swarm_event(
                         &mut state.relay_reserved,
                     );
                 }
+                reconcile_provider_announcements(swarm, state);
                 let _ = event_tx.emit(NodeEvent::ClassChanged(new_class)).await;
             }
         }
@@ -752,6 +759,7 @@ async fn on_swarm_event(
                                     &mut state.relay_reserved,
                                 );
                             }
+                            reconcile_provider_announcements(swarm, state);
                             let _ = event_tx.emit(NodeEvent::ClassChanged(new_class)).await;
                         }
 
@@ -1094,6 +1102,56 @@ async fn on_manifest_event(
 // ---------------------------------------------------------------------------
 // Relay reservation
 // ---------------------------------------------------------------------------
+
+/// Announce a single key to the DHT as a provider, with the warn-once handling
+/// for a full provider store.
+fn announce_provider(swarm: &mut libp2p::Swarm<RucioBehaviour>, state: &mut LoopState, key: &[u8]) {
+    let record_key = kad::RecordKey::new(&key);
+    if let Err(e) = swarm.behaviour_mut().kademlia.start_providing(record_key) {
+        if !state.provider_store_full_warned {
+            warn!("start_providing error: {e} — further occurrences suppressed");
+            state.provider_store_full_warned = true;
+        } else {
+            debug!("start_providing error: {e}");
+        }
+    }
+}
+
+/// Bring the DHT provider announcements in line with our reachability.
+///
+/// We advertise our shares **only while HighId** — i.e. while our data path is
+/// direct. A relay/DCUtR-reachable node deliberately stays a non-provider: we
+/// don't want a peer pulling file data through a relay (burdening it), and an
+/// opportunistic hole-punch can fall back to the relay if it fails. So when we
+/// reach HighId we (re)announce every wanted key, and when we drop out of HighId
+/// we stop providing them.
+fn reconcile_provider_announcements(
+    swarm: &mut libp2p::Swarm<RucioBehaviour>,
+    state: &mut LoopState,
+) {
+    let want = matches!(state.classifier.current(), NodeClass::HighId);
+    if want == state.providing {
+        return;
+    }
+    state.providing = want;
+    let keys: Vec<Vec<u8>> = state.wanted_providers.iter().cloned().collect();
+    if keys.is_empty() {
+        return;
+    }
+    for key in &keys {
+        if want {
+            announce_provider(swarm, state, key);
+        } else {
+            let record_key = kad::RecordKey::new(key);
+            swarm.behaviour_mut().kademlia.stop_providing(&record_key);
+        }
+    }
+    info!(
+        providing = want,
+        shares = keys.len(),
+        "Provider announcements toggled by reachability (HighId only)"
+    );
+}
 
 /// Pick the first relay candidate with a public address and issue a
 /// `listen_on` for a `/p2p-circuit` address.  The relay client behaviour
