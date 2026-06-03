@@ -189,6 +189,9 @@ pub enum InternalSource {
     Emule {
         hash_hex: String,
         ed2k_link: String,
+        /// Summed availability (FT_SOURCES) across every Kad index node that
+        /// reported this hash — eMule's "Availability" figure.
+        sources: u32,
     },
 }
 
@@ -219,14 +222,18 @@ impl InternalResult {
                     peer_count: providers.len() as u32,
                 }
             }
-            InternalSource::Emule { ed2k_link, .. } => SearchResult {
+            InternalSource::Emule {
+                ed2k_link, sources, ..
+            } => SearchResult {
                 result_id: index + 1,
                 name: self.name.clone(),
                 size: self.size,
                 source: ResultSource::Emule,
                 download_link: Some(ed2k_link.clone()),
                 providers: None,
-                peer_count: 1,
+                // Kad availability; floor at 1 so a found file always counts as
+                // at least one source (the tag is sometimes absent).
+                peer_count: (*sources).max(1),
             },
         }
     }

@@ -483,30 +483,38 @@ fn spawn_kad2_search(state: &AppState, search_id: u64, keywords: Vec<String>) {
                         h.size,
                         hash_hex,
                     );
-                    // Deduplicate by ed2k hash.
-                    let already_have = record.results.iter().any(|r| {
+                    // Merge by ed2k hash: sum the availability across index
+                    // nodes (eMule's CSearchFile::AddSources) and re-emit the
+                    // same result_id so the source count updates in place.
+                    let existing = record.results.iter_mut().enumerate().find(|(_, r)| {
                         matches!(
                             &r.source,
                             crate::api::InternalSource::Emule { hash_hex: hx, .. }
-                            if *hx == hex::encode(h.hash)
+                            if *hx == hash_hex
                         )
                     });
-                    if !already_have {
+                    let index = if let Some((index, r)) = existing {
+                        if let crate::api::InternalSource::Emule { sources, .. } = &mut r.source {
+                            *sources = sources.saturating_add(h.sources);
+                        }
+                        index
+                    } else {
                         record.results.push(crate::api::InternalResult {
                             name: h.name.clone(),
                             size: h.size,
                             source: crate::api::InternalSource::Emule {
                                 hash_hex,
                                 ed2k_link,
+                                sources: h.sources,
                             },
                         });
-                        // Push the new eMule result to WebSocket subscribers.
-                        let index = record.results.len() - 1;
-                        let _ = ws_tx.send(rucio_core::api::ws::WsEvent::SearchResult {
-                            search_id,
-                            result: record.results[index].to_api(index),
-                        });
-                    }
+                        record.results.len() - 1
+                    };
+                    // Push (new or updated) eMule result to WebSocket subscribers.
+                    let _ = ws_tx.send(rucio_core::api::ws::WsEvent::SearchResult {
+                        search_id,
+                        result: record.results[index].to_api(index),
+                    });
                 }
             }
             record.kad2_done = true;

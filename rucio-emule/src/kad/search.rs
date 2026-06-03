@@ -36,6 +36,8 @@ pub struct KeywordHit {
     pub hash: [u8; 16],
     pub name: String,
     pub size: u64,
+    /// Availability (FT_SOURCES) reported by the indexing node, 0 if absent.
+    pub sources: u32,
 }
 
 // ── Outgoing packet descriptor ─────────────────────────────────────────────────
@@ -319,6 +321,7 @@ impl ActiveSearch {
                                 hash: *entry.file_hash.as_bytes(),
                                 name: entry.name,
                                 size: entry.size,
+                                sources: entry.sources,
                             });
                         }
                     }

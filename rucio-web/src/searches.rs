@@ -602,11 +602,8 @@ fn ResultRow(result: SearchResult, downloads: RwSignal<Vec<DownloadResponse>>) -
             <span class="result-name">{result.name}</span>
             <span class="result-size">{format_size(result.size)}</span>
             <span class=source_css>{source_label}</span>
-            <span class="result-peers" title="Peers que tienen el fichero">
-            {match result.source {
-                ResultSource::Rucio => format!("{} ⬩", result.peer_count),
-                ResultSource::Emule => String::new(),
-            }}
+            <span class="result-peers" title="Sources that have this file">
+            {format!("{} ⬩", result.peer_count)}
             </span>
             <span class="result-action">
             {move || {

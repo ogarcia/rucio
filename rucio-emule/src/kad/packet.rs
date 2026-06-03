@@ -348,6 +348,10 @@ pub struct KeywordResultEntry {
     pub file_hash: KadId,
     pub name: String,
     pub size: u64,
+    /// Availability (FT_SOURCES, 0x15): number of sources the indexing node
+    /// knows about. 0 when the tag is absent. eMule sums this across entries
+    /// for the same hash to get the "Availability" figure.
+    pub sources: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -644,11 +648,12 @@ pub fn parse_keyword_res(payload: &[u8]) -> io::Result<KeywordResPayload> {
     let mut results = Vec::with_capacity(count as usize);
     for _ in 0..count {
         let file_hash = KadId::read_from(&mut cur)?;
-        let (name, size) = read_keyword_tags(&mut cur).unwrap_or_default();
+        let (name, size, sources) = read_keyword_tags(&mut cur).unwrap_or_default();
         results.push(KeywordResultEntry {
             file_hash,
             name,
             size,
+            sources,
         });
     }
     Ok(KeywordResPayload {
@@ -798,12 +803,13 @@ fn read_source_tags<R: Read>(r: &mut R) -> io::Result<(std::net::Ipv4Addr, u16, 
     Ok((ip, tcp_port, udp_port))
 }
 
-/// Read a keyword-result tag list and extract file name and size.
+/// Read a keyword-result tag list and extract file name, size and availability.
 ///
 /// Tag names (opcodes.h):
 ///   `[0x01]` = TAG_FILENAME (TAGTYPE_STRING or TAGTYPE_STR1..N)
 ///   `[0x02]` = TAG_FILESIZE (TAGTYPE_UINT32 or TAGTYPE_UINT64)
-fn read_keyword_tags<R: Read>(r: &mut R) -> io::Result<(String, u64)> {
+///   `[0x15]` = FT_SOURCES   (TAGTYPE_UINT32 — availability / source count)
+fn read_keyword_tags<R: Read>(r: &mut R) -> io::Result<(String, u64, u32)> {
     let count = {
         let mut b = [0u8];
         r.read_exact(&mut b)?;
@@ -811,6 +817,7 @@ fn read_keyword_tags<R: Read>(r: &mut R) -> io::Result<(String, u64)> {
     };
     let mut name = String::new();
     let mut size: u64 = 0;
+    let mut sources: u32 = 0;
 
     for _ in 0..count {
         let type_byte = {
@@ -848,13 +855,27 @@ fn read_keyword_tags<R: Read>(r: &mut R) -> io::Result<(String, u64)> {
                 r.read_exact(&mut b)?;
                 size = u64::from_le_bytes(b);
             }
+            // FT_SOURCES (availability): TAGTYPE_UINT32 (0x03)
+            (0x03, [0x15]) => {
+                sources = read_u32(r)?;
+            }
+            // FT_SOURCES as TAGTYPE_UINT8/UINT16 (0x09 / 0x08) — some peers
+            // encode small counts compactly.
+            (0x09, [0x15]) => {
+                let mut b = [0u8];
+                r.read_exact(&mut b)?;
+                sources = b[0] as u32;
+            }
+            (0x08, [0x15]) => {
+                sources = read_u16(r)? as u32;
+            }
             // Any other tag: skip the value
             (t, _) => {
                 skip_tag_value(r, t)?;
             }
         }
     }
-    Ok((name, size))
+    Ok((name, size, sources))
 }
 
 // ── Encode ────────────────────────────────────────────────────────────────────
@@ -904,11 +925,12 @@ pub fn parse_search_res_keywords(payload: &[u8]) -> io::Result<KeywordResPayload
     let mut results = Vec::with_capacity(count as usize);
     for _ in 0..count {
         let file_hash = KadId::read_from(&mut cur)?;
-        let (name, size) = read_keyword_tags(&mut cur).unwrap_or_default();
+        let (name, size, sources) = read_keyword_tags(&mut cur).unwrap_or_default();
         results.push(KeywordResultEntry {
             file_hash,
             name,
             size,
+            sources,
         });
     }
     Ok(KeywordResPayload {
@@ -1408,5 +1430,40 @@ mod tests {
         let kad = KadId::from_bytes(md4);
         // The wire bytes must equal the original MD4 — no transformation.
         assert_eq!(kad.as_bytes(), &md4);
+    }
+
+    #[test]
+    fn test_keyword_res_parses_availability() {
+        // Build a one-entry keyword response with FILENAME, FILESIZE and
+        // FT_SOURCES (availability) tags.
+        let mut p = Vec::new();
+        p.extend_from_slice(&[0u8; 16]); // sender_id
+        p.extend_from_slice(&[0u8; 16]); // target
+        p.extend_from_slice(&1u16.to_le_bytes()); // count = 1
+        p.extend_from_slice(&[0xABu8; 16]); // file_hash
+        // tag list: 3 tags
+        p.push(3);
+        // FILENAME: type 0x02, name=[0x01], u16 len + bytes
+        p.push(0x02);
+        p.extend_from_slice(&1u16.to_le_bytes());
+        p.push(0x01);
+        p.extend_from_slice(&5u16.to_le_bytes());
+        p.extend_from_slice(b"movie");
+        // FILESIZE: type 0x03 (uint32), name=[0x02]
+        p.push(0x03);
+        p.extend_from_slice(&1u16.to_le_bytes());
+        p.push(0x02);
+        p.extend_from_slice(&100u32.to_le_bytes());
+        // FT_SOURCES: type 0x03 (uint32), name=[0x15]
+        p.push(0x03);
+        p.extend_from_slice(&1u16.to_le_bytes());
+        p.push(0x15);
+        p.extend_from_slice(&42u32.to_le_bytes());
+
+        let res = parse_search_res_keywords(&p).unwrap();
+        assert_eq!(res.results.len(), 1);
+        assert_eq!(res.results[0].name, "movie");
+        assert_eq!(res.results[0].size, 100);
+        assert_eq!(res.results[0].sources, 42, "FT_SOURCES availability parsed");
     }
 }
