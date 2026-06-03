@@ -8,11 +8,14 @@ LowID distinction.
 
 ### HighID
 
-The node is reachable on a public IP address. Other peers can dial it
-directly. A HighID node:
+The node is reachable directly on a public IP address (a cold dial works, as
+confirmed by AutoNAT). Other peers can dial it without an intermediary. A
+HighID node:
 
 - Can serve file chunks to any peer that requests them.
 - Is a full participant in the DHT as both a client and a server.
+- **Announces its shared files as Kademlia provider records** — only HighID
+  nodes do (see [DHT provider announcements](#dht-provider-announcements)).
 - Appears in `rucio node status` as `HighID`.
 
 ### LowID
@@ -28,7 +31,11 @@ Other peers on the internet generally cannot dial it directly. A LowID node:
 - **DCUtR upgrades relay connections to direct ones** — once a peer
   connects through the relay, both sides attempt a simultaneous NAT hole
   punch. On success the relay is no longer needed for that peer pair.
-- May also serve chunks to peers on the same LAN via mDNS-discovered
+- **Does NOT announce its shared files as DHT providers** — see
+  [DHT provider announcements](#dht-provider-announcements). It participates
+  as a downloader and stays reachable for control traffic, but it never
+  advertises content that a peer might have to pull through a relay.
+- May still serve chunks to peers on the same LAN via mDNS-discovered
   local addresses.
 - Appears in `rucio node status` as `LowID`.
 
@@ -41,21 +48,39 @@ connecting to the first peer.
 
 ## Classification logic
 
-The class is determined by `addr_scope_hint()` applied to the node's observed
-address (as reported by Identify):
+`ClassificationState` (in `rucio-net/src/classify.rs`) combines two inputs —
+addresses **observed** by remote peers via Identify, and addresses **confirmed**
+reachable by AutoNAT — and applies a single predicate, `is_direct_public_listen`:
 
 ```
-observed address is RFC1918 (10/8, 172.16/12, 192.168/16)  →  LowID
-observed address is link-local (169.254/16)                 →  LowID
-observed address is IPv6 ULA (fc00::/7)                     →  LowID
-observed address is IPv6 link-local (fe80::/10)             →  LowID
-observed address is a public IP                             →  HighID
-no observed address yet                                     →  Unknown
+HighID  ⇔  we have an address that is, all at once:
+             · a public IP (not RFC1918 / link-local / ULA / loopback), and
+             · on one of our listen ports (not an ephemeral source port), and
+             · direct — NOT a relayed /p2p-circuit address
 ```
 
-`addr_scope_hint` extracts the IP component from a multiaddr string and
-applies the above rules. It returns a short label (`"LAN"`, `"link-local"`,
-etc.) for local addresses, or an empty string for public addresses.
+An address satisfies this either because **AutoNAT confirmed it**
+(`ExternalAddrConfirmed` — authoritative) or because a peer **observed us on
+our listen port** via Identify (a fast hint, which happens when a peer dials
+*in*). Then:
+
+```
+any address passes is_direct_public_listen   →  HighID
+observations exist but none pass              →  LowID
+no observations and nothing confirmed yet     →  Unknown
+```
+
+Two subtleties this captures that a naive "public IP → HighID" check misses:
+
+- **Ephemeral ports don't count.** When the node only dials *out*, Identify
+  reports its public IP on the connection's random source port, not the listen
+  port. That is not proof of inbound reachability → LowID until AutoNAT
+  confirms the translated listen-port address (see
+  [networking → AutoNAT v2](02-networking.md)).
+- **Relayed addresses don't count.** AutoNAT will happily confirm a
+  `/p2p-circuit` address (the relay path works), but that means the node is
+  reachable *only through a relay* — i.e. it is really LowID. Circuit
+  addresses are excluded from the HighID decision.
 
 ## Display in `rucio node status`
 
@@ -129,6 +154,34 @@ simultaneously, attempting to punch through their respective NATs.
 - **Symmetric NAT / strict firewall** — hole punch fails, the relay
   connection is kept as a fallback. The relay continues to carry traffic
   for that peer pair.
+
+## DHT provider announcements
+
+A node advertises its shared files as Kademlia provider records **only while it
+is HighID**. The task tracks the set of keys it wants to provide; it announces
+them when the node reaches HighID and calls `stop_providing` when it drops back
+out (the announce/stop is driven from `reconcile_provider_announcements`).
+
+The rule is deliberately strict — **HighID, not merely "reachable"** — because
+HighID is the one state that guarantees a *direct* data path. The alternatives
+do not:
+
+- A **relay-reachable** node would force every downloader to pull file data
+  through a relay, turning ordinary full nodes into bandwidth relays. That
+  violates the "no TURN-style data relay" principle (see
+  [networking](02-networking.md#design-principles)).
+- A **DCUtR-reachable** node *usually* ends up direct, but hole punching is
+  per-connection and opportunistic: when it fails (symmetric NAT) the
+  connection falls back to carrying data over the relay. So DCUtR-capability
+  cannot guarantee a direct path either, and is not a safe basis for
+  advertising content.
+
+The trade-off: a LowID node — even one reachable via relay/DCUtR — does **not**
+make its files discoverable through the DHT. It remains a full downloader and is
+reachable for control/coordination, but content it shares is only served once it
+becomes HighID (e.g. by opening its listen port, or via UPnP). This keeps relays
+free of file-transfer load and keeps the DHT free of provider records that a
+peer could not reach directly.
 
 In practice, DCUtR succeeds for the majority of consumer-grade NAT devices,
 so the relay is only a short-term bridge during hole punching and a

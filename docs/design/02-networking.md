@@ -200,17 +200,39 @@ For most consumer routers (cone NAT), hole punching succeeds and data flows
 directly. The relay is used only during the hole-punch window and as a
 persistent fallback for the minority of symmetric-NAT cases.
 
+### AutoNAT v2 — reachability confirmation
+
+Both the client and server halves of AutoNAT v2 (`autonat::v2::{client,
+server}`) are mounted on every node. They turn HighID/LowID from a guess into
+a *confirmed* verdict:
+
+- **Client.** `identify` derives external-address candidates by translating the
+  observed public IP onto our listen port (so even a node that has only ever
+  dialled out proposes `<public-ip>:<listen-port>`, not just the ephemeral
+  source port it was seen on). The client asks a server to dial one of those
+  candidates back over a freshly allocated port; success surfaces as
+  `SwarmEvent::ExternalAddrConfirmed` and is what authoritatively promotes the
+  node to HighID — see [node classes](05-node-classes.md).
+- **Server.** Performs those dial-back probes for other nodes. Mounting it
+  everywhere (the bootstrap especially) means a freshly-started public node is
+  confirmed from a single probe instead of waiting for a chance inbound dial.
+
+Because the dial-back uses a new connection, a relayed (`/p2p-circuit`) address
+can also be confirmed — but that only proves the *relay* path works, so the
+classifier excludes circuit addresses from the HighID decision.
+
 ## Peer lifecycle
 
 ```
-ConnectionEstablished  →  PeerConnected  (increments peer counter)
-Identify::Received     →  PeerDiscovered (upsert in DB, add to Kademlia)
-ConnectionClosed       →  PeerDisconnected (decrements peer counter)
+ConnectionEstablished  →  PeerConnected     (first connection to a peer)
+Identify::Received     →  PeerDiscovered    (upsert in DB, add to Kademlia)
+ConnectionClosed       →  PeerDisconnected  (last connection to a peer closed)
 ```
 
-`PeerConnected` and `PeerDisconnected` are distinct from `PeerDiscovered`.
-The peer counter reflects currently connected peers, not the total number of
-known peers.
+`PeerConnected`/`PeerDisconnected` fire once per **peer**, not per connection
+(gated on `num_established`), so a peer reached over both IPv4 and IPv6 counts
+once. They are distinct from `PeerDiscovered`; the peer counter reflects
+currently connected peers, not the total number of known peers.
 
 ## Design principles
 
