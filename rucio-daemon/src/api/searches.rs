@@ -157,21 +157,51 @@ pub async fn get_search(
     )
 )]
 pub async fn delete_search(State(state): State<AppState>, Path(id): Path<u64>) -> StatusCode {
-    let mut reg = state.search_registry.write().await;
-    match reg.records.get_mut(&id) {
-        None => StatusCode::NOT_FOUND,
-        Some(record) => {
-            if matches!(record.effective_state(), SearchState::Running) {
-                record.cancelled = true;
-            } else {
-                // Done or already cancelled — remove from memory.
-                let gossip_id = record.gossip_query_id.clone();
-                reg.records.remove(&id);
-                reg.gossip_to_id.remove(&gossip_id);
-            }
-            StatusCode::NO_CONTENT
+    let (running, result_count) = {
+        let mut reg = state.search_registry.write().await;
+        let Some(record) = reg.records.get_mut(&id) else {
+            tracing::debug!(search_id = id, "DELETE search: id not found");
+            return StatusCode::NOT_FOUND;
+        };
+        let gossip_id = record.gossip_query_id.clone();
+        let running = matches!(record.effective_state(), SearchState::Running);
+        let result_count = record.results.len();
+        if running {
+            record.cancelled = true;
+        } else {
+            reg.records.remove(&id);
         }
+        // Unmap the Gossip query in BOTH cases: a cancelled search must stop
+        // routing incoming results immediately (dropped as "unknown" in
+        // accumulate_gossip_result), not merely rely on the `cancelled` flag.
+        // A relaunch re-adds the mapping.
+        reg.gossip_to_id.remove(&gossip_id);
+        tracing::debug!(
+            search_id = id,
+            running,
+            "DELETE search: {}",
+            if running {
+                "cancelled running search"
+            } else {
+                "removed finished search"
+            }
+        );
+        (running, result_count)
+    };
+
+    // Tell the UI immediately (the periodic tick would also catch it, but this
+    // makes the cancel reflect at once).
+    if running {
+        let _ = state
+            .ws_tx
+            .send(rucio_core::api::ws::WsEvent::SearchStateChanged {
+                id,
+                state: SearchState::Cancelled,
+                result_count,
+                emule_queued: false,
+            });
     }
+    StatusCode::NO_CONTENT
 }
 
 // ---------------------------------------------------------------------------
