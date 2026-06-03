@@ -374,10 +374,14 @@ async fn run_loop(
                     }
                     Some(NodeCmd::RespondChunk { channel_id, response }) => {
                         if let Some(ch) = state.pending_chunk_channels.remove(&channel_id) {
+                            // `send_response` returns the response back in `Err`
+                            // when the channel is gone (requester cancelled or
+                            // disconnected) — expected, and we must NOT log the
+                            // payload: a chunk is multiple MiB of raw bytes.
                             if let Some(transfer) = swarm.behaviour_mut().transfer.as_mut()
-                                && let Err(e) = transfer.send_response(ch, response)
+                                && transfer.send_response(ch, response).is_err()
                             {
-                                warn!("Failed to send chunk response: {e:?}");
+                                debug!(%channel_id, "Chunk response dropped: requester no longer reachable");
                             }
                         } else {
                             warn!(%channel_id, "RespondChunk: unknown channel id");
@@ -393,10 +397,12 @@ async fn run_loop(
                     }
                     Some(NodeCmd::RespondManifest { channel_id, response }) => {
                         if let Some(ch) = state.pending_manifest_channels.remove(&channel_id) {
+                            // Same as chunks: `Err` carries the response back
+                            // and just means the requester is gone.
                             if let Some(manifest) = swarm.behaviour_mut().manifest.as_mut()
-                                && let Err(e) = manifest.send_response(ch, response)
+                                && manifest.send_response(ch, response).is_err()
                             {
-                                warn!("Failed to send manifest response: {e:?}");
+                                debug!(%channel_id, "Manifest response dropped: requester no longer reachable");
                             }
                         } else {
                             warn!(%channel_id, "RespondManifest: unknown channel id");
