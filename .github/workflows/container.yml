@@ -117,6 +117,13 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # Disable metadata-action's automatic `latest=auto`: on a semver tag it
+          # would make EVERY image (headless/cli/bootstrap too) also push the bare
+          # `latest`, and the jobs race for it — so `latest` could end up the
+          # headless image (no web). Only the complete job sets `latest`, via its
+          # explicit `type=raw,value=latest` below.
+          flavor: |
+            latest=false
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -169,6 +176,13 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # Disable metadata-action's automatic `latest=auto`: on a semver tag it
+          # would make EVERY image (headless/cli/bootstrap too) also push the bare
+          # `latest`, and the jobs race for it — so `latest` could end up the
+          # headless image (no web). Only the complete job sets `latest`, via its
+          # explicit `type=raw,value=latest` below.
+          flavor: |
+            latest=false
           tags: |
             type=ref,event=branch,suffix=-headless
             type=ref,event=pr,suffix=-headless
@@ -221,6 +235,13 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # Disable metadata-action's automatic `latest=auto`: on a semver tag it
+          # would make EVERY image (headless/cli/bootstrap too) also push the bare
+          # `latest`, and the jobs race for it — so `latest` could end up the
+          # headless image (no web). Only the complete job sets `latest`, via its
+          # explicit `type=raw,value=latest` below.
+          flavor: |
+            latest=false
           tags: |
             type=ref,event=branch,suffix=-cli
             type=ref,event=pr,suffix=-cli
@@ -273,6 +294,13 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # Disable metadata-action's automatic `latest=auto`: on a semver tag it
+          # would make EVERY image (headless/cli/bootstrap too) also push the bare
+          # `latest`, and the jobs race for it — so `latest` could end up the
+          # headless image (no web). Only the complete job sets `latest`, via its
+          # explicit `type=raw,value=latest` below.
+          flavor: |
+            latest=false
           tags: |
             type=ref,event=branch,suffix=-bootstrap
             type=ref,event=pr,suffix=-bootstrap
