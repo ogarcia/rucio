@@ -19,6 +19,19 @@ pub struct StatusResponse {
     pub external_ip: Option<String>,
 }
 
+/// One entry of GET /api/v1/peers (a recently-seen peer from the local DB).
+#[derive(Deserialize, Clone, Debug)]
+pub struct PeerInfo {
+    pub peer_id: String,
+    pub addresses: Vec<String>,
+    pub class: String,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct PeersResponse {
+    pub peers: Vec<PeerInfo>,
+}
+
 // ── eMule status ───────────────────────────────────────────────────────────
 
 #[derive(Deserialize, Clone, Copy, Debug, Default, PartialEq)]

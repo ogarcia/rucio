@@ -73,7 +73,7 @@ use downloads::{
     DownloadsTab, any_pausable, any_paused, any_terminal, api_add_links, clear_history, pause_all,
     refresh_downloads, resume_all,
 };
-use overlays::{AboutPanel, AddressesPanel, NodeStatusPanel, StatsPanel};
+use overlays::{AboutPanel, AddressesPanel, NodeStatusPanel, PeersPanel, StatsPanel};
 use searches::SearchesTab;
 use shares::SharesTab;
 use types::{
@@ -182,6 +182,7 @@ const TABS: [(Tab, &str); 4] = [
 pub enum Panel {
     NodeStatus,
     Addresses,
+    Peers,
     Stats,
     About,
 }
@@ -799,6 +800,10 @@ fn App() -> impl IntoView {
                                     menu_open.set(false);
                                 }>"Addresses"</button>
                                 <button class="dropdown-item" on:click=move |_| {
+                                    active_panel.set(Some(Panel::Peers));
+                                    menu_open.set(false);
+                                }>"Peers"</button>
+                                <button class="dropdown-item" on:click=move |_| {
                                     active_panel.set(Some(Panel::Stats));
                                     menu_open.set(false);
                                 }>"Statistics"</button>
@@ -863,6 +868,10 @@ fn App() -> impl IntoView {
             }.into_any(),
             Panel::Addresses => view! {
                 <AddressesPanel status=status active_panel=active_panel/>
+            }
+            .into_any(),
+            Panel::Peers => view! {
+                <PeersPanel active_panel=active_panel/>
             }.into_any(),
             Panel::Stats => view! {
                 <StatsPanel active_panel=active_panel/>

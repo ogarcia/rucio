@@ -8,8 +8,8 @@ use leptos::task::spawn_local;
 
 use crate::icons::{self, Icon};
 use crate::types::{
-    EmuleConnectivity, EmuleStatusResponse, MetricsResponse, StatusResponse, class_badge,
-    format_size, format_speed_full, format_uptime,
+    EmuleConnectivity, EmuleStatusResponse, MetricsResponse, PeerInfo, PeersResponse,
+    StatusResponse, class_badge, format_size, format_speed_full, format_uptime,
 };
 
 async fn api_fetch_emule_status() -> Option<EmuleStatusResponse> {
@@ -273,6 +273,89 @@ pub fn AddressesPanel(
                                 }}
                             </ul>
                         }.into_any()
+                    }}
+                </div>
+            </div>
+        </div>
+    }
+}
+
+/// Recently-seen peers (GET /api/v1/peers): a directory of known peers with
+/// their connectivity class and addresses. Polled every few seconds while open.
+#[component]
+pub fn PeersPanel(active_panel: RwSignal<Option<super::Panel>>) -> impl IntoView {
+    let close = move || active_panel.set(None);
+    let peers: RwSignal<Option<Vec<PeerInfo>>> = RwSignal::new(None);
+
+    let alive = Arc::new(AtomicBool::new(true));
+    let alive_cleanup = alive.clone();
+    on_cleanup(move || alive_cleanup.store(false, Ordering::Relaxed));
+
+    spawn_local(async move {
+        loop {
+            if !alive.load(Ordering::Relaxed) {
+                break;
+            }
+            if let Ok(resp) = gloo_net::http::Request::get("/api/v1/peers").send().await
+                && let Ok(p) = resp.json::<PeersResponse>().await
+                && alive.load(Ordering::Relaxed)
+            {
+                peers.set(Some(p.peers));
+            }
+            if !alive.load(Ordering::Relaxed) {
+                break;
+            }
+            sleep(Duration::from_secs(5)).await;
+        }
+    });
+
+    view! {
+        <div class="overlay-backdrop" on:click=move |_| close()>
+            <div class="overlay" on:click=move |e| e.stop_propagation()>
+                <div class="overlay-header">
+                    <span class="overlay-title">"Peers"</span>
+                    <button class="overlay-close" on:click=move |_| close()>
+                        <Icon paths=icons::X/>
+                    </button>
+                </div>
+                <div class="overlay-body">
+                    {move || match peers.get() {
+                        None => view! { <p class="loading">"Loading..."</p> }.into_any(),
+                        Some(list) if list.is_empty() => {
+                            view! { <p class="muted">"No peers seen yet."</p> }.into_any()
+                        }
+                        Some(list) => {
+                            let count = list.len();
+                            view! {
+                                <ul class="peer-list">
+                                    {list.into_iter().map(|p| {
+                                        let (label, css) = class_badge(&p.class);
+                                        let peer_id_title = p.peer_id.clone();
+                                        let addr = if p.addresses.is_empty() {
+                                            "—".to_string()
+                                        } else if p.addresses.len() == 1 {
+                                            p.addresses[0].clone()
+                                        } else {
+                                            format!("{} addresses", p.addresses.len())
+                                        };
+                                        view! {
+                                            <li class="peer-item">
+                                                <div class="peer-head">
+                                                    <span class=css>{label}</span>
+                                                    <span class="mono peer-id" title=peer_id_title>
+                                                        {p.peer_id}
+                                                    </span>
+                                                </div>
+                                                <span class="peer-addr">{addr}</span>
+                                            </li>
+                                        }
+                                    }).collect_view()}
+                                </ul>
+                                <p class="section-label">
+                                    {format!("{count} known peer{}", if count == 1 { "" } else { "s" })}
+                                </p>
+                            }.into_any()
+                        }
                     }}
                 </div>
             </div>

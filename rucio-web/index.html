@@ -387,6 +387,23 @@
             border-radius: 0.25rem; word-break: break-all;
         }
 
+        /* ── Peers panel ─────────────────────────────────────────────────── */
+        .peer-list { list-style: none; display: flex; flex-direction: column; gap: 0; }
+        .peer-item {
+            display: flex; flex-direction: column; gap: 0.2rem;
+            padding: 0.5rem 0; border-bottom: 1px solid var(--raised);
+        }
+        .peer-item:last-child { border-bottom: none; }
+        .peer-head { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
+        .peer-id {
+            font-size: 0.75rem; color: var(--text-2);
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
+        }
+        .peer-addr {
+            font-family: monospace; font-size: 0.625rem; color: var(--text-3);
+            word-break: break-all;
+        }
+
         /* ── Toolbar ─────────────────────────────────────────────────────── */
 
         .dl-toolbar {
