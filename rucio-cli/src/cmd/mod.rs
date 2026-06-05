@@ -4,3 +4,4 @@ pub mod emule;
 pub mod search;
 pub mod shares;
 pub mod status;
+pub mod uploads;

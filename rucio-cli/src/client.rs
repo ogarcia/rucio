@@ -24,6 +24,7 @@ use rucio_core::api::{
     },
     shares::{AddShareRequest, AddShareResponse, SharesResponse},
     status::{PeersResponse, StatusResponse},
+    uploads::UploadsResponse,
 };
 
 /// HTTP client bound to a specific daemon base URL.
@@ -218,6 +219,10 @@ impl ApiClient {
 
     pub async fn list_downloads(&self) -> Result<DownloadsResponse> {
         self.get("/api/v1/downloads").await
+    }
+
+    pub async fn list_uploads(&self) -> Result<UploadsResponse> {
+        self.get("/api/v1/uploads").await
     }
 
     pub async fn get_download(&self, id: i64) -> Result<DownloadDetailResponse> {

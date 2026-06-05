@@ -27,6 +27,11 @@ pub enum Commands {
         #[command(subcommand)]
         action: DownloadAction,
     },
+    /// Inspect active uploads (peers downloading from us)
+    Upload {
+        #[command(subcommand)]
+        action: UploadAction,
+    },
     /// Search for files on the network
     Search {
         #[command(subcommand)]
@@ -133,6 +138,17 @@ pub enum DownloadAction {
     Clean {
         /// Row number from `rucio download list` (e.g. 1) or root hash prefix (omit to remove all finished downloads)
         hash: Option<String>,
+    },
+}
+
+/// `rucio upload …` — inspect peers downloading from us.
+#[derive(Subcommand, Debug)]
+pub enum UploadAction {
+    /// List peers currently downloading a file from us
+    List {
+        /// Refresh the table live until interrupted with Ctrl-C
+        #[arg(short, long)]
+        watch: bool,
     },
 }
 
@@ -260,6 +276,9 @@ pub async fn run() -> Result<()> {
             DownloadAction::Pause { hash } => cmd::downloads::pause(&client, &hash).await,
             DownloadAction::Resume { hash } => cmd::downloads::resume(&client, &hash).await,
             DownloadAction::Clean { hash } => cmd::downloads::clean(&client, hash.as_deref()).await,
+        },
+        Commands::Upload { action } => match action {
+            UploadAction::List { watch } => cmd::uploads::list(&client, watch).await,
         },
         Commands::Node { action } => match action {
             NodeAction::Status => cmd::status::status(&client).await,
