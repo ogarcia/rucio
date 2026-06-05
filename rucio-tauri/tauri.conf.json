@@ -1,0 +1,18 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Rucio",
+  "identifier": "com.connectical.rucio",
+  "build": {},
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "longDescription": "Peer-to-peer file sharing over libp2p, with eMule/Kad2 compatibility.",
+    "shortDescription": "Rucio P2P file sharing"
+  }
+}

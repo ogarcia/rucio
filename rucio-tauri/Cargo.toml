@@ -1,0 +1,22 @@
+[package]
+name        = "rucio-tauri"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+authors     = { workspace = true }
+repository  = { workspace = true }
+description = "Portable Rucio desktop app — a thin Tauri shell hosting the embedded daemon and its web UI"
+
+# Excluded from the workspace `default-members`, so `cargo build`/`test`/`clippy`
+# (and the Linux/container CI) never pull in Tauri/WebView2. Built only by the
+# Windows desktop packaging job.
+
+[build-dependencies]
+tauri-build = "2"
+
+[dependencies]
+# The whole product, embedded: the daemon serves the Leptos UI + REST + WS on
+# loopback, so the shell just spawns it and points a webview at it.
+rucio-daemon = { path = "../rucio-daemon", features = ["emule-compat", "web-ui"] }
+tauri        = "2"
+tokio        = { workspace = true }

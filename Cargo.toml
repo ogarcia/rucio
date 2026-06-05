@@ -8,8 +8,11 @@ members = [
     "rucio",
     "rucio-emule",
     "rucio-web",
+    "rucio-tauri",
 ]
-# rucio-web compiles to wasm32; exclude it from the default host-target build
+# Excluded from the default host build:
+#  - rucio-web compiles to wasm32 (built via trunk)
+#  - rucio-tauri pulls Tauri/WebView2 and is built only by the Windows desktop job
 default-members = [
     "rucio-core",
     "rucio-net",
