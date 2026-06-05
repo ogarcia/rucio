@@ -1038,6 +1038,28 @@ pub type ActiveDownloads = Arc<RwLock<HashMap<[u8; 16], UploadInfo>>>;
 /// depending on the daemon. `None` means no limit.
 pub type ByteLimiter = Arc<dyn Fn(u64) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
+/// Hook for reporting active upload sessions to the daemon's upload-stats
+/// registry. Implemented by the daemon so this crate stays free of API types,
+/// mirroring [`ByteLimiter`]. `None` means uploads are not tracked.
+pub trait UploadObserver: Send + Sync {
+    /// Register the start of an upload session serving `hash` (display `name`)
+    /// to `peer`. The returned handle reports bytes as they are sent and
+    /// deregisters the session when dropped.
+    fn upload_started(
+        &self,
+        peer: SocketAddr,
+        hash: [u8; 16],
+        name: &str,
+    ) -> Box<dyn UploadSession>;
+}
+
+/// Per-session handle returned by [`UploadObserver::upload_started`]. Dropping
+/// it ends the session (the daemon removes the corresponding row).
+pub trait UploadSession: Send + Sync {
+    /// Report `bytes` just sent to the peer in this session.
+    fn add_bytes(&self, bytes: u64);
+}
+
 /// Everything the upload handler needs, shared across all incoming connections.
 pub struct UploadContext {
     /// Semaphore that caps simultaneous upload connections.
@@ -1068,6 +1090,8 @@ pub struct UploadContext {
     pub chunks_served: Arc<AtomicU64>,
     /// Optional upload rate limiter; gated before each SENDINGPART send.
     pub upload_limiter: Option<ByteLimiter>,
+    /// Optional observer fed live upload activity for the stats registry.
+    pub upload_observer: Option<Arc<dyn UploadObserver>>,
 }
 
 // ── Incoming TCP server ───────────────────────────────────────────────────────
@@ -1213,6 +1237,7 @@ async fn handle_incoming(mut stream: TcpStream, peer: SocketAddr, ctx: Arc<Uploa
                 &info,
                 &done,
                 &ctx,
+                peer,
                 OP_TIMEOUT,
             )
             .await
@@ -1255,6 +1280,7 @@ async fn send_hashset_answer(
 }
 
 /// Run the upload phase: STARTUPLOADREQ → ACCEPTUPLOAD → serve REQUESTPARTS.
+#[allow(clippy::too_many_arguments)]
 async fn run_upload_session(
     stream: &mut TcpStream,
     ciphers: &mut ObfCiphers,
@@ -1262,6 +1288,7 @@ async fn run_upload_session(
     info: &UploadInfo,
     done: &[bool],
     ctx: &UploadContext,
+    peer: SocketAddr,
     op_timeout: Duration,
 ) -> io::Result<()> {
     // Wait for STARTUPLOADREQ.
@@ -1280,6 +1307,13 @@ async fn run_upload_session(
     }
 
     write_frame(stream, ciphers, OP_ACCEPTUPLOAD_REQ, &[]).await?;
+
+    // Register this upload with the stats registry (if any); the guard removes
+    // the row when this session ends (function returns → drop).
+    let session = ctx
+        .upload_observer
+        .as_ref()
+        .map(|o| o.upload_started(peer, *hash, &info.name));
 
     // Serve from the file the whitelist entry points at: the `.part` for an
     // in-progress download, the final file for a completed share.
@@ -1350,6 +1384,9 @@ async fn run_upload_session(
                     write_frame(stream, ciphers, OP_SENDINGPART, &sp).await?;
                     ctx.uploaded_bytes.fetch_add(len as u64, Ordering::Relaxed);
                     ctx.chunks_served.fetch_add(1, Ordering::Relaxed);
+                    if let Some(s) = &session {
+                        s.add_bytes(len as u64);
+                    }
                     debug!(start, end, bytes = len, "Sent SENDINGPART");
                 }
             }

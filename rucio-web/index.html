@@ -665,6 +665,53 @@
         .dl-error { font-size: 0.75rem; color: var(--sf-fg); }
         .dl-actions { margin-left: auto; display: flex; gap: 0.5rem; }
 
+        /* ── Uploads ─────────────────────────────────────────────────────── */
+
+        /* Mirror of the downloads list for the other direction: peers pulling
+           data from us. One row per active upload, no selection. */
+        .ul-list { list-style: none; display: flex; flex-direction: column; gap: 0; }
+        .ul-row {
+            display: flex; align-items: center; gap: 0.75rem;
+            padding: 0.75rem 0.5rem;
+            border-bottom: 1px solid var(--raised);
+        }
+        .ul-row:last-child { border-bottom: none; }
+
+        .ul-badge {
+            display: inline-block; padding: 0.1rem 0.4rem;
+            border-radius: 4px; font-size: 0.625rem; font-weight: 700;
+            letter-spacing: 0.04em; white-space: nowrap; flex-shrink: 0;
+        }
+        .ul-badge-rucio { background: var(--sa); color: var(--sa-fg); }
+        .ul-badge-emule { background: var(--st); color: var(--st-fg); }
+
+        .ul-main { display: flex; flex-direction: column; gap: 0.125rem; min-width: 0; flex: 1; }
+        .ul-name {
+            font-size: 0.875rem; font-weight: 500; color: var(--text);
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .ul-peer {
+            font-size: 0.6875rem; color: var(--text-4);
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+            font-variant-numeric: tabular-nums;
+        }
+        .ul-sent {
+            font-size: 0.75rem; color: var(--text-3); white-space: nowrap;
+            font-variant-numeric: tabular-nums; text-align: right;
+        }
+        .ul-rate {
+            font-size: 0.8125rem; font-weight: 600; color: var(--sd-fg);
+            white-space: nowrap; font-variant-numeric: tabular-nums;
+            min-width: 5rem; text-align: right;
+        }
+
+        /* Reuses the downloads status bar layout (.dl-* classes inside). */
+        .ul-statusbar {
+            display: flex; align-items: center; gap: 0.75rem;
+            padding: 0.625rem 1.5rem;
+            border-top: 1px solid var(--border);
+        }
+
         /* ── Searches ────────────────────────────────────────────────────── */
 
         /* Mirrors .dl-toolbar so the Searches header matches Downloads/Shares:

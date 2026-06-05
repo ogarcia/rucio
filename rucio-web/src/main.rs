@@ -5,6 +5,7 @@ mod overlays;
 mod searches;
 mod shares;
 mod types;
+mod uploads;
 
 // ── Theme ──────────────────────────────────────────────────────────────────
 
@@ -76,9 +77,11 @@ use overlays::{AboutPanel, AddressesPanel, NodeStatusPanel, StatsPanel};
 use searches::SearchesTab;
 use shares::SharesTab;
 use types::{
-    DownloadResponse, SearchResult, SearchState, SearchSummary, SpeedLimits, StatusResponse,
-    TempLimitRequest, TempLimitStatus, WsEvent, format_rate_kbps, is_streamed_state,
+    ActiveUpload, DownloadResponse, SearchResult, SearchState, SearchSummary, SpeedLimits,
+    StatusResponse, TempLimitRequest, TempLimitStatus, UploadsResponse, WsEvent, format_rate_kbps,
+    is_streamed_state,
 };
+use uploads::UploadsTab;
 
 /// Search state shared across the app: the recent-search list, results keyed by
 /// search id, and the currently-selected search. Lives in `App` so the WS keeps
@@ -124,6 +127,7 @@ thread_local! {
 #[derive(Clone, Copy, PartialEq)]
 enum Tab {
     Downloads,
+    Uploads,
     Searches,
     Shares,
 }
@@ -132,6 +136,7 @@ impl Tab {
     fn as_str(self) -> &'static str {
         match self {
             Tab::Downloads => "downloads",
+            Tab::Uploads => "uploads",
             Tab::Searches => "searches",
             Tab::Shares => "shares",
         }
@@ -140,6 +145,7 @@ impl Tab {
     fn from_str(s: &str) -> Option<Self> {
         match s {
             "downloads" => Some(Tab::Downloads),
+            "uploads" => Some(Tab::Uploads),
             "searches" => Some(Tab::Searches),
             "shares" => Some(Tab::Shares),
             _ => None,
@@ -165,8 +171,9 @@ fn save_tab(t: Tab) {
 
 /// The navigation sections, shown as top-bar tabs (wide) or sidebar items
 /// (narrow). One source so both stay in sync.
-const TABS: [(Tab, &str); 3] = [
+const TABS: [(Tab, &str); 4] = [
     (Tab::Downloads, "Downloads"),
+    (Tab::Uploads, "Uploads"),
     (Tab::Searches, "Searches"),
     (Tab::Shares, "Shares"),
 ];
@@ -194,9 +201,11 @@ fn ws_url() -> String {
     format!("{ws_proto}://{host}/api/ws")
 }
 
+#[allow(clippy::too_many_arguments)]
 fn start_ws_loop(
     ws_connected: RwSignal<bool>,
     downloads: RwSignal<Vec<DownloadResponse>>,
+    uploads: RwSignal<Vec<ActiveUpload>>,
     status: RwSignal<Option<StatusResponse>>,
     dl_speed: RwSignal<u64>,
     ul_speed: RwSignal<u64>,
@@ -257,8 +266,8 @@ fn start_ws_loop(
                                     && let Ok(event) = serde_json::from_str::<WsEvent>(&text)
                                 {
                                     handle_event(
-                                        event, downloads, status, dl_speed, ul_speed, search,
-                                        indexing,
+                                        event, downloads, uploads, status, dl_speed, ul_speed,
+                                        search, indexing,
                                     );
                                 }
                             }
@@ -281,9 +290,11 @@ fn start_ws_loop(
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_event(
     event: WsEvent,
     downloads: RwSignal<Vec<DownloadResponse>>,
+    uploads: RwSignal<Vec<ActiveUpload>>,
     status: RwSignal<Option<StatusResponse>>,
     dl_speed: RwSignal<u64>,
     ul_speed: RwSignal<u64>,
@@ -291,6 +302,11 @@ fn handle_event(
     indexing: RwSignal<usize>,
 ) {
     match event {
+        WsEvent::UploadProgress(list) => {
+            // Volatile, full-snapshot stream: replace wholesale (the daemon
+            // sends one empty list when the last upload ends, clearing the tab).
+            uploads.set(list);
+        }
         WsEvent::DownloadProgress(list) => {
             // The daemon only streams *active* downloads. Merge into the existing
             // list so completed/paused/cancelled rows don't disappear.
@@ -468,6 +484,8 @@ fn App() -> impl IntoView {
     let ws_connected: RwSignal<bool> = RwSignal::new(false);
     let status: RwSignal<Option<StatusResponse>> = RwSignal::new(None);
     let downloads: RwSignal<Vec<DownloadResponse>> = RwSignal::new(vec![]);
+    // Peers currently downloading from us (driven by the WS UploadProgress).
+    let uploads: RwSignal<Vec<ActiveUpload>> = RwSignal::new(vec![]);
     // Number of files currently being indexed (driven by the WS IndexingCount).
     let indexing: RwSignal<usize> = RwSignal::new(0);
     let dl_speed: RwSignal<u64> = RwSignal::new(0);
@@ -532,12 +550,20 @@ fn App() -> impl IntoView {
             base_down.set(s.download_kbps);
         }
         refresh_downloads(downloads).await;
+        // Seed the Uploads tab so it shows current activity immediately; the WS
+        // UploadProgress stream keeps it live thereafter.
+        if let Ok(r) = gloo_net::http::Request::get("/api/v1/uploads").send().await
+            && let Ok(s) = r.json::<UploadsResponse>().await
+        {
+            uploads.set(s.uploads);
+        }
     });
 
     // Start the persistent WebSocket loop.
     start_ws_loop(
         ws_connected,
         downloads,
+        uploads,
         status,
         dl_speed,
         ul_speed,
@@ -793,6 +819,7 @@ fn App() -> impl IntoView {
                             temp_limit=temp_limit
                         />
                     }.into_any(),
+                    Tab::Uploads => view! { <UploadsTab uploads=uploads/> }.into_any(),
                     Tab::Searches => view! { <SearchesTab search=search downloads=downloads/> }.into_any(),
                     Tab::Shares => view! { <SharesTab indexing=indexing/> }.into_any(),
                 }}

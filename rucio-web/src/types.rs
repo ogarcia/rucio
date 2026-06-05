@@ -145,6 +145,32 @@ pub struct DownloadDetailResponse {
     pub eta_secs: Option<u64>,
 }
 
+/// Which network an active upload is served over.
+#[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UploadNetwork {
+    Rucio,
+    Emule,
+}
+
+/// A peer currently downloading a file from us (GET /api/v1/uploads,
+/// WsEvent::UploadProgress).
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+pub struct ActiveUpload {
+    pub network: UploadNetwork,
+    pub peer: String,
+    pub file_hash: String,
+    pub file_name: Option<String>,
+    pub bytes_sent: u64,
+    pub rate_bps: u64,
+    pub started_at: u64,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct UploadsResponse {
+    pub uploads: Vec<ActiveUpload>,
+}
+
 /// GET /api/v1/downloads/{id}/pieces — per-piece state for a block bar.
 #[derive(Deserialize, Clone, Debug)]
 pub struct DownloadPiecesResponse {
@@ -437,6 +463,7 @@ pub enum WsEvent {
         upload_speed: u64,
     },
     DownloadProgress(Vec<DownloadResponse>),
+    UploadProgress(Vec<ActiveUpload>),
     IndexingCount {
         pending: usize,
     },

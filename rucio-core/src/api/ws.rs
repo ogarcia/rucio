@@ -33,6 +33,11 @@ pub enum WsEvent {
     /// download exists.
     DownloadProgress(Vec<DownloadResponse>),
 
+    /// One or more peers are actively downloading files from us.
+    /// Emitted every second while at least one upload is in progress (the
+    /// upload-side mirror of `DownloadProgress`).
+    UploadProgress(Vec<crate::api::uploads::ActiveUpload>),
+
     /// The number of files currently being indexed changed.
     IndexingCount { pending: usize },
 

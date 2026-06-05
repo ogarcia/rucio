@@ -16,6 +16,7 @@ mod static_files;
 pub mod status;
 #[cfg(test)]
 mod tests;
+pub mod uploads;
 pub mod ws;
 
 use std::collections::HashMap;
@@ -105,6 +106,7 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         config::get_limits,
         config::put_limits,
         metrics::get_metrics,
+        uploads::list_uploads,
         health::get_health,
         emule::get_emule_status,
         emule::post_emule_bootstrap,
@@ -151,6 +153,9 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         rucio_core::api::metrics::SessionMetrics,
         rucio_core::api::metrics::TotalMetrics,
         rucio_core::api::metrics::HealthResponse,
+        rucio_core::api::uploads::UploadNetwork,
+        rucio_core::api::uploads::ActiveUpload,
+        rucio_core::api::uploads::UploadsResponse,
         rucio_core::api::emule::EmuleBootstrapRequest,
         rucio_core::api::emule::EmuleBootstrapResponse,
         rucio_core::api::emule::EmuleStatusResponse,
@@ -404,6 +409,8 @@ pub struct AppState {
     pub external_ip: crate::upnp::ExternalIp,
     /// Per-download live statistics (sources, pieces in flight, speed).
     pub live_stats: crate::live_stats::LiveStatsMap,
+    /// Per-peer active-upload statistics (who is downloading from us, rate).
+    pub upload_stats: Arc<crate::upload_stats::UploadRegistry>,
 }
 
 /// Live node status kept in memory and updated by the event loop.
@@ -509,6 +516,8 @@ fn v1_router() -> Router<AppState> {
         )
         // metrics
         .route("/metrics", routing::get(metrics::get_metrics))
+        // active uploads (peers downloading from us)
+        .route("/uploads", routing::get(uploads::list_uploads))
         // emule
         .route("/emule/status", routing::get(emule::get_emule_status))
         .route(

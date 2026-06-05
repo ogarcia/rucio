@@ -227,6 +227,8 @@ pub struct DownloadEngine {
     download_throttle: Arc<TokenBucket>,
     /// Per-download live statistics, shared with the API handlers.
     live_stats: crate::live_stats::LiveStatsMap,
+    /// Per-peer active-upload statistics, shared with the API handlers.
+    upload_stats: Arc<crate::upload_stats::UploadRegistry>,
 }
 
 impl DownloadEngine {
@@ -242,6 +244,7 @@ impl DownloadEngine {
         upload_throttle: Arc<TokenBucket>,
         download_throttle: Arc<TokenBucket>,
         live_stats: crate::live_stats::LiveStatsMap,
+        upload_stats: Arc<crate::upload_stats::UploadRegistry>,
     ) -> Self {
         Self {
             db,
@@ -257,6 +260,7 @@ impl DownloadEngine {
             upload_throttle,
             download_throttle,
             live_stats,
+            upload_stats,
         }
     }
 
@@ -1396,7 +1400,7 @@ impl DownloadEngine {
 
     pub async fn serve_chunk(
         &self,
-        _peer: PeerId,
+        peer: PeerId,
         request: ChunkRequest,
         channel_id: u64,
         is_high_id: bool,
@@ -1422,6 +1426,8 @@ impl DownloadEngine {
         let semaphore = Arc::clone(&self.upload_semaphore);
         let scheduler = Arc::clone(&self.upload_scheduler);
         let upload_throttle = Arc::clone(&self.upload_throttle);
+        let upload_stats = Arc::clone(&self.upload_stats);
+        let root_hash = request.root_hash;
 
         tokio::spawn(async move {
             let started = std::time::Instant::now();
@@ -1456,6 +1462,17 @@ impl DownloadEngine {
                     upload_throttle.acquire(bytes).await;
                 }
                 metrics.record_upload(bytes);
+                // Track this peer in the active-upload registry. The name is
+                // resolved (one DB hit) only on the first chunk to this peer
+                // for this file; later chunks just accumulate.
+                if !upload_stats.add_bytes_rucio(peer, &root_hash, bytes) {
+                    let name = db::shares::get_by_hash(&db, &root_hash)
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|r| r.name);
+                    upload_stats.record_rucio(peer, &root_hash, name, bytes);
+                }
             }
             debug!(
                 chunk_idx = request.chunk_idx,
@@ -1678,6 +1695,7 @@ mod tests {
             Arc::new(crate::throttle::TokenBucket::new(0)),
             Arc::new(crate::throttle::TokenBucket::new(0)),
             Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            Arc::new(crate::upload_stats::UploadRegistry::new()),
         );
         (engine, cmd_rx, db_dir)
     }

@@ -8,6 +8,7 @@ pub mod metrics;
 pub mod throttle;
 pub mod transfer;
 pub mod upload_scheduler;
+pub mod upload_stats;
 pub mod upnp;
 pub mod watcher;
 
@@ -214,6 +215,9 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     // sampler in this loop, and the API handlers.
     let live_stats: live_stats::LiveStatsMap =
         Arc::new(RwLock::new(std::collections::HashMap::new()));
+    // Per-peer active-upload registry, shared between the rucio engine, the
+    // eMule upload server, the per-second sampler in this loop, and the API.
+    let upload_stats = Arc::new(upload_stats::UploadRegistry::new());
     let mut engine = transfer::DownloadEngine::new(
         db.clone(),
         handle.cmd_tx.clone(),
@@ -225,6 +229,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
         Arc::clone(&upload_throttle),
         Arc::clone(&download_throttle),
         Arc::clone(&live_stats),
+        Arc::clone(&upload_stats),
     );
 
     // Resume any downloads that were interrupted by a previous crash or restart.
@@ -389,6 +394,9 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                     uploaded_bytes: emule_uploaded_bytes.clone(),
                     chunks_served: emule_uploaded_chunks.clone(),
                     upload_limiter: Some(upload_limiter),
+                    upload_observer: Some(std::sync::Arc::new(upload_stats::EmuleUploadObserver(
+                        Arc::clone(&upload_stats),
+                    ))),
                 });
                 tokio::spawn(rucio_emule::transfer::serve_incoming(listener, upload_ctx));
             }
@@ -458,6 +466,7 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
         emule_cancel: emule_cancel.clone(),
         external_ip,
         live_stats: Arc::clone(&live_stats),
+        upload_stats: Arc::clone(&upload_stats),
     };
 
     // --- eMule: republish our shared files as Kad sources (good citizen) ----
@@ -611,6 +620,10 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     // table by then) so shares actually land in the DHT without waiting for the
     // 22-minute reprovide tick.
     let mut reannounced_after_connect = false;
+    // Whether the last UploadProgress push carried any rows, so we can emit one
+    // empty snapshot when uploads drain (clearing the client's Uploads tab)
+    // without streaming an empty list every idle second.
+    let mut had_uploads = false;
     loop {
         tokio::select! {
             _ = shutdown_signal() => {
@@ -662,6 +675,8 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                 }
                 session_metrics.tick();
                 sample_download_speeds(&db, &live_stats, &mut speed_samples).await;
+                // Refresh per-peer upload rates and prune finished rucio rows.
+                upload_stats.sample();
             }
             _ = metrics_flush_tick.tick() => {
                 let delta = session_metrics.take_delta();
@@ -774,6 +789,18 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
                 }
                 if !active.is_empty() {
                     let _ = ws_tx.send(WsEvent::DownloadProgress(active));
+                }
+
+                // UploadProgress — peers currently downloading from us. Push a
+                // full snapshot while active, and one empty snapshot on the
+                // active→idle edge so the client clears its list promptly.
+                let uploads = upload_stats.snapshot();
+                if !uploads.is_empty() {
+                    had_uploads = true;
+                    let _ = ws_tx.send(WsEvent::UploadProgress(uploads));
+                } else if had_uploads {
+                    had_uploads = false;
+                    let _ = ws_tx.send(WsEvent::UploadProgress(Vec::new()));
                 }
 
                 // SearchStateChanged — emit on lifecycle transitions (e.g. a
