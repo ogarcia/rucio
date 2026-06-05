@@ -13,7 +13,9 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: "-D warnings"
+  # No global RUSTFLAGS here: a set RUSTFLAGS env overrides the target-scoped
+  # rustflags in .cargo/config.toml, which would drop the Windows crt-static
+  # linking. Warnings are gated in ci.yml on every push/PR.
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -168,7 +170,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-unknown-unknown
+          targets: wasm32-unknown-unknown,x86_64-pc-windows-msvc
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -184,15 +186,17 @@ jobs:
       - name: Build frontend
         run: cd rucio-web && trunk build --release
 
+      # Explicit --target so the crt-static rustflags in .cargo/config.toml apply
+      # only to the final binary, not to host proc-macros / build scripts.
       - name: Build desktop app
-        run: cargo build --release -p rucio-tauri
+        run: cargo build --release -p rucio-tauri --target x86_64-pc-windows-msvc
 
       - name: Package (portable ZIP)
         shell: pwsh
         run: |
           $archive = "rucio-${{ github.ref_name }}-windows-x86_64-portable.zip"
           New-Item -ItemType Directory -Force stage | Out-Null
-          Copy-Item target/release/rucio-tauri.exe stage/Rucio.exe
+          Copy-Item target/x86_64-pc-windows-msvc/release/rucio-tauri.exe stage/Rucio.exe
           @"
           Rucio - portable build.
 

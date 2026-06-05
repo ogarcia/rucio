@@ -1,0 +1,11 @@
+# Statically link the MSVC C runtime for Windows builds, so the portable
+# desktop .exe is self-contained and does not require the Visual C++
+# Redistributable (no VCRUNTIME140*.dll / MSVCP140.dll dependency) — the
+# whole point of shipping it as an unzip-and-run portable app.
+#
+# Target-scoped: only affects x86_64-pc-windows-msvc builds, so Linux/macOS
+# host builds and the rest of the workspace are untouched. When building this
+# target, pass `--target x86_64-pc-windows-msvc` explicitly so proc-macros and
+# build scripts (host artifacts) are NOT compiled with crt-static.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
