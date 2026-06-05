@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Rucio — decentralized P2P file sharing</title>
+    <meta
+      name="description"
+      content="Rucio is decentralized peer-to-peer file sharing in Rust over libp2p, with eMule/Kad2 compatibility. No trackers, no central servers, no relays — files move directly between peers."
+    />
+    <meta name="theme-color" content="#4f6ef7" />
+    <link rel="icon" href="favicon.svg" />
+
+    <!-- Open Graph / social preview -->
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Rucio — decentralized P2P file sharing" />
+    <meta
+      property="og:description"
+      content="Peer-to-peer file sharing in Rust over libp2p, with eMule/Kad2 compatibility. No trackers, no central servers."
+    />
+    <meta property="og:image" content="panel.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f8fafc;
+        --surface: #ffffff;
+        --surface-2: #f1f5f9;
+        --border: #e2e8f0;
+        --text: #0f172a;
+        --text-2: #475569;
+        --text-3: #64748b;
+        --accent: #4f6ef7;
+        --accent-2: #3b5bdb;
+        --accent-fg: #ffffff;
+        --shadow: 0 12px 36px rgba(15, 23, 42, 0.12);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          color-scheme: dark;
+          --bg: #0f0f1a;
+          --surface: #1a1a2e;
+          --surface-2: #16162a;
+          --border: #2d2d4e;
+          --text: #e2e8f0;
+          --text-2: #94a3b8;
+          --text-3: #64748b;
+          --accent: #7c93f0;
+          --accent-2: #a5b4fc;
+          --accent-fg: #0f0f1a;
+          --shadow: 0 12px 36px rgba(0, 0, 0, 0.4);
+        }
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+      html {
+        scroll-behavior: smooth;
+      }
+      body {
+        margin: 0;
+        font-family: system-ui, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        line-height: 1.6;
+        -webkit-font-smoothing: antialiased;
+      }
+      a {
+        color: var(--accent);
+        text-decoration: none;
+      }
+      a:hover {
+        text-decoration: underline;
+      }
+      .wrap {
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 0 1.25rem;
+      }
+
+      /* ── Header ─────────────────────────────────────────────── */
+      header.site {
+        position: sticky;
+        top: 0;
+        z-index: 10;
+        background: color-mix(in srgb, var(--bg) 88%, transparent);
+        backdrop-filter: blur(8px);
+        border-bottom: 1px solid var(--border);
+      }
+      .site .wrap {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        height: 56px;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        color: var(--text);
+        font-weight: 700;
+        font-size: 1.05rem;
+      }
+      .brand:hover {
+        text-decoration: none;
+      }
+      .brand svg {
+        width: 28px;
+        height: 28px;
+        color: var(--accent);
+      }
+      .site nav {
+        margin-left: auto;
+        display: flex;
+        gap: 1.25rem;
+        font-size: 0.9rem;
+      }
+      .site nav a {
+        color: var(--text-2);
+      }
+
+      /* ── Buttons ────────────────────────────────────────────── */
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.6rem 1.1rem;
+        border-radius: 0.5rem;
+        border: 1px solid var(--border);
+        background: var(--surface);
+        color: var(--text);
+        font-weight: 600;
+        font-size: 0.9rem;
+        transition: transform 0.08s ease, border-color 0.15s;
+      }
+      .btn:hover {
+        text-decoration: none;
+        transform: translateY(-1px);
+        border-color: var(--accent);
+      }
+      .btn-primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: var(--accent-fg);
+      }
+
+      /* ── Hero ───────────────────────────────────────────────── */
+      .hero {
+        text-align: center;
+        padding: 4rem 0 2.5rem;
+      }
+      .hero h1 {
+        font-size: clamp(2rem, 5vw, 3.1rem);
+        line-height: 1.1;
+        margin: 0 0 1rem;
+        letter-spacing: -0.02em;
+      }
+      .hero .lede {
+        font-size: 1.15rem;
+        color: var(--text-2);
+        max-width: 40rem;
+        margin: 0 auto 1.75rem;
+      }
+      .cta {
+        display: flex;
+        gap: 0.75rem;
+        justify-content: center;
+        flex-wrap: wrap;
+      }
+      .tags {
+        list-style: none;
+        padding: 0;
+        margin: 2rem 0 0;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem 1.25rem;
+        justify-content: center;
+        color: var(--text-3);
+        font-size: 0.85rem;
+      }
+      .tags li::before {
+        content: "◆";
+        color: var(--accent);
+        margin-right: 0.4rem;
+        font-size: 0.7em;
+      }
+
+      /* ── Screenshots ────────────────────────────────────────── */
+      .shots {
+        display: grid;
+        gap: 1.25rem;
+        margin: 1rem 0 3.5rem;
+      }
+      .shots figure {
+        margin: 0;
+      }
+      .shots img {
+        width: 100%;
+        height: auto;
+        display: block;
+        border: 1px solid var(--border);
+        border-radius: 0.75rem;
+        box-shadow: var(--shadow);
+      }
+      .shots figcaption {
+        margin-top: 0.6rem;
+        text-align: center;
+        font-size: 0.85rem;
+        color: var(--text-3);
+      }
+
+      /* ── Sections ───────────────────────────────────────────── */
+      section.block {
+        padding: 2.5rem 0;
+        border-top: 1px solid var(--border);
+      }
+      section.block h2 {
+        font-size: 1.6rem;
+        margin: 0 0 1.5rem;
+        letter-spacing: -0.01em;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+        gap: 1rem;
+      }
+      .card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 0.75rem;
+        padding: 1.25rem;
+      }
+      .card h3 {
+        margin: 0 0 0.4rem;
+        font-size: 1.05rem;
+      }
+      .card p {
+        margin: 0;
+        color: var(--text-2);
+        font-size: 0.92rem;
+      }
+      .card .tag {
+        font-size: 0.7rem;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--accent);
+        font-weight: 700;
+      }
+      pre {
+        background: var(--surface-2);
+        border: 1px solid var(--border);
+        border-radius: 0.5rem;
+        padding: 0.85rem 1rem;
+        overflow-x: auto;
+        font-size: 0.85rem;
+        margin: 0.75rem 0 0;
+      }
+      code {
+        font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      }
+      .muted {
+        color: var(--text-3);
+        font-size: 0.9rem;
+      }
+
+      /* ── Footer ─────────────────────────────────────────────── */
+      footer.site {
+        border-top: 1px solid var(--border);
+        padding: 2rem 0;
+        color: var(--text-3);
+        font-size: 0.85rem;
+        text-align: center;
+      }
+      footer.site a {
+        color: var(--text-2);
+      }
+    </style>
+  </head>
+  <body>
+    <!-- The mark is the app's favicon, recoloured to the accent. -->
+    <header class="site">
+      <div class="wrap">
+        <a class="brand" href="#top">
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path
+              d="M19.3 12.4 C16.7 9.2 15.9 8.2 16.0 7.9 A16.3 16.3 0 0 0 17.1 6.3 C17.3 6.0 17.7 5.0 17.0 4.3 C16.4 3.7 15.7 3.7 15.1 4.3 S14.3 5.0 13.8 5.4 L13.2 4.3 C13.0 3.8 12.5 3.0 11.9 2.7 S10.5 3.0 10.5 4.3 A10.0 10.0 0 0 1 10.2 6.8 C10.1 7.1 9.9 7.6 5.3 17.1 L4.0 19.7 L9.9 19.7 C10.5 18.7 10.3 18.7 11.2 16.9 L11.8 15.4 L13.0 15.9 C14.4 16.5 15.7 17.0 17.1 17.6 A2.1 2.1 0 0 0 19.4 17.0 A3.5 3.5 0 0 0 19.3 12.4 Z"
+            />
+          </svg>
+          <span>Rucio</span>
+        </a>
+        <nav>
+          <a href="#features">Features</a>
+          <a href="#download">Download</a>
+          <a href="https://github.com/ogarcia/rucio">GitHub</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="wrap" id="top">
+      <section class="hero">
+        <h1>Decentralized peer-to-peer file sharing</h1>
+        <p class="lede">
+          Rucio is a file-sharing application written in Rust over libp2p, with
+          eMule/Kad2 compatibility. No trackers, no central servers, no relays —
+          files are found through a distributed hash table and keyword search,
+          and transferred directly between peers.
+        </p>
+        <div class="cta">
+          <a class="btn btn-primary" href="#download">Download</a>
+          <a class="btn" href="https://github.com/ogarcia/rucio">View on GitHub</a>
+        </div>
+        <ul class="tags">
+          <li>No trackers</li>
+          <li>No central servers</li>
+          <li>eMule / Kad2 compatible</li>
+          <li>Web control panel</li>
+          <li>GPLv3</li>
+        </ul>
+      </section>
+
+      <div class="shots">
+        <figure>
+          <img src="panel.png" alt="Rucio web panel showing active transfers" />
+          <figcaption>The built-in web control panel — transfers, shares and node status.</figcaption>
+        </figure>
+        <figure>
+          <img src="searches.png" alt="Rucio search results across the rucio and eMule networks" />
+          <figcaption>Unified search across the rucio and eMule networks.</figcaption>
+        </figure>
+      </div>
+
+      <section class="block" id="features">
+        <h2>What it does</h2>
+        <div class="grid">
+          <div class="card">
+            <h3>Fully decentralized</h3>
+            <p>
+              Discovery via a Kademlia DHT and keyword search via Gossipsub.
+              Direct peer-to-peer transfers — no relay nodes for data.
+            </p>
+          </div>
+          <div class="card">
+            <h3>eMule / Kad2 compatible</h3>
+            <p>
+              Talks to the existing eMule Kad network: keyword search, source
+              lookup and downloads, including obfuscated connections.
+            </p>
+          </div>
+          <div class="card">
+            <h3>Web control panel</h3>
+            <p>
+              Manage searches, downloads, uploads and shares from a clean web
+              UI — embedded in the daemon, no extra setup.
+            </p>
+          </div>
+          <div class="card">
+            <h3>Runs anywhere</h3>
+            <p>
+              A single daemon for Linux, macOS and containers, a CLI, and a
+              portable Windows desktop app — unzip and run.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section class="block" id="download">
+        <h2>Download</h2>
+        <div class="grid">
+          <div class="card">
+            <span class="tag">Windows</span>
+            <h3>Portable desktop app</h3>
+            <p>
+              No install: unzip and run. All data lives in the same folder.
+              Grab the <code>…-windows-x86_64-portable.zip</code> from the
+              latest release.
+            </p>
+            <p style="margin-top: 0.75rem">
+              <a class="btn btn-primary" href="https://github.com/ogarcia/rucio/releases/latest">Latest release</a>
+            </p>
+          </div>
+          <div class="card">
+            <span class="tag">Linux / macOS</span>
+            <h3>Daemon + CLI</h3>
+            <p>
+              A single binary (<code>rucio</code> + <code>ruciod</code>) with
+              the web panel embedded. Prebuilt for x86_64 and ARM64.
+            </p>
+            <p style="margin-top: 0.75rem">
+              <a class="btn" href="https://github.com/ogarcia/rucio/releases/latest">Latest release</a>
+            </p>
+          </div>
+          <div class="card">
+            <span class="tag">Docker</span>
+            <h3>Container image</h3>
+            <p>Run the daemon anywhere with the published image:</p>
+            <pre><code>docker run -d \
+  -p 4321:4321 -p 4662:4662 \
+  -p 4672:4672/udp \
+  ghcr.io/ogarcia/rucio</code></pre>
+          </div>
+          <div class="card">
+            <span class="tag">Source</span>
+            <h3>Build it yourself</h3>
+            <p>
+              It's Rust + a Leptos/WASM frontend. Build instructions and the
+              full protocol live in the repository.
+            </p>
+            <p style="margin-top: 0.75rem">
+              <a class="btn" href="https://github.com/ogarcia/rucio">Source &amp; docs</a>
+            </p>
+          </div>
+        </div>
+        <p class="muted" style="margin-top: 1.5rem">
+          On Windows the app is a single self-contained executable — no Visual
+          C++ Redistributable needed. On first run Windows Firewall asks to allow
+          network access; click Allow for full connectivity.
+        </p>
+      </section>
+    </main>
+
+    <footer class="site">
+      <div class="wrap">
+        Rucio is free software under the
+        <a href="https://github.com/ogarcia/rucio/blob/master/LICENSE">GPLv3</a>.
+        ·
+        <a href="https://github.com/ogarcia/rucio">github.com/ogarcia/rucio</a>
+      </div>
+    </footer>
+  </body>
+</html>
