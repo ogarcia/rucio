@@ -33,3 +33,36 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Test
         run: cargo test --all-features --no-fail-fast
+
+  # The desktop shell (rucio-tauri) is excluded from default-members, so the
+  # check job above never builds it. Compile-check it here on Linux (WebKitGTK)
+  # so it can't rot — the same code ships as the Windows portable app.
+  desktop:
+    name: Desktop shell (Linux build check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: desktop
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev \
+            librsvg2-dev \
+            build-essential
+      - name: Install trunk
+        uses: taiki-e/install-action@v2
+        with:
+          tool: trunk
+      - name: Build frontend
+        run: cd rucio-web && trunk build --release
+      - name: Clippy desktop shell
+        run: cargo clippy -p rucio-tauri --all-targets -- -D warnings

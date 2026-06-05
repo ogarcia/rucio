@@ -150,11 +150,71 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
+  # Windows portable desktop app — the Tauri shell hosting the embedded daemon
+  # + web UI. Shipped as a ZIP (no installer): unzip to a writable folder, run,
+  # and all state lives next to the .exe (portable mode). Relies on the
+  # evergreen WebView2 runtime (preinstalled on Windows 10/11).
+  # ---------------------------------------------------------------------------
+  windows-desktop:
+    name: Build Windows desktop (portable)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-desktop
+
+      - name: Install trunk
+        uses: taiki-e/install-action@v2
+        with:
+          tool: trunk
+
+      # The embedded daemon serves the web UI (web-ui feature / rust-embed), so
+      # the frontend has to be built before the crate is compiled.
+      - name: Build frontend
+        run: cd rucio-web && trunk build --release
+
+      - name: Build desktop app
+        run: cargo build --release -p rucio-tauri
+
+      - name: Package (portable ZIP)
+        shell: pwsh
+        run: |
+          $archive = "rucio-${{ github.ref_name }}-windows-x86_64-portable.zip"
+          New-Item -ItemType Directory -Force stage | Out-Null
+          Copy-Item target/release/rucio-tauri.exe stage/Rucio.exe
+          @"
+          Rucio - portable build.
+
+          Extract this folder somewhere you can write to (Desktop, Documents -
+          NOT Program Files) and run Rucio.exe. All data (settings, database,
+          downloads, identity) lives in this same folder, so deleting the folder
+          removes everything.
+
+          Requires the Microsoft Edge WebView2 runtime, preinstalled on
+          Windows 10/11.
+          "@ | Set-Content -Encoding UTF8 stage/README.txt
+          Compress-Archive -Path stage/* -DestinationPath $archive -Force
+          "ARCHIVE=$archive" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: rucio-windows-desktop
+          path: ${{ env.ARCHIVE }}
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
   # Create GitHub Release and attach all binaries
   # ---------------------------------------------------------------------------
   release:
     name: GitHub Release
-    needs: [build, web]
+    needs: [build, web, windows-desktop]
     runs-on: ubuntu-latest
     permissions:
       contents: write
