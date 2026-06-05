@@ -19,4 +19,5 @@ tauri-build = "2"
 # loopback, so the shell just spawns it and points a webview at it.
 rucio-daemon = { path = "../rucio-daemon", features = ["emule-compat", "web-ui"] }
 tauri        = "2"
+tauri-plugin-single-instance = "2"
 tokio        = { workspace = true }

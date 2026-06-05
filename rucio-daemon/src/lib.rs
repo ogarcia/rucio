@@ -83,8 +83,19 @@ pub fn apply_base_dir_env(portable: bool, base_dir: Option<&std::path::Path>) {
     }
 }
 
-/// Entry point for the daemon logic.
+/// Entry point for the daemon logic. Runs until Ctrl-C / SIGTERM.
 pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
+    run_until(config_path, shutdown_signal()).await
+}
+
+/// Like [`run`], but also shuts down gracefully when `shutdown` resolves — not
+/// only on a process signal. The desktop shell passes a trigger it fires when
+/// its window closes, so the daemon still flushes metrics, saves the Kad cache
+/// and closes SQLite cleanly instead of being killed with the process.
+pub async fn run_until<F: std::future::Future<Output = ()>>(
+    config_path: Option<&std::path::Path>,
+    shutdown: F,
+) -> Result<()> {
     rucio_core::logging::init(
         "RUCIOD",
         "rucio_daemon=info,rucio_core=info,rucio_emule=info,rucio_net=info",
@@ -659,9 +670,11 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     // empty snapshot when uploads drain (clearing the client's Uploads tab)
     // without streaming an empty list every idle second.
     let mut had_uploads = false;
+    // Single-use shutdown trigger (process signal or the shell's window-close).
+    tokio::pin!(shutdown);
     loop {
         tokio::select! {
-            _ = shutdown_signal() => {
+            _ = &mut shutdown => {
                 info!("Received shutdown signal, shutting down");
                 let _ = handle.cmd_tx.send(node::messages::NodeCmd::Shutdown).await;
                 // Remove UPnP mappings while the network is still up (best-effort,

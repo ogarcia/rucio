@@ -1,10 +1,10 @@
 //! Portable Rucio desktop shell.
 //!
-//! A thin Tauri app that embeds the whole product: it spawns
-//! [`rucio_daemon::run`] (which serves the Leptos UI + REST + WebSocket on
-//! loopback) and points a single webview window at it. The frontend is *not*
-//! ported to Tauri IPC — the page talks to the daemon over HTTP/WS exactly as
-//! in a browser, so the web UI works unchanged.
+//! A thin Tauri app that embeds the whole product: it spawns the daemon (which
+//! serves the Leptos UI + REST + WebSocket on loopback) and points a single
+//! webview window at it. The frontend is *not* ported to Tauri IPC — the page
+//! talks to the daemon over HTTP/WS exactly as in a browser, so the web UI
+//! works unchanged.
 //!
 //! Storage is portable: all state lives next to the executable (see
 //! [`rucio_daemon::apply_base_dir_env`]).
@@ -16,9 +16,11 @@
     windows_subsystem = "windows"
 )]
 
+use std::sync::Mutex;
 use std::time::Duration;
 
-use tauri::{WebviewUrl, WebviewWindowBuilder};
+use tauri::{Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
+use tokio::sync::oneshot;
 
 /// Loopback host the embedded daemon serves the web UI + REST + WS on. The
 /// shell never exposes it off-loopback — there is no authentication. The port
@@ -60,18 +62,35 @@ fn main() {
     // SAFETY: set in main before the Tauri runtime / any worker thread exists.
     unsafe { std::env::set_var("RUCIOD_API_LISTEN", format!("{API_HOST}:{port}")) };
 
-    tauri::Builder::default()
+    // Spawn the embedded daemon with a graceful-shutdown trigger we fire when
+    // the window closes, so it flushes metrics, saves the Kad cache and closes
+    // SQLite cleanly instead of being killed with the process.
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let daemon = tauri::async_runtime::spawn(async move {
+        if let Err(e) = rucio_daemon::run_until(None, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        {
+            eprintln!("rucio daemon exited with error: {e}");
+        }
+    });
+    // Wrapped so the (FnMut) exit handler can take them exactly once.
+    let shutdown_tx = Mutex::new(Some(shutdown_tx));
+    let daemon = Mutex::new(Some(daemon));
+
+    let app = tauri::Builder::default()
+        // Must be registered first. A second launch focuses the running window
+        // instead of starting a rival daemon over the same portable data dir.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.unminimize();
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+        }))
         .setup(move |app| {
             let handle = app.handle().clone();
-
-            // Spawn the embedded daemon. When the app exits, the process ends
-            // and takes the daemon down with it.
-            tauri::async_runtime::spawn(async {
-                if let Err(e) = rucio_daemon::run(None).await {
-                    eprintln!("rucio daemon exited with error: {e}");
-                }
-            });
-
             // Open the window once the daemon's API accepts connections, so the
             // first paint isn't a connection error.
             tauri::async_runtime::spawn(async move {
@@ -90,11 +109,25 @@ fn main() {
                     eprintln!("failed to open the main window: {e}");
                 }
             });
-
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running the Rucio desktop shell");
+        .build(tauri::generate_context!())
+        .expect("error while building the Rucio desktop shell");
+
+    app.run(move |_app, event| {
+        if let RunEvent::ExitRequested { .. } = event {
+            // Trigger the daemon's graceful shutdown and wait for it, bounded so
+            // a wedged daemon can't hang the close (then the process exits).
+            if let Some(tx) = shutdown_tx.lock().unwrap().take() {
+                let _ = tx.send(());
+            }
+            if let Some(task) = daemon.lock().unwrap().take() {
+                let _ = tauri::async_runtime::block_on(async {
+                    tokio::time::timeout(Duration::from_secs(8), task).await
+                });
+            }
+        }
+    });
 }
 
 /// Poll the loopback API port until it accepts a TCP connection — the daemon
