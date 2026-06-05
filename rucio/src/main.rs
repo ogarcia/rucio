@@ -6,8 +6,7 @@
 /// Distributing a single binary:
 ///   - `rucio`  → CLI mode
 ///   - `ruciod` → daemon mode  (symlink or hardlink to the same binary)
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     let argv0 = std::env::args().next().unwrap_or_default();
 
     if argv0.contains("ruciod") {
@@ -19,11 +18,33 @@ async fn main() -> anyhow::Result<()> {
             /// Path to the TOML configuration file
             #[arg(long, short, env = "RUCIOD_CONFIG")]
             config: Option<std::path::PathBuf>,
+
+            /// Portable mode: keep all data (config, database, identity,
+            /// downloads, temp) next to the executable.
+            #[arg(long, conflicts_with = "base_dir")]
+            portable: bool,
+
+            /// Root all storage under DIR.
+            #[arg(long, value_name = "DIR", env = "RUCIOD_BASE_DIR")]
+            base_dir: Option<std::path::PathBuf>,
         }
 
         let cli = Cli::parse();
-        rucio_daemon::run(cli.config.as_deref()).await
+        // Export RUCIOD_BASE_DIR before the runtime starts (set_var must not
+        // race Tokio's worker threads).
+        rucio_daemon::apply_base_dir_env(cli.portable, cli.base_dir.as_deref());
+        run_daemon(cli.config)
     } else {
-        rucio_cli::run().await
+        run_cli()
     }
+}
+
+#[tokio::main]
+async fn run_daemon(config: Option<std::path::PathBuf>) -> anyhow::Result<()> {
+    rucio_daemon::run(config.as_deref()).await
+}
+
+#[tokio::main]
+async fn run_cli() -> anyhow::Result<()> {
+    rucio_cli::run().await
 }

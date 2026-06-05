@@ -300,10 +300,7 @@ impl Default for StorageConfig {
     fn default() -> Self {
         Self {
             download_dir: default_download_dir(),
-            temp_dir: dirs::cache_dir()
-                .unwrap_or_else(|| home_dir().join(".cache"))
-                .join("rucio")
-                .join("tmp"),
+            temp_dir: default_temp_dir(),
             database_path: default_data_dir().join("rucio.db"),
             nodes_dat_path: None,
         }
@@ -320,6 +317,11 @@ impl Default for StorageConfig {
 ///
 /// A `rucio/` subdirectory is appended in every case.
 fn default_download_dir() -> PathBuf {
+    // Portable mode: keep finished files inside the app folder too.
+    if let Some(base) = base_dir_override() {
+        return base.join("downloads");
+    }
+
     let home = home_dir();
 
     // 1. XDG user-dirs — Linux desktop only.
@@ -393,6 +395,9 @@ fn xdg_download_dir(home: &std::path::Path) -> Option<PathBuf> {
 }
 
 fn default_emule_temp_dir() -> PathBuf {
+    if let Some(base) = base_dir_override() {
+        return base.join("emule-tmp");
+    }
     dirs::cache_dir()
         .unwrap_or_else(|| home_dir().join(".cache"))
         .join("rucio")
@@ -668,16 +673,49 @@ impl Config {
 
 // --- Helpers -----------------------------------------------------------------
 
+/// Portable mode: when `RUCIOD_BASE_DIR` is set to an absolute path, every
+/// default storage location (config, identity, database, temp, downloads,
+/// eMule caches) is rooted under that single directory instead of the
+/// platform's per-user config/data dirs. The Windows desktop shell points this
+/// at the folder next to the `.exe` so the app is fully portable: unzip, run,
+/// and deleting the folder removes all state. Unset on Unix → classic
+/// XDG/AppData behaviour, unchanged.
+fn base_dir_override() -> Option<PathBuf> {
+    std::env::var_os("RUCIOD_BASE_DIR")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+}
+
+/// Directory holding `config.toml` and `identity.key`.
 fn default_config_dir() -> PathBuf {
+    if let Some(base) = base_dir_override() {
+        return base;
+    }
     dirs::config_dir()
         .unwrap_or_else(|| home_dir().join(".config"))
         .join("rucio")
 }
 
-fn default_data_dir() -> PathBuf {
+/// Directory holding the database and eMule routing caches (`nodes.dat`,
+/// `kad_cache.dat`).
+pub(crate) fn default_data_dir() -> PathBuf {
+    if let Some(base) = base_dir_override() {
+        return base;
+    }
     dirs::data_local_dir()
         .unwrap_or_else(|| home_dir().join(".local").join("share"))
         .join("rucio")
+}
+
+/// Default temporary directory for in-progress (`.part`) downloads.
+fn default_temp_dir() -> PathBuf {
+    if let Some(base) = base_dir_override() {
+        return base.join("tmp");
+    }
+    dirs::cache_dir()
+        .unwrap_or_else(|| home_dir().join(".cache"))
+        .join("rucio")
+        .join("tmp")
 }
 
 // --- Tests -------------------------------------------------------------------
@@ -899,6 +937,36 @@ mod tests {
         assert!(!cfg.node.listen_addrs.is_empty());
         assert!(cfg.node.listen_addrs.iter().any(|a| a.contains("/ip4/")));
         assert!(cfg.node.listen_addrs.iter().any(|a| a.contains("/ip6/")));
+    }
+
+    #[test]
+    #[serial]
+    fn base_dir_roots_all_storage_under_one_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().to_path_buf();
+        // SAFETY: single-threaded test context.
+        unsafe { std::env::set_var("RUCIOD_BASE_DIR", &base) };
+        let cfg = Config::default();
+        let nodes = crate::config::default_data_dir().join("nodes.dat");
+        unsafe { std::env::remove_var("RUCIOD_BASE_DIR") };
+
+        assert_eq!(cfg.node.identity_path, base.join("identity.key"));
+        assert_eq!(cfg.storage.database_path, base.join("rucio.db"));
+        assert_eq!(cfg.storage.download_dir, base.join("downloads"));
+        assert_eq!(cfg.storage.temp_dir, base.join("tmp"));
+        assert_eq!(nodes, base.join("nodes.dat"));
+    }
+
+    #[test]
+    #[serial]
+    fn base_dir_must_be_absolute() {
+        // A relative RUCIOD_BASE_DIR is ignored — we never root storage at a
+        // relative path that depends on the process's working directory.
+        unsafe { std::env::set_var("RUCIOD_BASE_DIR", "relative/portable") };
+        let cfg = Config::default();
+        unsafe { std::env::remove_var("RUCIOD_BASE_DIR") };
+        assert!(cfg.storage.database_path.is_absolute());
+        assert!(!cfg.storage.database_path.starts_with("relative"));
     }
 
     #[cfg(target_os = "linux")]

@@ -55,6 +55,34 @@ async fn shutdown_signal() {
     }
 }
 
+/// Resolve the portable base directory from CLI flags and, if one applies,
+/// export it as `RUCIOD_BASE_DIR` so the config layer roots *all* storage
+/// (config, identity, database, temp, downloads, eMule caches) under it.
+///
+/// `base_dir` wins if given; otherwise `--portable` uses the folder containing
+/// the executable (the Windows desktop shell relies on this). With neither, the
+/// environment is left untouched and platform defaults (XDG/AppData) apply.
+///
+/// Call this from `main` **before** the async runtime is created: `set_var` is
+/// only sound while no other thread reads the environment, which holds at that
+/// point but not once Tokio's workers are live.
+pub fn apply_base_dir_env(portable: bool, base_dir: Option<&std::path::Path>) {
+    let resolved = base_dir.map(std::path::Path::to_path_buf).or_else(|| {
+        if portable {
+            std::env::current_exe()
+                .ok()
+                .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf))
+        } else {
+            None
+        }
+    });
+    if let Some(dir) = resolved {
+        // SAFETY: per this function's contract it runs before the runtime starts,
+        // so no other thread is reading the environment concurrently.
+        unsafe { std::env::set_var("RUCIOD_BASE_DIR", dir) };
+    }
+}
+
 /// Entry point for the daemon logic.
 pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     rucio_core::logging::init(

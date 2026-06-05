@@ -1350,12 +1350,11 @@ async fn wait_for_stop(db: &Db, download_id: i64) -> String {
 /// Resolve the effective `nodes.dat` path: the configured value when present,
 /// otherwise the platform default (`$XDG_DATA_HOME/rucio/nodes.dat`).
 pub fn effective_nodes_dat_path(config: &crate::config::Config) -> std::path::PathBuf {
-    config.storage.nodes_dat_path.clone().unwrap_or_else(|| {
-        dirs::data_local_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-            .join("rucio")
-            .join("nodes.dat")
-    })
+    config
+        .storage
+        .nodes_dat_path
+        .clone()
+        .unwrap_or_else(|| crate::config::default_data_dir().join("nodes.dat"))
 }
 
 /// Path of the routing-table cache written by the daemon itself.
