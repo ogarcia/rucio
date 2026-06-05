@@ -18,7 +18,7 @@ use crate::api::AppState;
 #[utoipa::path(
     get,
     path = "/api/v1/metrics",
-    tag = "metrics",
+    tag = "node",
     summary = "Transfer metrics",
     description = "Session counters (in-memory, since last start) and lifetime totals (SQLite).",
     responses(

@@ -25,6 +25,7 @@ use crate::api::AppState;
 #[utoipa::path(
     get,
     path = "/api/v1/status",
+    tag = "node",
     responses(
         (status = 200, description = "Daemon is running and returned its status.", body = StatusResponse)
     )
@@ -81,6 +82,7 @@ pub async fn get_status(State(state): State<AppState>) -> Json<StatusResponse> {
 #[utoipa::path(
     get,
     path = "/api/v1/peers",
+    tag = "node",
     responses(
         (status = 200, description = "List of recently seen peers.", body = PeersResponse)
     )
