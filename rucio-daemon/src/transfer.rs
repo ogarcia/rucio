@@ -161,6 +161,17 @@ struct PeerState {
     /// Network-level failures in a row (no successful chunk in between).
     /// Reset to 0 on any verified chunk; drives provider eviction.
     consecutive_failures: u32,
+    /// Cumulative bytes received from this peer for the current download.
+    bytes_downloaded: u64,
+    /// Per-peer rate sampler state, advanced by `publish_live_stats`.
+    last_sample_bytes: u64,
+    last_sample_at: Option<std::time::Instant>,
+    /// Smoothed per-peer download rate in bytes/s.
+    rate_bps: u64,
+    /// Network address of the peer, resolved once from the peers DB and cached
+    /// (`addr_resolved` distinguishes "not looked up yet" from "no address").
+    address: Option<String>,
+    addr_resolved: bool,
 }
 
 impl PeerState {
@@ -265,31 +276,108 @@ impl DownloadEngine {
     }
 
     /// Recompute and publish live stats for every active download.  Called
-    /// periodically from the main loop; cheap (a few in-memory reads).
-    pub async fn publish_live_stats(&self) {
-        let mut map = self.live_stats.write().await;
-        for dl in self.active.values() {
-            let active_peers = dl
-                .peer_state
-                .values()
-                .filter(|ps| !ps.in_flight.is_empty())
-                .count() as u32;
-            let e = map.entry(dl.download_id).or_default();
-            e.sources_total = dl.providers.len() as u32;
-            e.sources_active = active_peers;
-            e.pieces_in_flight = dl.in_flight.len() as u32;
-            e.in_flight_pieces = dl.in_flight.iter().copied().collect();
+    /// periodically (~2s) from the main loop. Cheap: in-memory reads plus, on
+    /// the first sight of each peer, one DB lookup to resolve its address.
+    pub async fn publish_live_stats(&mut self) {
+        use rucio_core::api::downloads::DownloadPeerDetail;
+
+        /// One download's recomputed snapshot, built before taking the lock so
+        /// the (async) address lookups don't run while the map is write-locked.
+        struct Snap {
+            id: i64,
+            sources_total: u32,
+            sources_active: u32,
+            pieces_in_flight: u32,
+            in_flight_pieces: Vec<u32>,
+            peers: Vec<DownloadPeerDetail>,
         }
-        // Also surface pending manifests (no transfer yet) so `show` reports
-        // how many providers we have lined up before the manifest arrives.
-        for pm in self.pending_manifests.values() {
-            if pm.db_id > 0 {
-                let e = map.entry(pm.db_id).or_default();
-                e.sources_total = pm.providers.len() as u32;
-                e.sources_active = 0;
-                e.pieces_in_flight = 0;
-                e.in_flight_pieces = Vec::new();
+
+        let db = self.db.clone();
+        let now = std::time::Instant::now();
+        let mut snaps: Vec<Snap> = Vec::with_capacity(self.active.len());
+
+        for dl in self.active.values_mut() {
+            let mut active_peers = 0u32;
+            let mut peers: Vec<DownloadPeerDetail> = Vec::new();
+            for (peer_id, ps) in dl.peer_state.iter_mut() {
+                if !ps.in_flight.is_empty() {
+                    active_peers += 1;
+                }
+                // Per-peer rate over the interval since the last publish.
+                match ps.last_sample_at {
+                    Some(last) => {
+                        let elapsed = now.duration_since(last).as_secs_f64();
+                        if elapsed >= 0.5 {
+                            let delta = ps.bytes_downloaded.saturating_sub(ps.last_sample_bytes);
+                            ps.rate_bps = (delta as f64 / elapsed) as u64;
+                            ps.last_sample_bytes = ps.bytes_downloaded;
+                            ps.last_sample_at = Some(now);
+                        }
+                    }
+                    None => {
+                        ps.last_sample_at = Some(now);
+                        ps.last_sample_bytes = ps.bytes_downloaded;
+                    }
+                }
+                // Resolve the peer's address once, then cache it.
+                if !ps.addr_resolved {
+                    ps.address = db::peers::first_addr(&db, &peer_id.to_base58())
+                        .await
+                        .ok()
+                        .flatten();
+                    ps.addr_resolved = true;
+                }
+                // Only surface peers actually contributing or being asked.
+                if ps.bytes_downloaded > 0 || !ps.in_flight.is_empty() {
+                    peers.push(DownloadPeerDetail {
+                        peer_id: peer_id.to_base58(),
+                        address: ps.address.clone(),
+                        bytes_downloaded: ps.bytes_downloaded,
+                        chunks_in_flight: ps.in_flight.len() as u32,
+                        rate_bps: ps.rate_bps,
+                    });
+                }
             }
+            peers.sort_by(|a, b| {
+                b.rate_bps
+                    .cmp(&a.rate_bps)
+                    .then_with(|| b.bytes_downloaded.cmp(&a.bytes_downloaded))
+            });
+            snaps.push(Snap {
+                id: dl.download_id,
+                sources_total: dl.providers.len() as u32,
+                sources_active: active_peers,
+                pieces_in_flight: dl.in_flight.len() as u32,
+                in_flight_pieces: dl.in_flight.iter().copied().collect(),
+                peers,
+            });
+        }
+        // Pending manifests (no transfer yet) so `show` reports how many
+        // providers are lined up before the manifest arrives.
+        let pending: Vec<(i64, u32)> = self
+            .pending_manifests
+            .values()
+            .filter(|pm| pm.db_id > 0)
+            .map(|pm| (pm.db_id, pm.providers.len() as u32))
+            .collect();
+
+        // Take the lock only now, with no awaits held inside.
+        let mut map = self.live_stats.write().await;
+        for s in snaps {
+            let e = map.entry(s.id).or_default();
+            e.sources_total = s.sources_total;
+            e.sources_active = s.sources_active;
+            e.pieces_in_flight = s.pieces_in_flight;
+            e.in_flight_pieces = s.in_flight_pieces;
+            e.peers = s.peers;
+        }
+        for (id, total) in pending {
+            let e = map.entry(id).or_default();
+            e.sources_total = total;
+            e.sources_active = 0;
+            e.pieces_in_flight = 0;
+            e.in_flight_pieces = Vec::new();
+            e.peers = Vec::new();
         }
     }
 
@@ -1216,9 +1304,11 @@ impl DownloadEngine {
                 let chunk_bytes = data.len() as u64;
                 self.metrics.record_download(chunk_bytes);
 
-                // A good chunk clears this peer's failure streak.
+                // A good chunk clears this peer's failure streak and adds to its
+                // per-peer byte tally (drives the per-peer rate in live stats).
                 if let Some(ps) = dl.peer_state.get_mut(&peer) {
                     ps.consecutive_failures = 0;
+                    ps.bytes_downloaded += chunk_bytes;
                 }
 
                 dl.done.insert(chunk_idx);

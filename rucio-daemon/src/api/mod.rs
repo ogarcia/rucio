@@ -129,6 +129,7 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         rucio_core::api::downloads::DownloadResponse,
         rucio_core::api::downloads::DownloadsResponse,
         rucio_core::api::downloads::DownloadDetailResponse,
+        rucio_core::api::downloads::DownloadPeerDetail,
         rucio_core::api::downloads::DownloadPiecesResponse,
         rucio_core::api::searches::StartSearchRequest,
         rucio_core::api::searches::SearchStartedResponse,

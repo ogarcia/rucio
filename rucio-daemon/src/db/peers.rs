@@ -40,6 +40,20 @@ pub async fn upsert(
     Ok(())
 }
 
+/// Return the first known network address for a peer, if any. Used to label
+/// per-peer download detail with a human-meaningful endpoint.
+pub async fn first_addr(db: &Db, peer_id: &str) -> Result<Option<String>> {
+    let row = sqlx::query("SELECT addrs FROM known_peers WHERE peer_id = ?1")
+        .bind(peer_id)
+        .fetch_optional(db)
+        .await?;
+    Ok(row.and_then(|r| {
+        let addrs: Vec<String> =
+            serde_json::from_str(r.get::<String, _>("addrs").as_str()).unwrap_or_default();
+        addrs.into_iter().next()
+    }))
+}
+
 /// Return up to `limit` peers most recently seen.
 pub async fn list_recent(db: &Db, limit: u32) -> Result<Vec<PeerRow>> {
     let rows = sqlx::query(

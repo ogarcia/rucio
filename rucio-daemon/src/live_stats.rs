@@ -37,6 +37,9 @@ pub struct DownloadLiveStats {
     /// the single source of progress avoids the value oscillating between the
     /// live (with partials) and persisted (without) figures.
     pub bytes_done: Option<u64>,
+    /// Per-peer breakdown of the sources we are downloading from (libp2p only).
+    /// Empty for eMule downloads and for downloads with no active sources.
+    pub peers: Vec<rucio_core::api::downloads::DownloadPeerDetail>,
 }
 
 /// Shared map of live stats keyed by signed download id.

@@ -194,6 +194,7 @@ pub async fn get_download(
                 bytes_done,
                 live.as_ref().map(|l| l.speed_bps).unwrap_or(0),
             ),
+            peers: live.as_ref().map(|l| l.peers.clone()).unwrap_or_default(),
         }))
     } else {
         // eMule download
@@ -250,6 +251,9 @@ pub async fn get_download(
                     bytes_done,
                     live.as_ref().map(|l| l.speed_bps).unwrap_or(0),
                 ),
+                // Per-peer eMule download detail is a later pass (sources live in
+                // independent worker tasks with no central per-peer registry).
+                peers: Vec::new(),
             }))
         }
         #[cfg(not(feature = "emule-compat"))]

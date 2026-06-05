@@ -160,6 +160,18 @@ pub struct DownloadDetailResponse {
     pub speed_bps: Option<u64>,
     #[serde(default)]
     pub eta_secs: Option<u64>,
+    #[serde(default)]
+    pub peers: Vec<DownloadPeerDetail>,
+}
+
+/// One source we are downloading from (libp2p), mirrored from the daemon.
+#[derive(Deserialize, Clone, Debug)]
+pub struct DownloadPeerDetail {
+    pub peer_id: String,
+    pub address: Option<String>,
+    pub bytes_downloaded: u64,
+    pub chunks_in_flight: u32,
+    pub rate_bps: u64,
 }
 
 /// Which network an active upload is served over.

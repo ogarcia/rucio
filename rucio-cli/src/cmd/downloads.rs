@@ -393,6 +393,28 @@ pub async fn show(client: &ApiClient, target: &str) -> Result<()> {
     if let Some(eta) = d.eta_secs {
         println!("  ETA:        {}", human_duration(eta));
     }
+    // Per-peer sources (libp2p; empty for eMule for now).
+    if !d.peers.is_empty() {
+        println!("  Downloading from:");
+        for p in &d.peers {
+            let who = p
+                .address
+                .clone()
+                .unwrap_or_else(|| truncate(&p.peer_id, 20));
+            let rate = if p.rate_bps > 0 {
+                format!("{}/s", human_size(p.rate_bps))
+            } else {
+                "idle".to_string()
+            };
+            println!(
+                "    {:>11}  {}  ({}, {} in flight)",
+                rate,
+                who,
+                human_size(p.bytes_downloaded),
+                p.chunks_in_flight,
+            );
+        }
+    }
     if let Some(path) = &d.dest_path {
         println!("  Saved to:   {}", color::value(path));
     }

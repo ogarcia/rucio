@@ -91,6 +91,25 @@ pub struct DownloadDetailResponse {
     /// bytes.  Absent when speed is zero or the size is unknown.
     #[serde(default)]
     pub eta_secs: Option<u64>,
+    /// Live: per-peer breakdown of the sources we are downloading from.
+    /// libp2p only for now (empty for eMule downloads); present only while active.
+    #[serde(default)]
+    pub peers: Vec<DownloadPeerDetail>,
+}
+
+/// Live per-peer download detail: one source we are pulling chunks from.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+pub struct DownloadPeerDetail {
+    /// Base58 PeerId (libp2p) of the source.
+    pub peer_id: String,
+    /// Best-known network address (multiaddr) of the peer, when one is known.
+    pub address: Option<String>,
+    /// Bytes received from this peer for this download so far.
+    pub bytes_downloaded: u64,
+    /// Chunks currently in flight to this peer.
+    pub chunks_in_flight: u32,
+    /// Smoothed download rate from this peer, in bytes per second.
+    pub rate_bps: u64,
 }
 
 /// GET /api/v1/downloads/{id}/pieces — per-piece state for rendering a block bar.

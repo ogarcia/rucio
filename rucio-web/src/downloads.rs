@@ -837,6 +837,9 @@ fn DownloadInfoOverlay(
     let name_input = RwSignal::new(detail.name.clone().unwrap_or_default());
     let saving = RwSignal::new(false);
 
+    // Per-peer sources (libp2p), a snapshot at the moment the panel was opened.
+    let peers = detail.peers;
+
     view! {
         <div class="overlay-backdrop" on:click=move |_| on_close()>
             <div class="overlay overlay-wide" on:click=move |e| e.stop_propagation()>
@@ -901,6 +904,32 @@ fn DownloadInfoOverlay(
                             <dd class="mono">{l}</dd>
                         })}
                     </dl>
+
+                    {(!peers.is_empty()).then(|| view! {
+                        <p class="section-label">"Downloading from"</p>
+                        <ul class="peer-list">
+                            {peers.into_iter().map(|p| {
+                                let who = p.address.clone().unwrap_or_else(|| p.peer_id.clone());
+                                let rate = format_speed(p.rate_bps);
+                                let meta = format!(
+                                    "{} · {} in flight",
+                                    format_size(p.bytes_downloaded),
+                                    p.chunks_in_flight,
+                                );
+                                view! {
+                                    <li class="peer-item">
+                                        <div class="peer-head">
+                                            <span class="dl-peer-rate">
+                                                {if rate.is_empty() { "idle".to_string() } else { rate }}
+                                            </span>
+                                            <span class="mono peer-id" title=p.peer_id>{who}</span>
+                                        </div>
+                                        <span class="peer-addr">{meta}</span>
+                                    </li>
+                                }
+                            }).collect_view()}
+                        </ul>
+                    })}
 
                     {renamable.then(|| view! {
                         <div class="dl-rename" style="display:flex; gap:8px; margin:14px 0;">
