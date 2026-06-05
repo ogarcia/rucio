@@ -19,8 +19,20 @@
 use std::sync::Mutex;
 use std::time::Duration;
 
-use tauri::{Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{AppHandle, Manager, RunEvent, Runtime, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tokio::sync::oneshot;
+
+/// Show, un-minimise and focus the main window (from the tray or a second
+/// launch). No-op until the window exists.
+fn show_main<R: Runtime>(app: &AppHandle<R>) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
+}
 
 /// Loopback host the embedded daemon serves the web UI + REST + WS on. The
 /// shell never exposes it off-loopback — there is no authentication. The port
@@ -83,13 +95,45 @@ fn main() {
         // Must be registered first. A second launch focuses the running window
         // instead of starting a rival daemon over the same portable data dir.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(w) = app.get_webview_window("main") {
-                let _ = w.unminimize();
-                let _ = w.show();
-                let _ = w.set_focus();
-            }
+            show_main(app);
         }))
+        // Closing the window hides to the tray instead of quitting — the app
+        // keeps running and is restored from the tray. The tray's Quit exits.
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
         .setup(move |app| {
+            // System tray: left-click restores the window, right-click opens a
+            // menu (Show / Quit). Built up front; its handlers look the window
+            // up lazily, so it's fine that the window doesn't exist yet.
+            let show_i = MenuItem::with_id(app, "show", "Show Rucio", true, None::<&str>)?;
+            let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&show_i, &quit_i])?;
+            let _tray = TrayIconBuilder::with_id("main")
+                .tooltip("Rucio")
+                .icon(app.default_window_icon().expect("app icon").clone())
+                .menu(&menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "show" => show_main(app),
+                    "quit" => app.exit(0),
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        show_main(tray.app_handle());
+                    }
+                })
+                .build(app)?;
+
             let handle = app.handle().clone();
             // Open the window once the daemon's API accepts connections, so the
             // first paint isn't a connection error.

@@ -18,6 +18,6 @@ tauri-build = "2"
 # The whole product, embedded: the daemon serves the Leptos UI + REST + WS on
 # loopback, so the shell just spawns it and points a webview at it.
 rucio-daemon = { path = "../rucio-daemon", features = ["emule-compat", "web-ui"] }
-tauri        = "2"
+tauri        = { version = "2", features = ["tray-icon"] }
 tauri-plugin-single-instance = "2"
 tokio        = { workspace = true }
