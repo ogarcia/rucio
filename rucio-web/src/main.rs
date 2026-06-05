@@ -213,7 +213,15 @@ fn start_ws_loop(
     indexing: RwSignal<usize>,
 ) {
     spawn_local(async move {
-        let mut backoff_ms = 1_000u64;
+        // Reconnect backoff. The daemon binds to loopback, so retries are cheap;
+        // grow gently from 500 ms to a 5 s ceiling. This is reset to the floor
+        // only on a *genuine* connection (first frame received), not on
+        // WebSocket::open() — which almost always returns Ok before the TCP
+        // connect resolves, so resetting there would defeat the backoff and
+        // hammer a starting/stopped daemon (and its console) once per second.
+        const BACKOFF_MIN_MS: u64 = 500;
+        const BACKOFF_MAX_MS: u64 = 5_000;
+        let mut backoff_ms = BACKOFF_MIN_MS;
 
         loop {
             // Guard: only notify subscribers when the value actually changes.
@@ -226,16 +234,14 @@ fn start_ws_loop(
             match WebSocket::open(&ws_url()) {
                 Err(_) => {
                     sleep(Duration::from_millis(backoff_ms)).await;
-                    backoff_ms = (backoff_ms * 2).min(30_000);
+                    backoff_ms = (backoff_ms * 2).min(BACKOFF_MAX_MS);
                     continue;
                 }
                 Ok(ws) => {
-                    // Set connected on the first message, not on socket creation.
+                    // Connected/green is set on the first message, not here —
                     // WebSocket::open() only creates the JS object; the TCP
-                    // handshake hasn't completed yet, so setting green here makes
-                    // failed reconnection attempts appear connected.
-                    backoff_ms = 1_000;
-
+                    // handshake hasn't completed yet, so treating Ok as connected
+                    // would make failed reconnection attempts appear connected.
                     let mut stream = ws;
                     loop {
                         // Bound the wait on the next frame. The daemon greets
@@ -261,6 +267,8 @@ fn start_ws_loop(
                             futures_util::future::Either::Left((Some(msg), _)) => {
                                 if !connected {
                                     ws_connected.set(true);
+                                    // Genuine connection: reset the backoff floor.
+                                    backoff_ms = BACKOFF_MIN_MS;
                                 }
                                 if let Ok(Message::Text(text)) = msg
                                     && let Ok(event) = serde_json::from_str::<WsEvent>(&text)
@@ -285,7 +293,7 @@ fn start_ws_loop(
             }
 
             sleep(Duration::from_millis(backoff_ms)).await;
-            backoff_ms = (backoff_ms * 2).min(30_000);
+            backoff_ms = (backoff_ms * 2).min(BACKOFF_MAX_MS);
         }
     });
 }

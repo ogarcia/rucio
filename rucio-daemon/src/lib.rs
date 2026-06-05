@@ -171,13 +171,10 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
         }
     }
 
-    // Re-announce all previously shared files to Kademlia so the DHT
-    // knows we are a provider even after a restart.  Files that no longer
-    // exist on disk are pruned from the DB at this point.
-    let announced = reannounce_shares(&db, &handle.cmd_tx).await;
-    if announced > 0 {
-        info!("Re-announced {announced} share(s) to Kademlia");
-    }
+    // (Share re-announce and interrupted-download resume are deferred until
+    // after the API server is listening — see below — so a browser reloaded
+    // against a just-started daemon can open its WebSocket without waiting on
+    // this best-effort startup work.)
 
     // --- Shared dirs: ensure download_dir is registered as protected --------
     {
@@ -231,9 +228,6 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
         Arc::clone(&live_stats),
         Arc::clone(&upload_stats),
     );
-
-    // Resume any downloads that were interrupted by a previous crash or restart.
-    engine.resume_interrupted().await;
 
     let (download_tx, mut download_rx) = tokio::sync::mpsc::channel::<api::DownloadRequest>(32);
 
@@ -488,6 +482,19 @@ pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
             tracing::error!("API server error: {e}");
         }
     });
+
+    // Best-effort startup work, run only now that the API/WebSocket server is
+    // listening so a reloaded browser tab can connect promptly instead of
+    // hammering a closed port while these complete.
+    //
+    // Re-announce previously shared files to Kademlia (and prune any that no
+    // longer exist on disk) so the DHT knows we are a provider after a restart.
+    let announced = reannounce_shares(&db, &handle.cmd_tx).await;
+    if announced > 0 {
+        info!("Re-announced {announced} share(s) to Kademlia");
+    }
+    // Resume any downloads interrupted by a previous crash or restart.
+    engine.resume_interrupted().await;
 
     // --- eMule: ensure nodes.dat is present (download if missing) -----------
     // On a cold start (no nodes.dat, no kad_cache.dat) the Kad2 routing table
