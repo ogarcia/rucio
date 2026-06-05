@@ -205,6 +205,11 @@ jobs:
           downloads, identity) lives in this same folder, so deleting the folder
           removes everything.
 
+          On first run Windows Firewall will ask whether to allow Rucio to
+          communicate on your networks - click Allow for full connectivity
+          (incoming connections / High-ID). If you decline, downloads still
+          work but the node runs as Low-ID (no incoming connections).
+
           Requires the Microsoft Edge WebView2 runtime, preinstalled on
           Windows 10/11.
           "@ | Set-Content -Encoding UTF8 stage/README.txt
