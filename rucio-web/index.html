@@ -352,6 +352,10 @@
         .overlay-header {
             display: flex; align-items: center; justify-content: space-between;
             padding: 0.875rem 1.25rem; border-bottom: 1px solid var(--border);
+            /* Pin the title + close button while the overlay body scrolls, so
+               the X is always reachable on tall/scrolling modals. */
+            position: sticky; top: 0; z-index: 1;
+            background: var(--surface);
         }
         .overlay-title { font-size: 0.8125rem; font-weight: 600; color: var(--text); }
         .overlay-close {

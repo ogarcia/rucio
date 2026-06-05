@@ -603,7 +603,7 @@ fn ResultRow(result: SearchResult, downloads: RwSignal<Vec<DownloadResponse>>) -
             <span class="result-size">{format_size(result.size)}</span>
             <span class=source_css>{source_label}</span>
             <span class="result-peers" title="Sources that have this file">
-            {format!("{} ⬩", result.peer_count)}
+            {result.peer_count.to_string()}
             </span>
             <span class="result-action">
             {move || {
