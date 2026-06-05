@@ -19,9 +19,10 @@
 use std::sync::Mutex;
 use std::time::Duration;
 
-use tauri::menu::{Menu, MenuItem};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, RunEvent, Runtime, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tokio::sync::oneshot;
 
 /// Show, un-minimise and focus the main window (from the tray or a second
@@ -97,6 +98,12 @@ fn main() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_main(app);
         }))
+        // Launch-at-login support. Off by default; toggled from the tray. On
+        // Windows this is an HKCU Run-key entry (no admin needed).
+        .plugin(tauri_plugin_autostart::init(
+            MacosLauncher::LaunchAgent,
+            None,
+        ))
         // Closing the window hides to the tray instead of quitting — the app
         // keeps running and is restored from the tray. The tray's Quit exits.
         .on_window_event(|window, event| {
@@ -110,15 +117,34 @@ fn main() {
             // menu (Show / Quit). Built up front; its handlers look the window
             // up lazily, so it's fine that the window doesn't exist yet.
             let show_i = MenuItem::with_id(app, "show", "Show Rucio", true, None::<&str>)?;
+            let autostart_i = CheckMenuItem::with_id(
+                app,
+                "autostart",
+                "Start with Windows",
+                true,
+                app.autolaunch().is_enabled().unwrap_or(false),
+                None::<&str>,
+            )?;
             let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_i, &quit_i])?;
+            let menu = Menu::with_items(app, &[&show_i, &autostart_i, &quit_i])?;
+            let autostart_item = autostart_i.clone();
             let _tray = TrayIconBuilder::with_id("main")
                 .tooltip("Rucio")
                 .icon(app.default_window_icon().expect("app icon").clone())
                 .menu(&menu)
                 .show_menu_on_left_click(false)
-                .on_menu_event(|app, event| match event.id.as_ref() {
+                .on_menu_event(move |app, event| match event.id.as_ref() {
                     "show" => show_main(app),
+                    "autostart" => {
+                        let mgr = app.autolaunch();
+                        let _ = if mgr.is_enabled().unwrap_or(false) {
+                            mgr.disable()
+                        } else {
+                            mgr.enable()
+                        };
+                        // Reflect the resulting state on the check mark.
+                        let _ = autostart_item.set_checked(mgr.is_enabled().unwrap_or(false));
+                    }
                     "quit" => app.exit(0),
                     _ => {}
                 })

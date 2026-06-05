@@ -20,4 +20,5 @@ tauri-build = "2"
 rucio-daemon = { path = "../rucio-daemon", features = ["emule-compat", "web-ui"] }
 tauri        = { version = "2", features = ["tray-icon"] }
 tauri-plugin-single-instance = "2"
+tauri-plugin-autostart = "2"
 tokio        = { workspace = true }
