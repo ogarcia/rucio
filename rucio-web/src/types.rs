@@ -162,6 +162,10 @@ pub struct DownloadDetailResponse {
     pub eta_secs: Option<u64>,
     #[serde(default)]
     pub peers: Vec<DownloadPeerDetail>,
+    #[serde(default)]
+    pub queued_sources: Option<u32>,
+    #[serde(default)]
+    pub best_queue_rank: Option<u32>,
 }
 
 /// One source we are downloading from (libp2p), mirrored from the daemon.

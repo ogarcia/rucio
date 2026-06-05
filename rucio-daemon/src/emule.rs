@@ -754,6 +754,14 @@ pub async fn run_ed2k_download(
             e.pieces_in_flight = max_workers as u32;
         }
 
+        // Sources that currently have us waiting in their upload queue, keyed by
+        // peer address → queue rank. A worker inserts its rank on OP_QUEUE_RANK
+        // and clears it once the connect attempt resolves (slot granted or moved
+        // on). The in-flight publisher folds this into live stats so the UI can
+        // explain a download that keeps trying but isn't transferring.
+        let queue_ranks: Arc<Mutex<HashMap<std::net::SocketAddrV4, u32>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
         // Publisher task: derive the in-flight slice indices for this round as
         // (all slices) − (done) − (still queued). A worker only ever holds one
         // slice outside the queue at a time, so anything neither done nor queued
@@ -764,6 +772,7 @@ pub async fn run_ed2k_download(
             let pub_done = done_vec.clone();
             let pub_ls = live_stats.clone();
             let pub_progress = progress.clone();
+            let pub_qranks = queue_ranks.clone();
             let pub_key = live_key;
             let total = num_slices;
             tokio::spawn(async move {
@@ -781,6 +790,10 @@ pub async fn run_ed2k_download(
                         .map(|i| i as u32)
                         .collect();
                     let live_bytes = pub_progress.lock().unwrap().total;
+                    let (queued_sources, best_rank) = {
+                        let qr = pub_qranks.lock().unwrap();
+                        (qr.len() as u32, qr.values().copied().min())
+                    };
                     let mut s = pub_ls.write().await;
                     match s.get_mut(&pub_key) {
                         Some(e) => {
@@ -788,6 +801,8 @@ pub async fn run_ed2k_download(
                             // Single source of progress for the WS/API, with
                             // in-flight partials folded in (see DownloadLiveStats).
                             e.bytes_done = Some(live_bytes);
+                            e.queued_sources = queued_sources;
+                            e.best_queue_rank = best_rank;
                         }
                         // Entry gone — download finished/cancelled, stop.
                         None => break,
@@ -835,6 +850,7 @@ pub async fn run_ed2k_download(
             let throttle_w = download_throttle.clone();
             let cancel_w = cancel.clone();
             let pool = source_pool.clone();
+            let qranks = queue_ranks.clone();
             let nick_w = our_nick.clone();
             let min_speed = min_speed_bytes;
 
@@ -873,19 +889,28 @@ pub async fn run_ed2k_download(
                     // Connected and Queued are transient (Connected even fires
                     // twice per attempt — plain then the obfuscated retry), so
                     // they stay at debug; only an actual transfer start is info.
-                    let mut on_connect = |ev: DownloadEvent| match ev {
+                    let qr_cb = qranks.clone();
+                    let mut on_connect = move |ev: DownloadEvent| match ev {
                         DownloadEvent::Connected => {
                             debug!(dl = download_id, %peer, "Connected to eMule peer")
                         }
                         DownloadEvent::Queued { rank } => {
+                            // Record our queue position at this peer so the UI can
+                            // show "queued at N sources (best rank M)".
+                            qr_cb.lock().unwrap().insert(peer, rank);
                             debug!(dl = download_id, %peer, rank, "Queued at eMule peer")
                         }
                         DownloadEvent::Started => {
+                            qr_cb.lock().unwrap().remove(&peer);
                             debug!(dl = download_id, %peer, "Peer granted upload slot")
                         }
                         _ => {}
                     };
-                    let mut session = match Session::connect(peer, &opts, &mut on_connect).await {
+                    let connect_result = Session::connect(peer, &opts, &mut on_connect).await;
+                    // The attempt resolved (slot granted or giving up): we are no
+                    // longer waiting in this peer's queue either way.
+                    qranks.lock().unwrap().remove(&peer);
+                    let mut session = match connect_result {
                         Ok(s) => {
                             info!(
                                 dl = download_id, %peer,

@@ -40,6 +40,12 @@ pub struct DownloadLiveStats {
     /// Per-peer breakdown of the sources we are downloading from (libp2p only).
     /// Empty for eMule downloads and for downloads with no active sources.
     pub peers: Vec<rucio_core::api::downloads::DownloadPeerDetail>,
+    /// eMule only: number of sources that currently have us waiting in their
+    /// upload queue. Explains a download that is trying but not transferring.
+    pub queued_sources: u32,
+    /// eMule only: best (lowest) queue rank across those sources — how close we
+    /// are to being granted an upload slot somewhere. `None` if not queued.
+    pub best_queue_rank: Option<u32>,
 }
 
 /// Shared map of live stats keyed by signed download id.

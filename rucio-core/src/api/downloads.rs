@@ -95,6 +95,14 @@ pub struct DownloadDetailResponse {
     /// libp2p only for now (empty for eMule downloads); present only while active.
     #[serde(default)]
     pub peers: Vec<DownloadPeerDetail>,
+    /// Live (eMule): number of sources currently holding us in their upload
+    /// queue. Absent / `None` when not queued anywhere. Explains a download that
+    /// keeps trying but isn't transferring (all sources' slots are full).
+    #[serde(default)]
+    pub queued_sources: Option<u32>,
+    /// Live (eMule): best (lowest) queue rank across those sources.
+    #[serde(default)]
+    pub best_queue_rank: Option<u32>,
 }
 
 /// Live per-peer download detail: one source we are pulling chunks from.

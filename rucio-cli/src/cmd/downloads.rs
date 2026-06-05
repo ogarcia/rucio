@@ -387,6 +387,12 @@ pub async fn show(client: &ApiClient, target: &str) -> Result<()> {
     if let Some(n) = d.pieces_in_flight {
         println!("  In flight:  {n}");
     }
+    if let Some(n) = d.queued_sources {
+        match d.best_queue_rank {
+            Some(r) => println!("  Queued:     {n} source(s), best rank {r}"),
+            None => println!("  Queued:     {n} source(s)"),
+        }
+    }
     if let Some(bps) = d.speed_bps.filter(|&b| b > 0) {
         println!("  Speed:      {}/s", human_size(bps));
     }

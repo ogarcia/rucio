@@ -839,6 +839,8 @@ fn DownloadInfoOverlay(
 
     // Per-peer sources (libp2p), a snapshot at the moment the panel was opened.
     let peers = detail.peers;
+    let queued_sources = detail.queued_sources;
+    let best_queue_rank = detail.best_queue_rank;
 
     view! {
         <div class="overlay-backdrop" on:click=move |_| on_close()>
@@ -884,6 +886,17 @@ fn DownloadInfoOverlay(
                         {detail.sources_active.zip(detail.sources_total).map(|(a, t)| view! {
                             <dt>"Sources"</dt>
                             <dd>{format!("{a} active / {t} known")}</dd>
+                        })}
+
+                        {queued_sources.map(|n| {
+                            let label = match best_queue_rank {
+                                Some(r) => format!("{n} source(s), best rank {r}"),
+                                None => format!("{n} source(s)"),
+                            };
+                            view! {
+                                <dt>"Queued"</dt>
+                                <dd>{label}</dd>
+                            }
                         })}
 
                         {detail.dest_path.map(|p| view! {

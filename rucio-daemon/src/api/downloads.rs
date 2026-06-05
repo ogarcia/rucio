@@ -195,6 +195,9 @@ pub async fn get_download(
                 live.as_ref().map(|l| l.speed_bps).unwrap_or(0),
             ),
             peers: live.as_ref().map(|l| l.peers.clone()).unwrap_or_default(),
+            // libp2p has no upload-queue concept; these stay absent.
+            queued_sources: live.as_ref().map(|l| l.queued_sources).filter(|&n| n > 0),
+            best_queue_rank: live.as_ref().and_then(|l| l.best_queue_rank),
         }))
     } else {
         // eMule download
@@ -254,6 +257,8 @@ pub async fn get_download(
                 // Per-peer eMule download detail is a later pass (sources live in
                 // independent worker tasks with no central per-peer registry).
                 peers: Vec::new(),
+                queued_sources: live.as_ref().map(|l| l.queued_sources).filter(|&n| n > 0),
+                best_queue_rank: live.as_ref().and_then(|l| l.best_queue_rank),
             }))
         }
         #[cfg(not(feature = "emule-compat"))]
