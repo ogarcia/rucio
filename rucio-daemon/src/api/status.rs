@@ -34,6 +34,28 @@ pub async fn get_status(State(state): State<AppState>) -> Json<StatusResponse> {
     let uptime = state.started_at.elapsed().as_secs();
     let external_ip = state.external_ip.read().await.clone();
 
+    // Active rucio downloads: count rows in a transferring/searching state, the
+    // same set the WS DownloadProgress stream considers active.
+    use rucio_core::api::downloads::DownloadState;
+    let active_downloads = crate::db::downloads::list(&state.db)
+        .await
+        .map(|rows| {
+            rows.iter()
+                .filter(|r| {
+                    matches!(
+                        crate::api::downloads::db_status_to_state(&r.status),
+                        DownloadState::FindingProviders
+                            | DownloadState::Queued
+                            | DownloadState::Downloading
+                            | DownloadState::Stalled
+                    )
+                })
+                .count()
+        })
+        .unwrap_or(0);
+    // Active rucio uploads: distinct peers currently pulling from us.
+    let active_uploads = state.upload_stats.snapshot().len();
+
     Json(StatusResponse {
         peer_id: ns.peer_id.clone(),
         class: ns.node_class.clone(),
@@ -42,6 +64,8 @@ pub async fn get_status(State(state): State<AppState>) -> Json<StatusResponse> {
         observed_addrs: ns.observed_addrs.clone(),
         uptime_secs: uptime,
         version: env!("CARGO_PKG_VERSION").to_string(),
+        active_downloads,
+        active_uploads,
         external_ip,
     })
 }

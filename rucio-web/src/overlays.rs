@@ -86,6 +86,10 @@ pub fn NodeStatusPanel(
                                     <dd class="mono">{s.peer_id}</dd>
                                     <dt>"Peers"</dt>
                                     <dd>{s.connected_peers.to_string()}</dd>
+                                    <dt>"Active downloads"</dt>
+                                    <dd>{s.active_downloads.to_string()}</dd>
+                                    <dt>"Active uploads"</dt>
+                                    <dd>{s.active_uploads.to_string()}</dd>
                                     <dt>"Uptime"</dt>
                                     <dd>{uptime}</dd>
                                     {s.external_ip.map(|ip| view! {

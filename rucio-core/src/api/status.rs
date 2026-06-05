@@ -13,6 +13,15 @@ pub struct StatusResponse {
     pub observed_addrs: Vec<String>,
     pub uptime_secs: u64,
     pub version: String,
+    /// Number of rucio/libp2p downloads currently active (finding providers,
+    /// queued, transferring, or stalled). The eMule equivalent lives in the
+    /// eMule status response.
+    #[serde(default)]
+    pub active_downloads: usize,
+    /// Number of peers currently downloading a file from us over rucio/libp2p
+    /// right now (distinct active uploads).
+    #[serde(default)]
+    pub active_uploads: usize,
     /// External IP address as reported by UPnP gateway.
     /// `null` when no UPnP gateway is available on the LAN.
     #[serde(skip_serializing_if = "Option::is_none")]

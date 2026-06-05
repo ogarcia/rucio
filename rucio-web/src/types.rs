@@ -12,6 +12,10 @@ pub struct StatusResponse {
     pub uptime_secs: u64,
     pub version: String,
     #[serde(default)]
+    pub active_downloads: usize,
+    #[serde(default)]
+    pub active_uploads: usize,
+    #[serde(default)]
     pub external_ip: Option<String>,
 }
 
