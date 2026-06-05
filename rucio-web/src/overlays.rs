@@ -319,6 +319,10 @@ pub fn PeersPanel(active_panel: RwSignal<Option<super::Panel>>) -> impl IntoView
                     </button>
                 </div>
                 <div class="overlay-body">
+                    <p class="panel-note">
+                        "Peers seen recently — may include some no longer connected. \
+                         The live connected count is in Node status."
+                    </p>
                     {move || match peers.get() {
                         None => view! { <p class="loading">"Loading..."</p> }.into_any(),
                         Some(list) if list.is_empty() => {
