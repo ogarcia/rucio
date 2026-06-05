@@ -838,15 +838,21 @@
             font-size: 0.75rem; color: var(--text-3);
         }
 
-        .results-list { list-style: none; display: flex; flex-direction: column; gap: 0; }
+        /* One grid for the whole list (not per-row) so every column is sized to
+           its widest cell across all rows and stays aligned — the count column
+           is then exactly as wide as the largest count, with no fixed padding.
+           Rows are subgrids so they keep their own box (border, hover, padding). */
+        .results-list {
+            list-style: none; display: grid;
+            grid-template-columns: 1fr auto auto auto 6.5rem;
+            column-gap: 1rem;
+        }
 
         .result-row {
             display: grid;
-            /* Each row is its own grid, so `auto` tracks size per-row. The count
-               column is fixed-width (like the action cell) so right-aligned
-               counts line up across rows instead of shifting between e.g. 2/123. */
-            grid-template-columns: 1fr auto auto 2.5rem 6.5rem;
-            align-items: center; gap: 1rem;
+            grid-template-columns: subgrid;
+            grid-column: 1 / -1;
+            align-items: center;
             padding: 0.625rem 0;
             border-bottom: 1px solid var(--raised);
         }
@@ -887,11 +893,11 @@
         /* On phones, tighten search results: drop the fixed 6.5rem action column
            (which left a wide gap between the source badge and the button) to
            fit-content, and shrink the inter-column gap. Placed after the base
-           `.result-row` rules so it wins the cascade at this viewport. */
+           `.results-list` rule so it wins the cascade at this viewport. */
         @media (max-width: 640px) {
-            .result-row {
-                grid-template-columns: 1fr auto auto 2.5rem auto;
-                gap: 0.6rem;
+            .results-list {
+                grid-template-columns: 1fr auto auto auto auto;
+                column-gap: 0.6rem;
             }
         }
 
