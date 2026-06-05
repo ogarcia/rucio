@@ -842,7 +842,10 @@
 
         .result-row {
             display: grid;
-            grid-template-columns: 1fr auto auto auto 6.5rem;
+            /* Each row is its own grid, so `auto` tracks size per-row. The count
+               column is fixed-width (like the action cell) so right-aligned
+               counts line up across rows instead of shifting between e.g. 2/123. */
+            grid-template-columns: 1fr auto auto 2.5rem 6.5rem;
             align-items: center; gap: 1rem;
             padding: 0.625rem 0;
             border-bottom: 1px solid var(--raised);
@@ -887,7 +890,7 @@
            `.result-row` rules so it wins the cascade at this viewport. */
         @media (max-width: 640px) {
             .result-row {
-                grid-template-columns: 1fr auto auto auto auto;
+                grid-template-columns: 1fr auto auto 2.5rem auto;
                 gap: 0.6rem;
             }
         }
