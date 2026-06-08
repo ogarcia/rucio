@@ -39,9 +39,17 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
-#[tokio::main]
-async fn run_daemon(config: Option<std::path::PathBuf>) -> anyhow::Result<()> {
-    rucio_daemon::run(config.as_deref()).await
+fn run_daemon(config: Option<std::path::PathBuf>) -> anyhow::Result<()> {
+    let rt = tokio::runtime::Runtime::new()?;
+    let result = rt.block_on(rucio_daemon::run(config.as_deref()));
+    // Don't block process exit waiting for in-flight spawn_blocking work (e.g. a
+    // large file being hashed by the indexer): the graceful shutdown inside
+    // run() already flushed metrics, saved the Kad cache and closed the DB. A
+    // plain runtime drop would join those blocking threads and could keep the
+    // process alive long after the user asked it to stop — leaving a second
+    // instance unable to bind the API port.
+    rt.shutdown_background();
+    result
 }
 
 #[tokio::main]

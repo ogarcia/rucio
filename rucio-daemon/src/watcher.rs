@@ -81,16 +81,16 @@ pub fn spawn(
     db: Db,
     node_tx: mpsc::Sender<NodeCmd>,
     indexing_count: Arc<AtomicUsize>,
-) -> WatcherHandle {
+) -> (WatcherHandle, tokio::task::JoinHandle<()>) {
     let (cmd_tx, cmd_rx) = mpsc::channel::<WatcherCmd>(64);
 
-    tokio::spawn(async move {
+    let task = tokio::spawn(async move {
         if let Err(e) = run(db, node_tx, cmd_rx, indexing_count).await {
             warn!("WatcherService exited with error: {e}");
         }
     });
 
-    WatcherHandle { cmd_tx }
+    (WatcherHandle { cmd_tx }, task)
 }
 
 // ---------------------------------------------------------------------------

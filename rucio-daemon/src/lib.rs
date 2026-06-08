@@ -274,7 +274,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
     // Shared with AppState so watcher-driven indexing shows up in the indexing
     // status endpoint / WS, the same as manual `share add`.
     let indexing_count = Arc::new(AtomicUsize::new(0));
-    let watcher = watcher::spawn(
+    let (watcher, watcher_task) = watcher::spawn(
         db.clone(),
         handle.cmd_tx.clone(),
         Arc::clone(&indexing_count),
@@ -294,7 +294,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
     // inotify event the kernel dropped under load) would otherwise be missed —
     // then re-check once a day. Cheap on a stable library: it only hashes files
     // that are actually new or whose size/mtime changed.
-    {
+    let reconcile_task = {
         let db = db.clone();
         let node_tx = handle.cmd_tx.clone();
         let indexing_count = indexing_count.clone();
@@ -304,8 +304,8 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                 tick.tick().await; // fires immediately on the first iteration
                 watcher::reconcile_shares(&db, &node_tx, &indexing_count).await;
             }
-        });
-    }
+        })
+    };
 
     // --- API server ---------------------------------------------------------
     let (ws_tx, _) = tokio::sync::broadcast::channel::<WsEvent>(256);
@@ -516,7 +516,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
 
     let listen_addr = config.api.listen.clone();
     let app_state_for_serve = app_state.clone();
-    tokio::spawn(async move {
+    let api_task = tokio::spawn(async move {
         if let Err(e) = api::serve(app_state_for_serve, &listen_addr).await {
             tracing::error!("API server error: {e}");
         }
@@ -676,6 +676,15 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         tokio::select! {
             _ = &mut shutdown => {
                 info!("Received shutdown signal, shutting down");
+                // Stop the background tasks that touch the DB before we close the
+                // pool, so they can't race the close and spew "closed pool"
+                // errors (a half-finished share rescan was the worst offender).
+                // Aborting the API task drops its listener, freeing the port at
+                // once so a restart — or a second instance the user starts
+                // thinking the first had stopped — can bind it immediately.
+                reconcile_task.abort();
+                watcher_task.abort();
+                api_task.abort();
                 let _ = handle.cmd_tx.send(node::messages::NodeCmd::Shutdown).await;
                 // Remove UPnP mappings while the network is still up (best-effort,
                 // bounded). Leases would expire on their own, but cleaning up is
