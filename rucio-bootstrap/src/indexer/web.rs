@@ -45,10 +45,10 @@ a:hover{text-decoration:underline}
 /* Results — left-aligned, Google/mnemo style. The list shares its left edge
    with the header search box (past the logo), via --indent. */
 header.bar{position:sticky;top:0;z-index:5;background:color-mix(in srgb,var(--bg) 90%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--border)}
-header.bar .inner{display:flex;align-items:center;gap:.9rem;padding:.7rem 1.5rem}
+header.bar .inner{display:flex;align-items:center;gap:.9rem;padding:.75rem 1.5rem}
 header.bar .logo{width:30px;height:30px;color:var(--accent);flex-shrink:0}
 header.bar .search{max-width:600px}
-main{padding:1.5rem;padding-left:var(--indent);max-width:calc(var(--indent) + 720px)}
+main{padding:1.5rem;padding-left:var(--indent);max-width:calc(var(--indent) + 760px)}
 .count{color:var(--text-3);font-size:.85rem;margin:0 0 1.25rem}
 .hit{margin-bottom:1.5rem;padding-bottom:1.5rem;border-bottom:1px solid var(--border)}
 .hit:last-of-type{border-bottom:none;margin-bottom:0}
@@ -65,6 +65,8 @@ main{padding:1.5rem;padding-left:var(--indent);max-width:calc(var(--indent) + 72
 .pager{display:flex;gap:1.5rem;margin:1.5rem 0}
 .pager span{color:var(--text-3)}
 footer{padding:1.25rem 1.5rem;padding-left:var(--indent);color:var(--text-3);font-size:.8rem}
+/* On a monitor, use the spare width for roomier results (like mnemo). */
+@media(min-width:1280px){main{max-width:calc(var(--indent) + 1040px)}}
 "#;
 
 /// Query parameters for the web search page.
