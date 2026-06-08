@@ -26,8 +26,8 @@ const LOGO_SVG: &str = r##"<svg viewBox="0 0 24 24" fill="none" stroke="currentC
 /// Shared `<style>`, mirroring the project landing page palette (light/dark).
 const CSS: &str = r#"
 *{box-sizing:border-box}
-:root{color-scheme:light;--bg:#f8fafc;--surface:#fff;--surface-2:#f1f5f9;--border:#e2e8f0;--text:#0f172a;--text-2:#475569;--text-3:#64748b;--accent:#4f6ef7;--accent-2:#3b5bdb;--accent-fg:#fff;--shadow:0 12px 36px rgba(15,23,42,.12)}
-@media(prefers-color-scheme:dark){:root{color-scheme:dark;--bg:#0f0f1a;--surface:#1a1a2e;--surface-2:#16162a;--border:#2d2d4e;--text:#e2e8f0;--text-2:#94a3b8;--text-3:#64748b;--accent:#7c93f0;--accent-2:#a5b4fc;--accent-fg:#0f0f1a;--shadow:0 12px 36px rgba(0,0,0,.4)}}
+:root{color-scheme:light;--bg:#f8fafc;--surface:#fff;--surface-2:#f1f5f9;--border:#e2e8f0;--text:#0f172a;--text-2:#475569;--text-3:#64748b;--accent:#4f6ef7;--accent-2:#3b5bdb;--accent-fg:#fff;--shadow:0 12px 36px rgba(15,23,42,.12);--indent:4.25rem;--low-bg:#fef2f2;--low-fg:#b91c1c;--low-bd:#fecaca;--warn-bg:#fffbeb;--warn-fg:#b45309;--warn-bd:#fde68a;--ok-bg:#f0fdf4;--ok-fg:#15803d;--ok-bd:#bbf7d0}
+@media(prefers-color-scheme:dark){:root{color-scheme:dark;--bg:#0f0f1a;--surface:#1a1a2e;--surface-2:#16162a;--border:#2d2d4e;--text:#e2e8f0;--text-2:#94a3b8;--text-3:#64748b;--accent:#7c93f0;--accent-2:#a5b4fc;--accent-fg:#0f0f1a;--shadow:0 12px 36px rgba(0,0,0,.4);--low-bg:#3a1f24;--low-fg:#fca5a5;--low-bd:#7f2a35;--warn-bg:#3a311c;--warn-fg:#fcd34d;--warn-bd:#7a5e22;--ok-bg:#15301f;--ok-fg:#86efac;--ok-bd:#225c38}}
 body{margin:0;font-family:system-ui,sans-serif;background:var(--bg);color:var(--text);line-height:1.5;-webkit-font-smoothing:antialiased}
 a{color:var(--accent);text-decoration:none}
 a:hover{text-decoration:underline}
@@ -42,21 +42,29 @@ a:hover{text-decoration:underline}
 .home h1{font-size:2.4rem;letter-spacing:-.02em;margin:.5rem 0 .25rem}
 .home p.tag{color:var(--text-2);margin:0 0 1.75rem}
 .home .search{max-width:34rem}
-/* Results */
+/* Results — left-aligned, Google/mnemo style. The list shares its left edge
+   with the header search box (past the logo), via --indent. */
 header.bar{position:sticky;top:0;z-index:5;background:color-mix(in srgb,var(--bg) 90%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--border)}
-header.bar .inner{max-width:48rem;margin:0 auto;display:flex;align-items:center;gap:.9rem;padding:.7rem 1.25rem}
+header.bar .inner{display:flex;align-items:center;gap:.9rem;padding:.7rem 1.5rem}
 header.bar .logo{width:30px;height:30px;color:var(--accent);flex-shrink:0}
-main{max-width:48rem;margin:0 auto;padding:1.25rem}
-.count{color:var(--text-3);font-size:.85rem;margin:.25rem 0 1rem}
-.result{padding:.9rem 0;border-bottom:1px solid var(--border)}
-.result h2{font-size:1.05rem;margin:0 0 .2rem;font-weight:600;overflow-wrap:break-word}
-.result .meta{color:var(--text-3);font-size:.82rem;margin:0 0 .4rem}
-.result .meta b{color:var(--text-2);font-weight:600}
-.magnet{display:block;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.78rem;color:var(--text-2);background:var(--surface-2);border:1px solid var(--border);border-radius:.4rem;padding:.4rem .6rem;overflow-x:auto;white-space:nowrap}
-.empty{color:var(--text-2);padding:2rem 0;text-align:center}
-.pager{display:flex;justify-content:space-between;margin:1.5rem 0;gap:1rem}
+header.bar .search{max-width:600px}
+main{padding:1.5rem;padding-left:var(--indent);max-width:calc(var(--indent) + 720px)}
+.count{color:var(--text-3);font-size:.85rem;margin:0 0 1.25rem}
+.hit{margin-bottom:1.5rem;padding-bottom:1.5rem;border-bottom:1px solid var(--border)}
+.hit:last-of-type{border-bottom:none;margin-bottom:0}
+.hit-title{font-size:1.05rem;font-weight:600;line-height:1.35;margin:0 0 .4rem;overflow-wrap:anywhere}
+.hit-title a{color:var(--accent)}
+.hit-meta{display:flex;flex-wrap:wrap;gap:.4rem;margin:0 0 .5rem}
+.chip{display:inline-flex;align-items:center;font-size:.72rem;font-weight:600;padding:.12rem .55rem;border:1px solid var(--border);border-radius:999px;background:var(--surface-2);color:var(--text-2);white-space:nowrap}
+.chip-low{background:var(--low-bg);color:var(--low-fg);border-color:var(--low-bd)}
+.chip-mid{background:var(--warn-bg);color:var(--warn-fg);border-color:var(--warn-bd)}
+.chip-high{background:var(--ok-bg);color:var(--ok-fg);border-color:var(--ok-bd)}
+/* The magnet wraps across lines instead of scrolling horizontally. */
+.magnet{display:block;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.76rem;color:var(--text-2);background:var(--surface-2);border:1px solid var(--border);border-radius:.4rem;padding:.45rem .6rem;line-height:1.5;overflow-wrap:anywhere;word-break:break-all}
+.empty{color:var(--text-2);padding:2rem 0}
+.pager{display:flex;gap:1.5rem;margin:1.5rem 0}
 .pager span{color:var(--text-3)}
-footer{max-width:48rem;margin:0 auto;padding:1.5rem 1.25rem;color:var(--text-3);font-size:.8rem;text-align:center}
+footer{padding:1.25rem 1.5rem;padding-left:var(--indent);color:var(--text-3);font-size:.8rem}
 "#;
 
 /// Query parameters for the web search page.
@@ -180,19 +188,47 @@ fn result_row(r: &HashRow) -> String {
     };
     let magnet_e = esc(&magnet);
 
-    let mut meta = format!("<b>{}</b> provider(s)", r.providers);
+    // Meta as chips. The provider chip is coloured by availability: a single
+    // source is poor (red), a handful is fair (amber), many is good (green).
+    let mut chips = String::new();
     if let Some(sz) = r.size.filter(|&s| s > 0) {
-        meta = format!("{} · {}", human_size(sz as u64), meta);
+        chips.push_str(&format!(
+            r#"<span class="chip">{}</span>"#,
+            human_size(sz as u64)
+        ));
     }
-    meta.push_str(&format!(" · seen {}", seen_ago(r.last_seen)));
+    let plabel = if r.providers == 1 {
+        "1 provider".to_string()
+    } else {
+        format!("{} providers", r.providers)
+    };
+    chips.push_str(&format!(
+        r#"<span class="chip {}">{plabel}</span>"#,
+        provider_chip_class(r.providers)
+    ));
+    chips.push_str(&format!(
+        r#"<span class="chip">seen {}</span>"#,
+        seen_ago(r.last_seen)
+    ));
 
     format!(
-        r#"<div class="result">
-  <h2><a href="{magnet_e}">{title}</a></h2>
-  <p class="meta">{meta}</p>
+        r#"<div class="hit">
+  <h2 class="hit-title"><a href="{magnet_e}">{title}</a></h2>
+  <div class="hit-meta">{chips}</div>
   <code class="magnet">{magnet_e}</code>
 </div>"#,
     )
+}
+
+/// Colour band for the provider-count chip: availability at a glance.
+fn provider_chip_class(providers: i64) -> &'static str {
+    if providers >= 5 {
+        "chip-high"
+    } else if providers >= 2 {
+        "chip-mid"
+    } else {
+        "chip-low"
+    }
 }
 
 /// Previous/next links, preserving the query.
@@ -308,5 +344,21 @@ mod tests {
     fn human_size_picks_a_unit() {
         assert_eq!(human_size(512), "512 B");
         assert_eq!(human_size(1536), "1.5 KB");
+    }
+
+    #[test]
+    fn provider_chip_class_bands() {
+        assert_eq!(provider_chip_class(1), "chip-low");
+        assert_eq!(provider_chip_class(2), "chip-mid");
+        assert_eq!(provider_chip_class(4), "chip-mid");
+        assert_eq!(provider_chip_class(5), "chip-high");
+        assert_eq!(provider_chip_class(50), "chip-high");
+    }
+
+    #[test]
+    fn result_row_emits_colored_provider_chip() {
+        let html = result_row(&row(Some("x.mkv"), Some(1024)));
+        assert!(html.contains(r#"class="chip chip-mid""#)); // 3 providers → mid
+        assert!(html.contains("3 providers"));
     }
 }
