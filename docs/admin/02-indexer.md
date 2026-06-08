@@ -107,6 +107,30 @@ identity_count = 3
 
 ---
 
+## Web search interface
+
+When the indexer is running it also serves a small, human-facing search site
+on the same `api_listen` address — a search engine for the network, much like
+DuckDuckGo or Google:
+
+- **`/`** — a landing page with the Rucio logo and a search box.
+- **`/search?q=…`** — results, with a compact header that repeats the search
+  box. Each result shows the file name (or the hash, if not enriched yet), its
+  size, how many peers provide it, when it was last seen, and the canonical
+  `rucio:` magnet link to paste into a client.
+
+It is **server-rendered with no JavaScript** and reuses the very same query as
+[`GET /api/v1/search`](#get-apiv1search), so the page and the API never drift
+apart. The site and the public API need no authentication (only the
+`/api/v1/admin/*` endpoints do), so it is safe to expose read-only — point a
+browser at `http://<api_listen>/`.
+
+To make it a public search portal, bind `api_listen` to `0.0.0.0:3003` (or put
+a reverse proxy with TLS in front of it). Keep it on a trusted network only if
+you also set an `api_token`, since the admin endpoints share the port.
+
+---
+
 ## REST API
 
 The indexer exposes a REST API when running.  Interactive API documentation
@@ -300,9 +324,9 @@ The `latest-bootstrap` image runs the indexer by default — no flag needed.
 Pass `--no-index` (or set `indexer.enabled = false` in the config file inside
 the volume) to run it as a plain bootstrap node instead.
 
-> Port 3003 is the indexer REST API.  If you only want it accessible from
-> localhost, omit `-p 3003:3003` and use `docker exec` or an SSH tunnel to
-> reach it.
+> Port 3003 serves both the web search interface (`/`) and the REST API.  If
+> you only want it accessible from localhost, omit `-p 3003:3003` and use
+> `docker exec` or an SSH tunnel to reach it.
 
 ### Systemd with the indexer
 
