@@ -101,7 +101,6 @@ in to use the `rucio` CLI:
 ```sh
 docker run -d --name rucio \
   -e RUCIOD_API_LISTEN=0.0.0.0:3003 \
-  -e RUCIOD_UPNP=false \
   -v rucio-data:/var/lib/rucio \
   -p 3003:3003/tcp \
   -p 4321:4321/tcp \

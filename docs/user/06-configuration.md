@@ -478,6 +478,11 @@ the file value untouched.
 
 ### Docker / container example
 
+> The official `ghcr.io/ogarcia/rucio` image already sets `RUCIOD_UPNP=false`
+> (UPnP rarely works from inside a container), so the `docker run` examples
+> below don't repeat it. Set `RUCIOD_UPNP=true` to re-enable it. When you build
+> your own image, set it yourself as shown.
+
 ```dockerfile
 FROM debian:bookworm-slim
 COPY ruciod /usr/local/bin/ruciod
@@ -502,7 +507,6 @@ docker run \
   -e RUCIOD_API_LISTEN=0.0.0.0:3003 \
   -e RUCIOD_DOWNLOAD_DIR=/data/downloads \
   -e RUCIOD_DB_PATH=/data/rucio.db \
-  -e RUCIOD_UPNP=false \
   -v rucio-data:/data \
   -p 3003:3003 -p 4321:4321 \
   ghcr.io/ogarcia/rucio
@@ -518,7 +522,6 @@ docker run \
   -e RUCIOD_NODES_DAT=/data/nodes.dat \
   -e RUCIOD_EMULE_UDP_PORT=40066 \
   -e RUCIOD_EMULE_TCP_PORT=40067 \
-  -e RUCIOD_UPNP=false \
   -v rucio-data:/data \
   -p 3003:3003 -p 4321:4321 -p 40067:40067/tcp -p 40066:40066/udp \
   ghcr.io/ogarcia/rucio
