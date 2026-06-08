@@ -153,6 +153,34 @@ impl ObfCiphers {
     }
 }
 
+/// Maximum eMule TCP frame length we will accept. Legitimate frames are small:
+/// a data block is at most a ~180 KB requested window, a hashset a few hundred
+/// KB. The header carries the length as a peer-supplied `u32` (up to ~4 GiB), so
+/// without a cap a malformed/garbage frame — or a malicious peer — makes us
+/// `vec![0u8; len]` gigabytes and the process OOM-aborts. 16 MiB is far above any
+/// real frame; anything larger closes the connection instead of allocating.
+const MAX_FRAME_LEN: usize = 16 * 1024 * 1024;
+
+/// Validate the frame length header and return the payload length (`len - 1`,
+/// the opcode byte excluded). Rejects empty and oversized frames so we never
+/// allocate an attacker-controlled buffer.
+fn frame_payload_len(len: u32) -> io::Result<usize> {
+    let len = len as usize;
+    if len == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "zero-length frame",
+        ));
+    }
+    if len > MAX_FRAME_LEN {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("frame length {len} exceeds maximum {MAX_FRAME_LEN}"),
+        ));
+    }
+    Ok(len - 1)
+}
+
 /// Read one eMule TCP frame, applying RC4 decryption with the receive key if the
 /// connection is obfuscated. Returns `(protocol, opcode, payload)`.
 async fn read_frame(
@@ -165,15 +193,9 @@ async fn read_frame(
         rc4.apply(&mut hdr);
     }
     let proto = hdr[0];
-    let len = u32::from_le_bytes([hdr[1], hdr[2], hdr[3], hdr[4]]) as usize;
-    if len == 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "zero-length frame",
-        ));
-    }
+    let len = u32::from_le_bytes([hdr[1], hdr[2], hdr[3], hdr[4]]);
+    let payload_len = frame_payload_len(len)?;
     let opcode = hdr[5];
-    let payload_len = len - 1;
     let mut payload = vec![0u8; payload_len];
     if payload_len > 0 {
         stream.read_exact(&mut payload).await?;
@@ -1404,6 +1426,24 @@ async fn run_upload_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frame_payload_len_caps_and_rejects() {
+        // Empty frame is invalid.
+        assert!(frame_payload_len(0).is_err());
+        // A huge peer-supplied length must be rejected, not allocated.
+        assert!(frame_payload_len(u32::MAX).is_err());
+        assert!(frame_payload_len(MAX_FRAME_LEN as u32 + 1).is_err());
+        // The reported crash value (~3.9 GiB) is rejected.
+        assert!(frame_payload_len(4_177_203_401u32).is_err());
+        // Normal frames pass and return len - 1 (opcode excluded).
+        assert_eq!(frame_payload_len(1).unwrap(), 0);
+        assert_eq!(frame_payload_len(181).unwrap(), 180);
+        assert_eq!(
+            frame_payload_len(MAX_FRAME_LEN as u32).unwrap(),
+            MAX_FRAME_LEN - 1
+        );
+    }
 
     #[test]
     fn test_build_message_framing() {
