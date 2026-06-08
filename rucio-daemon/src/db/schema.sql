@@ -115,17 +115,6 @@ CREATE INDEX IF NOT EXISTS idx_dl_chunks_status ON download_chunks(download_id, 
 -- is shared until it is modified or removed on disk (size/mtime change),
 -- detected at startup and via the filesystem watcher.
 -- ---------------------------------------------------------------------------
--- ---------------------------------------------------------------------------
--- emule_identity
--- Our persistent eMule "user hash" (credit identity). Single row. Generated
--- once with the eMule client markers (byte 5 = 14, byte 14 = 111) and kept
--- stable across restarts so peers accrue our upload credit to one identity.
--- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS emule_identity (
-    id          INTEGER PRIMARY KEY CHECK (id = 1),
-    user_hash   BLOB    NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS emule_shared_files (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     ed2k_hash   BLOB    NOT NULL UNIQUE,  -- 16 bytes MD4, canonical identifier

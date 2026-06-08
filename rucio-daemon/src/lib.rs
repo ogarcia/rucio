@@ -3,6 +3,8 @@ pub mod config;
 pub mod db;
 
 pub mod emule;
+#[cfg(feature = "emule-compat")]
+pub mod emule_identity;
 pub mod live_stats;
 pub mod metrics;
 pub mod throttle;
@@ -403,10 +405,12 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
             config.storage.download_dir.clone(),
         );
         // Our persistent eMule user hash (credit identity), generated once and
-        // reused so seeding credit accrues to a stable identity.
-        let emule_user_hash = crate::db::emule_identity::get_or_create(&db)
-            .await
-            .unwrap_or([0u8; 16]);
+        // reused so seeding credit accrues to a stable identity. Stored on disk
+        // next to identity.key (see emule_identity) — never in the DB, which is
+        // reconstructible.
+        let emule_id_path = crate::emule_identity::path(&config);
+        let emule_user_hash =
+            crate::emule_identity::load_or_create(&emule_id_path).unwrap_or([0u8; 16]);
         let tcp_port = config.emule.tcp_port;
         match crate::emule::start_emule_tcp_listener(&config).await {
             Ok(listener) => {

@@ -493,9 +493,9 @@ pub async fn run_ed2k_download(
     let mut retry_count: u32 = 0;
 
     // Our persistent eMule user hash, advertised in the download HELLO so a peer
-    // sees the same identity whether it uploads to or downloads from us.
-    let our_user_hash = crate::db::emule_identity::get_or_create(db)
-        .await
+    // sees the same identity whether it uploads to or downloads from us. Stored
+    // on disk next to identity.key (see crate::emule_identity), not in the DB.
+    let our_user_hash = crate::emule_identity::load_or_create(&crate::emule_identity::path(config))
         .unwrap_or([0u8; 16]);
     let our_nick = config.emule.nick.clone();
 
