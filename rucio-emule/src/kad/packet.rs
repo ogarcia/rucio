@@ -212,6 +212,13 @@ impl Contact {
 
 // ── Packet codec ──────────────────────────────────────────────────────────────
 
+/// Bytes still unread in `cur`. Used to cap speculative `Vec::with_capacity`
+/// reservations to what the (bounded) datagram could actually contain, so a
+/// peer's inflated element count can't make us pre-allocate megabytes.
+fn remaining(cur: &Cursor<&[u8]>) -> usize {
+    (cur.get_ref().len() as u64).saturating_sub(cur.position()) as usize
+}
+
 /// Read a u16 little-endian from `r`.
 fn read_u16<R: Read>(r: &mut R) -> io::Result<u16> {
     let mut b = [0u8; 2];
@@ -418,7 +425,7 @@ pub fn decode(data: &[u8]) -> Result<KadPacket, PacketError> {
                 b[0]
             };
             let count = read_u16(&mut cur)?;
-            let mut contacts = Vec::with_capacity(count as usize);
+            let mut contacts = Vec::with_capacity((count as usize).min(remaining(&cur)));
             for _ in 0..count {
                 let id = KadId::read_from(&mut cur)?;
                 let ip_raw = read_u32(&mut cur)?;
@@ -645,7 +652,7 @@ pub fn parse_keyword_res(payload: &[u8]) -> io::Result<KeywordResPayload> {
     let sender_id = KadId::read_from(&mut cur)?;
     let target = KadId::read_from(&mut cur)?;
     let count = read_u16(&mut cur)?;
-    let mut results = Vec::with_capacity(count as usize);
+    let mut results = Vec::with_capacity((count as usize).min(remaining(&cur)));
     for _ in 0..count {
         let file_hash = KadId::read_from(&mut cur)?;
         let (name, size, sources) = read_keyword_tags(&mut cur).unwrap_or_default();
@@ -894,7 +901,7 @@ pub fn parse_search_res_sources(payload: &[u8]) -> io::Result<SearchResPayload> 
     let sender_id = KadId::read_from(&mut cur)?;
     let target = KadId::read_from(&mut cur)?;
     let count = read_u16(&mut cur)?;
-    let mut sources = Vec::with_capacity(count as usize);
+    let mut sources = Vec::with_capacity((count as usize).min(remaining(&cur)));
     for _ in 0..count {
         let id = KadId::read_from(&mut cur)?;
         let (ip, tcp_port, udp_port) = read_source_tags(&mut cur)?;
@@ -922,7 +929,7 @@ pub fn parse_search_res_keywords(payload: &[u8]) -> io::Result<KeywordResPayload
     let sender_id = KadId::read_from(&mut cur)?;
     let target = KadId::read_from(&mut cur)?;
     let count = read_u16(&mut cur)?;
-    let mut results = Vec::with_capacity(count as usize);
+    let mut results = Vec::with_capacity((count as usize).min(remaining(&cur)));
     for _ in 0..count {
         let file_hash = KadId::read_from(&mut cur)?;
         let (name, size, sources) = read_keyword_tags(&mut cur).unwrap_or_default();
