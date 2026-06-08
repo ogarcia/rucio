@@ -33,8 +33,8 @@ CREATE TABLE IF NOT EXISTS shared_files (
 );
 
 -- Look up a share by its on-disk path. The watcher and the startup rescan do
--- this once per file (to re-index or drop it); without the index each lookup
--- is a full table scan, making a rescan of a large share O(files²).
+-- this once per file (to re-index or drop it). Without the index each lookup
+-- is a full table scan, making a rescan of a large share O(files squared).
 CREATE INDEX IF NOT EXISTS idx_shared_files_path ON shared_files(path);
 
 -- ---------------------------------------------------------------------------

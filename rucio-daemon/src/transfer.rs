@@ -1744,7 +1744,6 @@ mod tests {
 
     /// Open a temporary SQLite DB and run migrations.
     async fn make_db() -> (Db, tempfile::TempDir) {
-        use sqlx::AssertSqlSafe;
         use sqlx::sqlite::SqlitePoolOptions;
         // Use a temp-file DB rather than :memory: to avoid SQLite in-memory
         // connection pool deadlocks when multiple queries run concurrently.
@@ -1756,13 +1755,9 @@ mod tests {
             .connect(&url)
             .await
             .unwrap();
-        let schema = include_str!("db/schema.sql");
-        for stmt in schema.split(';').map(str::trim).filter(|s| !s.is_empty()) {
-            sqlx::query(AssertSqlSafe(stmt))
-                .execute(&pool)
-                .await
-                .unwrap();
-        }
+        // Apply the schema exactly as the daemon does, rather than re-parsing it
+        // here: a hand-rolled split on ';' breaks on a ';' inside a comment.
+        crate::db::apply_schema(&pool).await.unwrap();
         (pool, dir)
     }
 
