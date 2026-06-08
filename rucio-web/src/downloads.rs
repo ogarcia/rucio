@@ -714,7 +714,7 @@ fn AddModal(
                     </p>
                     <textarea
                         class="link-textarea"
-                        placeholder="rucio:?xt=urn:blake3:…\ned2k://|file|…"
+                        placeholder="rucio:<hash>?name=…&size=…\ned2k://|file|…"
                         prop:value=move || text.get()
                         on:input=move |e| text.set(event_target_value(&e))
                         on:keydown=move |e| {
