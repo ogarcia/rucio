@@ -700,6 +700,11 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
     // empty snapshot when uploads drain (clearing the client's Uploads tab)
     // without streaming an empty list every idle second.
     let mut had_uploads = false;
+    // Same active→idle edge for downloads: emit one empty DownloadProgress when
+    // the last active download finishes, so the client refreshes and sees the
+    // terminal state (otherwise a download that completes as the last active one
+    // is never streamed again and stays "Downloading 100%" until a reload).
+    let mut had_downloads = false;
     // Single-use shutdown trigger (process signal or the shell's window-close).
     tokio::pin!(shutdown);
     loop {
@@ -875,7 +880,14 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                     }
                 }
                 if !active.is_empty() {
+                    had_downloads = true;
                     let _ = ws_tx.send(WsEvent::DownloadProgress(active));
+                } else if had_downloads {
+                    // Active→idle edge: one empty tick so the client notices the
+                    // download(s) left the active set and refreshes their final
+                    // state (e.g. Downloading 100% → Completed).
+                    had_downloads = false;
+                    let _ = ws_tx.send(WsEvent::DownloadProgress(Vec::new()));
                 }
 
                 // UploadProgress — peers currently downloading from us. Push a
