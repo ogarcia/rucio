@@ -71,6 +71,16 @@ main{padding:1.5rem;padding-left:var(--indent);max-width:calc(var(--indent) + 76
 footer{padding:1.25rem 1.5rem;padding-left:var(--indent);color:var(--text-3);font-size:.8rem}
 /* On a monitor, use the spare width for roomier results (like mnemo). */
 @media(min-width:1280px){main{max-width:calc(var(--indent) + 1040px)}}
+/* Phones: the search box wraps — text input on its own row, the sort
+   selector and button below it — and the results header drops the logo so
+   the box doesn't overflow to the right. */
+@media(max-width:640px){
+.search{flex-wrap:wrap}
+.search input{flex:1 1 100%}
+.search select{flex:1}
+header.bar .logo{display:none}
+header.bar .search{max-width:none}
+}
 "#;
 
 /// Query parameters for the web search page.
