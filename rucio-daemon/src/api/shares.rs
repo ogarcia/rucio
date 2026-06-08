@@ -87,25 +87,71 @@ pub async fn list_shares(State(state): State<AppState>) -> Json<SharedDirsRespon
 // GET /api/v1/shares/files
 // ---------------------------------------------------------------------------
 
-/// List shared files
+/// Default page size when the client doesn't specify `limit`.
+const SHARES_PAGE_DEFAULT: i64 = 200;
+/// Hard cap on `limit` so a client can't ask for the whole (huge) list at once.
+const SHARES_PAGE_MAX: i64 = 1000;
+
+/// Query parameters for paginating and filtering the shared-files list.
+#[derive(Debug, Deserialize)]
+pub struct ListSharesParams {
+    /// Case-insensitive substring to match against the file name.
+    #[serde(default)]
+    pub q: Option<String>,
+    /// Restrict to files under this directory (exact dir or anything beneath it).
+    #[serde(default)]
+    pub dir: Option<String>,
+    /// Page size (default 200, capped at 1000).
+    #[serde(default)]
+    pub limit: Option<i64>,
+    /// Number of rows to skip (for paging through the result set).
+    #[serde(default)]
+    pub offset: Option<i64>,
+}
+
+/// List shared files (paginated)
 ///
-/// Returns every file that has been indexed and is currently being shared by this node.
+/// Returns one page of indexed files matching the optional `q` (name substring)
+/// and `dir` (directory) filters, newest first, plus `total` — the number of
+/// files matching the filter. Filtering and slicing happen in SQL, so this
+/// scales to very large shares; the client pages with `limit`/`offset`.
 ///
-/// Each entry includes the BLAKE3 root hash, file name, size, chunk count, MIME type,
-/// filesystem path, and a ready-to-use magnet link that already contains this node's
+/// Each entry includes the BLAKE3 root hash, file name, size, chunk count, MIME
+/// type, filesystem path, and a ready-to-use magnet link carrying this node's
 /// peer ID as a provider hint.
-///
-/// Files are indexed automatically when a directory is added with `POST /api/v1/shares`
-/// and whenever the filesystem watcher detects a new file under a watched directory.
 #[utoipa::path(
     get,
     path = "/api/v1/shares/files",
+    params(
+        ("q" = Option<String>, Query, description = "Case-insensitive name substring filter."),
+        ("dir" = Option<String>, Query, description = "Restrict to files under this directory."),
+        ("limit" = Option<i64>, Query, description = "Page size (default 200, max 1000)."),
+        ("offset" = Option<i64>, Query, description = "Rows to skip.")
+    ),
     responses(
-        (status = 200, description = "All currently shared files.", body = SharesResponse)
+        (status = 200, description = "One page of shared files plus the total match count.", body = SharesResponse)
     )
 )]
-pub async fn list_share_files(State(state): State<AppState>) -> Json<SharesResponse> {
-    let rows = db::shares::list(&state.db).await.unwrap_or_default();
+pub async fn list_share_files(
+    State(state): State<AppState>,
+    Query(params): Query<ListSharesParams>,
+) -> Json<SharesResponse> {
+    let limit = params
+        .limit
+        .unwrap_or(SHARES_PAGE_DEFAULT)
+        .clamp(1, SHARES_PAGE_MAX);
+    let offset = params.offset.unwrap_or(0).max(0);
+    // Treat blank filters as absent.
+    let q = params.q.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let dir = params
+        .dir
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    let (rows, total) = db::shares::list_page(&state.db, q, dir, limit, offset)
+        .await
+        .unwrap_or_default();
     let peer_id = state.node_status.read().await.peer_id.clone();
 
     let shares = rows
@@ -121,7 +167,10 @@ pub async fn list_share_files(State(state): State<AppState>) -> Json<SharesRespo
         })
         .collect();
 
-    Json(SharesResponse { shares })
+    Json(SharesResponse {
+        shares,
+        total: total as u64,
+    })
 }
 
 // ---------------------------------------------------------------------------

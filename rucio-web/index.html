@@ -990,6 +990,17 @@
         }
         .share-copy-btn .icon { width: 0.875rem; height: 0.875rem; }
 
+        /* "Load more" button for the paginated shared-files list. */
+        .share-load-more {
+            display: block; margin: 0.75rem auto; padding: 0.4rem 1rem;
+            background: var(--raised); border: 1px solid var(--border);
+            border-radius: 0.375rem; color: var(--text-2);
+            font-size: 0.8125rem; font-family: inherit; cursor: pointer;
+            transition: background 0.1s, color 0.1s;
+        }
+        .share-load-more:hover:not(:disabled) { background: var(--row-hover); color: var(--text); }
+        .share-load-more:disabled { opacity: 0.6; cursor: default; }
+
         /* ── Shared atoms ────────────────────────────────────────────────── */
 
         .empty-state {

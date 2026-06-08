@@ -25,15 +25,31 @@ async fn api_list_dirs() -> Option<Vec<SharedDir>> {
         .map(|r| r.dirs)
 }
 
-async fn api_list_files() -> Option<Vec<ShareFile>> {
-    gloo_net::http::Request::get("/api/v1/shares/files")
+/// Fetch one page of shared files, filtered server-side by name (`q`) and/or
+/// directory (`dir`). Returns the page plus the total number of matches.
+async fn api_list_files_page(
+    q: &str,
+    dir: Option<&str>,
+    offset: u32,
+    limit: u32,
+) -> Option<(Vec<ShareFile>, u64)> {
+    let mut url = format!("/api/v1/shares/files?limit={limit}&offset={offset}");
+    if !q.is_empty() {
+        url.push_str("&q=");
+        url.push_str(&urlencoding_encode(q));
+    }
+    if let Some(d) = dir {
+        url.push_str("&dir=");
+        url.push_str(&urlencoding_encode(d));
+    }
+    gloo_net::http::Request::get(&url)
         .send()
         .await
         .ok()?
         .json::<SharesFilesResponse>()
         .await
         .ok()
-        .map(|r| r.shares)
+        .map(|r| (r.shares, r.total))
 }
 
 /// POST a directory to share. Returns the queued count and any read errors, or
@@ -91,21 +107,6 @@ fn basename(p: &str) -> &str {
     trimmed.rsplit('/').next().unwrap_or(trimmed)
 }
 
-/// Whether `file_path` lives under directory `dir`. Mirrors the daemon's
-/// prefix matching (`path == dir` or `path` starts with `dir/`). Assumes `/`
-/// separators, which holds for the Unix hosts the daemon runs on.
-fn file_under_dir(file_path: &str, dir: &str) -> bool {
-    if file_path == dir {
-        return true;
-    }
-    let prefix = if dir.ends_with('/') {
-        dir.to_string()
-    } else {
-        format!("{dir}/")
-    };
-    file_path.starts_with(&prefix)
-}
-
 fn confirm(message: &str) -> bool {
     web_sys::window()
         .and_then(|w| w.confirm_with_message(message).ok())
@@ -113,6 +114,9 @@ fn confirm(message: &str) -> bool {
 }
 
 // ── Tab ───────────────────────────────────────────────────────────────────────
+
+/// Files fetched per page (and on the initial load). The server caps this.
+const PAGE_SIZE: u32 = 200;
 
 #[component]
 pub fn SharesTab(
@@ -122,7 +126,13 @@ pub fn SharesTab(
     temp_limit: RwSignal<bool>,
 ) -> impl IntoView {
     let dirs: RwSignal<Vec<SharedDir>> = RwSignal::new(vec![]);
+    // The files loaded so far (one or more appended pages). The full set is never
+    // loaded at once: filtering and paging happen on the server so this scales.
     let files: RwSignal<Vec<ShareFile>> = RwSignal::new(vec![]);
+    // Total files matching the current filter (server-side), to show progress
+    // and decide whether a "Load more" page remains.
+    let total: RwSignal<u64> = RwSignal::new(0);
+    let loading: RwSignal<bool> = RwSignal::new(false);
     let filter: RwSignal<String> = RwSignal::new(String::new());
     let add_open: RwSignal<bool> = RwSignal::new(false);
     // When set, the file list is restricted to this directory. Toggled by
@@ -130,14 +140,45 @@ pub fn SharesTab(
     let selected_dir: RwSignal<Option<String>> = RwSignal::new(None);
     // root_hash of the file whose magnet was just copied (for the "Copied!" hint).
     let copied: RwSignal<Option<String>> = RwSignal::new(None);
+    // Bumped on every load; a response is applied only if its generation is
+    // still current, so a reset (new filter/dir) discards an in-flight page.
+    let load_gen: RwSignal<u32> = RwSignal::new(0);
 
-    let reload = move || {
+    // Load a page from the server. `reset` starts a fresh result set (offset 0,
+    // replacing the list); otherwise it appends the next page.
+    let load_files = Callback::new(move |reset: bool| {
+        let q = filter.get_untracked();
+        let dir = selected_dir.get_untracked();
+        let offset = if reset {
+            0
+        } else {
+            files.with_untracked(|f| f.len() as u32)
+        };
+        let generation = load_gen.get_untracked() + 1;
+        load_gen.set(generation);
+        loading.set(true);
+        spawn_local(async move {
+            let res = api_list_files_page(&q, dir.as_deref(), offset, PAGE_SIZE).await;
+            // A newer load started while this was in flight — drop this result.
+            if load_gen.get_untracked() != generation {
+                return;
+            }
+            if let Some((page, tot)) = res {
+                if reset {
+                    files.set(page);
+                } else {
+                    files.update(|f| f.extend(page));
+                }
+                total.set(tot);
+            }
+            loading.set(false);
+        });
+    });
+
+    let reload_dirs = move || {
         spawn_local(async move {
             if let Some(d) = api_list_dirs().await {
                 dirs.set(d);
-            }
-            if let Some(f) = api_list_files().await {
-                files.set(f);
             }
         });
     };
@@ -148,9 +189,38 @@ pub fn SharesTab(
         let cur = indexing.get();
         let finished = matches!(prev, Some(p) if p > 0) && cur == 0;
         if prev.is_none() || finished {
-            reload();
+            reload_dirs();
+            load_files.run(true);
         }
         cur
+    });
+
+    // Selecting/clearing a folder re-queries from the server (skip the initial
+    // run — the indexing effect above already does the first load).
+    Effect::new(move |prev: Option<Option<String>>| {
+        let dir = selected_dir.get();
+        if prev.is_some() {
+            load_files.run(true);
+        }
+        dir
+    });
+
+    // Debounced search: re-query 300 ms after the user stops typing, and only if
+    // the text actually changed (skip the initial run).
+    Effect::new(move |prev: Option<String>| {
+        let q = filter.get();
+        if prev.as_ref().is_some_and(|p| p != &q) {
+            let generation = load_gen.get_untracked() + 1;
+            load_gen.set(generation);
+            spawn_local(async move {
+                sleep(Duration::from_millis(300)).await;
+                // Still the latest keystroke?
+                if load_gen.get_untracked() == generation {
+                    load_files.run(true);
+                }
+            });
+        }
+        q
     });
 
     // Stays alive across this component's lifetime; used to guard the copied
@@ -170,18 +240,6 @@ pub fn SharesTab(
             }
         });
     });
-
-    let visible_files = move || {
-        let q = filter.get().to_lowercase();
-        let dir = selected_dir.get();
-        files.with(|v| {
-            v.iter()
-                .filter(|f| dir.as_deref().is_none_or(|d| file_under_dir(&f.path, d)))
-                .filter(|f| q.is_empty() || f.name.to_lowercase().contains(&q))
-                .cloned()
-                .collect::<Vec<_>>()
-        })
-    };
 
     view! {
         <div class="tab-content">
@@ -273,7 +331,7 @@ pub fn SharesTab(
                                                                     selected_dir.set(None);
                                                                 }
                                                                 if let Some(d) = api_list_dirs().await { dirs.set(d); }
-                                                                if let Some(f) = api_list_files().await { files.set(f); }
+                                                                load_files.run(true);
                                                             });
                                                         }
                                                     }
@@ -317,11 +375,21 @@ pub fn SharesTab(
                 </div>
                 <Show
                     when=move || !files.get().is_empty()
-                    fallback=|| view! { <div class="empty-state empty-state-sm"><p>"No shared files yet"</p></div> }
+                    fallback=move || view! {
+                        <div class="empty-state empty-state-sm">
+                            <p>{move || if loading.get() {
+                                "Loading…"
+                            } else if !filter.get().is_empty() {
+                                "No files match"
+                            } else {
+                                "No shared files yet"
+                            }}</p>
+                        </div>
+                    }
                 >
                     <ul class="share-file-list">
                         <For
-                            each=move || visible_files()
+                            each=move || files.get()
                             key=|f| f.root_hash.clone()
                             children=move |f| {
                                 let hash = f.root_hash.clone();
@@ -347,23 +415,37 @@ pub fn SharesTab(
                             }
                         />
                     </ul>
+                    // Load the next page on demand (server-side paging).
+                    <Show when=move || (files.get().len() as u64) < total.get() fallback=|| ()>
+                        <button
+                            class="share-load-more"
+                            disabled=move || loading.get()
+                            on:click=move |_| load_files.run(false)
+                        >
+                            {move || if loading.get() {
+                                "Loading…".to_string()
+                            } else {
+                                format!("Load more ({} of {})", files.get().len(), total.get())
+                            }}
+                        </button>
+                    </Show>
                 </Show>
             </div>
 
             // ── Status bar: shared file count (left) + global meters (right) ─
             <StatusBar dl_speed=dl_speed ul_speed=ul_speed temp_limit=temp_limit>
                 {move || {
-                    let total = files.get().len();
-                    if total == 0 {
+                    let tot = total.get();
+                    if tot == 0 {
                         return view! {
                             <span class="dl-active-count dl-active-none">"No shared files"</span>
                         }.into_any();
                     }
-                    let shown = visible_files().len();
-                    let label = if shown == total {
-                        format!("{total} file(s)")
+                    let shown = files.get().len() as u64;
+                    let label = if shown >= tot {
+                        format!("{tot} file(s)")
                     } else {
-                        format!("{shown} of {total} file(s)")
+                        format!("{shown} of {tot} file(s)")
                     };
                     view! { <span class="dl-active-count">{label}</span> }.into_any()
                 }}
@@ -372,7 +454,7 @@ pub fn SharesTab(
 
         <Show when=move || add_open.get()>
             <AddDirModal
-                on_added=move || { reload(); }
+                on_added=move || { reload_dirs(); load_files.run(true); }
                 on_close=move || add_open.set(false)
             />
         </Show>

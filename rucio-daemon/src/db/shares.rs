@@ -103,6 +103,91 @@ pub async fn list(db: &Db) -> Result<Vec<SharedFileRow>> {
         .collect())
 }
 
+/// One page of shared files matching an optional name substring (`q`) and/or
+/// directory (`dir`, exact dir or any file under it), newest first, plus the
+/// total number of matches. The filtering, ordering and slicing all happen in
+/// SQL so the daemon never materialises the whole share list — this is what
+/// lets the Shares UI scale to hundreds of thousands of files. `chunk_count` is
+/// computed only for the rows on the page, so the join stays cheap.
+pub async fn list_page(
+    db: &Db,
+    q: Option<&str>,
+    dir: Option<&str>,
+    limit: i64,
+    offset: i64,
+) -> Result<(Vec<SharedFileRow>, i64)> {
+    // `q` is a literal substring: escape LIKE's wildcards so a stray % or _ in
+    // the query doesn't match unexpectedly.
+    let name_pat = q.map(|s| {
+        let e = s
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        format!("%{e}%")
+    });
+    let (dir_eq, dir_pat) = match dir {
+        Some(d) => {
+            let d = d.trim_end_matches('/');
+            (Some(d.to_string()), Some(format!("{d}/%")))
+        }
+        None => (None, None),
+    };
+
+    // Same WHERE in both queries (filter is `(?1 IS NULL OR name LIKE ?1) AND
+    // (?2 IS NULL OR path = ?2 OR path LIKE ?3)`). Kept as full literals because
+    // sqlx only accepts statically-safe query strings.
+    const COUNT_SQL: &str = "SELECT COUNT(*) FROM shared_files \
+         WHERE (?1 IS NULL OR name LIKE ?1 ESCAPE '\\') \
+           AND (?2 IS NULL OR path = ?2 OR path LIKE ?3 ESCAPE '\\')";
+    const PAGE_SQL: &str = "SELECT sf.id, sf.root_hash, sf.name, sf.size, sf.mime_type, sf.path, \
+                sf.chunk_size, sf.added_at, sf.mtime, COUNT(c.id) AS chunk_count \
+         FROM ( \
+             SELECT * FROM shared_files \
+             WHERE (?1 IS NULL OR name LIKE ?1 ESCAPE '\\') \
+               AND (?2 IS NULL OR path = ?2 OR path LIKE ?3 ESCAPE '\\') \
+             ORDER BY added_at DESC \
+             LIMIT ?4 OFFSET ?5 \
+         ) sf \
+         LEFT JOIN chunks c ON c.shared_file_id = sf.id \
+         GROUP BY sf.id \
+         ORDER BY sf.added_at DESC";
+
+    let total: i64 = sqlx::query_scalar(COUNT_SQL)
+        .bind(name_pat.as_deref())
+        .bind(dir_eq.as_deref())
+        .bind(dir_pat.as_deref())
+        .fetch_one(db)
+        .await?;
+
+    // Slice first (cheap, index-friendly), then join chunks for just the page.
+    let rows = sqlx::query(PAGE_SQL)
+        .bind(name_pat.as_deref())
+        .bind(dir_eq.as_deref())
+        .bind(dir_pat.as_deref())
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(db)
+        .await?;
+
+    let files = rows
+        .iter()
+        .map(|r| SharedFileRow {
+            id: r.get("id"),
+            root_hash: r.get("root_hash"),
+            name: r.get("name"),
+            size: r.get("size"),
+            mime_type: r.get("mime_type"),
+            path: r.get("path"),
+            chunk_size: r.get("chunk_size"),
+            added_at: r.get("added_at"),
+            mtime: r.get("mtime"),
+            chunk_count: r.get("chunk_count"),
+        })
+        .collect();
+
+    Ok((files, total))
+}
+
 /// List just the root hashes of every shared file.
 ///
 /// Lightweight counterpart to [`list`] for the periodic Kademlia re-announce,
@@ -399,6 +484,57 @@ mod tests {
         let remaining = list(&db).await.unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].path, "/music-extra/b.mp3");
+    }
+
+    #[tokio::test]
+    async fn list_page_filters_and_paginates() {
+        let (db, _dir) = test_db().await;
+        for (i, (seed, name, path)) in [
+            (1u8, "alpha.mkv", "/movies/alpha.mkv"),
+            (2u8, "beta.mkv", "/movies/beta.mkv"),
+            (3u8, "gamma.txt", "/docs/gamma.txt"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            insert(
+                &db,
+                NewSharedFile {
+                    root_hash: &dummy_hash(seed),
+                    name,
+                    size: 10,
+                    mime_type: None,
+                    path,
+                    chunk_size: 4096,
+                    added_at: 1_000_000 + i as u64,
+                    mtime: 0,
+                    chunks: &[],
+                },
+            )
+            .await
+            .unwrap();
+        }
+
+        // No filter: 3 total, first page of 2 newest-first.
+        let (page, total) = list_page(&db, None, None, 2, 0).await.unwrap();
+        assert_eq!(total, 3);
+        assert_eq!(page.len(), 2);
+        assert_eq!(page[0].name, "gamma.txt"); // most recent added_at
+
+        // Offset reaches the last row.
+        let (page2, _) = list_page(&db, None, None, 2, 2).await.unwrap();
+        assert_eq!(page2.len(), 1);
+        assert_eq!(page2[0].name, "alpha.mkv");
+
+        // Name substring filter (case-insensitive).
+        let (m, total_m) = list_page(&db, Some("MKV"), None, 50, 0).await.unwrap();
+        assert_eq!(total_m, 2);
+        assert_eq!(m.len(), 2);
+
+        // Directory filter.
+        let (d, total_d) = list_page(&db, None, Some("/docs"), 50, 0).await.unwrap();
+        assert_eq!(total_d, 1);
+        assert_eq!(d[0].name, "gamma.txt");
     }
 
     #[tokio::test]

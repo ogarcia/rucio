@@ -101,6 +101,8 @@ pub struct ShareFile {
 #[derive(Deserialize, Clone, Debug)]
 pub struct SharesFilesResponse {
     pub shares: Vec<ShareFile>,
+    /// Total files matching the filter (server-side), for "N of TOTAL" + paging.
+    pub total: u64,
 }
 
 /// Response to POST /api/v1/shares.

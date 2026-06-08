@@ -32,10 +32,14 @@ pub struct ShareResponse {
     pub magnet: String,
 }
 
-/// GET /api/v1/shares/files
+/// GET /api/v1/shares/files — one page of shared files plus the total count
+/// matching the (optional) `q`/`dir` filter, so the client can show progress
+/// ("N of TOTAL") and know whether more pages remain.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct SharesResponse {
     pub shares: Vec<ShareResponse>,
+    /// Total files matching the filter (not just this page).
+    pub total: u64,
 }
 
 /// A shared directory (watched folder) with aggregate counts.
