@@ -260,7 +260,7 @@ fn provider_chip_class(providers: i64) -> &'static str {
 fn sort_options(current: db::Sort) -> String {
     // (value, label) — value must match db::Sort::parse / as_param.
     const OPTS: [(&str, &str); 4] = [
-        ("recent", "Freshest"),
+        ("recent", "Newest"),
         ("oldest", "Oldest"),
         ("providers", "Most sources"),
         ("size", "Largest"),
