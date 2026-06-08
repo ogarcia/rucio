@@ -313,11 +313,12 @@ async fn flush_pending(
 async fn on_file_upsert(path: &Path, db: &Db, node_tx: &mpsc::Sender<NodeCmd>) {
     // If the file already exists in the DB with the same path, remove the old
     // record first so we get a fresh hash (content may have changed).
+    // Re-indexing one file: drop just that path's old row (exact match → uses
+    // the path index), not a prefix scan. delete_by_path_prefix here would scan
+    // the whole shared_files table per file, making a rescan O(files²).
     let path_str = path.to_string_lossy().into_owned();
-    if let Ok(hashes) = db::shares::delete_by_path_prefix(db, &path_str).await {
-        for hash in hashes {
-            let _ = node_tx.send(NodeCmd::StopProviding(hash)).await;
-        }
+    if let Ok(Some(hash)) = db::shares::delete_by_path(db, &path_str).await {
+        let _ = node_tx.send(NodeCmd::StopProviding(hash)).await;
     }
 
     match index_file(db, path).await {

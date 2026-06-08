@@ -33,6 +33,14 @@ pub async fn open(path: &Path) -> Result<Db> {
         .context("parsing sqlite URL")?
         .create_if_missing(true)
         .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+        // NORMAL is the recommended pairing with WAL: it fsyncs only at
+        // checkpoint, not on every commit, which is what FULL does. A power loss
+        // can lose the last few transactions but never corrupts the database (WAL
+        // guarantees that). Without this, the default FULL fsyncs on every commit,
+        // and since indexing writes one transaction per file a large share (or a
+        // re-scan of a churning tree) turns into tens of thousands of serial
+        // fsyncs — minutes of disk-bound work where this is a few seconds.
+        .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
         .foreign_keys(true);
 
     let pool = SqlitePool::connect_with(opts)

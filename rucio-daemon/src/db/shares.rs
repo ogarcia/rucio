@@ -155,6 +155,29 @@ pub async fn delete_by_hash(db: &Db, root_hash: &[u8; 32]) -> Result<bool> {
     Ok(affected > 0)
 }
 
+/// Delete the single share at exactly `path` (no prefix/`LIKE`), returning its
+/// root hash if a row was removed. Used when re-indexing one file: it matches by
+/// equality, so it uses the `path` index (O(log n)) instead of the table scan
+/// `delete_by_path_prefix` incurs — the difference between O(n) and O(n²) when
+/// the watcher rescans a large share file by file.
+pub async fn delete_by_path(db: &Db, path: &str) -> Result<Option<Vec<u8>>> {
+    let row = sqlx::query("SELECT root_hash FROM shared_files WHERE path = ?1")
+        .bind(path)
+        .fetch_optional(db)
+        .await?;
+
+    let hash: Option<Vec<u8>> = row.map(|r| r.get("root_hash"));
+
+    if hash.is_some() {
+        sqlx::query("DELETE FROM shared_files WHERE path = ?1")
+            .bind(path)
+            .execute(db)
+            .await?;
+    }
+
+    Ok(hash)
+}
+
 /// Delete all shared files whose `path` starts with `prefix`.
 ///
 /// Use this to remove a whole directory tree: pass the directory path.
@@ -376,6 +399,47 @@ mod tests {
         let remaining = list(&db).await.unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].path, "/music-extra/b.mp3");
+    }
+
+    #[tokio::test]
+    async fn delete_by_path_exact_only() {
+        let (db, _dir) = test_db().await;
+
+        // Exact-match delete must remove only the named file and return its
+        // hash; a sibling under the same directory stays put (no prefix match).
+        for (seed, path) in [(1u8, "/music/a.mp3"), (2u8, "/music/b.mp3")] {
+            insert(
+                &db,
+                NewSharedFile {
+                    root_hash: &dummy_hash(seed),
+                    name: "f",
+                    size: 10,
+                    mime_type: None,
+                    path,
+                    chunk_size: 4096,
+                    added_at: 1_000_000,
+                    mtime: 0,
+                    chunks: &[],
+                },
+            )
+            .await
+            .unwrap();
+        }
+
+        let removed = delete_by_path(&db, "/music/a.mp3").await.unwrap();
+        assert_eq!(removed.as_deref(), Some(dummy_hash(1).as_slice()));
+
+        let remaining = list(&db).await.unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].path, "/music/b.mp3");
+
+        // Deleting a path that isn't shared is a no-op returning None.
+        assert!(
+            delete_by_path(&db, "/music/missing.mp3")
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]

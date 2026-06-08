@@ -32,6 +32,11 @@ CREATE TABLE IF NOT EXISTS shared_files (
     mtime       INTEGER NOT NULL DEFAULT 0 -- file mtime in Unix seconds, change signal for the rescan
 );
 
+-- Look up a share by its on-disk path. The watcher and the startup rescan do
+-- this once per file (to re-index or drop it); without the index each lookup
+-- is a full table scan, making a rescan of a large share O(files²).
+CREATE INDEX IF NOT EXISTS idx_shared_files_path ON shared_files(path);
+
 -- ---------------------------------------------------------------------------
 -- chunks
 -- Individual chunks that belong to a shared file.
