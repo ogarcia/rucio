@@ -12,7 +12,11 @@ Rucio includes an opt-in compatible Kad2 client that can:
 2. Search for ed2k sources for a given MD4 hash.
 3. Download files via ed2k links, verify chunks with MD4, and register
    completed files in the Rucio DHT using their BLAKE3 hash.
-4. Keep seeding completed eMule downloads back to the network — including
+4. Share the chunks it has already verified **while still downloading**
+   (partial sharing), contributing to a file's availability from the first
+   complete chunk (see
+   [Partial sharing](#partial-sharing-uploading-while-downloading)).
+5. Keep seeding completed eMule downloads back to the network — including
    serving the ed2k hashset — as a good Kad citizen (see
    [Seeding completed downloads](#seeding-completed-downloads)).
 
@@ -231,6 +235,31 @@ All chunks done → compute BLAKE3 + ed2k hashset (single read of the file)
 ```
 
 The download appears in `rucio download list` and supports `--watch` throughout.
+
+---
+
+## Partial sharing (uploading while downloading)
+
+Rucio is a good Kad citizen *before* a download finishes too: an in-progress
+ed2k download is offered to the network, serving the chunks already verified.
+
+- The in-progress download is registered in the upload whitelist
+  (`ActiveDownloads`) with `complete = false` and its serving `path` pointing at
+  the `.part` file (a completed share points at the final file instead).
+- When a peer requests the file, the upload server builds the **`OP_FILESTATUS`
+  bitmap** (one bit per 9.28 MB slice, `1` = available) from the `.part.met`
+  completion bitmap, so we advertise honestly which slices we hold.
+- On `OP_REQUESTPARTS`, a requested byte range is served **only if it falls
+  entirely within completed slices**. If the peer asks for a slice we don't have
+  yet, the upload session is closed rather than serving partial data — we never
+  hand out bytes from a half-written chunk.
+- The ed2k **hashset is empty while downloading** (it is computed in a single
+  pass on completion), so the peer's chunk-hash verification engages once the
+  file is done; the complete slices are still served in the meantime.
+
+The status bitmap is loaded **once per upload session**. Slices that complete
+mid-session are offered on the peer's next connection — conservative (it never
+over-promises), and sufficient for the good-citizen policy.
 
 ---
 
