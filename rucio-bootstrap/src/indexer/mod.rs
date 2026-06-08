@@ -53,6 +53,7 @@
 
 mod api;
 mod db;
+mod web;
 
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;

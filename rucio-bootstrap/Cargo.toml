@@ -22,6 +22,7 @@ indexer = [
     "dep:utoipa-scalar",
     "dep:serde_json",
     "dep:hex",
+    "dep:urlencoding",
 ]
 
 [dependencies]
@@ -43,3 +44,4 @@ utoipa        = { workspace = true, optional = true }
 utoipa-scalar = { workspace = true, optional = true }
 serde_json    = { workspace = true, optional = true }
 hex           = { workspace = true, optional = true }
+urlencoding   = { workspace = true, optional = true }

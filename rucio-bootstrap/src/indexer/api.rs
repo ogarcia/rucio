@@ -94,6 +94,9 @@ impl Modify for SecurityAddon {
 
 pub fn router(state: AppState) -> Router {
     Router::new()
+        // Server-rendered search front-end (no JS): landing + results pages.
+        .route("/", routing::get(super::web::landing))
+        .route("/search", routing::get(super::web::search_page))
         .route("/health", routing::get(get_health))
         .merge(Scalar::with_url("/api/docs", ApiDoc::openapi()).custom_html(SCALAR_HTML))
         .nest("/api/v1", v1_router())
