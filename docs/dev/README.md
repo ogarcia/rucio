@@ -1,6 +1,6 @@
 # Developer guide
 
-Covers everything needed to build rucio from source and work on its
+Covers everything needed to build Rucio from source and work on its
 subsystems.
 
 | Document | Contents |

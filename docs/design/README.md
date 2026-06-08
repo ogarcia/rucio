@@ -1,7 +1,7 @@
 # Design documentation
 
 Internal architecture, protocol decisions and implementation rationale.
-Aimed at contributors and anyone who wants to understand how rucio works
+Aimed at contributors and anyone who wants to understand how Rucio works
 under the hood.
 
 | Document | Description |

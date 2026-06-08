@@ -1,6 +1,6 @@
 # Magnet links
 
-A magnet link in rucio is a self-contained reference to a file. It encodes
+A magnet link in Rucio is a self-contained reference to a file. It encodes
 the file's content hash, its name and size, and optionally a list of known
 peers. Anyone with the link can start downloading the file without going
 through search.
@@ -38,7 +38,7 @@ rucio share magnet --file /path/to/any/file.mkv
 
 This hashes the file locally and prints the magnet link. No daemon or network
 connection is required. Useful for generating links on a machine that is not
-running rucio.
+running Rucio.
 
 ## Using a magnet link to download
 
@@ -48,7 +48,7 @@ Paste the full link as the argument to `rucio download add`:
 rucio download add "rucio:7b4a3f9c...?name=great-expectations.epub&size=1258291"
 ```
 
-rucio parses the link, registers the download, and starts locating peers that
+Rucio parses the link, registers the download, and starts locating peers that
 have the file via the Kademlia DHT.
 
 ## Sharing links out of band
@@ -59,7 +59,7 @@ Magnet links are plain text — you can share them anywhere:
 - Post them on a web page or forum
 - Store them in a text file
 
-The recipient needs a running rucio daemon to download the file.
+The recipient needs a running Rucio daemon to download the file.
 
 ## Privacy note
 

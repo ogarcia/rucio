@@ -6,12 +6,12 @@
 
 ## Overview
 
-rucio includes an opt-in compatible Kad2 client that can:
+Rucio includes an opt-in compatible Kad2 client that can:
 
 1. Bootstrap into the eMule/aMule Kademlia network.
 2. Search for ed2k sources for a given MD4 hash.
 3. Download files via ed2k links, verify chunks with MD4, and register
-   completed files in the rucio DHT using their BLAKE3 hash.
+   completed files in the Rucio DHT using their BLAKE3 hash.
 4. Keep seeding completed eMule downloads back to the network — including
    serving the ed2k hashset — as a good Kad citizen (see
    [Seeding completed downloads](#seeding-completed-downloads)).
@@ -136,7 +136,7 @@ in `kad/packet.rs`.
 
 ### KAD_VERSION
 
-rucio advertises `KAD_VERSION = 11`, which is compatible with current
+Rucio advertises `KAD_VERSION = 11`, which is compatible with current
 eMule/aMule deployments.
 
 ---
@@ -145,7 +145,7 @@ eMule/aMule deployments.
 
 ### nodes.dat format
 
-rucio uses the standard eMule `nodes.dat` format (version 2). The file is a
+Rucio uses the standard eMule `nodes.dat` format (version 2). The file is a
 binary sequence of contact records. Each record contains:
 
 - Kad node ID (16 bytes)
@@ -236,7 +236,7 @@ The download appears in `rucio download list` and supports `--watch` throughout.
 
 ## Seeding completed downloads
 
-Once a download completes, rucio keeps serving the file to the eMule network
+Once a download completes, Rucio keeps serving the file to the eMule network
 (good-citizen policy) instead of dropping it the moment the transfer finishes.
 
 - Completed files are recorded in the `emule_shared_files` table (`ed2k_hash`,

@@ -126,7 +126,7 @@ rucio config set network.download_limit_kbps 0      # unlimited
 
 ### Bandwidth recommendations
 
-Setting limits is recommended for anyone who does not want rucio to saturate
+Setting limits is recommended for anyone who does not want Rucio to saturate
 their connection while running in the background. The table below shows the
 **80 % rule**: leave 20 % free for other traffic (web browsing, gaming, video
 calls). Values are in KB/s.

@@ -1,4 +1,4 @@
-# rucio
+# Rucio
 
 A decentralized peer-to-peer file sharing application built in Rust, inspired by
 eMule and MLDonkey and adapted to modern infrastructure.
@@ -6,11 +6,11 @@ eMule and MLDonkey and adapted to modern infrastructure.
 No trackers. No central servers. No relay nodes for data transfer.
 Files are discovered via a distributed hash table (Kademlia DHT) and keyword
 search (Gossipsub), and transferred directly between peers. A web control panel
-and a full command-line client ship in the box, and rucio can optionally bridge
+and a full command-line client ship in the box, and Rucio can optionally bridge
 to the **eMule / Kad2** network to download `ed2k://` files.
 
 <p align="center">
-  <img src="docs/images/panel.png" alt="rucio web control panel" width="820">
+  <img src="docs/images/panel.png" alt="Rucio web control panel" width="820">
 </p>
 
 ## Features
@@ -22,7 +22,7 @@ to the **eMule / Kad2** network to download `ed2k://` files.
 - **Command-line client** — scriptable `rucio` CLI for shares, searches,
   downloads and node status, locally or against a remote daemon
 - **eMule / Kad2 compatibility** *(opt-in)* — search the Kad network and
-  download `ed2k://` links alongside native rucio transfers
+  download `ed2k://` links alongside native Rucio transfers
 - **Magnet links** — share any file with a single `rucio:<hash>` link, entirely
   offline if desired
 - **Resumable downloads** — interrupted transfers pick up where they left off
@@ -52,7 +52,7 @@ docker run -d --name rucio \
   ghcr.io/ogarcia/rucio:latest
 ```
 
-Ports: `3003` web panel + API, `4321/tcp` the rucio libp2p network, and
+Ports: `3003` web panel + API, `4321/tcp` the Rucio libp2p network, and
 `4662/tcp` + `4672/udp` eMule/Kad2. Map the eMule ports so the node is reachable
 (High-ID) — without them eMule still works but downloads are much slower
 (Low-ID), and you can drop them entirely if you don't use eMule.

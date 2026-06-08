@@ -2,13 +2,13 @@
 
 ## SQLite database
 
-rucio uses a single SQLite database for all persistent state. The database
+Rucio uses a single SQLite database for all persistent state. The database
 file location is `storage.database_path` (see
 [Configuration](../user/06-configuration.md) for defaults).
 
 ### Schema volatility
 
-The schema is considered **volatile** until rucio reaches a stable release.
+The schema is considered **volatile** until Rucio reaches a stable release.
 There are no migrations. If the schema changes between versions, the database
 must be deleted manually and the daemon restarted. Shares are re-indexed
 automatically on restart; downloads in progress are lost.
@@ -85,7 +85,7 @@ Stores discovered peers for display in `rucio node peers` and for bootstrap hint
 
 ## Directory sharing model
 
-rucio share list **directories**, not individual files. This simplifies the
+Rucio shares **directories**, not individual files. This simplifies the
 inotify/FSEvents watcher model — there is a single watcher per shared
 directory rather than one per file.
 

@@ -1,6 +1,6 @@
 # Networking
 
-rucio uses [libp2p](https://libp2p.io/) as its networking layer. The swarm
+Rucio uses [libp2p](https://libp2p.io/) as its networking layer. The swarm
 combines several behaviours that serve distinct purposes.
 
 ## Behaviours
@@ -10,7 +10,7 @@ combines several behaviours that serve distinct purposes.
 The Identify protocol exchanges metadata (protocol version, listen addresses,
 observed address) with every peer upon connection.
 
-When rucio receives an Identify response from a peer it:
+When Rucio receives an Identify response from a peer it:
 
 1. Emits a `PeerDiscovered` event with the peer's announced `listen_addrs`.
 2. Adds those addresses to the Kademlia routing table, so the peer is
@@ -33,11 +33,11 @@ added to the Kademlia routing table.
 
 The Kademlia DHT is the backbone of internet-wide discovery.
 
-**Provider records** — when a file is indexed, rucio calls
+**Provider records** — when a file is indexed, Rucio calls
 `kad.start_providing(key)` where `key` is the BLAKE3 hash of the file. Other
 nodes can find providers for a hash by calling `kad.get_providers(key)`.
 
-**Bootstrap** — on startup, rucio dials a set of bootstrap peers. By default the
+**Bootstrap** — on startup, Rucio dials a set of bootstrap peers. By default the
 configured `network.bootstrap_peers` are **added** to `BUILTIN_BOOTSTRAP_PEERS`
 (deduplicated); setting `network.exclusive_bootstrap = true` uses only the
 configured peers and ignores the built-ins (for a separate network — not a

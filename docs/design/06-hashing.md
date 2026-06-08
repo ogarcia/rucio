@@ -2,7 +2,7 @@
 
 ## Algorithm: BLAKE3
 
-rucio uses [BLAKE3](https://github.com/BLAKE3-team/BLAKE3) for all content
+Rucio uses [BLAKE3](https://github.com/BLAKE3-team/BLAKE3) for all content
 hashing. BLAKE3 was chosen over SHA1 (BitTorrent), SHA256, or MD4 (eMule)
 for the following reasons:
 
@@ -18,7 +18,7 @@ NVMe drive the entire hashing pipeline is effectively I/O-bound.
 
 ## Hash granularity
 
-rucio computes a single **root hash** per file. This is not a Merkle tree
+Rucio computes a single **root hash** per file. This is not a Merkle tree
 over chunks — it is a flat BLAKE3 hash of the entire file content.
 
 ```rust
@@ -56,7 +56,7 @@ rucio:<hash_hex>?name=<url-encoded-name>&size=<bytes>[&peer=<multiaddr>]...
 ```
 
 The scheme `rucio:` distinguishes these links from BitTorrent `magnet:` links
-and makes them grep-friendly. There is no ambiguity — rucio never parses
+and makes them grep-friendly. There is no ambiguity — Rucio never parses
 `magnet:` links.
 
 ### URL encoding
@@ -89,7 +89,7 @@ a running daemon:
 rucio share magnet --file /path/to/file.mkv
 ```
 
-This is useful for generating links on a machine where rucio is not running
+This is useful for generating links on a machine where Rucio is not running
 as a daemon (e.g. a seed box where you want to produce links to share
 elsewhere).
 

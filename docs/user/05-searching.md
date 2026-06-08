@@ -7,7 +7,7 @@ rucio search "keyword"
 rucio search "multiple words"
 ```
 
-rucio broadcasts the query to connected peers via Gossipsub and simultaneously
+Rucio broadcasts the query to connected peers via Gossipsub and simultaneously
 looks up providers in the Kademlia DHT. Results are accumulated for a few
 seconds and printed as they arrive.
 
@@ -48,17 +48,17 @@ search, previous row numbers refer to the new results.
 word is matched against file names announced by peers. A search for
 `"great expectations"` will match files whose name contains both words.
 
-**Very short keywords only search the rucio network.** Searches also query the
+**Very short keywords only search the Rucio network.** Searches also query the
 eMule/Kad2 network in parallel, but eMule indexes only whole words of **3 or
 more characters** — so a 1–2 character keyword such as `1x` returns results
-from rucio peers but never from eMule (its index has no entry for it, and there
+from Rucio peers but never from eMule (its index has no entry for it, and there
 is no partial-word search in Kad). To get eMule results too, search a longer
 word that actually appears in the file name (e.g. `1x01` instead of `1x`).
-rucio skips the (guaranteed-empty) eMule lookup for such short keywords, so
+Rucio skips the (guaranteed-empty) eMule lookup for such short keywords, so
 these searches also finish a little faster.
 
-**Accents matter on the eMule network, but not on rucio.** rucio normalizes
-diacritics, so `camion` and `camión` return the same rucio results. The
+**Accents matter on the eMule network, but not on Rucio.** Rucio normalizes
+diacritics, so `camion` and `camión` return the same Rucio results. The
 eMule/Kad network only lowercases keywords — it does **not** fold accents — so
 `camión` and `camion` are distinct entries in its index and return different
 results. To get eMule matches, type the keyword with the same accents it has in
@@ -69,7 +69,7 @@ few connections, results may be sparse. Check `rucio node status` to see how man
 peers you are connected to.
 
 **The same file from multiple peers is deduplicated by hash.** If three peers
-share an identical file, it appears as one row with `Peers: 3`. rucio will
+share an identical file, it appears as one row with `Peers: 3`. Rucio will
 download chunks from all of them in parallel.
 
 **You can download without searching** if you already have a magnet link:

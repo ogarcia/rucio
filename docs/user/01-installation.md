@@ -167,7 +167,7 @@ variables accepted by the container.
 
 ## Option D — Behind your own web server (nginx)
 
-There are two ways to put rucio behind nginx — typically for TLS termination
+There are two ways to put Rucio behind nginx — typically for TLS termination
 on a public hostname. Pick one depending on **which image serves the panel**:
 
 - **Reverse-proxy a complete daemon** — the daemon serves both panel and API;
@@ -263,7 +263,7 @@ than the public internet.
 
 ### Add authentication (strongly recommended)
 
-> rucio has **no built-in authentication** — anything that can reach the daemon
+> Rucio has **no built-in authentication** — anything that can reach the daemon
 > can drive it. When you expose it on a public hostname, put a basic auth gate
 > in front of it at the nginx layer.
 
@@ -353,7 +353,7 @@ systemctl enable --now ruciod
 
 ## Default paths
 
-rucio stores its files under standard platform directories.  
+Rucio stores its files under standard platform directories.  
 Run `rucio config show` at any time to see the actual paths in use.
 
 | Path | Linux | macOS |
@@ -366,6 +366,6 @@ Run `rucio config show` at any time to see the actual paths in use.
 | eMule nodes.dat | `~/.local/share/rucio/nodes.dat` | `~/Library/Application Support/rucio/nodes.dat` |
 
 > **Note:** the database schema is volatile before a stable release.
-> If rucio refuses to start after an upgrade, delete the database file and
+> If Rucio refuses to start after an upgrade, delete the database file and
 > restart — downloads in progress will be lost but shares are re-indexed
 > automatically.

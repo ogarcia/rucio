@@ -2,7 +2,7 @@
 
 ## Overview
 
-rucio is structured as a Cargo workspace with four crates:
+Rucio is structured as a Cargo workspace with four crates:
 
 ```
 rucio/
@@ -145,7 +145,7 @@ The daemon exposes a JSON REST API on `http://127.0.0.1:3003/api/v1/`.
 | `GET` | `/shares/:hash/magnet` | Get magnet link for a shared file |
 | `GET` | `/shares/indexing` | Number of files pending indexing |
 | `GET` | `/downloads` | List downloads (with optional state filter) |
-| `POST` | `/downloads` | Start a rucio download (magnet or hash) |
+| `POST` | `/downloads` | Start a Rucio download (magnet or hash) |
 | `POST` | `/downloads/ed2k` | Start an eMule download (ed2k:// link) — emule-compat |
 | `POST` | `/downloads/:id/cancel` | Cancel an active download |
 | `POST` | `/downloads/:id/pause` | Pause an active download (keeps progress) |

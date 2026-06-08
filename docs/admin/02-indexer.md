@@ -132,7 +132,7 @@ The query `q` is matched two ways:
 - as a hex **prefix** of the content hash (a single whitespace-free token);
 - against the indexed **file name**, split into whitespace-separated terms that
   must *all* appear as substrings. Matching is case- and accent-insensitive
-  (folded the same way as the rucio network), so word separators (dots, dashes,
+  (folded the same way as the Rucio network), so word separators (dots, dashes,
   underscores) don't matter and `camion` finds `Camión...`. `ghost in the shell`
   matches `Ghost.in.the.Shell.ARISE...`. The `ñ` is treated as a distinct letter
   and not folded.

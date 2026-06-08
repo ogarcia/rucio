@@ -21,7 +21,7 @@ becomes valuable when you want:
 ## Prerequisites
 
 - A server with a **static public IP** or a DNS name that resolves to it.
-- **Port 4321/TCP** open and reachable from the internet (the default rucio
+- **Port 4321/TCP** open and reachable from the internet (the default Rucio
   DHT port). No other ports are required for the seed role alone.
 - At least 64 MB of RAM and a small amount of storage (identity key only,
   ~100 bytes).

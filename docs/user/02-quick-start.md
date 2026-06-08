@@ -47,7 +47,7 @@ download. See [Node classes](../design/05-node-classes.md) for more detail.
 rucio share add ~/Documents/ebooks
 ```
 
-rucio scans the directory, hashes every file with BLAKE3, and announces them
+Rucio scans the directory, hashes every file with BLAKE3, and announces them
 to the network. Large directories take a moment — check progress with:
 
 ```sh
@@ -72,7 +72,7 @@ rucio share list
 rucio search "epub"
 ```
 
-rucio queries the network using keyword search and accumulates results for a
+Rucio queries the network using keyword search and accumulates results for a
 few seconds:
 
 ```

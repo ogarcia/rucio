@@ -1,11 +1,11 @@
 # User guide
 
-Everything you need to install, configure and use rucio on a day-to-day basis.
+Everything you need to install, configure and use Rucio on a day-to-day basis.
 No knowledge of distributed systems or networking required.
 
 | Document | Description |
 |---|---|
-| [01 — Installation](01-installation.md) | How to install rucio from a release binary or from source |
+| [01 — Installation](01-installation.md) | How to install Rucio from a release binary or from source |
 | [02 — Quick start](02-quick-start.md) | Start the daemon, share a folder and download your first file in five minutes |
 | [03 — Sharing files](03-sharing-files.md) | Adding and removing shared directories, checking indexing progress |
 | [04 — Downloading](04-downloading.md) | Starting, monitoring, resuming and cancelling downloads |

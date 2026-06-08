@@ -17,7 +17,7 @@ rucio download add 1
 rucio download add "rucio:7b4a...?name=moby-dick.epub&size=980123"
 ```
 
-rucio immediately registers the download and begins locating peers that have
+Rucio immediately registers the download and begins locating peers that have
 the file. The download appears in `rucio download list` right away, even before any
 data has been transferred.
 
@@ -57,9 +57,9 @@ rucio download show 7b4a         # hash prefix also works
 ```
 
 This prints the full detail for one download: its hash, state, size and
-progress (both in bytes and in completed pieces — libp2p chunks for rucio
+progress (both in bytes and in completed pieces — libp2p chunks for Rucio
 downloads, 9.28 MB slices for eMule), the destination path, when it was added
-and last updated, and the link used to re-add it (a `rucio:` magnet for rucio
+and last updated, and the link used to re-add it (a `rucio:` magnet for Rucio
 downloads, the original `ed2k://` link for eMule downloads).
 
 While a download is active it also shows live stats: how many sources are
@@ -83,7 +83,7 @@ locally in the DHT. It can last up to a minute on a cold start.
 
 ## Resuming interrupted downloads
 
-If the daemon is stopped while a download is in progress, rucio resumes
+If the daemon is stopped while a download is in progress, Rucio resumes
 automatically on the next startup. Chunks that were already received are not
 re-downloaded.
 

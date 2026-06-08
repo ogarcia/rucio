@@ -1,6 +1,6 @@
 # Node classes
 
-rucio classifies every node — including itself — into one of three classes
+Rucio classifies every node — including itself — into one of three classes
 based on network reachability. The concept is borrowed from eMule's HighID /
 LowID distinction.
 

@@ -1,6 +1,6 @@
 # Sharing files
 
-rucio share list **directories**, not individual files. Adding a directory causes
+Rucio shares **directories**, not individual files. Adding a directory causes
 every file inside it (recursively) to be hashed and announced to the network.
 New files dropped into a shared directory are picked up automatically.
 
@@ -71,12 +71,12 @@ It does **not** delete the files on disk.
 
 ## Automatic re-indexing
 
-rucio watches shared directories using an inotify-based watcher (Linux) or
+Rucio watches shared directories using an inotify-based watcher (Linux) or
 FSEvents (macOS). When a file is added or modified, it is re-hashed and
 re-announced within about 500 ms. Deleted files are removed from the index
 immediately.
 
-In addition, rucio re-announces all shared files to the DHT every 22 minutes
+In addition, Rucio re-announces all shared files to the DHT every 22 minutes
 to keep provider records from expiring. Any file that no longer exists on disk
 at that point is silently removed from the database.
 

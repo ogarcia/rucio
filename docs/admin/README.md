@@ -1,6 +1,6 @@
 # Admin guide
 
-For operators running infrastructure nodes that support the rucio network.
+For operators running infrastructure nodes that support the Rucio network.
 
 | Document | Description |
 |---|---|
