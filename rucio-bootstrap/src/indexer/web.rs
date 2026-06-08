@@ -45,13 +45,13 @@ a:hover{text-decoration:underline}
 .home .logo{width:72px;height:72px;color:var(--accent)}
 .home h1{font-size:2.4rem;letter-spacing:-.02em;margin:.5rem 0 .25rem}
 .home p.tag{color:var(--text-2);margin:0 0 1.75rem}
-.home .search{max-width:34rem}
+.home .search{max-width:40rem}
 /* Results — left-aligned, Google/mnemo style. The list shares its left edge
    with the header search box (past the logo), via --indent. */
 header.bar{position:sticky;top:0;z-index:5;background:color-mix(in srgb,var(--bg) 90%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--border)}
 header.bar .inner{display:flex;align-items:center;gap:.9rem;padding:.75rem 1.5rem}
 header.bar .logo{width:30px;height:30px;color:var(--accent);flex-shrink:0}
-header.bar .search{max-width:600px}
+header.bar .search{max-width:760px}
 main{padding:1.5rem;padding-left:var(--indent);max-width:calc(var(--indent) + 760px)}
 .count{color:var(--text-3);font-size:.85rem;margin:0 0 1.25rem}
 .hit{margin-bottom:1.5rem;padding-bottom:1.5rem;border-bottom:1px solid var(--border)}
@@ -93,11 +93,13 @@ pub async fn landing() -> Html<String> {
   <p class="tag">Search the decentralized network</p>
   <form class="search" action="/search" method="get" role="search">
     <input type="text" name="q" placeholder="Search files by name or hash…" autofocus aria-label="Search">
+    <select name="sort" aria-label="Sort order">{sort_opts}</select>
     <button type="submit">Search</button>
   </form>
 </div>
 {footer}"#,
         logo = LOGO_SVG,
+        sort_opts = sort_options(db::Sort::default()),
         footer = footer(),
     );
     Html(page("Rucio — search", &body))
