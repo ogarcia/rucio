@@ -4,6 +4,7 @@ use leptos::task::spawn_local;
 use crate::SearchStore;
 use crate::downloads::refresh_downloads;
 use crate::icons::{self, Icon};
+use crate::statusbar::StatusBar;
 use crate::types::{
     DownloadResponse, DownloadState, ResultSource, SearchDetailResponse, SearchResult,
     SearchStartedResponse, SearchState, SearchSummary, StartSearchRequest, format_size,
@@ -190,6 +191,9 @@ fn refresh_list(search: SearchStore) {
 pub fn SearchesTab(
     search: SearchStore,
     downloads: RwSignal<Vec<DownloadResponse>>,
+    dl_speed: RwSignal<u64>,
+    ul_speed: RwSignal<u64>,
+    temp_limit: RwSignal<bool>,
 ) -> impl IntoView {
     let query = RwSignal::new(String::new());
 
@@ -508,6 +512,30 @@ pub fn SearchesTab(
                 }.into_any()
             }}
             </div>
+
+            // ── Status bar: result count (left) + global meters (right) ───
+            <StatusBar dl_speed=dl_speed ul_speed=ul_speed temp_limit=temp_limit>
+                {move || {
+                    if search.selected.get().is_none() {
+                        return view! {
+                            <span class="dl-active-count dl-active-none">"No search selected"</span>
+                        }.into_any();
+                    }
+                    let raw = raw_count();
+                    if raw == 0 {
+                        return view! {
+                            <span class="dl-active-count dl-active-none">"No results"</span>
+                        }.into_any();
+                    }
+                    let shown = view_results().len();
+                    let label = if shown == raw {
+                        format!("{raw} result(s)")
+                    } else {
+                        format!("{shown} of {raw} result(s)")
+                    };
+                    view! { <span class="dl-active-count">{label}</span> }.into_any()
+                }}
+            </StatusBar>
         </div>
     }
 }

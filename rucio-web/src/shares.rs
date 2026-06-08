@@ -7,6 +7,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 use crate::icons::{self, Icon};
+use crate::statusbar::StatusBar;
 use crate::types::{
     AddShareResponse, ShareFile, SharedDir, SharedDirsResponse, SharesFilesResponse, format_size,
 };
@@ -114,7 +115,12 @@ fn confirm(message: &str) -> bool {
 // ── Tab ───────────────────────────────────────────────────────────────────────
 
 #[component]
-pub fn SharesTab(indexing: RwSignal<usize>) -> impl IntoView {
+pub fn SharesTab(
+    indexing: RwSignal<usize>,
+    dl_speed: RwSignal<u64>,
+    ul_speed: RwSignal<u64>,
+    temp_limit: RwSignal<bool>,
+) -> impl IntoView {
     let dirs: RwSignal<Vec<SharedDir>> = RwSignal::new(vec![]);
     let files: RwSignal<Vec<ShareFile>> = RwSignal::new(vec![]);
     let filter: RwSignal<String> = RwSignal::new(String::new());
@@ -343,6 +349,25 @@ pub fn SharesTab(indexing: RwSignal<usize>) -> impl IntoView {
                     </ul>
                 </Show>
             </div>
+
+            // ── Status bar: shared file count (left) + global meters (right) ─
+            <StatusBar dl_speed=dl_speed ul_speed=ul_speed temp_limit=temp_limit>
+                {move || {
+                    let total = files.get().len();
+                    if total == 0 {
+                        return view! {
+                            <span class="dl-active-count dl-active-none">"No shared files"</span>
+                        }.into_any();
+                    }
+                    let shown = visible_files().len();
+                    let label = if shown == total {
+                        format!("{total} file(s)")
+                    } else {
+                        format!("{shown} of {total} file(s)")
+                    };
+                    view! { <span class="dl-active-count">{label}</span> }.into_any()
+                }}
+            </StatusBar>
         </div>
 
         <Show when=move || add_open.get()>

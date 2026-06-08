@@ -4,6 +4,7 @@ mod icons;
 mod overlays;
 mod searches;
 mod shares;
+mod statusbar;
 mod types;
 mod uploads;
 
@@ -832,9 +833,31 @@ fn App() -> impl IntoView {
                             temp_limit=temp_limit
                         />
                     }.into_any(),
-                    Tab::Uploads => view! { <UploadsTab uploads=uploads/> }.into_any(),
-                    Tab::Searches => view! { <SearchesTab search=search downloads=downloads/> }.into_any(),
-                    Tab::Shares => view! { <SharesTab indexing=indexing/> }.into_any(),
+                    Tab::Uploads => view! {
+                        <UploadsTab
+                            uploads=uploads
+                            dl_speed=dl_speed
+                            ul_speed=ul_speed
+                            temp_limit=temp_limit
+                        />
+                    }.into_any(),
+                    Tab::Searches => view! {
+                        <SearchesTab
+                            search=search
+                            downloads=downloads
+                            dl_speed=dl_speed
+                            ul_speed=ul_speed
+                            temp_limit=temp_limit
+                        />
+                    }.into_any(),
+                    Tab::Shares => view! {
+                        <SharesTab
+                            indexing=indexing
+                            dl_speed=dl_speed
+                            ul_speed=ul_speed
+                            temp_limit=temp_limit
+                        />
+                    }.into_any(),
                 }}
             </main>
         </div>

@@ -9,10 +9,16 @@
 
 use leptos::prelude::*;
 
-use crate::types::{ActiveUpload, UploadNetwork, format_size, format_speed, format_speed_full};
+use crate::statusbar::StatusBar;
+use crate::types::{ActiveUpload, UploadNetwork, format_size, format_speed};
 
 #[component]
-pub fn UploadsTab(uploads: RwSignal<Vec<ActiveUpload>>) -> impl IntoView {
+pub fn UploadsTab(
+    uploads: RwSignal<Vec<ActiveUpload>>,
+    dl_speed: RwSignal<u64>,
+    ul_speed: RwSignal<u64>,
+    temp_limit: RwSignal<bool>,
+) -> impl IntoView {
     view! {
         <div class="tab-content">
             <div class="tab-scroll">
@@ -34,12 +40,10 @@ pub fn UploadsTab(uploads: RwSignal<Vec<ActiveUpload>>) -> impl IntoView {
                 </Show>
             </div>
 
-            // ── Status bar: active count + aggregate upload rate ──────────────
-            <div class="ul-statusbar">
+            // ── Status bar: active upload count (left) + global meters (right) ─
+            <StatusBar dl_speed=dl_speed ul_speed=ul_speed temp_limit=temp_limit>
                 {move || {
-                    let list = uploads.get();
-                    let n = list.len();
-                    let total: u64 = list.iter().map(|u| u.rate_bps).sum();
+                    let n = uploads.get().len();
                     let count_class = if n > 0 {
                         "dl-active-count"
                     } else {
@@ -50,24 +54,9 @@ pub fn UploadsTab(uploads: RwSignal<Vec<ActiveUpload>>) -> impl IntoView {
                     } else {
                         "No active uploads".to_string()
                     };
-                    view! {
-                        <span class=count_class>{count_label}</span>
-                        <div class="dl-status-right">
-                            <div class="dl-speeds">
-                                {if total > 0 {
-                                    view! {
-                                        <span class="dl-speed dl-speed-up">
-                                            "↑ " {format_speed_full(total)}
-                                        </span>
-                                    }.into_any()
-                                } else {
-                                    view! { <span class="dl-speed-idle">"Idle"</span> }.into_any()
-                                }}
-                            </div>
-                        </div>
-                    }
+                    view! { <span class=count_class>{count_label}</span> }
                 }}
-            </div>
+            </StatusBar>
         </div>
     }
 }

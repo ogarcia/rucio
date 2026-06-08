@@ -622,24 +622,26 @@
             background: var(--accent); color: var(--accent-fg);
         }
 
-        /* Mobile: two purposeful rows via grid. Row 1 = select + elastic
-           input; row 2 = active count (left) and speeds (right), matching
-           the desktop left/right split. Declared after the base rules so it
-           wins the cascade at ≤540px. */
+        /* Mobile: two purposeful rows via grid, but only for the downloads
+           footer (the one carrying the filter controls). The simpler footers
+           on the other tabs — just a count + the global meters — keep the base
+           flex layout, which already wraps cleanly. Scoped via :has() so an
+           empty filter row never appears on those tabs. Declared after the base
+           rules so it wins the cascade at ≤540px. */
         @media (max-width: 540px) {
-            .dl-statusbar {
+            .dl-statusbar:has(.dl-filter-select) {
                 display: grid;
                 grid-template-columns: auto 1fr;
                 gap: 0.5rem; padding: 0.5rem 1rem;
             }
             /* Row 1: select keeps its natural width, input fills the rest. */
-            .dl-filter-select { grid-row: 1; grid-column: 1; }
-            .dl-filter-input  { grid-row: 1; grid-column: 2; width: auto; min-width: 0; }
+            .dl-statusbar:has(.dl-filter-select) .dl-filter-select { grid-row: 1; grid-column: 1; }
+            .dl-statusbar:has(.dl-filter-select) .dl-filter-input  { grid-row: 1; grid-column: 2; width: auto; min-width: 0; }
             /* Row 2 spans both columns so the count's text width never widens
                the select column — robust against longer translated strings. */
-            .dl-active-count  { grid-row: 2; grid-column: 1 / -1; justify-self: start; }
+            .dl-statusbar:has(.dl-filter-select) .dl-active-count  { grid-row: 2; grid-column: 1 / -1; justify-self: start; }
             /* Row 2, right side: speeds + button stay together as one group. */
-            .dl-status-right  { grid-row: 2; grid-column: 1 / -1; justify-self: end; margin-left: 0; }
+            .dl-statusbar:has(.dl-filter-select) .dl-status-right  { grid-row: 2; grid-column: 1 / -1; justify-self: end; margin-left: 0; }
         }
 
         /* ── Downloads ───────────────────────────────────────────────────── */
@@ -733,13 +735,6 @@
             font-size: 0.8125rem; font-weight: 600; color: var(--sd-fg);
             white-space: nowrap; font-variant-numeric: tabular-nums;
             min-width: 5rem; text-align: right;
-        }
-
-        /* Reuses the downloads status bar layout (.dl-* classes inside). */
-        .ul-statusbar {
-            display: flex; align-items: center; gap: 0.75rem;
-            padding: 0.625rem 1.5rem;
-            border-top: 1px solid var(--border);
         }
 
         /* ── Searches ────────────────────────────────────────────────────── */
