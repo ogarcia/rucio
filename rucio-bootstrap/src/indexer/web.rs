@@ -17,8 +17,8 @@ use serde::Deserialize;
 use super::api::AppState;
 use super::db::{self, HashRow};
 
-/// Results per results page.
-const PAGE: i64 = 30;
+/// Results per results page (matches the JSON API's default page size).
+const PAGE: i64 = 50;
 
 /// Accent colour, kept in sync with the favicon and the project landing page.
 const LOGO_SVG: &str = r##"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19.3 12.4 C16.7 9.2 15.9 8.2 16.0 7.9 A16.3 16.3 0 0 0 17.1 6.3 C17.3 6.0 17.7 5.0 17.0 4.3 C16.4 3.7 15.7 3.7 15.1 4.3 S14.3 5.0 13.8 5.4 L13.2 4.3 C13.0 3.8 12.5 3.0 11.9 2.7 S10.5 3.0 10.5 4.3 A10.0 10.0 0 0 1 10.2 6.8 C10.1 7.1 9.9 7.6 5.3 17.1 L4.0 19.7 L9.9 19.7 C10.5 18.7 10.3 18.7 11.2 16.9 L11.8 15.4 L13.0 15.9 C14.4 16.5 15.7 17.0 17.1 17.6 A2.1 2.1 0 0 0 19.4 17.0 A3.5 3.5 0 0 0 19.3 12.4 Z"/></svg>"##;
@@ -66,8 +66,10 @@ main{padding:1.5rem;padding-left:var(--indent);max-width:calc(var(--indent) + 76
 /* The magnet wraps across lines instead of scrolling horizontally. */
 .magnet{display:block;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.76rem;color:var(--text-2);background:var(--surface-2);border:1px solid var(--border);border-radius:.4rem;padding:.45rem .6rem;line-height:1.5;overflow-wrap:anywhere;word-break:break-all}
 .empty{color:var(--text-2);padding:2rem 0}
-.pager{display:flex;gap:1.5rem;margin:1.5rem 0}
+.pager{display:flex;justify-content:space-between;gap:1rem;margin:1.75rem 0 .5rem}
 .pager span{color:var(--text-3)}
+.pager a{padding:.45rem 1rem;border:1px solid var(--border);border-radius:.5rem;background:var(--surface);font-size:.85rem;font-weight:600}
+.pager a:hover{border-color:var(--accent);text-decoration:none}
 footer{padding:1.25rem 1.5rem;padding-left:var(--indent);color:var(--text-3);font-size:.8rem}
 /* On a monitor, use the spare width for roomier results (like mnemo). */
 @media(min-width:1280px){main{max-width:calc(var(--indent) + 1040px)}}
