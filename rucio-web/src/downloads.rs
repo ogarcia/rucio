@@ -217,25 +217,54 @@ async fn api_fetch_pieces(id: i64) -> Option<DownloadPiecesResponse> {
         .ok()
 }
 
-pub async fn api_add_links(text: String, downloads: RwSignal<Vec<DownloadResponse>>) {
+/// Add each non-empty line as a download. The valid links go through; the
+/// returned vec holds the lines we could *not* accept — an unrecognised scheme,
+/// or a link the daemon rejected (e.g. a malformed magnet) — so the caller can
+/// report exactly which ones failed without blocking the good ones.
+pub async fn api_add_links(
+    text: String,
+    downloads: RwSignal<Vec<DownloadResponse>>,
+) -> Vec<String> {
+    let mut rejected = Vec::new();
     for line in text.lines() {
         let link = line.trim();
         if link.is_empty() {
             continue;
         }
-        if link.starts_with("ed2k://") {
-            let body = serde_json::json!({ "link": link });
-            if let Ok(req) = gloo_net::http::Request::post("/api/v1/downloads/ed2k").json(&body) {
-                let _ = req.send().await;
-            }
+        let accepted = if link.starts_with("ed2k://") {
+            post_accepts(
+                "/api/v1/downloads/ed2k",
+                &serde_json::json!({ "link": link }),
+            )
+            .await
+        } else if link.starts_with("rucio:") {
+            post_accepts(
+                "/api/v1/downloads",
+                &serde_json::json!({ "magnet": link, "providers": [] }),
+            )
+            .await
         } else {
-            let body = serde_json::json!({ "magnet": link, "providers": [] });
-            if let Ok(req) = gloo_net::http::Request::post("/api/v1/downloads").json(&body) {
-                let _ = req.send().await;
-            }
+            // Not a rucio: or ed2k:// link — don't even send it.
+            false
+        };
+        if !accepted {
+            rejected.push(link.to_string());
         }
     }
     refresh_downloads(downloads).await;
+    rejected
+}
+
+/// POST `body` and report whether the daemon accepted it: `202` (queued) and
+/// `409` (already have it) both count as success; anything else is a rejection.
+async fn post_accepts(url: &str, body: &serde_json::Value) -> bool {
+    match gloo_net::http::Request::post(url).json(body) {
+        Ok(req) => match req.send().await {
+            Ok(resp) => matches!(resp.status(), 202 | 409),
+            Err(_) => false,
+        },
+        Err(_) => false,
+    }
 }
 
 // ── Tab ───────────────────────────────────────────────────────────────────────
@@ -684,6 +713,8 @@ fn AddModal(
 ) -> impl IntoView {
     let text = RwSignal::new(String::new());
     let busy = RwSignal::new(false);
+    // Lines the daemon couldn't accept; shown so the user can fix them.
+    let rejected: RwSignal<Vec<String>> = RwSignal::new(vec![]);
 
     let submit = move || {
         let t = text.get();
@@ -692,9 +723,16 @@ fn AddModal(
         }
         busy.set(true);
         spawn_local(async move {
-            api_add_links(t, downloads).await;
+            let rej = api_add_links(t, downloads).await;
             busy.set(false);
-            on_close();
+            if rej.is_empty() {
+                on_close();
+            } else {
+                // The valid links went through; keep only the failed ones in the
+                // box (and report them) so the user can correct and retry.
+                text.set(rej.join("\n"));
+                rejected.set(rej);
+            }
         });
     };
 
@@ -716,7 +754,13 @@ fn AddModal(
                         class="link-textarea"
                         placeholder="rucio:<hash>?name=…&size=…\ned2k://|file|…"
                         prop:value=move || text.get()
-                        on:input=move |e| text.set(event_target_value(&e))
+                        on:input=move |e| {
+                            text.set(event_target_value(&e));
+                            // Editing clears the previous rejection notice.
+                            if !rejected.get_untracked().is_empty() {
+                                rejected.set(vec![]);
+                            }
+                        }
                         on:keydown=move |e| {
                             if e.key() == "Enter" && e.ctrl_key() {
                                 submit();
@@ -724,6 +768,18 @@ fn AddModal(
                         }
                         rows="6"
                     />
+                    {move || {
+                        let r = rejected.get();
+                        (!r.is_empty()).then(|| view! {
+                            <p class="error-msg">
+                                {format!(
+                                    "Couldn't add {} link(s) — not a valid rucio: or ed2k:// link. \
+                                     The rest were added; fix these and try again.",
+                                    r.len(),
+                                )}
+                            </p>
+                        })
+                    }}
                 </div>
                 <div class="modal-footer">
                     <button class="btn-sm" on:click=move |_| on_close()>"Cancel"</button>
