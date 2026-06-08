@@ -154,6 +154,9 @@ pub struct SearchParams {
     ///
     /// An empty value returns the most recently announced records.
     pub q: String,
+    /// Result order: `recent` (default, freshest first), `oldest`, `providers`
+    /// (most sources first — availability), or `size` (largest first).
+    pub sort: Option<String>,
     /// Maximum records to return. Default 50, clamped to 1–500.
     pub limit: Option<i64>,
     /// Records to skip, for pagination. Default 0.
@@ -240,7 +243,8 @@ async fn get_health(State(s): State<AppState>) -> Json<HealthResponse> {
 )]
 async fn search_records(State(s): State<AppState>, Query(p): Query<SearchParams>) -> Response {
     let (limit, offset) = page(p.limit, p.offset);
-    match db::search(&s.db, &p.q, limit, offset).await {
+    let sort = db::Sort::parse(p.sort.as_deref().unwrap_or(""));
+    match db::search(&s.db, &p.q, sort, limit, offset).await {
         Ok(records) => Json(RecordsResponse {
             count: records.len(),
             records,
@@ -262,7 +266,7 @@ async fn search_records(State(s): State<AppState>, Query(p): Query<SearchParams>
 )]
 async fn list_records(State(s): State<AppState>, Query(p): Query<PageParams>) -> Response {
     let (limit, offset) = page(p.limit, p.offset);
-    match db::search(&s.db, "", limit, offset).await {
+    match db::search(&s.db, "", db::Sort::default(), limit, offset).await {
         Ok(records) => Json(RecordsResponse {
             count: records.len(),
             records,

@@ -115,9 +115,11 @@ DuckDuckGo or Google:
 
 - **`/`** — a landing page with the Rucio logo and a search box.
 - **`/search?q=…`** — results, with a compact header that repeats the search
-  box. Each result shows the file name (or the hash, if not enriched yet), its
-  size, how many peers provide it, when it was last seen, and the canonical
-  `rucio:` magnet link to paste into a client.
+  box and a sort selector (freshest, oldest, most sources, largest). Each
+  result shows the file name (or the hash, if not enriched yet), its size, how
+  many peers provide it (a colour-coded chip — green when well-seeded, red for
+  a single source), when it was last seen, and the canonical `rucio:` magnet
+  link to paste into a client.
 
 It is **server-rendered with no JavaScript** and reuses the very same query as
 [`GET /api/v1/search`](#get-apiv1search), so the page and the API never drift
@@ -164,6 +166,7 @@ The query `q` is matched two ways:
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `q` | string | `""` | Search query (empty returns all records). |
+| `sort` | string | `recent` | Order: `recent` (freshest first), `oldest`, `providers` (most sources — availability, also accepts `relevance`), `size` (largest first). |
 | `limit` | integer | `50` | Maximum results per page (clamped to 1–500). |
 | `offset` | integer | `0` | Pagination offset. |
 

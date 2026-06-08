@@ -108,7 +108,55 @@ fn like_escape(s: &str) -> String {
         .replace('_', "\\_")
 }
 
-/// Hashes matching `query`, most recently announced first.
+/// Result ordering for [`search`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Sort {
+    /// Most recently announced first (freshness). The default.
+    #[default]
+    Recent,
+    /// Oldest announcement first (age).
+    Oldest,
+    /// Most providers first — availability, used as a relevance proxy.
+    Providers,
+    /// Largest file first (records without a known size sort last).
+    Size,
+}
+
+impl Sort {
+    /// Map a query-string value to a variant; unknown/empty → [`Sort::Recent`].
+    pub fn parse(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "oldest" | "age" => Sort::Oldest,
+            "providers" | "relevance" => Sort::Providers,
+            "size" => Sort::Size,
+            _ => Sort::Recent,
+        }
+    }
+
+    /// Canonical query-string value, for round-tripping through links/forms.
+    pub fn as_param(self) -> &'static str {
+        match self {
+            Sort::Recent => "recent",
+            Sort::Oldest => "oldest",
+            Sort::Providers => "providers",
+            Sort::Size => "size",
+        }
+    }
+
+    /// The `ORDER BY` body. A fixed literal per variant — never user input — so
+    /// it is safe to splice into the query. A `last_seen DESC` tie-breaker keeps
+    /// ordering stable and useful within equal keys.
+    fn order_by(self) -> &'static str {
+        match self {
+            Sort::Recent => "last_seen DESC",
+            Sort::Oldest => "last_seen ASC",
+            Sort::Providers => "providers DESC, last_seen DESC",
+            Sort::Size => "size DESC, last_seen DESC",
+        }
+    }
+}
+
+/// Hashes matching `query`, ordered per `sort`.
 ///
 /// The query is matched two ways:
 ///
@@ -122,7 +170,13 @@ fn like_escape(s: &str) -> String {
 ///   `Camión...`.
 ///
 /// An empty `query` matches everything (used by the list endpoint).
-pub async fn search(db: &Db, query: &str, limit: i64, offset: i64) -> Result<Vec<HashRow>> {
+pub async fn search(
+    db: &Db,
+    query: &str,
+    sort: Sort,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<HashRow>> {
     let terms: Vec<String> = query
         .split_whitespace()
         .map(normalize_search_term)
@@ -161,7 +215,9 @@ pub async fn search(db: &Db, query: &str, limit: i64, offset: i64) -> Result<Vec
         qb.push("))");
     }
 
-    qb.push(" GROUP BY pr.hash ORDER BY last_seen DESC LIMIT ");
+    qb.push(" GROUP BY pr.hash ORDER BY ");
+    qb.push(sort.order_by());
+    qb.push(" LIMIT ");
     qb.push_bind(limit);
     qb.push(" OFFSET ");
     qb.push_bind(offset);
@@ -269,6 +325,45 @@ mod tests {
         rows.iter().map(|r| r.hash.as_str()).collect()
     }
 
+    #[test]
+    fn sort_parse_maps_values() {
+        assert_eq!(Sort::parse("size"), Sort::Size);
+        assert_eq!(Sort::parse("PROVIDERS"), Sort::Providers);
+        assert_eq!(Sort::parse("relevance"), Sort::Providers);
+        assert_eq!(Sort::parse("oldest"), Sort::Oldest);
+        assert_eq!(Sort::parse(""), Sort::Recent);
+        assert_eq!(Sort::parse("nonsense"), Sort::Recent);
+    }
+
+    #[tokio::test]
+    async fn sort_by_size_and_providers() {
+        let db = mem_db().await;
+        // aaa: small (100 B), 3 providers.
+        upsert_file(&db, "aaa", "small but popular", 100)
+            .await
+            .unwrap();
+        for p in ["p1", "p2", "p3"] {
+            upsert(&db, "aaa", p).await.unwrap();
+        }
+        // bbb: large (9000 B), 1 provider.
+        upsert_file(&db, "bbb", "big but lonely", 9000)
+            .await
+            .unwrap();
+        upsert(&db, "bbb", "q1").await.unwrap();
+        // ccc: medium (500 B), 2 providers.
+        upsert_file(&db, "ccc", "middle", 500).await.unwrap();
+        upsert(&db, "ccc", "r1").await.unwrap();
+        upsert(&db, "ccc", "r2").await.unwrap();
+
+        // Largest first.
+        let r = search(&db, "", Sort::Size, 50, 0).await.unwrap();
+        assert_eq!(hashes(&r), vec!["bbb", "ccc", "aaa"]);
+
+        // Most providers first (relevance proxy).
+        let r = search(&db, "", Sort::Providers, 50, 0).await.unwrap();
+        assert_eq!(hashes(&r), vec!["aaa", "ccc", "bbb"]);
+    }
+
     #[tokio::test]
     async fn multi_word_query_matches_separator_delimited_name() {
         let db = mem_db().await;
@@ -281,19 +376,25 @@ mod tests {
         insert(&db, "deadbeefdeadbeef", "Some.Other.Movie.1080p.mkv").await;
 
         // Single word (the case that already worked).
-        let r = search(&db, "ghost", 50, 0).await.unwrap();
+        let r = search(&db, "ghost", Sort::default(), 50, 0).await.unwrap();
         assert_eq!(hashes(&r), vec!["5040a9f7e363afc4"]);
 
         // Multi-word query across dot separators — the reported bug.
-        let r = search(&db, "ghost in the shell", 50, 0).await.unwrap();
+        let r = search(&db, "ghost in the shell", Sort::default(), 50, 0)
+            .await
+            .unwrap();
         assert_eq!(hashes(&r), vec!["5040a9f7e363afc4"]);
 
         // Case-insensitive and order-independent.
-        let r = search(&db, "SHELL ghost", 50, 0).await.unwrap();
+        let r = search(&db, "SHELL ghost", Sort::default(), 50, 0)
+            .await
+            .unwrap();
         assert_eq!(hashes(&r), vec!["5040a9f7e363afc4"]);
 
         // A term that is absent excludes the record (AND semantics).
-        let r = search(&db, "ghost batman", 50, 0).await.unwrap();
+        let r = search(&db, "ghost batman", Sort::default(), 50, 0)
+            .await
+            .unwrap();
         assert!(r.is_empty());
     }
 
@@ -304,11 +405,13 @@ mod tests {
         insert(&db, "deadbeefdeadbeef", "Other.mkv").await;
 
         // Single token is also tried as a hash prefix.
-        let r = search(&db, "5040a9f7", 50, 0).await.unwrap();
+        let r = search(&db, "5040a9f7", Sort::default(), 50, 0)
+            .await
+            .unwrap();
         assert_eq!(hashes(&r), vec!["5040a9f7e363afc4"]);
 
         // Empty query returns everything.
-        let r = search(&db, "", 50, 0).await.unwrap();
+        let r = search(&db, "", Sort::default(), 50, 0).await.unwrap();
         assert_eq!(r.len(), 2);
     }
 
@@ -321,22 +424,26 @@ mod tests {
 
         // Folded query matches the accented name (the reported gap).
         assert_eq!(
-            hashes(&search(&db, "camion", 50, 0).await.unwrap()),
+            hashes(&search(&db, "camion", Sort::default(), 50, 0).await.unwrap()),
             vec!["c0c0"]
         );
         // Accented query still matches (symmetric).
         assert_eq!(
-            hashes(&search(&db, "camión", 50, 0).await.unwrap()),
+            hashes(&search(&db, "camión", Sort::default(), 50, 0).await.unwrap()),
             vec!["c0c0"]
         );
         // ñ is a distinct letter, not folded: "ano" must not match "Año".
         assert_eq!(
-            hashes(&search(&db, "ano", 50, 0).await.unwrap()),
+            hashes(&search(&db, "ano", Sort::default(), 50, 0).await.unwrap()),
             vec!["d0d0"]
         );
         // "año" matches the ñ name, and "dragon" folds to match "Dragón".
         assert_eq!(
-            hashes(&search(&db, "año dragon", 50, 0).await.unwrap()),
+            hashes(
+                &search(&db, "año dragon", Sort::default(), 50, 0)
+                    .await
+                    .unwrap()
+            ),
             vec!["e0e0"]
         );
     }
@@ -348,7 +455,7 @@ mod tests {
         insert(&db, "bbbb", "5012.report.pdf").await;
 
         // `%` must not act as a wildcard: only the literal "50%" name matches.
-        let r = search(&db, "50%", 50, 0).await.unwrap();
+        let r = search(&db, "50%", Sort::default(), 50, 0).await.unwrap();
         assert_eq!(hashes(&r), vec!["aaaa"]);
     }
 }

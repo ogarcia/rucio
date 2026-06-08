@@ -36,6 +36,8 @@ a:hover{text-decoration:underline}
 .search input:focus{border-color:var(--accent)}
 .search button{padding:.7rem 1.25rem;font-size:.95rem;font-weight:600;font-family:inherit;color:var(--accent-fg);background:var(--accent);border:1px solid var(--accent);border-radius:.6rem;cursor:pointer;white-space:nowrap}
 .search button:hover{background:var(--accent-2);border-color:var(--accent-2)}
+.search select{padding:.7rem .55rem;font-size:.9rem;font-family:inherit;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:.6rem;cursor:pointer;outline:none}
+.search select:focus{border-color:var(--accent)}
 /* Landing */
 /* Extra bottom padding lifts the block above the true centre — optical
    centring reads better than mathematical for a search box. */
@@ -77,6 +79,8 @@ pub struct WebQuery {
     #[serde(default)]
     q: Option<String>,
     #[serde(default)]
+    sort: Option<String>,
+    #[serde(default)]
     offset: Option<i64>,
 }
 
@@ -104,8 +108,9 @@ pub async fn search_page(State(s): State<AppState>, Query(p): Query<WebQuery>) -
     let q = p.q.unwrap_or_default();
     let q_trim = q.trim();
     let offset = p.offset.unwrap_or(0).max(0);
+    let sort = db::Sort::parse(p.sort.as_deref().unwrap_or(""));
 
-    let records = db::search(&s.db, q_trim, PAGE, offset)
+    let records = db::search(&s.db, q_trim, sort, PAGE, offset)
         .await
         .unwrap_or_default();
 
@@ -114,11 +119,13 @@ pub async fn search_page(State(s): State<AppState>, Query(p): Query<WebQuery>) -
   <a class="logo" href="/" title="Home">{logo}</a>
   <form class="search" action="/search" method="get" role="search">
     <input type="text" name="q" value="{q}" placeholder="Search files by name or hash…" aria-label="Search">
+    <select name="sort" aria-label="Sort order">{sort_opts}</select>
     <button type="submit">Search</button>
   </form>
 </div></header>"#,
         logo = LOGO_SVG,
         q = esc(&q),
+        sort_opts = sort_options(sort),
     );
 
     let mut main = String::new();
@@ -142,7 +149,7 @@ pub async fn search_page(State(s): State<AppState>, Query(p): Query<WebQuery>) -
         for r in &records {
             main.push_str(&result_row(r));
         }
-        main.push_str(&pager(q_trim, offset, records.len() as i64));
+        main.push_str(&pager(q_trim, sort, offset, records.len() as i64));
     }
 
     let body = format!("{header}<main>{main}</main>{footer}", footer = footer());
@@ -235,18 +242,37 @@ fn provider_chip_class(providers: i64) -> &'static str {
     }
 }
 
-/// Previous/next links, preserving the query.
-fn pager(q: &str, offset: i64, got: i64) -> String {
+/// The sort `<option>`s, with the active one marked `selected`.
+fn sort_options(current: db::Sort) -> String {
+    // (value, label) — value must match db::Sort::parse / as_param.
+    const OPTS: [(&str, &str); 4] = [
+        ("recent", "Freshest"),
+        ("oldest", "Oldest"),
+        ("providers", "Most sources"),
+        ("size", "Largest"),
+    ];
+    let cur = current.as_param();
+    OPTS.iter()
+        .map(|(val, label)| {
+            let sel = if *val == cur { " selected" } else { "" };
+            format!(r#"<option value="{val}"{sel}>{label}</option>"#)
+        })
+        .collect()
+}
+
+/// Previous/next links, preserving the query and sort order.
+fn pager(q: &str, sort: db::Sort, offset: i64, got: i64) -> String {
     let qe = urlencoding::encode(q);
+    let sort = sort.as_param();
     let prev = if offset > 0 {
         let o = (offset - PAGE).max(0);
-        format!(r#"<a href="/search?q={qe}&offset={o}">← Previous</a>"#)
+        format!(r#"<a href="/search?q={qe}&sort={sort}&offset={o}">← Previous</a>"#)
     } else {
         "<span></span>".to_string()
     };
     let next = if got == PAGE {
         let o = offset + PAGE;
-        format!(r#"<a href="/search?q={qe}&offset={o}">Next →</a>"#)
+        format!(r#"<a href="/search?q={qe}&sort={sort}&offset={o}">Next →</a>"#)
     } else {
         "<span></span>".to_string()
     };
