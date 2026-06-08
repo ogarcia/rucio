@@ -37,7 +37,9 @@ a:hover{text-decoration:underline}
 .search button{padding:.7rem 1.25rem;font-size:.95rem;font-weight:600;font-family:inherit;color:var(--accent-fg);background:var(--accent);border:1px solid var(--accent);border-radius:.6rem;cursor:pointer;white-space:nowrap}
 .search button:hover{background:var(--accent-2);border-color:var(--accent-2)}
 /* Landing */
-.home{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:1.5rem;text-align:center}
+/* Extra bottom padding lifts the block above the true centre — optical
+   centring reads better than mathematical for a search box. */
+.home{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:1.5rem 1.5rem 16vh;text-align:center}
 .home .logo{width:72px;height:72px;color:var(--accent)}
 .home h1{font-size:2.4rem;letter-spacing:-.02em;margin:.5rem 0 .25rem}
 .home p.tag{color:var(--text-2);margin:0 0 1.75rem}
