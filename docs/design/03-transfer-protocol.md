@@ -94,6 +94,26 @@ While downloading, chunks are written sequentially to a `.part` file in
 On completion, the `.part` file is renamed (or copied if on a different
 filesystem) to `storage.download_dir/<name>`.
 
+## Partial sharing
+
+A download is shared **while still in progress**, so a downloader contributes
+to a file's availability from its first verified chunk — important for getting
+a freshly introduced file to spread.
+
+- On the **first chunk** that verifies and lands in the `.part`, the engine
+  announces the file to the DHT (`StartProviding(root_hash)`), once per
+  download.
+- Incoming chunk requests for a hash that isn't a completed share fall back to
+  the in-progress download: the chunk is served from the `.part` **only if it
+  is marked `done`** in `download_chunks` (i.e. already hash-verified on
+  receipt). A chunk we don't yet hold returns `NotFound` — we never serve bytes
+  from a half-written chunk.
+- On **completion**, the file moves to `download_dir`, is indexed as an ordinary
+  share, and is served by the normal shared-files path; the provider
+  announcement carries over.
+- On **cancel**, the `.part` is deleted and we `StopProviding`. A **paused**
+  download keeps sharing what it has (the `.part` and its `done` chunks remain).
+
 ## Resumption
 
 On daemon startup, `DownloadEngine::resume_interrupted()` is called. It

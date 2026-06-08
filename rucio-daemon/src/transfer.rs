@@ -201,6 +201,9 @@ struct ActiveDownload {
     peer_state: HashMap<PeerId, PeerState>,
     /// in-flight request_id → (peer, chunk_idx).
     inflight_map: HashMap<OutboundRequestId, (PeerId, u32)>,
+    /// Whether we've announced ourselves as a provider yet (partial sharing).
+    /// Flipped on the first completed chunk so we only StartProviding once.
+    announced: bool,
 }
 
 impl ActiveDownload {
@@ -513,6 +516,7 @@ impl DownloadEngine {
             providers: vec![],
             peer_state: HashMap::new(),
             inflight_map: HashMap::new(),
+            announced: false,
         };
 
         self.active.insert(root_hash, dl);
@@ -824,9 +828,12 @@ impl DownloadEngine {
         self.live_stats.write().await.remove(&download_id);
 
         // Drop in-memory state and remember the .part path if we had it live.
-        let hash_arr: Option<[u8; 32]> = root_hash.try_into().ok();
+        let hash_arr: Option<[u8; 32]> = <[u8; 32]>::try_from(root_hash.as_slice()).ok();
         let mut part_path: Option<PathBuf> = None;
+        // The hash to stop providing (partial sharing) — set once we know it.
+        let mut stop_hash: Option<Vec<u8>> = None;
         if let Some(h) = hash_arr {
+            stop_hash = Some(h.to_vec());
             // Remove a pending manifest (no .part exists yet at this stage).
             if self.pending_manifests.remove(&h).is_some() {
                 info!(
@@ -851,6 +858,7 @@ impl DownloadEngine {
             .map(|(h, _)| *h)
             && let Some(dl) = self.active.remove(&h)
         {
+            stop_hash = Some(h.to_vec());
             part_path = Some(dl.dest_path);
             info!(
                 download_id,
@@ -877,6 +885,13 @@ impl DownloadEngine {
             && e.kind() != std::io::ErrorKind::NotFound
         {
             warn!(path = %path.display(), "Could not remove .part file on cancel: {e}");
+        }
+
+        // Stop announcing it: the .part (and its verified chunks) are gone, so we
+        // can no longer serve any part of this file (partial sharing). Harmless
+        // if we never announced it.
+        if let Some(h) = stop_hash {
+            let _ = self.cmd_tx.send(NodeCmd::StopProviding(h)).await;
         }
     }
 
@@ -1111,6 +1126,7 @@ impl DownloadEngine {
                     providers: pending.providers,
                     peer_state,
                     inflight_map: HashMap::new(),
+                    announced: false,
                 };
 
                 self.active.insert(root_hash, dl);
@@ -1321,6 +1337,25 @@ impl DownloadEngine {
                 }
 
                 debug!(chunk_idx, %peer, "Chunk written");
+
+                // Partial sharing: now that we hold a verified chunk, announce
+                // ourselves as a provider so other peers can pull the parts we
+                // already have (read straight from the .part). Announce once.
+                let announce = self
+                    .active
+                    .get_mut(&root_hash)
+                    .map(|dl| !std::mem::replace(&mut dl.announced, true))
+                    .unwrap_or(false);
+                if announce {
+                    let _ = self
+                        .cmd_tx
+                        .send(NodeCmd::StartProviding(root_hash.to_vec()))
+                        .await;
+                    debug!(
+                        root_hash = hex::encode(root_hash),
+                        "Partial sharing: announced as provider while downloading"
+                    );
+                }
 
                 // Incorporate PEX peers from this response.
                 if !pex.is_empty() {
@@ -1613,7 +1648,8 @@ async fn read_chunk_from_db(
 
     let row = match row {
         Ok(Some(r)) => r,
-        Ok(None) => return ChunkResponse::NotFound,
+        // Not a completed share — try an in-progress download (partial sharing).
+        Ok(None) => return read_chunk_from_partial(db, request, pex_peers).await,
         Err(e) => return ChunkResponse::Error(e.to_string()),
     };
 
@@ -1624,6 +1660,49 @@ async fn read_chunk_from_db(
     let size: i64 = row.get("size");
 
     let offset = idx as u64 * chunk_size as u64;
+    match read_file_range(&path, offset, size as usize).await {
+        Ok(data) => ChunkResponse::Ok {
+            data,
+            peers: pex_peers,
+        },
+        Err(e) => ChunkResponse::Error(e.to_string()),
+    }
+}
+
+/// Partial sharing: serve a chunk we hold for a file we are *still downloading*.
+///
+/// Only chunks already marked `done` are served — those were verified against
+/// their hash when received, so we never hand out bytes from a half-written or
+/// unverified chunk. The bytes come from the download's `.part` (its
+/// `dest_path` while in progress). Once the download completes the file is
+/// indexed as a normal share and served by the path above instead.
+async fn read_chunk_from_partial(
+    db: &Db,
+    request: &ChunkRequest,
+    pex_peers: Vec<String>,
+) -> ChunkResponse {
+    let row = sqlx::query(
+        "SELECT dc.size AS size, d.dest_path AS dest_path
+         FROM download_chunks dc
+         JOIN downloads d ON d.id = dc.download_id
+         WHERE d.root_hash = ?1 AND dc.idx = ?2 AND dc.status = 'done'",
+    )
+    .bind(request.root_hash.as_slice())
+    .bind(request.chunk_idx as i64)
+    .fetch_optional(db)
+    .await;
+
+    let row = match row {
+        Ok(Some(r)) => r,
+        Ok(None) => return ChunkResponse::NotFound,
+        Err(e) => return ChunkResponse::Error(e.to_string()),
+    };
+
+    use sqlx::Row;
+    let path: String = row.get("dest_path");
+    let size: i64 = row.get("size");
+    // Downloads use the fixed rucio chunk size; the offset is idx * CHUNK_SIZE.
+    let offset = request.chunk_idx as u64 * rucio_core::protocol::chunk::CHUNK_SIZE as u64;
     match read_file_range(&path, offset, size as usize).await {
         Ok(data) => ChunkResponse::Ok {
             data,
@@ -1907,6 +1986,66 @@ mod tests {
     #[test]
     fn parse_magnet_wrong_hash_length() {
         assert!(parse_magnet("rucio:deadbeef?name=foo&size=1").is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Partial sharing — serve completed chunks of an in-progress download
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn partial_sharing_serves_done_chunk_not_pending_one() {
+        let (db, dir) = make_db().await;
+        let part = dir.path().join("file.bin.part");
+        let data = b"contents of chunk zero".to_vec();
+        tokio::fs::write(&part, &data).await.unwrap();
+        let hash = [9u8; 32];
+
+        // An in-progress download whose .part holds one verified ('done') chunk.
+        sqlx::query(
+            "INSERT INTO downloads (root_hash, name, total_size, dest_path, status, bytes_done, added_at, updated_at)
+             VALUES (?1, 'file.bin', ?2, ?3, 'downloading', ?2, 0, 0)",
+        )
+        .bind(hash.as_slice())
+        .bind(data.len() as i64)
+        .bind(part.to_str().unwrap())
+        .execute(&db)
+        .await
+        .unwrap();
+        let dl_id: i64 = sqlx::query_scalar("SELECT id FROM downloads WHERE root_hash = ?1")
+            .bind(hash.as_slice())
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO download_chunks (download_id, idx, hash, size, status)
+             VALUES (?1, 0, ?2, ?3, 'done')",
+        )
+        .bind(dl_id)
+        .bind([0u8; 32].as_slice())
+        .bind(data.len() as i64)
+        .execute(&db)
+        .await
+        .unwrap();
+
+        // Chunk 0 is done → served from the .part.
+        let req = ChunkRequest {
+            root_hash: hash,
+            chunk_idx: 0,
+        };
+        match read_chunk_from_partial(&db, &req, vec![]).await {
+            ChunkResponse::Ok { data: got, .. } => assert_eq!(got, data),
+            _ => panic!("expected the done chunk to be served"),
+        }
+
+        // Chunk 1 isn't done → not served (never hand out what we don't have).
+        let req2 = ChunkRequest {
+            root_hash: hash,
+            chunk_idx: 1,
+        };
+        assert!(matches!(
+            read_chunk_from_partial(&db, &req2, vec![]).await,
+            ChunkResponse::NotFound
+        ));
     }
 
     // -----------------------------------------------------------------------
