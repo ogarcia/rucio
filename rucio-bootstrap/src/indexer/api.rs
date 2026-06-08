@@ -154,8 +154,8 @@ pub struct SearchParams {
     ///
     /// An empty value returns the most recently announced records.
     pub q: String,
-    /// Result order: `recent` (default, freshest first), `oldest`, `providers`
-    /// (most sources first — availability), or `size` (largest first).
+    /// Result order: `newest` (default), `oldest`, `providers` (most sources
+    /// first — availability), or `size` (largest first).
     pub sort: Option<String>,
     /// Maximum records to return. Default 50, clamped to 1–500.
     pub limit: Option<i64>,

@@ -166,7 +166,7 @@ The query `q` is matched two ways:
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `q` | string | `""` | Search query (empty returns all records). |
-| `sort` | string | `recent` | Order: `recent` (newest first), `oldest`, `providers` (most sources — availability, also accepts `relevance`), `size` (largest first). |
+| `sort` | string | `newest` | Order: `newest` (newest first), `oldest`, `providers` (most sources — availability, also accepts `relevance`), `size` (largest first). |
 | `limit` | integer | `50` | Maximum results per page (clamped to 1–500). |
 | `offset` | integer | `0` | Pagination offset. |
 

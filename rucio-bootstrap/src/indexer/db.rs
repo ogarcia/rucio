@@ -113,7 +113,7 @@ fn like_escape(s: &str) -> String {
 pub enum Sort {
     /// Most recently announced first (freshness). The default.
     #[default]
-    Recent,
+    Newest,
     /// Oldest announcement first (age).
     Oldest,
     /// Most providers first — availability, used as a relevance proxy.
@@ -123,20 +123,20 @@ pub enum Sort {
 }
 
 impl Sort {
-    /// Map a query-string value to a variant; unknown/empty → [`Sort::Recent`].
+    /// Map a query-string value to a variant; unknown/empty → [`Sort::Newest`].
     pub fn parse(s: &str) -> Self {
         match s.trim().to_ascii_lowercase().as_str() {
             "oldest" | "age" => Sort::Oldest,
             "providers" | "relevance" => Sort::Providers,
             "size" => Sort::Size,
-            _ => Sort::Recent,
+            _ => Sort::Newest,
         }
     }
 
     /// Canonical query-string value, for round-tripping through links/forms.
     pub fn as_param(self) -> &'static str {
         match self {
-            Sort::Recent => "recent",
+            Sort::Newest => "newest",
             Sort::Oldest => "oldest",
             Sort::Providers => "providers",
             Sort::Size => "size",
@@ -148,7 +148,7 @@ impl Sort {
     /// ordering stable and useful within equal keys.
     fn order_by(self) -> &'static str {
         match self {
-            Sort::Recent => "last_seen DESC",
+            Sort::Newest => "last_seen DESC",
             Sort::Oldest => "last_seen ASC",
             Sort::Providers => "providers DESC, last_seen DESC",
             Sort::Size => "size DESC, last_seen DESC",
@@ -331,8 +331,9 @@ mod tests {
         assert_eq!(Sort::parse("PROVIDERS"), Sort::Providers);
         assert_eq!(Sort::parse("relevance"), Sort::Providers);
         assert_eq!(Sort::parse("oldest"), Sort::Oldest);
-        assert_eq!(Sort::parse(""), Sort::Recent);
-        assert_eq!(Sort::parse("nonsense"), Sort::Recent);
+        assert_eq!(Sort::parse("newest"), Sort::Newest);
+        assert_eq!(Sort::parse(""), Sort::Newest);
+        assert_eq!(Sort::parse("nonsense"), Sort::Newest);
     }
 
     #[tokio::test]

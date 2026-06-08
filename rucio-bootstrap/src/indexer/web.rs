@@ -104,7 +104,7 @@ pub async fn landing() -> Html<String> {
   <h1>Rucio</h1>
   <p class="tag">Search the decentralized network</p>
   <form class="search" action="/search" method="get" role="search">
-    <input type="text" name="q" placeholder="Search files by name or hash…" autofocus aria-label="Search">
+    <input type="text" name="q" placeholder="Search files by name or hash…" autofocus aria-label="Search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
     <select name="sort" aria-label="Sort order">{sort_opts}</select>
     <button type="submit">Search</button>
   </form>
@@ -132,7 +132,7 @@ pub async fn search_page(State(s): State<AppState>, Query(p): Query<WebQuery>) -
         r#"<header class="bar"><div class="inner">
   <a class="logo" href="/" title="Home">{logo}</a>
   <form class="search" action="/search" method="get" role="search">
-    <input type="text" name="q" value="{q}" placeholder="Search files by name or hash…" aria-label="Search">
+    <input type="text" name="q" value="{q}" placeholder="Search files by name or hash…" aria-label="Search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
     <select name="sort" aria-label="Sort order">{sort_opts}</select>
     <button type="submit">Search</button>
   </form>
@@ -260,7 +260,7 @@ fn provider_chip_class(providers: i64) -> &'static str {
 fn sort_options(current: db::Sort) -> String {
     // (value, label) — value must match db::Sort::parse / as_param.
     const OPTS: [(&str, &str); 4] = [
-        ("recent", "Newest"),
+        ("newest", "Newest"),
         ("oldest", "Oldest"),
         ("providers", "Most sources"),
         ("size", "Largest"),
