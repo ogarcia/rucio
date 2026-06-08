@@ -215,10 +215,12 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
     // against a just-started daemon can open its WebSocket without waiting on
     // this best-effort startup work.)
 
-    // --- Shared dirs: ensure download_dir is registered as protected --------
+    // --- Shared dirs: make the current download_dir the sole protected one ---
+    // If download_dir changed in the config, the previous one is demoted to an
+    // ordinary (removable) share rather than left as a protected orphan.
     {
         let dl_path = config.storage.download_dir.to_string_lossy().into_owned();
-        if let Err(e) = db::shared_dirs::insert(&db, &dl_path, true, now_secs()).await {
+        if let Err(e) = db::shared_dirs::set_sole_protected(&db, &dl_path, now_secs()).await {
             warn!("Could not register download_dir as protected shared dir: {e}");
         }
     }

@@ -42,6 +42,38 @@ pub async fn insert(db: &Db, path: &str, protected: bool, added_at: u64) -> Resu
     Ok(id)
 }
 
+/// Make `path` the one and only protected shared directory.
+///
+/// Registers `path` (creating it if needed) with `protected = 1`, and clears
+/// the protected flag from every other directory. Called at startup with the
+/// configured `download_dir`: this way, changing `download_dir` in the config
+/// and restarting leaves the *previous* download dir as an ordinary, removable
+/// share instead of a protected orphan the user can no longer delete — and the
+/// current one is always protected even if it was already shared unprotected.
+pub async fn set_sole_protected(db: &Db, path: &str, added_at: u64) -> Result<()> {
+    let path = path.trim_end_matches('/');
+    let mut tx = db.begin().await?;
+
+    sqlx::query("INSERT OR IGNORE INTO shared_dirs (path, protected, added_at) VALUES (?1, 1, ?2)")
+        .bind(path)
+        .bind(added_at as i64)
+        .execute(&mut *tx)
+        .await?;
+    // Force the flag on for the current dir (it may have pre-existed unprotected)
+    // and off for any other dir that was protected (a previous download_dir).
+    sqlx::query("UPDATE shared_dirs SET protected = 1 WHERE path = ?1")
+        .bind(path)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("UPDATE shared_dirs SET protected = 0 WHERE path <> ?1 AND protected = 1")
+        .bind(path)
+        .execute(&mut *tx)
+        .await?;
+
+    tx.commit().await?;
+    Ok(())
+}
+
 /// List all shared directories ordered by `added_at`.
 pub async fn list(db: &Db) -> Result<Vec<SharedDirRow>> {
     let rows =
@@ -158,6 +190,39 @@ mod tests {
             .unwrap();
         let result = delete(&db, "/home/user/Downloads/rucio").await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn set_sole_protected_moves_protection() {
+        let (db, _dir) = test_db().await;
+        // Old download_dir (protected) plus a user share that already exists
+        // unprotected and happens to be the new download_dir.
+        insert(&db, "/old/downloads", true, 1_000_000)
+            .await
+            .unwrap();
+        insert(&db, "/new/downloads", false, 1_000_001)
+            .await
+            .unwrap();
+
+        set_sole_protected(&db, "/new/downloads", 1_000_002)
+            .await
+            .unwrap();
+
+        // New dir is now protected; old one is demoted and removable.
+        assert!(is_protected(&db, "/new/downloads").await.unwrap());
+        assert!(!is_protected(&db, "/old/downloads").await.unwrap());
+        assert!(delete(&db, "/old/downloads").await.unwrap());
+        assert!(delete(&db, "/new/downloads").await.is_err()); // still protected
+    }
+
+    #[tokio::test]
+    async fn set_sole_protected_creates_when_absent() {
+        let (db, _dir) = test_db().await;
+        set_sole_protected(&db, "/fresh/downloads", 1_000_000)
+            .await
+            .unwrap();
+        assert!(is_protected(&db, "/fresh/downloads").await.unwrap());
+        assert_eq!(list(&db).await.unwrap().len(), 1);
     }
 
     #[tokio::test]
