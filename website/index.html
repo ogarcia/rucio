@@ -223,14 +223,27 @@
       }
       .grid {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+        /* minmax(0, 1fr) — not plain 1fr — so a column can shrink below its
+           content's min-content width. Otherwise a wide child (the docker/build
+           <pre>, a long <code>) forces the track wider than the container and
+           the cards overflow to the right before the single-column breakpoint. */
+        grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 1rem;
+      }
+      /* Break to a single column on narrow screens. */
+      @media (max-width: 640px) {
+        .grid {
+          grid-template-columns: 1fr;
+        }
       }
       .card {
         background: var(--surface);
         border: 1px solid var(--border);
         border-radius: 0.75rem;
         padding: 1.25rem;
+        /* Let long inline tokens (URLs, filenames in <code>) wrap instead of
+           pushing the card wider. */
+        overflow-wrap: break-word;
       }
       .card h3 {
         margin: 0 0 0.4rem;
@@ -271,10 +284,23 @@
         padding: 2rem 0;
         color: var(--text-3);
         font-size: 0.85rem;
-        text-align: center;
+      }
+      footer.site .wrap {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 0.5rem 1rem;
       }
       footer.site a {
         color: var(--text-2);
+      }
+      /* Stack and centre on narrow screens. */
+      @media (max-width: 640px) {
+        footer.site .wrap {
+          flex-direction: column;
+          text-align: center;
+        }
       }
     </style>
   </head>
@@ -345,29 +371,38 @@
           <div class="card">
             <h3>Fully decentralized</h3>
             <p>
-              Discovery via a Kademlia DHT and keyword search via Gossipsub.
-              Direct peer-to-peer transfers — no relay nodes for data.
+              Peers find each other over mDNS on the local network and a
+              Kademlia DHT on the internet, and search by keyword over
+              Gossipsub. Files then move directly between peers — there are no
+              trackers, no central servers, and no relay nodes carrying your
+              data.
             </p>
           </div>
           <div class="card">
             <h3>eMule / Kad2 compatible</h3>
             <p>
-              Talks to the existing eMule Kad network: keyword search, source
-              lookup and downloads, including obfuscated connections.
+              Rucio bridges to the existing eMule Kad network: keyword search,
+              source lookup and downloads of <code>ed2k://</code> links,
+              including obfuscated connections — all from the same client, side
+              by side with native Rucio transfers.
             </p>
           </div>
           <div class="card">
             <h3>Web control panel</h3>
             <p>
-              Manage searches, downloads, uploads and shares from a clean web
-              UI — embedded in the daemon, no extra setup.
+              Drive searches, downloads, uploads and shares from a clean web UI
+              served by the daemon itself — no extra process, no separate
+              install. Add a folder and every file inside is hashed and
+              announced to the network automatically.
             </p>
           </div>
           <div class="card">
             <h3>Runs anywhere</h3>
             <p>
-              A single daemon for Linux, macOS and containers, a CLI, and a
-              portable Windows desktop app — unzip and run.
+              One codebase, many shapes: a daemon and CLI for Linux and macOS, a
+              container image for servers, and a portable Windows desktop app
+              you just unzip and run. Interrupted transfers resume where they
+              left off after a restart.
             </p>
           </div>
         </div>
@@ -380,9 +415,11 @@
             <span class="tag">Windows</span>
             <h3>Portable desktop app</h3>
             <p>
-              No install: unzip and run. All data lives in the same folder.
-              Grab the <code>…-windows-x86_64-portable.zip</code> from the
-              latest release.
+              No installer and no dependencies — not even the Visual C++
+              runtime. Unzip and run: config, database and downloads all live
+              next to the executable, so deleting the folder removes every
+              trace. Grab the <code>…-windows-x86_64-portable.zip</code> from
+              the latest release.
             </p>
             <p style="margin-top: 0.75rem">
               <a class="btn btn-primary" href="https://github.com/ogarcia/rucio/releases/latest">Latest release</a>
@@ -392,8 +429,10 @@
             <span class="tag">Linux / macOS</span>
             <h3>Daemon + CLI</h3>
             <p>
-              A single binary (<code>rucio</code> + <code>ruciod</code>) with
-              the web panel embedded. Prebuilt for x86_64 and ARM64.
+              A single static binary — <code>rucio</code> for the CLI,
+              <code>ruciod</code> for the daemon — with the web panel built in
+              and eMule support included. Prebuilt for x86_64 and ARM64; drop it
+              on your <code>PATH</code> and you're ready.
             </p>
             <p style="margin-top: 0.75rem">
               <a class="btn" href="https://github.com/ogarcia/rucio/releases/latest">Latest release</a>
@@ -402,37 +441,52 @@
           <div class="card">
             <span class="tag">Docker</span>
             <h3>Container image</h3>
-            <p>Run the daemon anywhere with the published image:</p>
-            <pre><code>docker run -d \
-  -p 4321:4321 -p 4662:4662 \
-  -p 4672:4672/udp \
-  ghcr.io/ogarcia/rucio</code></pre>
+            <p>
+              Run the daemon anywhere with the published image. Map port
+              <code>3003</code> for the web panel, the P2P and eMule ports so
+              peers can reach you, and mount a volume to keep your data:
+            </p>
+            <pre><code>docker run -d --name rucio \
+  -v rucio-data:/var/lib/rucio \
+  -p 3003:3003 \
+  -p 4321:4321 \
+  -p 4662:4662 -p 4672:4672/udp \
+  ghcr.io/ogarcia/rucio:latest</code></pre>
+            <p class="muted" style="margin-top: 0.75rem">
+              Then open <code>http://localhost:3003/</code> for the panel.
+            </p>
           </div>
           <div class="card">
             <span class="tag">Source</span>
             <h3>Build it yourself</h3>
             <p>
-              It's Rust + a Leptos/WASM frontend. Build instructions and the
-              full protocol live in the repository.
+              Rucio is Rust with a Leptos/WASM frontend. Clone the repo and
+              build the daemon and CLI:
             </p>
-            <p style="margin-top: 0.75rem">
-              <a class="btn" href="https://github.com/ogarcia/rucio">Source &amp; docs</a>
+            <pre><code>git clone https://github.com/ogarcia/rucio
+cd rucio
+cargo build --release</code></pre>
+            <p class="muted" style="margin-top: 0.75rem">
+              Add <code>--features emule-compat,web-ui</code> for eMule and the
+              embedded panel. Full build, config and protocol notes live in the
+              <a href="https://github.com/ogarcia/rucio">docs</a>.
             </p>
           </div>
         </div>
         <p class="muted" style="margin-top: 1.5rem">
-          On Windows the app is a single self-contained executable — no Visual
-          C++ Redistributable needed. On first run Windows Firewall asks to allow
-          network access; click Allow for full connectivity.
+          On Windows the app is a single self-contained executable. On first run
+          Windows Firewall asks to allow network access; click Allow for full
+          connectivity.
         </p>
       </section>
     </main>
 
     <footer class="site">
       <div class="wrap">
-        Rucio is free software under the
-        <a href="https://github.com/ogarcia/rucio/blob/master/LICENSE">GPLv3</a>.
-        ·
+        <span>
+          Rucio is free software under the
+          <a href="https://github.com/ogarcia/rucio/blob/master/LICENSE">GPLv3</a>.
+        </span>
         <a href="https://github.com/ogarcia/rucio">github.com/ogarcia/rucio</a>
       </div>
     </footer>
