@@ -77,15 +77,18 @@ impl WatcherHandle {
 /// # Parameters
 /// - `db` — shared DB pool
 /// - `node_tx` — channel to send `NodeCmd` to the libp2p node task
+/// - `excluded` — directory prefixes whose files must never be indexed (the
+///   temp dirs); guards against a `temp_dir` nested inside the `download_dir`.
 pub fn spawn(
     db: Db,
     node_tx: mpsc::Sender<NodeCmd>,
     indexing_count: Arc<AtomicUsize>,
+    excluded: Arc<Vec<PathBuf>>,
 ) -> (WatcherHandle, tokio::task::JoinHandle<()>) {
     let (cmd_tx, cmd_rx) = mpsc::channel::<WatcherCmd>(64);
 
     let task = tokio::spawn(async move {
-        if let Err(e) = run(db, node_tx, cmd_rx, indexing_count).await {
+        if let Err(e) = run(db, node_tx, cmd_rx, indexing_count, excluded).await {
             warn!("WatcherService exited with error: {e}");
         }
     });
@@ -102,6 +105,7 @@ async fn run(
     node_tx: mpsc::Sender<NodeCmd>,
     mut cmd_rx: mpsc::Receiver<WatcherCmd>,
     indexing_count: Arc<AtomicUsize>,
+    excluded: Arc<Vec<PathBuf>>,
 ) -> Result<()> {
     // Bridge: notify (sync) → tokio (async)
     let (ev_tx, mut ev_rx) = mpsc::channel::<notify::Result<Event>>(256);
@@ -157,6 +161,7 @@ async fn run(
                             &db,
                             &node_tx,
                             &mut pending_upserts,
+                            &excluded,
                         ).await;
                     }
                 }
@@ -231,12 +236,13 @@ async fn handle_event(
     db: &Db,
     node_tx: &mpsc::Sender<NodeCmd>,
     pending_upserts: &mut HashMap<PathBuf, Instant>,
+    excluded: &[PathBuf],
 ) {
     match event.kind {
         // File created — queue for debounced indexing
         EventKind::Create(_) => {
             for path in &event.paths {
-                if !path.is_file() || is_hidden(path) {
+                if !path.is_file() || is_hidden(path) || is_excluded(path, excluded) {
                     continue;
                 }
                 debug!(path = %path.display(), "Watcher: Create — queuing upsert");
@@ -249,7 +255,10 @@ async fn handle_event(
             if event.paths.len() == 2 =>
         {
             on_file_remove(&event.paths[0], db, node_tx).await;
-            if event.paths[1].is_file() && !is_hidden(&event.paths[1]) {
+            if event.paths[1].is_file()
+                && !is_hidden(&event.paths[1])
+                && !is_excluded(&event.paths[1], excluded)
+            {
                 debug!(path = %event.paths[1].display(), "Watcher: Rename — queuing upsert");
                 pending_upserts.insert(event.paths[1].clone(), Instant::now());
             }
@@ -258,7 +267,7 @@ async fn handle_event(
         // Other modifications (data written) — queue for debounced indexing
         EventKind::Modify(_) => {
             for path in &event.paths {
-                if !path.is_file() || is_hidden(path) {
+                if !path.is_file() || is_hidden(path) || is_excluded(path, excluded) {
                     continue;
                 }
                 debug!(path = %path.display(), "Watcher: Modify — queuing upsert");
@@ -359,6 +368,7 @@ pub async fn reconcile_shares(
     db: &Db,
     node_tx: &mpsc::Sender<NodeCmd>,
     indexing_count: &AtomicUsize,
+    excluded: &[PathBuf],
 ) {
     let dirs = match db::shared_dirs::list(db).await {
         Ok(d) => d,
@@ -385,7 +395,7 @@ pub async fn reconcile_shares(
     for d in &dirs {
         let dir = PathBuf::from(&d.path);
         // Walk + stat off the async worker threads.
-        let disk: HashMap<String, (i64, i64)> = {
+        let mut disk: HashMap<String, (i64, i64)> = {
             let dir = dir.clone();
             tokio::task::spawn_blocking(move || {
                 let mut m = HashMap::new();
@@ -405,6 +415,11 @@ pub async fn reconcile_shares(
             .await
             .unwrap_or_default()
         };
+
+        // Drop excluded files (.part / under a temp dir). Removing them from the
+        // disk set means they're never indexed, and any that slipped into the
+        // index before are de-indexed below (in DB, absent from disk → removed).
+        disk.retain(|p, _| !is_excluded(Path::new(p), excluded));
 
         // New or changed files → (re)index (queued, indexed below).
         for (path, &(disk_size, disk_mtime)) in &disk {
@@ -448,10 +463,57 @@ pub async fn reconcile_shares(
     }
 }
 
+/// Returns `true` for files that must never be indexed or shared:
+///
+/// * **Partial downloads** (`*.part`) — incomplete content; sharing one would
+///   serve a hash of a half-written file.
+/// * **Anything under an excluded directory** (the temp dirs). This is the
+///   guard for the footgun of putting `temp_dir` inside `download_dir`: the
+///   recursive watcher would otherwise see, index and re-hash every `.part`.
+fn is_excluded(path: &Path, excluded: &[PathBuf]) -> bool {
+    if path.extension().and_then(|e| e.to_str()) == Some("part") {
+        return true;
+    }
+    excluded.iter().any(|dir| path.starts_with(dir))
+}
+
 /// Returns `true` for hidden files (name starts with `.`).
 fn is_hidden(path: &Path) -> bool {
     path.file_name()
         .and_then(|n| n.to_str())
         .map(|n| n.starts_with('.'))
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_excluded_covers_part_files_and_temp_dirs() {
+        let excluded = vec![PathBuf::from("/downloads/temp")];
+
+        // Partial downloads are excluded wherever they are.
+        assert!(is_excluded(Path::new("/media/movie.mkv.part"), &excluded));
+        assert!(is_excluded(Path::new("/anywhere/x.part"), &[]));
+
+        // Anything under a temp dir is excluded — the temp-inside-downloads case.
+        assert!(is_excluded(
+            Path::new("/downloads/temp/movie.mkv"),
+            &excluded
+        ));
+        assert!(is_excluded(
+            Path::new("/downloads/temp/sub/clip.iso"),
+            &excluded
+        ));
+
+        // Ordinary shared files are not excluded.
+        assert!(!is_excluded(Path::new("/downloads/movie.mkv"), &excluded));
+        assert!(!is_excluded(Path::new("/media/song.mp3"), &excluded));
+        // A sibling dir whose name merely starts the same is not under temp.
+        assert!(!is_excluded(
+            Path::new("/downloads/temp-extra/x.mkv"),
+            &excluded
+        ));
+    }
 }

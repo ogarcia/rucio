@@ -115,6 +115,28 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         info!(path = %dir.display(), "Storage directory ready");
     }
 
+    // Directories whose files must never be indexed/shared: the temp dirs,
+    // where in-progress `.part` downloads live. The share watcher excludes
+    // anything under these (and any `.part`), so a temp_dir nested inside the
+    // download_dir can't leak partial files onto the network.
+    let excluded_index_dirs = std::sync::Arc::new(vec![
+        config.storage.temp_dir.clone(),
+        config.emule.temp_dir.clone(),
+    ]);
+    // Warn (don't block — the watcher handles it) about the nested-temp footgun.
+    if config
+        .storage
+        .temp_dir
+        .starts_with(&config.storage.download_dir)
+    {
+        warn!(
+            temp_dir = %config.storage.temp_dir.display(),
+            download_dir = %config.storage.download_dir.display(),
+            "temp_dir is inside download_dir; partial .part files are kept out of \
+             sharing, but consider moving temp_dir outside the download directory"
+        );
+    }
+
     // --- Database -----------------------------------------------------------
     let db = db::open(&config.storage.database_path).await?;
 
@@ -282,6 +304,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         db.clone(),
         handle.cmd_tx.clone(),
         Arc::clone(&indexing_count),
+        Arc::clone(&excluded_index_dirs),
     );
 
     // Register all known shared dirs with the watcher (including download_dir
@@ -302,11 +325,12 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         let db = db.clone();
         let node_tx = handle.cmd_tx.clone();
         let indexing_count = indexing_count.clone();
+        let excluded = Arc::clone(&excluded_index_dirs);
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(24 * 3600));
             loop {
                 tick.tick().await; // fires immediately on the first iteration
-                watcher::reconcile_shares(&db, &node_tx, &indexing_count).await;
+                watcher::reconcile_shares(&db, &node_tx, &indexing_count, &excluded).await;
             }
         })
     };
