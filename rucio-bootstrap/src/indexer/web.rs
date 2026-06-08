@@ -258,10 +258,11 @@ fn provider_chip_class(providers: i64) -> &'static str {
 
 /// The sort `<option>`s, with the active one marked `selected`.
 fn sort_options(current: db::Sort) -> String {
-    // (value, label) — value must match db::Sort::parse / as_param.
-    const OPTS: [(&str, &str); 4] = [
+    // (value, label) — value must match db::Sort::parse / as_param. `oldest`
+    // exists in the API but isn't offered in the web UI (rarely what a human
+    // browsing for files wants).
+    const OPTS: [(&str, &str); 3] = [
         ("newest", "Newest"),
-        ("oldest", "Oldest"),
         ("providers", "Most sources"),
         ("size", "Largest"),
     ];

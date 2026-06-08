@@ -115,7 +115,8 @@ DuckDuckGo or Google:
 
 - **`/`** — a landing page with the Rucio logo and a search box.
 - **`/search?q=…`** — results, with a compact header that repeats the search
-  box and a sort selector (newest, oldest, most sources, largest). Each
+  box and a sort selector (newest, most sources, largest — `oldest` is
+  API-only). Each
   result shows the file name (or the hash, if not enriched yet), its size, how
   many peers provide it (a colour-coded chip — green when well-seeded, red for
   a single source), when it was last seen, and the canonical `rucio:` magnet
