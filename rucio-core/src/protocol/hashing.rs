@@ -28,6 +28,28 @@ pub fn hash_file(path: &Path) -> anyhow::Result<FileHash> {
     use std::io::Read;
 
     let mut file = std::fs::File::open(path)?;
+
+    // Defence in depth: hash only regular files. A character device such as
+    // /dev/zero yields endless bytes, so the read loop below would never reach
+    // EOF and would spin forever. Indexing runs in a background task and the
+    // read happens on a spawn_blocking thread, so this does not stall the
+    // daemon's startup — but the indexing task walks files sequentially, so a
+    // single never-ending read wedges *all* further indexing and leaks that
+    // blocking-pool thread for good. Opening such a node succeeds, so fstat the
+    // *open descriptor* (not the path — that avoids a TOCTOU) and reject
+    // anything that isn't a regular file. The enumeration paths already filter
+    // with `is_file()` (which is also why a shared directory's subdirectories
+    // are simply walked, never hashed); this is the last-line guard for a path
+    // that changed type after enumeration, or for any future caller.
+    let meta = file.metadata()?;
+    if !meta.is_file() {
+        anyhow::bail!(
+            "refusing to hash {}: not a regular file — skipping to avoid an \
+             unbounded read",
+            path.display()
+        );
+    }
+
     let mut chunks: Vec<(u32, [u8; 32], u32)> = Vec::new();
     let mut file_size: u64 = 0;
     let mut idx: u32 = 0;
@@ -190,6 +212,22 @@ mod tests {
         let fh = hash_file(&path).unwrap();
         assert_eq!(fh.size, 0);
         assert_eq!(fh.chunks.len(), 0);
+    }
+
+    // A character device like /dev/zero never reaches EOF: opening it succeeds,
+    // so only the post-open fstat saves the read loop from spinning forever.
+    // hash_file must reject it instead of wedging the background indexing task.
+    #[cfg(unix)]
+    #[test]
+    fn rejects_character_device() {
+        let dev = std::path::Path::new("/dev/zero");
+        if dev.exists() {
+            let err = hash_file(dev).err().expect("should reject /dev/zero");
+            assert!(
+                err.to_string().contains("not a regular file"),
+                "unexpected error: {err}"
+            );
+        }
     }
 
     #[test]
