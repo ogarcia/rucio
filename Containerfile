@@ -41,6 +41,8 @@
 #                              (default: http://127.0.0.1:3003)
 #   RUCIOD_KAD_PORT            Kad2 UDP port for eMule network (default: 4672).
 #                              Must be mapped on the host: -p 4672:4672/udp
+#   RUCIOD_UPNP                Enable UPnP port mapping (default: false in the
+#                              container; set to true only with --network=host)
 #   RUCIO_BOOTSTRAP_CONFIG     Path to the bootstrap config file — optional, defaults to
 #                              /var/lib/rucio/.config/rucio-bootstrap/config.toml
 #   RUCIO_BOOTSTRAP_API_LISTEN Indexer REST API bind address (default: 0.0.0.0:3003)
@@ -121,6 +123,10 @@ USER rucio
 WORKDIR /var/lib/rucio
 
 ENV RUCIOD_API_LISTEN=0.0.0.0:3003
+# UPnP rarely works from inside a container (the daemon can't see the LAN
+# gateway), and trying just adds startup noise. Off by default here; set
+# RUCIOD_UPNP=true if you run with --network=host on a UPnP-capable router.
+ENV RUCIOD_UPNP=false
 
 EXPOSE 4321/tcp
 # REST API and web control panel — http://<host>:3003/
@@ -147,6 +153,10 @@ USER rucio
 WORKDIR /var/lib/rucio
 
 ENV RUCIOD_API_LISTEN=0.0.0.0:3003
+# UPnP rarely works from inside a container (the daemon can't see the LAN
+# gateway), and trying just adds startup noise. Off by default here; set
+# RUCIOD_UPNP=true if you run with --network=host on a UPnP-capable router.
+ENV RUCIOD_UPNP=false
 
 EXPOSE 4321/tcp
 EXPOSE 3003/tcp
