@@ -1369,28 +1369,29 @@ impl DownloadEngine {
 
                 if self.active[&root_hash].is_complete() {
                     let part_path = self.active[&root_hash].dest_path.clone();
-
-                    // Move <name>.part  →  dest_dir/<name>
-                    let final_path = if let Some(stem) = part_path
+                    // Name the user sees, with the `.part` suffix stripped — used
+                    // for the notification on both the success and failure paths.
+                    let name = part_path
                         .file_name()
                         .and_then(|n| n.to_str())
-                        .and_then(|n| n.strip_suffix(".part"))
-                    {
-                        self.dest_dir.join(stem)
-                    } else {
-                        // Fallback: just drop .part extension or keep as-is
-                        self.dest_dir
-                            .join(part_path.file_name().unwrap_or_default())
-                    };
+                        .map(|n| n.strip_suffix(".part").unwrap_or(n).to_string())
+                        .unwrap_or_default();
+                    let hash_hex = hex::encode(root_hash);
 
-                    match move_file(&part_path, &final_path).await {
-                        Ok(()) => {
+                    // Persist the fully-verified `.part` into the download dir.
+                    // `persist_completed` (re)creates that dir first — the user
+                    // may have deleted it while we ran. Any failure (dir gone and
+                    // unrecreatable, no write permission, full disk) is recoverable:
+                    // the `.part` is left untouched, so we mark the download failed
+                    // — never a phantom "completed" — and notify so the user can
+                    // fix the folder and retry.
+                    match persist_completed(&self.dest_dir, &part_path).await {
+                        Ok(final_path) => {
                             info!(
                                 from = %part_path.display(),
                                 to   = %final_path.display(),
                                 "Download moved to download_dir"
                             );
-                            // Update DB dest_path to the final location
                             if let Err(e) = db::downloads::set_dest_path(
                                 &self.db,
                                 dl_id,
@@ -1400,34 +1401,47 @@ impl DownloadEngine {
                             {
                                 warn!("Could not update dest_path in DB: {e}");
                             }
+                            if let Err(e) =
+                                db::downloads::set_status(&self.db, dl_id, "completed", None).await
+                            {
+                                warn!("set_status completed error: {e}");
+                            }
+                            info!(root_hash = %hash_hex, "Download completed");
+                            self.notifier
+                                .notify(
+                                    rucio_core::api::notifications::NotificationKind::Download,
+                                    "Download complete",
+                                    name,
+                                    Some(hash_hex),
+                                )
+                                .await;
                         }
                         Err(e) => {
                             warn!(
-                                from = %part_path.display(),
-                                to   = %final_path.display(),
-                                "Could not move completed download: {e}"
+                                part = %part_path.display(),
+                                dir  = %self.dest_dir.display(),
+                                "Download finished but could not be saved (keeping .part): {e}"
                             );
+                            let reason =
+                                format!("Couldn't save to {}: {e}", self.dest_dir.display());
+                            if let Err(e2) =
+                                db::downloads::set_status(&self.db, dl_id, "failed", Some(&reason))
+                                    .await
+                            {
+                                warn!("set_status failed error: {e2}");
+                            }
+                            self.notifier
+                                .notify(
+                                    rucio_core::api::notifications::NotificationKind::Download,
+                                    "Couldn't save download",
+                                    format!(
+                                        "{name}: the download folder is missing or not writable — fix it and retry"
+                                    ),
+                                    Some(hash_hex),
+                                )
+                                .await;
                         }
                     }
-
-                    if let Err(e) =
-                        db::downloads::set_status(&self.db, dl_id, "completed", None).await
-                    {
-                        warn!("set_status completed error: {e}");
-                    }
-                    info!(root_hash = hex::encode(root_hash), "Download completed");
-                    let name = final_path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_default();
-                    self.notifier
-                        .notify(
-                            rucio_core::api::notifications::NotificationKind::Download,
-                            "Download complete",
-                            name,
-                            Some(hex::encode(root_hash)),
-                        )
-                        .await;
                     self.live_stats.write().await.remove(&dl_id);
                     self.active.remove(&root_hash);
                 } else {
@@ -1801,6 +1815,29 @@ async fn read_file_range(path: &str, offset: u64, len: usize) -> Result<Vec<u8>>
 // ---------------------------------------------------------------------------
 // Filesystem helpers
 // ---------------------------------------------------------------------------
+
+/// Move a finished `<name>.part` into `dest_dir/<name>`, (re)creating `dest_dir`
+/// first — the user may have deleted it (or revoked write access) while the
+/// download was in flight. Returns the final path on success. On any failure the
+/// `.part` is left untouched, so a completed-but-unsaved download loses nothing
+/// and can be retried once the folder is fixed.
+async fn persist_completed(
+    dest_dir: &std::path::Path,
+    part_path: &std::path::Path,
+) -> std::io::Result<std::path::PathBuf> {
+    let final_path = match part_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .and_then(|n| n.strip_suffix(".part"))
+    {
+        Some(stem) => dest_dir.join(stem),
+        // Fallback: no `.part` suffix — keep the file name as-is.
+        None => dest_dir.join(part_path.file_name().unwrap_or_default()),
+    };
+    tokio::fs::create_dir_all(dest_dir).await?;
+    move_file(part_path, &final_path).await?;
+    Ok(final_path)
+}
 
 /// Move `src` to `dst`, falling back to copy+delete if they are on different
 /// filesystems (the OS returns `EXDEV` / "Invalid cross-device link" for an
@@ -2859,5 +2896,46 @@ mod tests {
                 .as_deref(),
             Some("downloading")
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // persist_completed: deleted dir is recreated; an unusable dest keeps the .part
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn persist_completed_recreates_a_deleted_download_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("downloads");
+        std::fs::create_dir_all(&dest).unwrap();
+        // A finished .part, living in a separate temp dir.
+        let part = tmp.path().join("movie.mkv.part");
+        tokio::fs::write(&part, b"payload").await.unwrap();
+        // The user deletes the download dir while the download was running.
+        std::fs::remove_dir_all(&dest).unwrap();
+
+        let final_path = persist_completed(&dest, &part)
+            .await
+            .expect("should recreate the dir and move the file");
+
+        assert_eq!(final_path, dest.join("movie.mkv"));
+        assert!(final_path.exists(), "file landed in the recreated dir");
+        assert!(!part.exists(), ".part was moved, not copied");
+    }
+
+    #[tokio::test]
+    async fn persist_completed_keeps_part_when_dest_is_unusable() {
+        let tmp = tempfile::tempdir().unwrap();
+        // A regular file where a parent directory is expected: create_dir_all
+        // then fails with ENOTDIR — a portable stand-in for "dir unwritable".
+        let blocker = tmp.path().join("blocker");
+        std::fs::write(&blocker, b"x").unwrap();
+        let dest = blocker.join("downloads");
+        let part = tmp.path().join("movie.mkv.part");
+        tokio::fs::write(&part, b"payload").await.unwrap();
+
+        let res = persist_completed(&dest, &part).await;
+
+        assert!(res.is_err(), "unusable dest must surface an error");
+        assert!(part.exists(), ".part is preserved — nothing is lost");
     }
 }

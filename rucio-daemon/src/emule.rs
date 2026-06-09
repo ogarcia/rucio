@@ -1394,11 +1394,40 @@ pub async fn run_ed2k_download(
         _ => link.name.clone(),
     };
     let final_path = config.storage.download_dir.join(&final_name);
-    std::fs::create_dir_all(config.storage.download_dir.as_path())
-        .context("create download dir")?;
-    tokio::fs::rename(&part_path, &final_path)
-        .await
-        .with_context(|| format!("move {} → {}", part_path.display(), final_path.display()))?;
+    // Persist the finished .part into the download dir. The user may have deleted
+    // that dir or revoked write access while we downloaded, so recreate it first
+    // and treat any remaining failure as recoverable: keep the .part + .part.met
+    // intact, mark the download errored (never a phantom "complete"), notify, and
+    // bail so it can be retried once the folder is fixed.
+    let saved = async {
+        std::fs::create_dir_all(config.storage.download_dir.as_path())?;
+        tokio::fs::rename(&part_path, &final_path).await
+    }
+    .await;
+    if let Err(e) = saved {
+        let reason = format!(
+            "Couldn't save to {}: {e}",
+            config.storage.download_dir.display()
+        );
+        warn!(
+            dl = download_id,
+            part = %part_path.display(),
+            "eMule download finished but could not be saved (keeping .part): {e}"
+        );
+        let _ =
+            crate::db::emule_downloads::set_status(db, download_id, "error", Some(&reason)).await;
+        notifier
+            .notify(
+                rucio_core::api::notifications::NotificationKind::Download,
+                "Couldn't save download",
+                format!(
+                    "{final_name}: the download folder is missing or not writable — fix it and retry"
+                ),
+                None,
+            )
+            .await;
+        anyhow::bail!("save completed eMule download: {e}");
+    }
     // Clean up progress file.
     let _ = tokio::fs::remove_file(&met_path).await;
 
