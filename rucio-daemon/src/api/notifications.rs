@@ -11,12 +11,14 @@ use crate::api::AppState;
 
 const LIST_LIMIT: i64 = 200;
 
-/// List notifications (newest first) and the unread count.
+/// List notifications.
+///
+/// Returns the most recent notifications (newest first, capped) and the number
+/// still unread — what the notification centre and the bell badge render.
 #[utoipa::path(
     get,
     path = "/api/v1/notifications",
     tag = "notifications",
-    summary = "List notifications",
     responses(
         (status = 200, description = "Recent notifications and unread count", body = NotificationList),
     )
@@ -33,12 +35,13 @@ pub async fn list_notifications(
     Ok(Json(NotificationList { items, unread }))
 }
 
-/// Mark every notification as read.
+/// Mark all notifications read.
+///
+/// Marks every notification as read, clearing the unread badge.
 #[utoipa::path(
     post,
     path = "/api/v1/notifications/read",
     tag = "notifications",
-    summary = "Mark all notifications read",
     responses((status = 204, description = "All notifications marked read")),
 )]
 pub async fn mark_all_read(State(state): State<AppState>) -> StatusCode {
@@ -51,12 +54,13 @@ pub async fn mark_all_read(State(state): State<AppState>) -> StatusCode {
     }
 }
 
-/// Delete every notification.
+/// Clear all notifications.
+///
+/// Deletes every notification from the centre.
 #[utoipa::path(
     delete,
     path = "/api/v1/notifications",
     tag = "notifications",
-    summary = "Clear all notifications",
     responses((status = 204, description = "All notifications deleted")),
 )]
 pub async fn clear_notifications(State(state): State<AppState>) -> StatusCode {
@@ -69,12 +73,13 @@ pub async fn clear_notifications(State(state): State<AppState>) -> StatusCode {
     }
 }
 
-/// Delete a single notification by id.
+/// Delete a notification.
+///
+/// Removes a single notification by id.
 #[utoipa::path(
     delete,
     path = "/api/v1/notifications/{id}",
     tag = "notifications",
-    summary = "Delete a notification",
     params(("id" = i64, Path, description = "Notification id")),
     responses(
         (status = 204, description = "Notification deleted"),
@@ -92,12 +97,14 @@ pub async fn delete_notification(State(state): State<AppState>, Path(id): Path<i
     }
 }
 
-/// Read the notification toggles.
+/// Get notification settings.
+///
+/// Returns the live notification toggles: the master switch and the per-kind
+/// flags currently in effect.
 #[utoipa::path(
     get,
     path = "/api/v1/notifications/settings",
     tag = "notifications",
-    summary = "Get notification settings",
     responses((status = 200, description = "Current notification toggles", body = NotificationSettings)),
 )]
 pub async fn get_settings(State(state): State<AppState>) -> Json<NotificationSettings> {
@@ -111,14 +118,15 @@ pub async fn get_settings(State(state): State<AppState>) -> Json<NotificationSet
     })
 }
 
-/// Update the notification toggles: apply them to the live notifier and persist
-/// them to `config.toml`.
+/// Update notification settings.
+///
+/// Applies the toggles to the live notifier immediately and persists them to
+/// `config.toml` (the configured webhooks are left untouched).
 #[utoipa::path(
     put,
     path = "/api/v1/notifications/settings",
     tag = "notifications",
     request_body = NotificationSettings,
-    summary = "Update notification settings",
     responses(
         (status = 204, description = "Settings applied and persisted"),
         (status = 500, description = "Could not persist settings"),
@@ -151,12 +159,13 @@ pub async fn put_settings(
     }
 }
 
-/// List the configured outbound webhooks.
+/// List notification webhooks.
+///
+/// Returns the configured outbound webhook targets.
 #[utoipa::path(
     get,
     path = "/api/v1/notifications/webhooks",
     tag = "notifications",
-    summary = "List notification webhooks",
     responses((status = 200, description = "Configured webhooks", body = [crate::config::WebhookConfig])),
 )]
 pub async fn get_webhooks(
@@ -165,13 +174,15 @@ pub async fn get_webhooks(
     Json(state.notifications.webhooks())
 }
 
-/// Replace the whole webhook list: apply it live and persist to `config.toml`.
+/// Update notification webhooks.
+///
+/// Replaces the whole webhook list, applying it to the live notifier and
+/// persisting it to `config.toml` (the toggles are left untouched).
 #[utoipa::path(
     put,
     path = "/api/v1/notifications/webhooks",
     tag = "notifications",
     request_body = [crate::config::WebhookConfig],
-    summary = "Update notification webhooks",
     responses(
         (status = 204, description = "Webhooks applied and persisted"),
         (status = 500, description = "Could not persist webhooks"),
@@ -200,14 +211,15 @@ pub async fn put_webhooks(
     }
 }
 
-/// Send a one-off test delivery to a webhook (as posted, not necessarily saved)
-/// and report whether it succeeded — lets the user verify their setup.
+/// Send a test notification to a webhook.
+///
+/// Does a single synchronous delivery to the webhook as posted (not necessarily
+/// saved) and reports whether it succeeded — lets the user verify their setup.
 #[utoipa::path(
     post,
     path = "/api/v1/notifications/webhooks/test",
     tag = "notifications",
     request_body = crate::config::WebhookConfig,
-    summary = "Send a test notification to a webhook",
     responses((status = 200, description = "Test delivery outcome", body = WebhookTestResult)),
 )]
 pub async fn test_webhook(
