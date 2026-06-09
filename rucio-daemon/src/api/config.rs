@@ -1,5 +1,8 @@
-//! GET /api/v1/config
-//! PUT /api/v1/config
+//! Configuration endpoints under `/api/v1/config`: the full config (GET/PUT),
+//! the speed limits and temporary-limit toggle, and — since they are
+//! configuration too — the notification toggles and outbound webhooks
+//! (`/config/notifications`, `/config/notifications/webhooks`). The
+//! notification-centre data itself (list/clear/read) lives in `notifications.rs`.
 
 use axum::Json;
 use axum::extract::State;
@@ -8,9 +11,10 @@ use rucio_core::api::config::{
     ApiConfig, ConfigResponse, ConfigSnapshot, EmuleConfig, NetworkConfig, NodeConfig, SpeedLimits,
     StorageConfig, TempLimitRequest, TempLimitStatus,
 };
+use rucio_core::api::notifications::{NotificationSettings, WebhookTestResult};
 
 use crate::api::AppState;
-use crate::config::Config;
+use crate::config::{Config, WebhookConfig};
 
 /// Get configuration
 ///
@@ -157,9 +161,12 @@ pub async fn put_config(
     );
 
     // Build a new Config from the request and persist it.
-    // Fields not exposed in the API (e.g. api.token) are preserved from
-    // the startup config snapshot.
-    let mut new_cfg = (*state.config).clone();
+    // Start from the latest on-disk config, not the startup snapshot, so fields
+    // this endpoint doesn't touch but that are changed at runtime through their
+    // own endpoints — notably `notifications` (webhooks + toggles via
+    // PUT /config/notifications/...) — are preserved instead of reverted.
+    let mut new_cfg =
+        Config::load(state.config_path.as_deref()).unwrap_or_else(|_| (*state.config).clone());
     new_cfg.node.listen_addrs = c.node.listen_addrs;
     new_cfg.network.bootstrap_peers = c.network.bootstrap_peers;
     new_cfg.network.upload_limit_kbps = c.network.upload_limit_kbps;
@@ -285,4 +292,134 @@ pub async fn put_limits(State(state): State<AppState>, Json(req): Json<SpeedLimi
             StatusCode::INTERNAL_SERVER_ERROR
         }
     }
+}
+
+/// Get notification settings.
+///
+/// Returns the live notification toggles: the master switch and the per-kind
+/// flags currently in effect.
+#[utoipa::path(
+    get,
+    path = "/api/v1/config/notifications",
+    tag = "config",
+    responses((status = 200, description = "Current notification toggles", body = NotificationSettings)),
+)]
+pub async fn get_notification_settings(
+    State(state): State<AppState>,
+) -> Json<NotificationSettings> {
+    // Read the live toggles, not the startup config snapshot (which goes stale
+    // after a PUT).
+    let (enabled, downloads, system) = state.notifications.snapshot();
+    Json(NotificationSettings {
+        enabled,
+        downloads,
+        system,
+    })
+}
+
+/// Update notification settings.
+///
+/// Applies the toggles to the live notifier immediately and persists them to
+/// `config.toml` (the configured webhooks are left untouched).
+#[utoipa::path(
+    put,
+    path = "/api/v1/config/notifications",
+    tag = "config",
+    request_body = NotificationSettings,
+    responses(
+        (status = 204, description = "Settings applied and persisted"),
+        (status = 500, description = "Could not persist settings"),
+    )
+)]
+pub async fn put_notification_settings(
+    State(state): State<AppState>,
+    Json(req): Json<NotificationSettings>,
+) -> StatusCode {
+    // Apply to the live notifier immediately so the change takes effect now.
+    state
+        .notifications
+        .update(req.enabled, req.downloads, req.system);
+
+    // Persist: load what is currently on disk, swap only the toggles (keeping
+    // the configured webhooks), and save — so we never clobber other settings.
+    let mut cfg = match Config::load(state.config_path.as_deref()) {
+        Ok(c) => c,
+        Err(_) => (*state.config).clone(),
+    };
+    cfg.notifications.enabled = req.enabled;
+    cfg.notifications.downloads = req.downloads;
+    cfg.notifications.system = req.system;
+    match cfg.save() {
+        Ok(()) => StatusCode::NO_CONTENT,
+        Err(e) => {
+            tracing::error!("Failed to save notification settings: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    }
+}
+
+/// List notification webhooks.
+///
+/// Returns the configured outbound webhook targets.
+#[utoipa::path(
+    get,
+    path = "/api/v1/config/notifications/webhooks",
+    tag = "config",
+    responses((status = 200, description = "Configured webhooks", body = [WebhookConfig])),
+)]
+pub async fn get_webhooks(State(state): State<AppState>) -> Json<Vec<WebhookConfig>> {
+    Json(state.notifications.webhooks())
+}
+
+/// Update notification webhooks.
+///
+/// Replaces the whole webhook list, applying it to the live notifier and
+/// persisting it to `config.toml` (the toggles are left untouched).
+#[utoipa::path(
+    put,
+    path = "/api/v1/config/notifications/webhooks",
+    tag = "config",
+    request_body = [WebhookConfig],
+    responses(
+        (status = 204, description = "Webhooks applied and persisted"),
+        (status = 500, description = "Could not persist webhooks"),
+    )
+)]
+pub async fn put_webhooks(
+    State(state): State<AppState>,
+    Json(webhooks): Json<Vec<WebhookConfig>>,
+) -> StatusCode {
+    // Apply to the live notifier immediately.
+    state.notifications.set_webhooks(webhooks.clone());
+
+    // Persist: reload from disk, swap the webhook list (keeping the toggles),
+    // and save — so we never clobber other settings.
+    let mut cfg = match Config::load(state.config_path.as_deref()) {
+        Ok(c) => c,
+        Err(_) => (*state.config).clone(),
+    };
+    cfg.notifications.webhooks = webhooks;
+    match cfg.save() {
+        Ok(()) => StatusCode::NO_CONTENT,
+        Err(e) => {
+            tracing::error!("Failed to save webhooks: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    }
+}
+
+/// Send a test notification to a webhook.
+///
+/// Does a single synchronous delivery to the webhook as posted (not necessarily
+/// saved) and reports whether it succeeded — lets the user verify their setup.
+#[utoipa::path(
+    post,
+    path = "/api/v1/config/notifications/webhooks/test",
+    tag = "config",
+    request_body = WebhookConfig,
+    responses((status = 200, description = "Test delivery outcome", body = WebhookTestResult)),
+)]
+pub async fn test_webhook(Json(webhook): Json<WebhookConfig>) -> Json<WebhookTestResult> {
+    let client = reqwest::Client::new();
+    Json(crate::webhooks::send_test(&client, &webhook).await)
 }

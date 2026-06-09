@@ -155,12 +155,15 @@ The daemon exposes a JSON REST API on `http://127.0.0.1:3003/api/v1/`.
 | `GET` | `/search/:query_id` | Poll accumulated search results |
 | `GET` | `/config` | Current configuration |
 | `PUT` | `/config` | Update configuration |
+| `GET` | `/config/notifications` | Notification toggles |
+| `PUT` | `/config/notifications` | Update notification toggles (applied live) |
+| `GET` | `/config/notifications/webhooks` | List outbound webhooks |
+| `PUT` | `/config/notifications/webhooks` | Replace the webhook list (applied live) |
+| `POST` | `/config/notifications/webhooks/test` | Send a test delivery to a webhook |
 | `GET` | `/notifications` | Recent notifications + unread count |
 | `POST` | `/notifications/read` | Mark all notifications read |
 | `DELETE` | `/notifications` | Clear all notifications |
 | `DELETE` | `/notifications/:id` | Delete one notification |
-| `GET` | `/notifications/settings` | Notification toggles |
-| `PUT` | `/notifications/settings` | Update notification toggles (applied live) |
 | `GET` | `/metrics` | Transfer metrics (bytes up/down, active chunks) |
 | `GET` | `/emule/status` | Kad2 contact count and nodes.dat status — emule-compat |
 | `GET` | `/health` | Liveness probe (always `200 OK`) |
@@ -259,7 +262,8 @@ rucio` and the optional `X-Rucio-Signature` header):
 hex for downloads) and is omitted when absent.
 
 Webhooks can be edited from the web UI (Settings → Notifications) or directly in
-`config.toml`. The UI loads them from `GET /notifications/webhooks` and saves the
-whole list with `PUT /notifications/webhooks`, which applies them live (no
-restart) and persists them. The runtime list lives behind a lock in the
+`config.toml`. The UI loads them from `GET /config/notifications/webhooks` and
+saves the whole list with `PUT /config/notifications/webhooks`, which applies
+them live (no restart) and persists them. The runtime list lives behind a lock
+in the
 notifier, so a save takes effect on the next notification.

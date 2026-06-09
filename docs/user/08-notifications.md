@@ -28,8 +28,10 @@ Add one in **Settings → Notifications → Add webhook**. Each webhook has:
   and sent in the `X-Rucio-Signature: sha256=<hex>` header, so your receiver can
   verify it really came from your daemon.
 
-Click **Save webhooks** when done. Delivery is best-effort (a short retry, then
-it gives up); the event always stays in the notification centre regardless.
+Webhooks are saved together with the rest of the settings when you click
+**Save** at the bottom of the dialog — there's no separate button. Delivery is
+best-effort (a short retry, then it gives up); the event always stays in the
+notification centre regardless.
 
 Use the **Test** button on a row to send a sample notification right away and
 see whether it was delivered — handy for checking the URL and any secret before

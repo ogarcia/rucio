@@ -45,9 +45,36 @@ pub fn dispatch(client: &reqwest::Client, webhooks: &[WebhookConfig], n: &Notifi
         let prepared = build_payload(wh, n);
         let client = client.clone();
         let secret = wh.secret.clone();
+        let host = host_of(&wh.url).to_string();
+        let format = format_str(wh.format);
         tokio::spawn(async move {
-            send_with_retries(&client, prepared, secret.as_deref(), idx).await;
+            send_with_retries(&client, prepared, secret.as_deref(), idx, &host, format).await;
         });
+    }
+}
+
+/// The host of a URL, for logging — without the path or query, which may carry
+/// secrets (the Telegram bot token lives in the path, the ntfy topic too). Falls
+/// back to the whole string if it doesn't look like a URL.
+fn host_of(url: &str) -> &str {
+    let after_scheme = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let host_port = after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(after_scheme);
+    // Drop any `user:pass@` userinfo prefix.
+    host_port.rsplit('@').next().unwrap_or(host_port)
+}
+
+/// A short, log-friendly name for a webhook format.
+fn format_str(f: WebhookFormat) -> &'static str {
+    match f {
+        WebhookFormat::Generic => "generic",
+        WebhookFormat::Discord => "discord",
+        WebhookFormat::Slack => "slack",
+        WebhookFormat::Telegram => "telegram",
+        WebhookFormat::Ntfy => "ntfy",
+        WebhookFormat::Custom => "custom",
     }
 }
 
@@ -249,15 +276,22 @@ async fn send_with_retries(
     prepared: Prepared,
     secret: Option<&str>,
     idx: usize,
+    host: &str,
+    format: &'static str,
 ) {
     for attempt in 1..=MAX_ATTEMPTS {
         match build_request(client, &prepared, secret).send().await {
             Ok(resp) if resp.status().is_success() => {
-                debug!(webhook = idx, status = %resp.status(), "webhook delivered");
+                debug!(webhook = idx, host, format, status = %resp.status(), "webhook delivered");
                 return;
             }
-            Ok(resp) => warn!(webhook = idx, status = %resp.status(), attempt, "webhook rejected"),
-            Err(e) => warn!(webhook = idx, attempt, "webhook send failed: {e}"),
+            Ok(resp) => {
+                warn!(webhook = idx, host, format, status = %resp.status(), attempt, "webhook rejected")
+            }
+            Err(e) => warn!(
+                webhook = idx,
+                host, format, attempt, "webhook send failed: {e}"
+            ),
         }
         if attempt < MAX_ATTEMPTS {
             tokio::time::sleep(RETRY_BACKOFF).await;
@@ -265,7 +299,7 @@ async fn send_with_retries(
     }
     warn!(
         webhook = idx,
-        "webhook gave up after {MAX_ATTEMPTS} attempts"
+        host, format, "webhook gave up after {MAX_ATTEMPTS} attempts"
     );
 }
 
@@ -364,6 +398,20 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&p.body).unwrap();
         assert_eq!(v["title"], "T");
         assert_eq!(v["kind"], "download");
+    }
+
+    #[test]
+    fn host_of_strips_path_and_query_secrets() {
+        // Telegram bot token (in the path) and ntfy topic must not leak.
+        assert_eq!(
+            host_of("https://api.telegram.org/bot123:ABC/sendMessage?chat_id=9"),
+            "api.telegram.org"
+        );
+        assert_eq!(host_of("https://ntfy.sh/my-secret-topic"), "ntfy.sh");
+        assert_eq!(host_of("http://127.0.0.1:8080/hook"), "127.0.0.1:8080");
+        assert_eq!(host_of("https://user:pass@example.com/x"), "example.com");
+        // Not a URL → returned as-is.
+        assert_eq!(host_of("garbage"), "garbage");
     }
 
     #[test]

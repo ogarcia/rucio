@@ -67,7 +67,7 @@ pub struct NotificationList {
 }
 
 /// The notification-centre toggles, exchanged by
-/// `GET`/`PUT /api/v1/notifications/settings`. Mirrors the daemon's
+/// `GET`/`PUT /api/v1/config/notifications`. Mirrors the daemon's
 /// `NotificationConfig`; `enabled` is the master switch and the per-kind flags
 /// opt individual categories in or out.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
@@ -77,7 +77,7 @@ pub struct NotificationSettings {
     pub system: bool,
 }
 
-/// Outcome of `POST /api/v1/notifications/webhooks/test`: whether a test
+/// Outcome of `POST /api/v1/config/notifications/webhooks/test`: whether a test
 /// delivery to a webhook succeeded, with the HTTP status (if the request
 /// completed) or the transport error (if it didn't).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]

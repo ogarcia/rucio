@@ -106,6 +106,11 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         config::put_temp_limit,
         config::get_limits,
         config::put_limits,
+        config::get_notification_settings,
+        config::put_notification_settings,
+        config::get_webhooks,
+        config::put_webhooks,
+        config::test_webhook,
         metrics::get_metrics,
         uploads::list_uploads,
         health::get_health,
@@ -115,11 +120,6 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         notifications::mark_all_read,
         notifications::clear_notifications,
         notifications::delete_notification,
-        notifications::get_settings,
-        notifications::put_settings,
-        notifications::get_webhooks,
-        notifications::put_webhooks,
-        notifications::test_webhook,
     ),
     components(schemas(
         rucio_core::api::status::StatusResponse,
@@ -539,7 +539,20 @@ fn v1_router() -> Router<AppState> {
             "/config/limits",
             routing::get(config::get_limits).put(config::put_limits),
         )
-        // notifications
+        // notification settings + webhooks (configuration, grouped under config)
+        .route(
+            "/config/notifications",
+            routing::get(config::get_notification_settings).put(config::put_notification_settings),
+        )
+        .route(
+            "/config/notifications/webhooks",
+            routing::get(config::get_webhooks).put(config::put_webhooks),
+        )
+        .route(
+            "/config/notifications/webhooks/test",
+            routing::post(config::test_webhook),
+        )
+        // notification centre (runtime data: the bell + slideover)
         .route(
             "/notifications",
             routing::get(notifications::list_notifications)
@@ -548,18 +561,6 @@ fn v1_router() -> Router<AppState> {
         .route(
             "/notifications/read",
             routing::post(notifications::mark_all_read),
-        )
-        .route(
-            "/notifications/settings",
-            routing::get(notifications::get_settings).put(notifications::put_settings),
-        )
-        .route(
-            "/notifications/webhooks",
-            routing::get(notifications::get_webhooks).put(notifications::put_webhooks),
-        )
-        .route(
-            "/notifications/webhooks/test",
-            routing::post(notifications::test_webhook),
         )
         .route(
             "/notifications/{id}",

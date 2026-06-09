@@ -2,8 +2,10 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 use crate::icons::{self, Icon};
-use crate::types::{ConfigResponse, ConfigSnapshot, EmuleStatusResponse, NotificationSettings};
-use crate::webhooks::WebhooksEditor;
+use crate::types::{
+    ConfigResponse, ConfigSnapshot, EmuleStatusResponse, NotificationSettings, WebhookDef,
+};
+use crate::webhooks::{Row, WebhooksEditor, collect_defs, mint_row};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ConfigTab {
@@ -14,7 +16,7 @@ enum ConfigTab {
 }
 
 async fn api_get_notif_settings() -> Option<NotificationSettings> {
-    gloo_net::http::Request::get("/api/v1/notifications/settings")
+    gloo_net::http::Request::get("/api/v1/config/notifications")
         .send()
         .await
         .ok()?
@@ -123,6 +125,10 @@ pub fn ConfigModal(
     let n_enabled = RwSignal::new(true);
     let n_downloads = RwSignal::new(true);
     let n_system = RwSignal::new(true);
+    // Webhook rows live here (not in WebhooksEditor) so they survive tab
+    // switches and are persisted by this modal's Save button.
+    let webhook_rows: RwSignal<Vec<Row>> = RwSignal::new(vec![]);
+    let webhook_next_id = RwSignal::new(0usize);
 
     // Load once on open.
     Effect::new(move |_| {
@@ -163,6 +169,13 @@ pub fn ConfigModal(
                 n_downloads.set(s.downloads);
                 n_system.set(s.system);
             }
+            if let Ok(r) = gloo_net::http::Request::get("/api/v1/config/notifications/webhooks")
+                .send()
+                .await
+                && let Ok(list) = r.json::<Vec<WebhookDef>>().await
+            {
+                webhook_rows.set(list.iter().map(|d| mint_row(webhook_next_id, d)).collect());
+            }
         });
     });
 
@@ -175,7 +188,7 @@ pub fn ConfigModal(
         };
         spawn_local(async move {
             if let Ok(req) =
-                gloo_net::http::Request::put("/api/v1/notifications/settings").json(&body)
+                gloo_net::http::Request::put("/api/v1/config/notifications").json(&body)
             {
                 let _ = req.send().await;
             }
@@ -235,8 +248,18 @@ pub fn ConfigModal(
             snap.network.temp_download_limit_kbps,
             snap.network.temp_upload_limit_kbps,
         );
+        // Collect the webhook rows now; they're PUT to their own endpoint as
+        // part of this single Save (no separate "Save webhooks" button).
+        let webhooks = collect_defs(&webhook_rows.get_untracked());
         saving.set(true);
         spawn_local(async move {
+            // Webhooks first so the config PUT (which reloads from disk) sees
+            // them; then the main config.
+            if let Ok(req) = gloo_net::http::Request::put("/api/v1/config/notifications/webhooks")
+                .json(&webhooks)
+            {
+                let _ = req.send().await;
+            }
             let ok = api_put_config(&ConfigResponse {
                 current: snap,
                 pending: None,
@@ -510,7 +533,7 @@ pub fn ConfigModal(
                                         </span>
                                     </div>
                                 </div>
-                                <WebhooksEditor/>
+                                <WebhooksEditor rows=webhook_rows next_id=webhook_next_id/>
                             }.into_any(),
                         }
                     }}
