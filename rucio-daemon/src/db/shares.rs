@@ -263,6 +263,49 @@ pub async fn delete_by_path(db: &Db, path: &str) -> Result<Option<Vec<u8>>> {
     Ok(hash)
 }
 
+/// Look up a shared file by its exact on-disk path (uses the `path` index).
+pub async fn get_by_path(db: &Db, path: &str) -> Result<Option<SharedFileRow>> {
+    let row = sqlx::query(
+        "SELECT sf.id, sf.root_hash, sf.name, sf.size, sf.mime_type, sf.path,
+                sf.chunk_size, sf.added_at, sf.mtime,
+                COUNT(c.id) AS chunk_count
+         FROM shared_files sf
+         LEFT JOIN chunks c ON c.shared_file_id = sf.id
+         WHERE sf.path = ?1
+         GROUP BY sf.id",
+    )
+    .bind(path)
+    .fetch_optional(db)
+    .await?;
+
+    Ok(row.map(|r| SharedFileRow {
+        id: r.get("id"),
+        root_hash: r.get("root_hash"),
+        name: r.get("name"),
+        size: r.get("size"),
+        mime_type: r.get("mime_type"),
+        path: r.get("path"),
+        chunk_size: r.get("chunk_size"),
+        added_at: r.get("added_at"),
+        mtime: r.get("mtime"),
+        chunk_count: r.get("chunk_count"),
+    }))
+}
+
+/// Repoint a share to a new path/name without re-hashing — used for a pure
+/// rename, where the content (and therefore the root hash and chunks) is
+/// unchanged. Returns `true` if a row was updated.
+pub async fn rename_path(db: &Db, old_path: &str, new_path: &str, new_name: &str) -> Result<bool> {
+    let affected = sqlx::query("UPDATE shared_files SET path = ?2, name = ?3 WHERE path = ?1")
+        .bind(old_path)
+        .bind(new_path)
+        .bind(new_name)
+        .execute(db)
+        .await?
+        .rows_affected();
+    Ok(affected > 0)
+}
+
 /// Delete all shared files whose `path` starts with `prefix`.
 ///
 /// Use this to remove a whole directory tree: pass the directory path.
@@ -416,6 +459,50 @@ mod tests {
         let (db, _dir) = test_db().await;
         let deleted = delete_by_hash(&db, &dummy_hash(99)).await.unwrap();
         assert!(!deleted);
+    }
+
+    #[tokio::test]
+    async fn rename_path_repoints_keeping_hash() {
+        let (db, _dir) = test_db().await;
+        let hash = dummy_hash(7);
+        let chunks = dummy_chunks(2);
+        insert(
+            &db,
+            NewSharedFile {
+                root_hash: &hash,
+                name: "old.bin",
+                size: 8192,
+                mime_type: None,
+                path: "/dl/old.bin",
+                chunk_size: 4096,
+                added_at: 1,
+                mtime: 55,
+                chunks: &chunks,
+            },
+        )
+        .await
+        .unwrap();
+
+        // Repoint to the new path/name; the hash, size, mtime and chunks stay.
+        assert!(
+            rename_path(&db, "/dl/old.bin", "/dl/new.bin", "new.bin")
+                .await
+                .unwrap()
+        );
+        assert!(get_by_path(&db, "/dl/old.bin").await.unwrap().is_none());
+        let moved = get_by_path(&db, "/dl/new.bin").await.unwrap().unwrap();
+        assert_eq!(moved.name, "new.bin");
+        assert_eq!(moved.root_hash, hash);
+        assert_eq!(moved.size, 8192);
+        assert_eq!(moved.mtime, 55);
+        assert_eq!(moved.chunk_count, 2);
+
+        // Renaming an unknown path updates nothing.
+        assert!(
+            !rename_path(&db, "/dl/nope.bin", "/dl/x.bin", "x.bin")
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]

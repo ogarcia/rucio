@@ -115,6 +115,21 @@ pub async fn list_backfill_candidates(db: &Db, limit: i64) -> Result<Vec<Backfil
         .collect())
 }
 
+/// Repoint a seeded file to a new path/name on a pure rename, keeping its ed2k
+/// hash and hashset (the content is unchanged, so no MD4 recompute is needed).
+/// Returns `true` if a row was updated.
+pub async fn rename_path(db: &Db, old_path: &str, new_path: &str, new_name: &str) -> Result<bool> {
+    let affected =
+        sqlx::query("UPDATE emule_shared_files SET path = ?2, name = ?3 WHERE path = ?1")
+            .bind(old_path)
+            .bind(new_path)
+            .bind(new_name)
+            .execute(db)
+            .await?
+            .rows_affected();
+    Ok(affected > 0)
+}
+
 /// Remove a shared file by its ed2k hash. Returns `true` if a row was deleted.
 pub async fn delete_by_hash(db: &Db, ed2k_hash: &[u8]) -> Result<bool> {
     let res = sqlx::query("DELETE FROM emule_shared_files WHERE ed2k_hash = ?1")
@@ -178,6 +193,37 @@ mod tests {
         )
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn rename_path_repoints_keeping_ed2k_hash() {
+        let (db, _dir) = test_db().await;
+        upsert(
+            &db,
+            &[3u8; 16],
+            "old.bin",
+            4096,
+            "/dl/old.bin",
+            9,
+            b"\x01\x02",
+            1,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            rename_path(&db, "/dl/old.bin", "/dl/new.bin", "new.bin")
+                .await
+                .unwrap()
+        );
+        assert!(get_by_path(&db, "/dl/old.bin").await.unwrap().is_none());
+        let moved = get_by_path(&db, "/dl/new.bin").await.unwrap().unwrap();
+        assert_eq!(moved.name, "new.bin");
+        assert_eq!(moved.ed2k_hash, vec![3u8; 16]);
+        assert_eq!(moved.hashset, b"\x01\x02");
+        assert_eq!(moved.mtime, 9);
+
+        assert!(!rename_path(&db, "/dl/nope", "/dl/x", "x").await.unwrap());
     }
 
     #[tokio::test]

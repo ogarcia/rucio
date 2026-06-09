@@ -5,7 +5,12 @@
 //!
 //! - `Create` / `Modify`  → index (or re-index) the file, announce to DHT
 //! - `Remove`             → remove from DB, stop providing in DHT
-//! - `Rename` (from/to)   → treat as Remove + Create
+//! - `Rename` (both)      → repoint the row in place (no re-hash, no DHT churn)
+//!   when the content is unchanged; fall back to remove + re-index otherwise
+//!
+//! Indexing is idempotent: a path already recorded with the same size + mtime is
+//! skipped, so redundant `Modify` events (and the `To` half of a rename that the
+//! paired `Both` already repointed) never trigger a re-hash.
 //!
 //! The watcher runs `notify`'s blocking watcher on a dedicated OS thread and
 //! bridges events into async-land via a channel.
@@ -268,21 +273,32 @@ async fn handle_event(
             }
         }
 
-        // Rename (Both): process old removal immediately; queue new path
+        // Rename (Both): repoint in place when the content is unchanged (no
+        // re-hash), else fall back to remove-old + index-new.
         EventKind::Modify(notify::event::ModifyKind::Name(notify::event::RenameMode::Both))
             if event.paths.len() == 2 =>
         {
-            on_file_remove(&event.paths[0], db, node_tx).await;
-            if event.paths[1].is_file()
-                && !is_hidden(&event.paths[1])
-                && !is_excluded(&event.paths[1], excluded)
-            {
-                debug!(path = %event.paths[1].display(), "Watcher: Rename — queuing upsert");
-                pending_upserts.insert(event.paths[1].clone(), Instant::now());
+            let (old, new) = (&event.paths[0], &event.paths[1]);
+            // New path not shareable (hidden/excluded/not a file → e.g. moved to
+            // a temp dir or to a non-regular target): just drop the old share.
+            if !new.is_file() || is_hidden(new) || is_excluded(new, excluded) {
+                on_file_remove(old, db, node_tx).await;
+                return;
             }
+            on_file_rename(old, new, db, node_tx, &mut *pending_upserts).await;
         }
 
-        // Other modifications (data written) — queue for debounced indexing
+        // The "from" half of a rename: on Linux notify also emits the paired
+        // `Both` (handled above) which does the repoint, and the standalone
+        // `To` (caught below) which is a no-op once repointed. Ignore the bare
+        // `From` so a moved-away file isn't queued as an upsert of a vanished
+        // path; if it was a move *out* of the tree with no `Both`, the rescan
+        // de-indexes it. (Without this it would fall into the catch-all below.)
+        EventKind::Modify(notify::event::ModifyKind::Name(notify::event::RenameMode::From)) => {}
+
+        // Other modifications (data written, or the `To`/`Any` rename half) —
+        // queue for debounced indexing. on_file_upsert is idempotent, so the
+        // `To` of an already-repointed rename costs nothing.
         EventKind::Modify(_) => {
             for path in &event.paths {
                 if !path.is_file() || is_hidden(path) || is_excluded(path, excluded) {
@@ -353,14 +369,25 @@ async fn on_file_upsert(
     node_tx: &mpsc::Sender<NodeCmd>,
     ed2k_tx: Option<&mpsc::Sender<PathBuf>>,
 ) {
-    // If the file already exists in the DB with the same path, remove the old
-    // record first so we get a fresh hash (content may have changed).
-    // Re-indexing one file: drop just that path's old row (exact match → uses
-    // the path index), not a prefix scan. delete_by_path_prefix here would scan
-    // the whole shared_files table per file, making a rescan O(files²).
     let path_str = path.to_string_lossy().into_owned();
-    if let Ok(Some(hash)) = db::shares::delete_by_path(db, &path_str).await {
-        let _ = node_tx.send(NodeCmd::StopProviding(hash)).await;
+
+    // Idempotent: if this exact path is already indexed with the same size +
+    // mtime, the content hasn't changed — skip the re-hash. This makes a
+    // redundant Modify event (and the `To` half of an already-repointed rename)
+    // a no-op, and is the same change signal the rescan uses.
+    if let Ok(Some(row)) = db::shares::get_by_path(db, &path_str).await {
+        let disk_size = std::fs::metadata(path)
+            .map(|m| m.len() as i64)
+            .unwrap_or(-1);
+        if disk_size == row.size && file_mtime_secs(path) == row.mtime {
+            debug!(path = %path.display(), "Watcher: unchanged, skipping re-index");
+            return;
+        }
+        // Content changed: drop the stale row (exact match → uses the path
+        // index, not the O(files²) prefix scan) before re-hashing.
+        if let Ok(Some(hash)) = db::shares::delete_by_path(db, &path_str).await {
+            let _ = node_tx.send(NodeCmd::StopProviding(hash)).await;
+        }
     }
 
     match index_file(db, path).await {
@@ -374,6 +401,57 @@ async fn on_file_upsert(
             }
         }
         Err(e) => warn!(path = %path.display(), "Watcher: failed to index: {e}"),
+    }
+}
+
+/// Handle a rename of a shared file (`old` → `new`, both inside watched dirs).
+///
+/// A pure rename leaves the content — and therefore the root hash and chunks —
+/// untouched, so when the new path's size + mtime still match what we recorded
+/// for the old path we just repoint the DB row: no re-hash, and no DHT churn
+/// (we keep providing the same hash). Only if they differ (a write happened
+/// around the rename) do we fall back to remove-old + index-new.
+async fn on_file_rename(
+    old: &Path,
+    new: &Path,
+    db: &Db,
+    node_tx: &mpsc::Sender<NodeCmd>,
+    pending: &mut HashMap<PathBuf, Instant>,
+) {
+    // A pending debounced upsert for the old path is now stale.
+    pending.remove(old);
+    let old_str = old.to_string_lossy().into_owned();
+    let new_str = new.to_string_lossy().into_owned();
+    let new_name = new
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| new_str.clone());
+
+    match db::shares::get_by_path(db, &old_str).await {
+        Ok(Some(row)) => {
+            let disk_size = std::fs::metadata(new).map(|m| m.len() as i64).unwrap_or(-1);
+            let unchanged = disk_size == row.size && file_mtime_secs(new) == row.mtime;
+            if unchanged
+                && db::shares::rename_path(db, &old_str, &new_str, &new_name)
+                    .await
+                    .unwrap_or(false)
+            {
+                // Cancel the upsert the standalone `To` event queued for the new
+                // path — the repoint already covered it.
+                pending.remove(new);
+                debug!(from = %old.display(), to = %new.display(), "Watcher: renamed (repointed, no re-hash)");
+                return;
+            }
+            // Content changed alongside the rename (or the repoint raced) →
+            // re-index the new path and drop the old row.
+            on_file_remove(old, db, node_tx).await;
+            pending.insert(new.to_path_buf(), Instant::now());
+        }
+        // Old path wasn't a tracked share (hidden/excluded before, or a DB
+        // miss): treat the new path as a fresh file.
+        _ => {
+            pending.insert(new.to_path_buf(), Instant::now());
+        }
     }
 }
 

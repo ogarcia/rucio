@@ -117,6 +117,7 @@ pub fn spawn_shared_files_watcher(
     active_downloads: ActiveDownloads,
     downloads_dir: std::path::PathBuf,
 ) {
+    use notify::event::{ModifyKind, RenameMode};
     use notify::{EventKind, RecursiveMode, Watcher};
 
     tokio::spawn(async move {
@@ -145,6 +146,17 @@ pub fn spawn_shared_files_watcher(
             if matches!(ev.kind, EventKind::Access(_)) {
                 continue;
             }
+            // Pure rename inside the watched tree: repoint our seeded entry
+            // instead of dropping it, keeping the ed2k hash/hashset — no MD4
+            // recompute. Mirrors the Rucio share watcher's rename handling.
+            if matches!(
+                ev.kind,
+                EventKind::Modify(ModifyKind::Name(RenameMode::Both))
+            ) && ev.paths.len() == 2
+            {
+                handle_emule_rename(&db, &active_downloads, &ev.paths[0], &ev.paths[1]).await;
+                continue;
+            }
             for path in &ev.paths {
                 let path_str = path.to_string_lossy().into_owned();
                 let row = match crate::db::emule_shared_files::get_by_path(&db, &path_str).await {
@@ -167,6 +179,55 @@ pub fn spawn_shared_files_watcher(
             }
         }
     });
+}
+
+/// Handle a rename of a seeded eMule file. When the content is unchanged (new
+/// path's size + mtime match the recorded row) we repoint the share in place —
+/// the ed2k hash and hashset are kept, no MD4 recompute — and update the upload
+/// whitelist's serving path. If the content changed (a write around the rename),
+/// fall back to dropping the share; a Rucio re-index will re-seed it.
+async fn handle_emule_rename(
+    db: &Db,
+    active_downloads: &ActiveDownloads,
+    old: &std::path::Path,
+    new: &std::path::Path,
+) {
+    let old_str = old.to_string_lossy().into_owned();
+    let row = match crate::db::emule_shared_files::get_by_path(db, &old_str).await {
+        Ok(Some(r)) => r,
+        _ => return, // not one of our seeded files — nothing to do
+    };
+    let Ok(hash) = <[u8; 16]>::try_from(row.ed2k_hash.as_slice()) else {
+        return;
+    };
+
+    let disk_size = std::fs::metadata(new).map(|m| m.len() as i64).unwrap_or(-1);
+    let unchanged = disk_size == row.size && crate::api::shares::file_mtime_secs(new) == row.mtime;
+
+    if !unchanged {
+        // Content changed alongside the rename → stop seeding the stale file.
+        let _ = crate::db::emule_shared_files::delete_by_hash(db, &row.ed2k_hash).await;
+        active_downloads.write().await.remove(&hash);
+        info!(path = %new.display(), "eMule shared file changed on rename — stopped sharing");
+        return;
+    }
+
+    let new_str = new.to_string_lossy().into_owned();
+    let new_name = new
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| new_str.clone());
+    if crate::db::emule_shared_files::rename_path(db, &old_str, &new_str, &new_name)
+        .await
+        .unwrap_or(false)
+    {
+        // Repoint the upload whitelist's serving path (the hash key is unchanged).
+        if let Some(info) = active_downloads.write().await.get_mut(&hash) {
+            info.path = new.to_path_buf();
+            info.name = new_name;
+        }
+        debug!(from = %old.display(), to = %new.display(), "eMule seeded file renamed (repointed)");
+    }
 }
 
 /// How long between rounds of re-announcing our shared files as Kad sources.
