@@ -13,7 +13,7 @@ pub type WsStream =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 use rucio_core::api::{
-    categories::{CategoriesResponse, CategoryRequest, CategoryResponse},
+    categories::{CategoriesResponse, CategoryRequest, CategoryResponse, SetCategoryRequest},
     config::ConfigResponse,
     downloads::{
         DownloadDetailResponse, DownloadResponse, DownloadsResponse, StartDownloadRequest,
@@ -222,6 +222,16 @@ impl ApiClient {
 
     pub async fn delete_category(&self, id: i64) -> Result<()> {
         self.delete(&format!("/api/v1/categories/{id}")).await
+    }
+
+    /// Assign (or clear, with `None`) a download's category. `id` may be negative
+    /// for an eMule download.
+    pub async fn set_download_category(&self, id: i64, category_id: Option<i64>) -> Result<()> {
+        self.put(
+            &format!("/api/v1/downloads/{id}/category"),
+            &SetCategoryRequest { category_id },
+        )
+        .await
     }
 
     /// Retrieve the magnet link for a locally shared file by hash (full or prefix).

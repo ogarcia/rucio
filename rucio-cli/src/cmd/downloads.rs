@@ -358,6 +358,26 @@ fn split_links(input: &str) -> Vec<&str> {
 }
 
 /// Show full details for a single download identified by row number or hash.
+/// Move a download to a category, or clear it when `category_id` is `None`.
+pub async fn set_category(
+    client: &ApiClient,
+    target: &str,
+    category_id: Option<i64>,
+) -> Result<()> {
+    let Some(dl) = client.find_download_by_idx_or_hash(target).await? else {
+        bail!("No download found for '{target}'");
+    };
+    client.set_download_category(dl.id, category_id).await?;
+    match category_id {
+        Some(c) => println!(
+            "{}",
+            color::success(&format!("Moved download to category {c}."))
+        ),
+        None => println!("{}", color::success("Cleared the download's category.")),
+    }
+    Ok(())
+}
+
 pub async fn show(client: &ApiClient, target: &str) -> Result<()> {
     let dl = client.find_download_by_idx_or_hash(target).await?;
     let Some(dl) = dl else {

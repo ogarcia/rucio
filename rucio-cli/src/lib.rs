@@ -128,6 +128,13 @@ pub enum DownloadAction {
         #[arg(long)]
         category: Option<i64>,
     },
+    /// Move a download to a category (or clear it)
+    Category {
+        /// Row number from `rucio download list` (e.g. 1) or root hash (full or prefix)
+        target: String,
+        /// Category id (from `rucio category list`); omit to clear the category
+        category: Option<i64>,
+    },
     /// Cancel an in-progress download
     Cancel {
         /// Row number from `rucio download list` (e.g. 1) or root hash (full or prefix)
@@ -327,6 +334,9 @@ pub async fn run() -> Result<()> {
                 done,
             } => cmd::downloads::list(&client, watch, active, done).await,
             DownloadAction::Show { target } => cmd::downloads::show(&client, &target).await,
+            DownloadAction::Category { target, category } => {
+                cmd::downloads::set_category(&client, &target, category).await
+            }
             DownloadAction::Cancel { hash } => cmd::downloads::cancel(&client, &hash).await,
             DownloadAction::Pause { hash } => cmd::downloads::pause(&client, &hash).await,
             DownloadAction::Resume { hash } => cmd::downloads::resume(&client, &hash).await,
