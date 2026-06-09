@@ -439,6 +439,30 @@
         .notif-del:hover { color: #ef4444; }
         .notif-del .icon { width: 0.95rem; height: 0.95rem; }
 
+        /* Webhooks editor (Notifications settings tab) */
+        .webhook-row {
+            border: 1px solid var(--border); border-radius: 6px;
+            padding: 0.625rem; margin-bottom: 0.625rem;
+            display: flex; flex-direction: column; gap: 0.5rem;
+        }
+        .webhook-row-head { display: flex; align-items: center; gap: 0.5rem; }
+        .webhook-del {
+            margin-left: auto; background: transparent; border: none;
+            color: var(--text-3); cursor: pointer; display: flex; padding: 0.125rem;
+        }
+        .webhook-del:hover { color: #ef4444; }
+        .webhook-del .icon { width: 1rem; height: 1rem; }
+        .webhook-kinds {
+            display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;
+            font-size: 0.8125rem;
+        }
+        .webhook-check {
+            display: flex; align-items: center; gap: 0.3rem; cursor: pointer;
+            color: var(--text-2);
+        }
+        .webhook-hint { color: var(--text-3); font-size: 0.75rem; }
+        .webhook-actions { display: flex; gap: 0.5rem; margin-top: 0.25rem; }
+
         /* ── Panel contents ──────────────────────────────────────────────── */
 
         .panel-dl {

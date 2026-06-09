@@ -3,6 +3,7 @@ use leptos::task::spawn_local;
 
 use crate::icons::{self, Icon};
 use crate::types::{ConfigResponse, ConfigSnapshot, EmuleStatusResponse, NotificationSettings};
+use crate::webhooks::WebhooksEditor;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ConfigTab {
@@ -509,6 +510,7 @@ pub fn ConfigModal(
                                         </span>
                                     </div>
                                 </div>
+                                <WebhooksEditor/>
                             }.into_any(),
                         }
                     }}

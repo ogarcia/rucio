@@ -287,12 +287,8 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
     // record notifications. The notifier holds live toggles seeded from config.
     let (ws_tx, _) = tokio::sync::broadcast::channel::<WsEvent>(256);
     let notif_state = crate::notifier::NotificationState::from_config(&config.notifications);
-    let notifier = crate::notifier::Notifier::new(
-        db.clone(),
-        ws_tx.clone(),
-        Arc::clone(&notif_state),
-        config.notifications.webhooks.clone(),
-    );
+    let notifier =
+        crate::notifier::Notifier::new(db.clone(), ws_tx.clone(), Arc::clone(&notif_state));
 
     let mut engine = transfer::DownloadEngine::new(
         db.clone(),

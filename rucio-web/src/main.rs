@@ -8,6 +8,7 @@ mod shares;
 mod statusbar;
 mod types;
 mod uploads;
+mod webhooks;
 
 // ── Theme ──────────────────────────────────────────────────────────────────
 

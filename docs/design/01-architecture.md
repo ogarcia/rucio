@@ -258,4 +258,8 @@ rucio` and the optional `X-Rucio-Signature` header):
 `kind` is `download` or `system`; `ref_key` is the resource reference (a blake3
 hex for downloads) and is omitted when absent.
 
-A UI for managing webhooks is planned; for now they live in `config.toml`.
+Webhooks can be edited from the web UI (Settings → Notifications) or directly in
+`config.toml`. The UI loads them from `GET /notifications/webhooks` and saves the
+whole list with `PUT /notifications/webhooks`, which applies them live (no
+restart) and persists them. The runtime list lives behind a lock in the
+notifier, so a save takes effect on the next notification.

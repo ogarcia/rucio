@@ -151,6 +151,55 @@ pub async fn put_settings(
     }
 }
 
+/// List the configured outbound webhooks.
+#[utoipa::path(
+    get,
+    path = "/api/v1/notifications/webhooks",
+    tag = "notifications",
+    summary = "List notification webhooks",
+    responses((status = 200, description = "Configured webhooks", body = [crate::config::WebhookConfig])),
+)]
+pub async fn get_webhooks(
+    State(state): State<AppState>,
+) -> Json<Vec<crate::config::WebhookConfig>> {
+    Json(state.notifications.webhooks())
+}
+
+/// Replace the whole webhook list: apply it live and persist to `config.toml`.
+#[utoipa::path(
+    put,
+    path = "/api/v1/notifications/webhooks",
+    tag = "notifications",
+    request_body = [crate::config::WebhookConfig],
+    summary = "Update notification webhooks",
+    responses(
+        (status = 204, description = "Webhooks applied and persisted"),
+        (status = 500, description = "Could not persist webhooks"),
+    )
+)]
+pub async fn put_webhooks(
+    State(state): State<AppState>,
+    Json(webhooks): Json<Vec<crate::config::WebhookConfig>>,
+) -> StatusCode {
+    // Apply to the live notifier immediately.
+    state.notifications.set_webhooks(webhooks.clone());
+
+    // Persist: reload from disk, swap the webhook list (keeping the toggles),
+    // and save — so we never clobber other settings.
+    let mut cfg = match crate::config::Config::load(state.config_path.as_deref()) {
+        Ok(c) => c,
+        Err(_) => (*state.config).clone(),
+    };
+    cfg.notifications.webhooks = webhooks;
+    match cfg.save() {
+        Ok(()) => StatusCode::NO_CONTENT,
+        Err(e) => {
+            tracing::error!("Failed to save webhooks: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    }
+}
+
 fn internal<E: std::fmt::Display>(e: E) -> StatusCode {
     tracing::error!("notifications: {e}");
     StatusCode::INTERNAL_SERVER_ERROR

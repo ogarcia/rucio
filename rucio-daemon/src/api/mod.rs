@@ -117,6 +117,8 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         notifications::delete_notification,
         notifications::get_settings,
         notifications::put_settings,
+        notifications::get_webhooks,
+        notifications::put_webhooks,
     ),
     components(schemas(
         rucio_core::api::status::StatusResponse,
@@ -171,6 +173,8 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         rucio_core::api::notifications::NotificationDto,
         rucio_core::api::notifications::NotificationList,
         rucio_core::api::notifications::NotificationSettings,
+        crate::config::WebhookConfig,
+        crate::config::WebhookFormat,
     ))
 )]
 struct ApiDoc;
@@ -546,6 +550,10 @@ fn v1_router() -> Router<AppState> {
         .route(
             "/notifications/settings",
             routing::get(notifications::get_settings).put(notifications::put_settings),
+        )
+        .route(
+            "/notifications/webhooks",
+            routing::get(notifications::get_webhooks).put(notifications::put_webhooks),
         )
         .route(
             "/notifications/{id}",

@@ -488,7 +488,7 @@ pub struct SearchListResponse {
 
 // ── Notifications ────────────────────────────────────────────────────────────
 
-#[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum NotificationKind {
     Download,
@@ -520,6 +520,23 @@ pub struct NotificationSettings {
     pub enabled: bool,
     pub downloads: bool,
     pub system: bool,
+}
+
+/// A webhook target, round-tripped with `GET`/`PUT /notifications/webhooks`.
+/// Mirrors the daemon's `WebhookConfig`; `format` is a plain string here so it
+/// binds straight to a `<select>`.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct WebhookDef {
+    pub url: String,
+    pub format: String,
+    #[serde(default)]
+    pub kinds: Vec<NotificationKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
 }
 
 // ── WebSocket events ─────────────────────────────────────────────────────────

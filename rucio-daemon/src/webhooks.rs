@@ -6,7 +6,6 @@
 //! that stays down drops its messages; the notification still lives in the
 //! centre, which is the source of truth.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use rucio_core::api::notifications::NotificationDto;
@@ -34,7 +33,7 @@ struct Prepared {
 
 /// Fire every webhook that wants this notification. Returns immediately; each
 /// delivery runs in its own task so a slow endpoint never blocks the notifier.
-pub fn dispatch(client: &reqwest::Client, webhooks: &Arc<Vec<WebhookConfig>>, n: &NotificationDto) {
+pub fn dispatch(client: &reqwest::Client, webhooks: &[WebhookConfig], n: &NotificationDto) {
     if webhooks.is_empty() {
         return;
     }

@@ -59,7 +59,7 @@ impl Default for NotificationConfig {
 }
 
 /// Payload shape for an outbound webhook.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WebhookFormat {
     /// Our own `NotificationDto` as JSON. The receiver parses it.
@@ -82,7 +82,7 @@ pub enum WebhookFormat {
 }
 
 /// A single outbound webhook target.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct WebhookConfig {
     /// Destination URL (POSTed to).
     pub url: String,

@@ -10,24 +10,27 @@
 //! live) so changing them from the settings UI takes effect immediately, with
 //! `config.toml` as the persisted source of truth.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, RwLock};
 
 use rucio_core::api::notifications::{NotificationDto, NotificationKind};
 use rucio_core::api::ws::WsEvent;
 use tokio::sync::broadcast;
 use tracing::{debug, warn};
 
-use crate::config::NotificationConfig;
+use crate::config::{NotificationConfig, WebhookConfig};
 use crate::db::{self, Db};
 
 /// Runtime, live-updatable copy of [`NotificationConfig`]. The settings handler
-/// updates these on a config change so a toggle takes effect without a restart.
+/// updates these on a config change so a change takes effect without a restart.
 #[derive(Debug)]
 pub struct NotificationState {
     enabled: AtomicBool,
     downloads: AtomicBool,
     system: AtomicBool,
+    /// Outbound webhook targets. Behind a sync `RwLock` so the settings handler
+    /// can replace the list live; reads (one per notification) just clone it.
+    webhooks: RwLock<Vec<WebhookConfig>>,
 }
 
 impl NotificationState {
@@ -37,7 +40,18 @@ impl NotificationState {
             enabled: AtomicBool::new(cfg.enabled),
             downloads: AtomicBool::new(cfg.downloads),
             system: AtomicBool::new(cfg.system),
+            webhooks: RwLock::new(cfg.webhooks.clone()),
         })
+    }
+
+    /// A clone of the current webhook list.
+    pub fn webhooks(&self) -> Vec<WebhookConfig> {
+        self.webhooks.read().unwrap().clone()
+    }
+
+    /// Replace the webhook list (after the settings handler persists it).
+    pub fn set_webhooks(&self, webhooks: Vec<WebhookConfig>) {
+        *self.webhooks.write().unwrap() = webhooks;
     }
 
     /// Apply new toggle values to the live state (called after the settings
@@ -76,24 +90,16 @@ pub struct Notifier {
     db: Db,
     ws_tx: broadcast::Sender<WsEvent>,
     state: Arc<NotificationState>,
-    /// Outbound webhook targets (loaded from config at startup).
-    webhooks: Arc<Vec<crate::config::WebhookConfig>>,
     /// Shared HTTP client for webhook delivery (cheap to clone).
     http: reqwest::Client,
 }
 
 impl Notifier {
-    pub fn new(
-        db: Db,
-        ws_tx: broadcast::Sender<WsEvent>,
-        state: Arc<NotificationState>,
-        webhooks: Vec<crate::config::WebhookConfig>,
-    ) -> Self {
+    pub fn new(db: Db, ws_tx: broadcast::Sender<WsEvent>, state: Arc<NotificationState>) -> Self {
         Self {
             db,
             ws_tx,
             state,
-            webhooks: Arc::new(webhooks),
             http: reqwest::Client::new(),
         }
     }
@@ -140,7 +146,7 @@ impl Notifier {
         };
         // Fan out to webhooks (best-effort, spawned) before the dto is moved
         // into the WS event.
-        crate::webhooks::dispatch(&self.http, &self.webhooks, &dto);
+        crate::webhooks::dispatch(&self.http, &self.state.webhooks(), &dto);
 
         // A send error just means no client is connected; the row is persisted
         // and will be fetched on next load.
