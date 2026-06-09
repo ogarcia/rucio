@@ -10,7 +10,7 @@ and a full command-line client ship in the box, and Rucio can optionally bridge
 to the **eMule / Kad2** network to download `ed2k://` files.
 
 <p align="center">
-  <img src="docs/images/panel.png" alt="Rucio web control panel" width="820">
+  <img src="website/panel.png" alt="Rucio web control panel" width="820">
 </p>
 
 ## Features
