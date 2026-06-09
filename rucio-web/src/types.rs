@@ -170,6 +170,8 @@ pub struct DownloadDetailResponse {
     pub queued_sources: Option<u32>,
     #[serde(default)]
     pub best_queue_rank: Option<u32>,
+    #[serde(default)]
+    pub category_id: Option<i64>,
 }
 
 /// One source we are downloading from (libp2p), mirrored from the daemon.

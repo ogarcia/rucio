@@ -44,6 +44,35 @@ impl FilterState {
     }
 }
 
+/// Category filter for the download list.
+#[derive(Clone, Copy, PartialEq)]
+enum CatFilter {
+    All,
+    Uncategorized,
+    Id(i64),
+}
+
+impl CatFilter {
+    fn matches(self, category_id: Option<i64>) -> bool {
+        match self {
+            CatFilter::All => true,
+            CatFilter::Uncategorized => category_id.is_none(),
+            CatFilter::Id(id) => category_id == Some(id),
+        }
+    }
+
+    /// Parse the `<select>` value: "" = all, "none" = uncategorized, else an id.
+    fn from_value(v: &str) -> Self {
+        match v {
+            "none" => CatFilter::Uncategorized,
+            _ => match v.parse::<i64>() {
+                Ok(id) => CatFilter::Id(id),
+                Err(_) => CatFilter::All,
+            },
+        }
+    }
+}
+
 // ── State helpers ─────────────────────────────────────────────────────────────
 
 fn state_label(s: &DownloadState) -> &'static str {
@@ -288,6 +317,7 @@ pub fn DownloadsTab(
 
     let filter_state: RwSignal<FilterState> = RwSignal::new(FilterState::All);
     let filter_name: RwSignal<String> = RwSignal::new(String::new());
+    let filter_cat: RwSignal<CatFilter> = RwSignal::new(CatFilter::All);
 
     // The DownloadResponses currently selected.
     let selected_dls = move || {
@@ -482,9 +512,11 @@ pub fn DownloadsTab(
                             each=move || {
                                 let q = filter_name.get().to_lowercase();
                                 let fs = filter_state.get();
+                                let fc = filter_cat.get();
                                 downloads.with(|v| {
                                     v.iter()
                                         .filter(|d| fs.matches(&d.state))
+                                        .filter(|d| fc.matches(d.category_id))
                                         .filter(|d| {
                                             q.is_empty()
                                                 || d.name
@@ -534,6 +566,18 @@ pub fn DownloadsTab(
                     <option value="completed">"Completed"</option>
                     <option value="history">"History"</option>
                 </select>
+                <Show when=move || !categories.get().is_empty()>
+                    <select
+                        class="dl-filter-select"
+                        on:change=move |e| filter_cat.set(CatFilter::from_value(&event_target_value(&e)))
+                    >
+                        <option value="">"All categories"</option>
+                        <option value="none">"Uncategorized"</option>
+                        <For each=move || categories.get() key=|c| c.id let:c>
+                            <option value=c.id.to_string()>{c.name.clone()}</option>
+                        </For>
+                    </select>
+                </Show>
                 <input
                     type="text"
                     class="dl-filter-input"
@@ -573,6 +617,8 @@ pub fn DownloadsTab(
         {move || detail.get().map(|d| view! {
             <DownloadInfoOverlay
                 detail=d
+                categories=categories
+                downloads=downloads
                 on_close=move || detail.set(None)
             />
         })}
@@ -848,9 +894,13 @@ fn AddModal(
 #[component]
 fn DownloadInfoOverlay(
     detail: DownloadDetailResponse,
+    categories: RwSignal<Vec<Category>>,
+    downloads: RwSignal<Vec<DownloadResponse>>,
     on_close: impl Fn() + Copy + 'static,
 ) -> impl IntoView {
     let id = detail.id;
+    // Current category, editable: changing it PUTs and refreshes the list badge.
+    let cur_cat: RwSignal<Option<i64>> = RwSignal::new(detail.category_id);
     let name = detail
         .name
         .clone()
@@ -898,6 +948,34 @@ fn DownloadInfoOverlay(
 
                         <dt>"Kind"</dt>
                         <dd>{detail.kind}</dd>
+
+                        <dt>"Category"</dt>
+                        <dd>
+                            <select
+                                class="dl-filter-select"
+                                prop:value=move || cur_cat.get().map(|c| c.to_string()).unwrap_or_default()
+                                on:change=move |e| {
+                                    let cat = event_target_value(&e).parse::<i64>().ok();
+                                    cur_cat.set(cat);
+                                    spawn_local(async move {
+                                        let body = serde_json::json!({ "category_id": cat });
+                                        if let Ok(req) = gloo_net::http::Request::put(
+                                            &format!("/api/v1/downloads/{id}/category"),
+                                        ).json(&body)
+                                            && req.send().await.map(|r| r.ok()).unwrap_or(false)
+                                        {
+                                            // Reflect the new badge in the list.
+                                            refresh_downloads(downloads).await;
+                                        }
+                                    });
+                                }
+                            >
+                                <option value="">"None"</option>
+                                <For each=move || categories.get() key=|c| c.id let:c>
+                                    <option value=c.id.to_string()>{c.name.clone()}</option>
+                                </For>
+                            </select>
+                        </dd>
 
                         {pct.map(|p| view! {
                             <dt>"Progress"</dt>
