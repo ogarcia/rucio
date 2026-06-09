@@ -479,6 +479,22 @@
         }
         .webhook-hint { color: var(--text-3); font-size: 0.75rem; }
         .webhook-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 0.25rem; }
+        /* Category editor rows (reuses .webhook-del / .webhook-actions). */
+        .cat-row {
+            border: 1px solid var(--border); border-radius: 6px;
+            padding: 0.625rem; margin-bottom: 0.625rem;
+            display: flex; flex-direction: column; gap: 0.5rem;
+        }
+        .cat-row-head { display: flex; align-items: center; gap: 0.5rem; }
+        .cat-color {
+            width: 2rem; height: 2rem; padding: 0; flex: none; cursor: pointer;
+            border: 1px solid var(--border); border-radius: 0.25rem; background: var(--raised);
+        }
+        .cat-name { flex: 1; min-width: 0; }
+        .cat-status { font-size: 0.75rem; color: var(--text-3); white-space: nowrap; }
+        .cat-status-ok { color: #22c55e; }
+        .cat-status-err { color: #ef4444; }
+        .cat-row .config-input { width: 100%; box-sizing: border-box; }
 
         /* ── Panel contents ──────────────────────────────────────────────── */
 

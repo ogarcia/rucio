@@ -1,3 +1,4 @@
+mod categories;
 mod config;
 mod downloads;
 mod icons;
@@ -1011,6 +1012,7 @@ fn App() -> impl IntoView {
                 temp_up=temp_up
                 temp_down=temp_down
                 notif_enabled=notif_enabled
+                categories=categories
                 on_close=move || config_open.set(false)
             />
         </Show>

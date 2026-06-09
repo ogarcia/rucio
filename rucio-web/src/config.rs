@@ -1,9 +1,10 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
+use crate::categories::CategoriesEditor;
 use crate::icons::{self, Icon};
 use crate::types::{
-    ConfigResponse, ConfigSnapshot, EmuleStatusResponse, NotificationSettings, WebhookDef,
+    Category, ConfigResponse, ConfigSnapshot, EmuleStatusResponse, NotificationSettings, WebhookDef,
 };
 use crate::webhooks::{Row, WebhooksEditor, collect_defs, mint_row};
 
@@ -13,6 +14,7 @@ enum ConfigTab {
     Storage,
     Emule,
     Notifications,
+    Categories,
 }
 
 async fn api_get_notif_settings() -> Option<NotificationSettings> {
@@ -87,6 +89,7 @@ pub fn ConfigModal(
     temp_up: RwSignal<u64>,
     temp_down: RwSignal<u64>,
     notif_enabled: RwSignal<bool>,
+    categories: RwSignal<Vec<Category>>,
     on_close: impl Fn() + Copy + 'static,
 ) -> impl IntoView {
     let tab = RwSignal::new(ConfigTab::Network);
@@ -313,6 +316,8 @@ pub fn ConfigModal(
                     </Show>
                     <button class=move || tab_class(ConfigTab::Notifications)
                         on:click=move |_| tab.set(ConfigTab::Notifications)>"Notifications"</button>
+                    <button class=move || tab_class(ConfigTab::Categories)
+                        on:click=move |_| tab.set(ConfigTab::Categories)>"Categories"</button>
                 </div>
 
                 <div class="modal-body">
@@ -539,6 +544,9 @@ pub fn ConfigModal(
                                     </div>
                                 </div>
                                 <WebhooksEditor rows=webhook_rows next_id=webhook_next_id/>
+                            }.into_any(),
+                            ConfigTab::Categories => view! {
+                                <CategoriesEditor categories=categories/>
                             }.into_any(),
                         }
                     }}
