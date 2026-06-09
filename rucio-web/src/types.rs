@@ -501,11 +501,9 @@ pub struct Notification {
     pub kind: NotificationKind,
     pub title: String,
     pub body: String,
-    // Kept for a future deep-link (click a notification to open its resource);
-    // deserialized now so the field round-trips, not yet read by the UI.
-    #[allow(dead_code)]
-    #[serde(default)]
-    pub ref_key: Option<String>,
+    // The daemon's `ref_key` (the resource a notification is about) is sent but
+    // not consumed by the UI: there is no useful click target today, and serde
+    // ignores the extra field. It lives on in the backend model for webhooks.
     pub created_at: i64,
     #[serde(default)]
     pub read: bool,
