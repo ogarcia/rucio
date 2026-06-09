@@ -81,9 +81,9 @@ use overlays::{AboutPanel, AddressesPanel, NodeStatusPanel, PeersPanel, StatsPan
 use searches::SearchesTab;
 use shares::SharesTab;
 use types::{
-    ActiveUpload, DownloadResponse, Notification, NotificationList, SearchResult, SearchState,
-    SearchSummary, SpeedLimits, StatusResponse, TempLimitRequest, TempLimitStatus, UploadsResponse,
-    WsEvent, format_rate_kbps, is_streamed_state,
+    ActiveUpload, DownloadResponse, Notification, NotificationList, NotificationSettings,
+    SearchResult, SearchState, SearchSummary, SpeedLimits, StatusResponse, TempLimitRequest,
+    TempLimitStatus, UploadsResponse, WsEvent, format_rate_kbps, is_streamed_state,
 };
 use uploads::UploadsTab;
 
@@ -536,6 +536,9 @@ fn App() -> impl IntoView {
     // Notification centre: the list (newest first) and the unread badge count.
     let notifications: RwSignal<Vec<Notification>> = RwSignal::new(vec![]);
     let unread: RwSignal<i64> = RwSignal::new(0);
+    // Master notification switch, shared with the config modal: when off, the
+    // user wants nothing to do with notifications, so the bell is hidden.
+    let notif_enabled: RwSignal<bool> = RwSignal::new(true);
 
     // PWA protocol handler: when launched via an `ed2k:` link (manifest
     // `protocol_handlers`), the app opens at `/?handle=<link>`. Add it as a
@@ -597,6 +600,14 @@ fn App() -> impl IntoView {
             notifications.set(s.items);
             unread.set(s.unread);
         }
+        // Master switch, so the bell can hide when notifications are off.
+        if let Ok(r) = gloo_net::http::Request::get("/api/v1/config/notifications")
+            .send()
+            .await
+            && let Ok(s) = r.json::<NotificationSettings>().await
+        {
+            notif_enabled.set(s.enabled);
+        }
     });
 
     // Start the persistent WebSocket loop.
@@ -650,40 +661,43 @@ fn App() -> impl IntoView {
                         }
                     }}
 
-                    // Notification bell with unread badge.
-                    <button
-                        class="bell-btn"
-                        title="Notifications"
-                        on:click=move |_| {
-                            active_panel.set(Some(Panel::Notifications));
-                            // Opening the centre marks everything read.
-                            if unread.get_untracked() > 0 {
-                                unread.set(0);
-                                notifications.update(|list| {
-                                    for n in list.iter_mut() {
-                                        n.read = true;
-                                    }
-                                });
-                                spawn_local(async move {
-                                    let _ = gloo_net::http::Request::post(
-                                        "/api/v1/notifications/read",
-                                    )
-                                    .send()
-                                    .await;
-                                });
+                    // Notification bell with unread badge. Hidden entirely when
+                    // the user has switched notifications off — they want none.
+                    <Show when=move || notif_enabled.get()>
+                        <button
+                            class="bell-btn"
+                            title="Notifications"
+                            on:click=move |_| {
+                                active_panel.set(Some(Panel::Notifications));
+                                // Opening the centre marks everything read.
+                                if unread.get_untracked() > 0 {
+                                    unread.set(0);
+                                    notifications.update(|list| {
+                                        for n in list.iter_mut() {
+                                            n.read = true;
+                                        }
+                                    });
+                                    spawn_local(async move {
+                                        let _ = gloo_net::http::Request::post(
+                                            "/api/v1/notifications/read",
+                                        )
+                                        .send()
+                                        .await;
+                                    });
+                                }
                             }
-                        }
-                    >
-                        <icons::Icon paths=icons::BELL/>
-                        <Show when=move || { unread.get() > 0 }>
-                            <span class="bell-badge">
-                                {move || {
-                                    let u = unread.get();
-                                    if u > 99 { "99+".to_string() } else { u.to_string() }
-                                }}
-                            </span>
-                        </Show>
-                    </button>
+                        >
+                            <icons::Icon paths=icons::BELL/>
+                            <Show when=move || { unread.get() > 0 }>
+                                <span class="bell-badge">
+                                    {move || {
+                                        let u = unread.get();
+                                        if u > 99 { "99+".to_string() } else { u.to_string() }
+                                    }}
+                                </span>
+                            </Show>
+                        </button>
+                    </Show>
 
                     <button
                         class="menu-btn"
@@ -983,6 +997,7 @@ fn App() -> impl IntoView {
                 base_down=base_down
                 temp_up=temp_up
                 temp_down=temp_down
+                notif_enabled=notif_enabled
                 on_close=move || config_open.set(false)
             />
         </Show>

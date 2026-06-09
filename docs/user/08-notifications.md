@@ -11,7 +11,9 @@ are unread. Two kinds of event are produced:
 
 Open **Settings → Notifications**. The first switch is the master on/off; below
 it, one switch per kind lets you keep, say, download notifications while
-silencing system ones. Changes apply immediately.
+silencing system ones. Changes apply immediately. Turning the master switch off
+also hides the bell from the top bar — nothing is produced, so there's nothing
+to show.
 
 ## Webhooks
 

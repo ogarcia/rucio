@@ -78,12 +78,15 @@ fn lines_to_vec(s: &str) -> Vec<String> {
 
 /// Full configuration modal with tabbed sections. The menu's quick-settings
 /// signals are passed in so saving the limits here keeps them in sync.
+/// `notif_enabled` is the master notification switch, shared with the header so
+/// toggling it here hides/shows the bell live.
 #[component]
 pub fn ConfigModal(
     base_up: RwSignal<u64>,
     base_down: RwSignal<u64>,
     temp_up: RwSignal<u64>,
     temp_down: RwSignal<u64>,
+    notif_enabled: RwSignal<bool>,
     on_close: impl Fn() + Copy + 'static,
 ) -> impl IntoView {
     let tab = RwSignal::new(ConfigTab::Network);
@@ -121,8 +124,10 @@ pub fn ConfigModal(
     let f_em_nick = RwSignal::new(String::new());
     let f_em_minspeed = RwSignal::new(String::new());
     // Notification toggles. Applied immediately on change (dedicated endpoint),
-    // independent of the Save button which only persists the config above.
-    let n_enabled = RwSignal::new(true);
+    // independent of the Save button which only persists the config above. The
+    // master switch is the shared `notif_enabled` so the header bell reacts to
+    // it live.
+    let n_enabled = notif_enabled;
     let n_downloads = RwSignal::new(true);
     let n_system = RwSignal::new(true);
     // Webhook rows live here (not in WebhooksEditor) so they survive tab
