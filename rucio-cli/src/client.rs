@@ -273,7 +273,12 @@ impl ApiClient {
         self.get(&format!("/api/v1/downloads/{id}")).await
     }
 
-    pub async fn start_download(&self, magnet: &str, providers: Vec<String>) -> Result<()> {
+    pub async fn start_download(
+        &self,
+        magnet: &str,
+        providers: Vec<String>,
+        category_id: Option<i64>,
+    ) -> Result<()> {
         let url = format!("{}/api/v1/downloads", self.base);
         let resp = self
             .inner
@@ -281,9 +286,7 @@ impl ApiClient {
             .json(&StartDownloadRequest {
                 magnet: magnet.to_string(),
                 providers,
-                // The CLI does not expose categories yet; a `--category` flag
-                // can set this later.
-                category_id: None,
+                category_id,
             })
             .send()
             .await
@@ -298,7 +301,7 @@ impl ApiClient {
         }
     }
 
-    pub async fn start_ed2k_download(&self, link: &str) -> Result<()> {
+    pub async fn start_ed2k_download(&self, link: &str, category_id: Option<i64>) -> Result<()> {
         use rucio_core::api::downloads::StartEd2kDownloadRequest;
         let url = format!("{}/api/v1/downloads/ed2k", self.base);
         let resp = self
@@ -306,7 +309,7 @@ impl ApiClient {
             .post(&url)
             .json(&StartEd2kDownloadRequest {
                 link: link.to_string(),
-                category_id: None,
+                category_id,
             })
             .send()
             .await

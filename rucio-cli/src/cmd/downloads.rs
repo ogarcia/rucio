@@ -249,18 +249,23 @@ fn print_table(
 ///     whitespace (each link is started individually).
 ///
 /// `--provider` is optional — the DHT will find providers automatically.
-pub async fn start(client: &ApiClient, target: &str, provider: Option<&str>) -> Result<()> {
+pub async fn start(
+    client: &ApiClient,
+    target: &str,
+    provider: Option<&str>,
+    category_id: Option<i64>,
+) -> Result<()> {
     let links = split_links(target);
 
     if links.len() == 1 {
-        return start_single(client, links[0], provider).await;
+        return start_single(client, links[0], provider, category_id).await;
     }
 
     // Multiple links: start each one, collecting errors.
     let mut ok = 0usize;
     let mut errors = 0usize;
     for link in &links {
-        match start_single(client, link, provider).await {
+        match start_single(client, link, provider, category_id).await {
             Ok(()) => ok += 1,
             Err(e) => {
                 eprintln!("{}: {e}", color::error("Error"));
@@ -276,10 +281,17 @@ pub async fn start(client: &ApiClient, target: &str, provider: Option<&str>) -> 
     Ok(())
 }
 
-async fn start_single(client: &ApiClient, target: &str, provider: Option<&str>) -> Result<()> {
+async fn start_single(
+    client: &ApiClient,
+    target: &str,
+    provider: Option<&str>,
+    category_id: Option<i64>,
+) -> Result<()> {
     // Detect ed2k scheme first.
     if target.trim_start().starts_with("ed2k://") {
-        client.start_ed2k_download(target.trim()).await?;
+        client
+            .start_ed2k_download(target.trim(), category_id)
+            .await?;
         println!("{}", color::success("eMule download queued."));
         return Ok(());
     }
@@ -300,7 +312,9 @@ async fn start_single(client: &ApiClient, target: &str, provider: Option<&str>) 
         providers.push(p.to_string());
     }
 
-    client.start_download(&magnet, providers).await?;
+    client
+        .start_download(&magnet, providers, category_id)
+        .await?;
     println!("{}", color::success("Download queued."));
     Ok(())
 }

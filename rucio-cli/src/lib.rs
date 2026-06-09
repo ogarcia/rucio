@@ -123,6 +123,10 @@ pub enum DownloadAction {
         /// PeerId of the provider — only needed when target is a rucio: magnet link
         #[arg(long)]
         provider: Option<String>,
+        /// Category id to file the download under (see `rucio category list`).
+        /// Its directory becomes the destination; omit for the global download dir.
+        #[arg(long)]
+        category: Option<i64>,
     },
     /// Cancel an in-progress download
     Cancel {
@@ -299,9 +303,11 @@ pub async fn run() -> Result<()> {
             ShareAction::Indexing { watch } => cmd::shares::indexing(&client, watch).await,
         },
         Commands::Download { action } => match action {
-            DownloadAction::Add { target, provider } => {
-                cmd::downloads::start(&client, &target, provider.as_deref()).await
-            }
+            DownloadAction::Add {
+                target,
+                provider,
+                category,
+            } => cmd::downloads::start(&client, &target, provider.as_deref(), category).await,
             DownloadAction::List {
                 watch,
                 active,
