@@ -914,6 +914,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                                 bytes_done: r.bytes_done as u64,
                                 state,
                                 error: r.error_msg,
+                                category_id: r.category_id,
                             });
                         }
                     }
@@ -946,6 +947,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                                 bytes_done: live_bytes.unwrap_or(r.bytes_done as u64),
                                 state,
                                 error: r.error_msg,
+                                category_id: r.category_id,
                             });
                         }
                     }
@@ -998,12 +1000,12 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
             dl_req = download_rx.recv() => {
                 if let Some(req) = dl_req {
                     match req {
-                        api::DownloadRequest::Start { magnet, providers } => {
+                        api::DownloadRequest::Start { magnet, providers, category_id } => {
                             let peers: Vec<libp2p::PeerId> = providers
                                 .iter()
                                 .filter_map(|s| s.parse().ok())
                                 .collect();
-                            match engine.start(&magnet, peers, now_secs()).await {
+                            match engine.start(&magnet, peers, now_secs(), category_id).await {
                                 Ok(()) => info!("Download started"),
                                 Err(e) => warn!("Failed to start download: {e}"),
                             }

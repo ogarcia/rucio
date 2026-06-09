@@ -553,6 +553,7 @@ impl DownloadEngine {
         magnet: &str,
         extra_providers: Vec<PeerId>,
         now: u64,
+        category_id: Option<i64>,
     ) -> Result<()> {
         let info = parse_magnet(magnet)?;
 
@@ -584,6 +585,7 @@ impl DownloadEngine {
             info.name.as_deref(),
             now,
             !providers.is_empty(),
+            category_id,
         )
         .await
         {
@@ -2109,7 +2111,7 @@ mod tests {
         let magnet = fake_magnet(&hash, "file.bin", 1024);
         let p = peer(1);
 
-        engine.start(&magnet, vec![p], 0).await.unwrap();
+        engine.start(&magnet, vec![p], 0, None).await.unwrap();
 
         // Should have sent RequestManifest and FindProviders
         let cmd1 = rx.try_recv().unwrap();
@@ -2133,8 +2135,8 @@ mod tests {
         let magnet = fake_magnet(&hash, "dup.bin", 512);
         let p = peer(2);
 
-        engine.start(&magnet, vec![p], 0).await.unwrap();
-        let err = engine.start(&magnet, vec![p], 0).await.unwrap_err();
+        engine.start(&magnet, vec![p], 0, None).await.unwrap();
+        let err = engine.start(&magnet, vec![p], 0, None).await.unwrap_err();
         assert!(err.to_string().contains("already active"));
     }
 
@@ -2146,7 +2148,7 @@ mod tests {
         let magnet = fake_magnet(&hash, "nop.bin", 256);
 
         // Providers-less start should succeed — discovery via DHT.
-        engine.start(&magnet, vec![], 0).await.unwrap();
+        engine.start(&magnet, vec![], 0, None).await.unwrap();
 
         // Should have enqueued a FindProviders command.
         let cmd = rx.try_recv().unwrap();
@@ -2170,7 +2172,7 @@ mod tests {
         let p1 = peer(1);
         let p2 = peer(2);
 
-        engine.start(&magnet, vec![p1], 0).await.unwrap();
+        engine.start(&magnet, vec![p1], 0, None).await.unwrap();
         engine.add_providers(hash, vec![p2]).await;
 
         let pm = engine.pending_manifests.get(&hash).unwrap();
@@ -2185,7 +2187,7 @@ mod tests {
         let magnet = fake_magnet(&hash, "g.bin", 100);
         let p1 = peer(1);
 
-        engine.start(&magnet, vec![p1], 0).await.unwrap();
+        engine.start(&magnet, vec![p1], 0, None).await.unwrap();
         engine.add_providers(hash, vec![p1]).await; // same peer
         engine.add_providers(hash, vec![p1]).await;
 
@@ -2204,7 +2206,7 @@ mod tests {
         let hash = [0x03u8; 32];
         let magnet = fake_magnet(&hash, "c.bin", 200);
 
-        engine.start(&magnet, vec![peer(1)], 0).await.unwrap();
+        engine.start(&magnet, vec![peer(1)], 0, None).await.unwrap();
         assert!(engine.pending_manifests.contains_key(&hash));
 
         engine.cancel(99, hash.to_vec()).await;
@@ -2226,10 +2228,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (mut engine, _rx, _db_dir) = make_engine(&tmp).await;
         let hash = [0x07u8; 32];
-        let id = db::downloads::create_pending(&engine.db, &hash, Some("orphan.bin"), 500, false)
-            .await
-            .unwrap()
-            .id();
+        let id =
+            db::downloads::create_pending(&engine.db, &hash, Some("orphan.bin"), 500, false, None)
+                .await
+                .unwrap()
+                .id();
         let part = tmp.path().join("orphan.bin.part");
         tokio::fs::write(&part, b"partial data").await.unwrap();
         db::downloads::set_dest_path(&engine.db, id, part.to_str().unwrap())
@@ -2252,10 +2255,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (mut engine, _rx, _db_dir) = make_engine(&tmp).await;
         let hash = [0x08u8; 32];
-        let id = db::downloads::create_pending(&engine.db, &hash, Some("done.bin"), 500, false)
-            .await
-            .unwrap()
-            .id();
+        let id =
+            db::downloads::create_pending(&engine.db, &hash, Some("done.bin"), 500, false, None)
+                .await
+                .unwrap()
+                .id();
         let final_file = tmp.path().join("done.bin");
         tokio::fs::write(&final_file, b"complete").await.unwrap();
         db::downloads::set_dest_path(&engine.db, id, final_file.to_str().unwrap())
@@ -2284,7 +2288,7 @@ mod tests {
         let p = peer(1);
 
         engine
-            .start(&fake_magnet(&hash, "a.bin", 100), vec![p], 0)
+            .start(&fake_magnet(&hash, "a.bin", 100), vec![p], 0, None)
             .await
             .unwrap();
         // Drain start() commands (FindProviders + RequestManifest)
@@ -2337,7 +2341,7 @@ mod tests {
         let p1 = peer(1);
         let p2 = peer(2);
 
-        engine.start(&magnet, vec![p1, p2], 0).await.unwrap();
+        engine.start(&magnet, vec![p1, p2], 0, None).await.unwrap();
         // Drain start() commands
         while rx.try_recv().is_ok() {}
 
@@ -2363,7 +2367,7 @@ mod tests {
         let hash = [0x11u8; 32];
         let magnet = fake_magnet(&hash, "u.bin", 100);
 
-        engine.start(&magnet, vec![peer(1)], 0).await.unwrap();
+        engine.start(&magnet, vec![peer(1)], 0, None).await.unwrap();
         while rx.try_recv().is_ok() {}
 
         // Force timeout with only one provider (already attempted) and
@@ -2425,7 +2429,7 @@ mod tests {
         // Use spawn_acker so dispatch_requests doesn't deadlock waiting for id_rx
         let (acker_handle, stop_tx) = spawn_acker(rx);
 
-        engine.start(&magnet, vec![p], 0).await.unwrap();
+        engine.start(&magnet, vec![p], 0, None).await.unwrap();
 
         let response = ManifestResponse::Ok {
             root_hash: hash,
@@ -2491,7 +2495,7 @@ mod tests {
         // on_manifest_received and on_chunk_received (after requeue) need it.
         let (acker_handle, stop_tx) = spawn_acker(rx);
 
-        engine.start(&magnet, vec![p], 0).await.unwrap();
+        engine.start(&magnet, vec![p], 0, None).await.unwrap();
         engine
             .on_manifest_received(
                 fake_request_id(1),
@@ -2578,7 +2582,7 @@ mod tests {
 
         let (acker_handle, stop_tx) = spawn_acker(rx);
 
-        engine.start(&magnet, vec![p], 0).await.unwrap();
+        engine.start(&magnet, vec![p], 0, None).await.unwrap();
         engine
             .on_manifest_received(
                 fake_request_id(1),
@@ -2640,7 +2644,7 @@ mod tests {
 
         let (acker_handle, stop_tx) = spawn_acker(rx);
 
-        engine.start(&magnet, vec![p], 0).await.unwrap();
+        engine.start(&magnet, vec![p], 0, None).await.unwrap();
         engine
             .on_manifest_received(
                 fake_request_id(1),
@@ -2710,7 +2714,7 @@ mod tests {
         let magnet = format!("rucio:{}?name=pex.bin&size=1024", hex::encode([0xAAu8; 32]));
         let hash: [u8; 32] = [0xAAu8; 32];
 
-        engine.start(&magnet, vec![peer(1)], 0).await.unwrap();
+        engine.start(&magnet, vec![peer(1)], 0, None).await.unwrap();
 
         let pex_peer = peer(42);
 
@@ -2752,10 +2756,11 @@ mod tests {
         let hash = [0xf1u8; 32];
 
         // Insert a placeholder row with status 'finding_providers' (no chunks).
-        let id = db::downloads::create_pending(&engine.db, &hash, Some("ghost.bin"), 1_000, false)
-            .await
-            .unwrap()
-            .id();
+        let id =
+            db::downloads::create_pending(&engine.db, &hash, Some("ghost.bin"), 1_000, false, None)
+                .await
+                .unwrap()
+                .id();
         assert!(id > 0);
 
         engine.resume_interrupted().await;
@@ -2783,10 +2788,11 @@ mod tests {
         let hash = [0xf2u8; 32];
         let chunk_hash = *blake3::hash(b"data").as_bytes();
 
-        let id = db::downloads::create_pending(&engine.db, &hash, Some("resume.bin"), 1_000, true)
-            .await
-            .unwrap()
-            .id();
+        let id =
+            db::downloads::create_pending(&engine.db, &hash, Some("resume.bin"), 1_000, true, None)
+                .await
+                .unwrap()
+                .id();
         db::downloads::finalize_pending(
             &engine.db,
             id,
@@ -2828,10 +2834,11 @@ mod tests {
         let hash = [0xf3u8; 32];
         let chunk_hash = *blake3::hash(b"data").as_bytes();
 
-        let id = db::downloads::create_pending(&engine.db, &hash, Some("pause.bin"), 1_000, true)
-            .await
-            .unwrap()
-            .id();
+        let id =
+            db::downloads::create_pending(&engine.db, &hash, Some("pause.bin"), 1_000, true, None)
+                .await
+                .unwrap()
+                .id();
         db::downloads::finalize_pending(
             &engine.db,
             id,

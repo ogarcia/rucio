@@ -53,6 +53,8 @@ pub struct EmuleDownloadRow {
     pub error_msg: Option<String>,
     pub added_at: i64,
     pub updated_at: i64,
+    /// Category this download is filed under (NULL = global download dir).
+    pub category_id: Option<i64>,
 }
 
 /// Insert a new eMule download row, handling duplicates gracefully.
@@ -72,6 +74,7 @@ pub async fn create(
     total_size: u64,
     ed2k_link: &str,
     now: u64,
+    category_id: Option<i64>,
 ) -> Result<CreateResult> {
     // Check for an existing row with the same hash.
     let existing = sqlx::query("SELECT id, status FROM emule_downloads WHERE ed2k_hash = ?1")
@@ -90,9 +93,10 @@ pub async fn create(
                 sqlx::query(
                     "UPDATE emule_downloads \
                      SET status = 'finding_providers', bytes_done = 0, dest_path = '', \
-                         error_msg = NULL, updated_at = ?1 \
-                     WHERE id = ?2",
+                         error_msg = NULL, category_id = ?1, updated_at = ?2 \
+                     WHERE id = ?3",
                 )
+                .bind(category_id)
                 .bind(now as i64)
                 .bind(id)
                 .execute(db)
@@ -104,13 +108,14 @@ pub async fn create(
 
     let id = sqlx::query(
         "INSERT INTO emule_downloads \
-         (ed2k_hash, name, total_size, ed2k_link, status, bytes_done, dest_path, added_at, updated_at) \
-         VALUES (?1, ?2, ?3, ?4, 'finding_providers', 0, '', ?5, ?5)",
+         (ed2k_hash, name, total_size, ed2k_link, status, bytes_done, dest_path, category_id, added_at, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, 'finding_providers', 0, '', ?5, ?6, ?6)",
     )
     .bind(ed2k_hash.as_slice())
     .bind(name)
     .bind(total_size as i64)
     .bind(ed2k_link)
+    .bind(category_id)
     .bind(now as i64)
     .execute(db)
     .await?
@@ -123,7 +128,7 @@ pub async fn create(
 pub async fn list(db: &Db) -> Result<Vec<EmuleDownloadRow>> {
     let rows = sqlx::query(
         "SELECT id, ed2k_hash, name, total_size, ed2k_link, status,
-                bytes_done, dest_path, error_msg, added_at, updated_at
+                bytes_done, dest_path, error_msg, added_at, updated_at, category_id
          FROM emule_downloads ORDER BY added_at ASC",
     )
     .fetch_all(db)
@@ -141,7 +146,7 @@ pub async fn list(db: &Db) -> Result<Vec<EmuleDownloadRow>> {
 pub async fn list_resumable(db: &Db) -> Result<Vec<EmuleDownloadRow>> {
     let rows = sqlx::query(
         "SELECT id, ed2k_hash, name, total_size, ed2k_link, status,
-                bytes_done, dest_path, error_msg, added_at, updated_at
+                bytes_done, dest_path, error_msg, added_at, updated_at, category_id
          FROM emule_downloads
          WHERE status IN ('finding_providers', 'downloading', 'queued', 'stalled')
          ORDER BY added_at ASC",
@@ -165,7 +170,7 @@ pub async fn get_status(db: &Db, id: i64) -> Result<Option<String>> {
 pub async fn get(db: &Db, id: i64) -> Result<Option<EmuleDownloadRow>> {
     let row = sqlx::query(
         "SELECT id, ed2k_hash, name, total_size, ed2k_link, status,
-                bytes_done, dest_path, error_msg, added_at, updated_at
+                bytes_done, dest_path, error_msg, added_at, updated_at, category_id
          FROM emule_downloads WHERE id = ?1",
     )
     .bind(id)
@@ -197,6 +202,18 @@ pub async fn get_category_id(db: &Db, id: i64) -> Result<Option<i64>> {
             .fetch_optional(db)
             .await?;
     Ok(v.flatten())
+}
+
+/// Assign (or clear, with `None`) the download's category. Returns `true` if a
+/// row was updated.
+pub async fn set_category(db: &Db, id: i64, category_id: Option<i64>) -> Result<bool> {
+    let affected = sqlx::query("UPDATE emule_downloads SET category_id = ?1 WHERE id = ?2")
+        .bind(category_id)
+        .bind(id)
+        .execute(db)
+        .await?
+        .rows_affected();
+    Ok(affected > 0)
 }
 
 /// Update the status, but only while the download is still running — i.e. not
@@ -316,6 +333,7 @@ fn row_from_sqlx(r: &sqlx::sqlite::SqliteRow) -> EmuleDownloadRow {
         error_msg: r.get("error_msg"),
         added_at: r.get("added_at"),
         updated_at: r.get("updated_at"),
+        category_id: r.get("category_id"),
     }
 }
 
@@ -362,6 +380,7 @@ mod tests {
             1_000_000,
             "ed2k://|file|movie.mkv|1000000|abababababababababababababababababab|/",
             1_000,
+            None,
         )
         .await
         .unwrap();
@@ -379,11 +398,11 @@ mod tests {
     async fn active_duplicate_returns_already_active() {
         let (db, _dir) = test_db().await;
         let link = "ed2k://|file|movie.mkv|1000000|abababababababababababababababababab|/";
-        let id1 = create(&db, &hash(), "movie.mkv", 1_000_000, link, 1_000)
+        let id1 = create(&db, &hash(), "movie.mkv", 1_000_000, link, 1_000, None)
             .await
             .unwrap()
             .id();
-        let result2 = create(&db, &hash(), "movie.mkv", 1_000_000, link, 2_000)
+        let result2 = create(&db, &hash(), "movie.mkv", 1_000_000, link, 2_000, None)
             .await
             .unwrap();
         assert_eq!(result2, CreateResult::AlreadyActive(id1));
@@ -394,13 +413,13 @@ mod tests {
     async fn cancelled_download_is_reactivated() {
         let (db, _dir) = test_db().await;
         let link = "ed2k://|file|movie.mkv|1000000|abababababababababababababababababab|/";
-        let id = create(&db, &hash(), "movie.mkv", 1_000_000, link, 1_000)
+        let id = create(&db, &hash(), "movie.mkv", 1_000_000, link, 1_000, None)
             .await
             .unwrap()
             .id();
         set_status(&db, id, "cancelled", None).await.unwrap();
 
-        let result = create(&db, &hash(), "movie.mkv", 1_000_000, link, 2_000)
+        let result = create(&db, &hash(), "movie.mkv", 1_000_000, link, 2_000, None)
             .await
             .unwrap();
         assert_eq!(result, CreateResult::Reactivated(id));
@@ -413,7 +432,7 @@ mod tests {
     async fn error_download_is_reactivated() {
         let (db, _dir) = test_db().await;
         let link = "ed2k://|file|movie.mkv|1000000|abababababababababababababababababab|/";
-        let id = create(&db, &hash(), "movie.mkv", 1_000_000, link, 1_000)
+        let id = create(&db, &hash(), "movie.mkv", 1_000_000, link, 1_000, None)
             .await
             .unwrap()
             .id();
@@ -421,7 +440,7 @@ mod tests {
             .await
             .unwrap();
 
-        let result = create(&db, &hash(), "movie.mkv", 1_000_000, link, 2_000)
+        let result = create(&db, &hash(), "movie.mkv", 1_000_000, link, 2_000, None)
             .await
             .unwrap();
         assert_eq!(result, CreateResult::Reactivated(id));
@@ -434,7 +453,7 @@ mod tests {
     async fn completed_download_returns_already_completed() {
         let (db, _dir) = test_db().await;
         let link = "ed2k://|file|movie.mkv|1000000|abababababababababababababababababab|/";
-        let id = create(&db, &hash(), "movie.mkv", 1_000_000, link, 1_000)
+        let id = create(&db, &hash(), "movie.mkv", 1_000_000, link, 1_000, None)
             .await
             .unwrap()
             .id();
@@ -442,7 +461,7 @@ mod tests {
             .await
             .unwrap();
 
-        let result = create(&db, &hash(), "movie.mkv", 1_000_000, link, 2_000)
+        let result = create(&db, &hash(), "movie.mkv", 1_000_000, link, 2_000, None)
             .await
             .unwrap();
         assert_eq!(result, CreateResult::AlreadyCompleted(id));
@@ -458,6 +477,7 @@ mod tests {
             512,
             "ed2k://|file|file.bin|512|abababababababababababababababababab|/",
             1_000,
+            None,
         )
         .await
         .unwrap()
@@ -479,6 +499,7 @@ mod tests {
             512,
             "ed2k://|file|track.flac|512|abababababababababababababababababab|/",
             1_000,
+            None,
         )
         .await
         .unwrap()
@@ -504,6 +525,7 @@ mod tests {
             1,
             "ed2k://|file|a.bin|1|01010101010101010101010101010101|/",
             1,
+            None,
         )
         .await
         .unwrap();
@@ -514,6 +536,7 @@ mod tests {
             2,
             "ed2k://|file|b.bin|2|02020202020202020202020202020202|/",
             2,
+            None,
         )
         .await
         .unwrap()
@@ -525,6 +548,7 @@ mod tests {
             3,
             "ed2k://|file|c.bin|3|03030303030303030303030303030303|/",
             3,
+            None,
         )
         .await
         .unwrap()
@@ -548,6 +572,7 @@ mod tests {
             512,
             "ed2k://|file|f.bin|512|abababababababababababababababababab|/",
             1_000,
+            None,
         )
         .await
         .unwrap()
@@ -589,6 +614,7 @@ mod tests {
             1,
             "ed2k://|file|del.bin|1|abababababababababababababababababab|/",
             1,
+            None,
         )
         .await
         .unwrap()

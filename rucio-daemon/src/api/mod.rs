@@ -94,6 +94,7 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         downloads::pause_download,
         downloads::resume_download,
         downloads::rename_download,
+        downloads::set_download_category,
         downloads::delete_download,
         downloads::clear_history,
         searches::post_search,
@@ -185,6 +186,7 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         rucio_core::api::categories::CategoryRequest,
         rucio_core::api::categories::CategoryResponse,
         rucio_core::api::categories::CategoriesResponse,
+        rucio_core::api::categories::SetCategoryRequest,
     ))
 )]
 struct ApiDoc;
@@ -340,6 +342,8 @@ pub enum DownloadRequest {
         magnet: String,
         /// Known providers (PeerId strings). At least one is required.
         providers: Vec<String>,
+        /// Category to file the download under (None = global download dir).
+        category_id: Option<i64>,
     },
     /// Start a new eMule download (emule-compat feature).
     StartEd2k {
@@ -524,6 +528,10 @@ fn v1_router() -> Router<AppState> {
         .route(
             "/downloads/{id}/rename",
             routing::post(downloads::rename_download),
+        )
+        .route(
+            "/downloads/{id}/category",
+            routing::put(downloads::set_download_category),
         )
         // unified searches
         .route("/searches", routing::post(searches::post_search))

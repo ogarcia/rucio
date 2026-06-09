@@ -17,6 +17,26 @@ pub struct DownloadRow {
     pub error_msg: Option<String>,
     pub added_at: i64,
     pub updated_at: i64,
+    /// Category this download is filed under (NULL = global download dir).
+    pub category_id: Option<i64>,
+}
+
+/// Build a [`DownloadRow`] from a query row. The SELECT must list the columns in
+/// the struct (see [`list`]).
+fn row_to_download(r: &sqlx::sqlite::SqliteRow) -> DownloadRow {
+    DownloadRow {
+        id: r.get("id"),
+        root_hash: r.get("root_hash"),
+        name: r.get("name"),
+        total_size: r.get("total_size"),
+        dest_path: r.get("dest_path"),
+        status: r.get("status"),
+        bytes_done: r.get("bytes_done"),
+        error_msg: r.get("error_msg"),
+        added_at: r.get("added_at"),
+        updated_at: r.get("updated_at"),
+        category_id: r.get("category_id"),
+    }
 }
 
 /// Outcome of [`create_pending`] when a row for the same hash already exists.
@@ -59,6 +79,7 @@ pub async fn create_pending(
     name: Option<&str>,
     now: u64,
     has_providers: bool,
+    category_id: Option<i64>,
 ) -> Result<CreatePendingResult> {
     let status = if has_providers {
         "queued"
@@ -84,10 +105,11 @@ pub async fn create_pending(
                 sqlx::query(
                     "UPDATE downloads \
                      SET status = ?1, bytes_done = 0, dest_path = '', \
-                         error_msg = NULL, updated_at = ?2 \
-                     WHERE id = ?3",
+                         error_msg = NULL, category_id = ?2, updated_at = ?3 \
+                     WHERE id = ?4",
                 )
                 .bind(status)
+                .bind(category_id)
                 .bind(now as i64)
                 .bind(id)
                 .execute(db)
@@ -103,12 +125,13 @@ pub async fn create_pending(
     }
 
     let id = sqlx::query(
-        "INSERT INTO downloads (root_hash, name, total_size, dest_path, status, added_at, updated_at)
-         VALUES (?1, ?2, 0, '', ?3, ?4, ?4)",
+        "INSERT INTO downloads (root_hash, name, total_size, dest_path, status, category_id, added_at, updated_at)
+         VALUES (?1, ?2, 0, '', ?3, ?4, ?5, ?5)",
     )
     .bind(root_hash.as_slice())
     .bind(name)
     .bind(status)
+    .bind(category_id)
     .bind(now as i64)
     .execute(db)
     .await?
@@ -162,52 +185,27 @@ pub async fn finalize_pending(
 pub async fn list(db: &Db) -> Result<Vec<DownloadRow>> {
     let rows = sqlx::query(
         "SELECT id, root_hash, name, total_size, dest_path, status,
-                bytes_done, error_msg, added_at, updated_at
+                bytes_done, error_msg, added_at, updated_at, category_id
          FROM downloads ORDER BY added_at ASC",
     )
     .fetch_all(db)
     .await?;
 
-    Ok(rows
-        .iter()
-        .map(|r| DownloadRow {
-            id: r.get("id"),
-            root_hash: r.get("root_hash"),
-            name: r.get("name"),
-            total_size: r.get("total_size"),
-            dest_path: r.get("dest_path"),
-            status: r.get("status"),
-            bytes_done: r.get("bytes_done"),
-            error_msg: r.get("error_msg"),
-            added_at: r.get("added_at"),
-            updated_at: r.get("updated_at"),
-        })
-        .collect())
+    Ok(rows.iter().map(row_to_download).collect())
 }
 
 /// Fetch a single download by ID, or `None` if it does not exist.
 pub async fn get(db: &Db, id: i64) -> Result<Option<DownloadRow>> {
     let row = sqlx::query(
         "SELECT id, root_hash, name, total_size, dest_path, status,
-                bytes_done, error_msg, added_at, updated_at
+                bytes_done, error_msg, added_at, updated_at, category_id
          FROM downloads WHERE id = ?1",
     )
     .bind(id)
     .fetch_optional(db)
     .await?;
 
-    Ok(row.map(|r| DownloadRow {
-        id: r.get("id"),
-        root_hash: r.get("root_hash"),
-        name: r.get("name"),
-        total_size: r.get("total_size"),
-        dest_path: r.get("dest_path"),
-        status: r.get("status"),
-        bytes_done: r.get("bytes_done"),
-        error_msg: r.get("error_msg"),
-        added_at: r.get("added_at"),
-        updated_at: r.get("updated_at"),
-    }))
+    Ok(row.as_ref().map(row_to_download))
 }
 
 /// Mark a chunk as done and update `bytes_done` on the parent download.
@@ -299,6 +297,18 @@ pub async fn get_category_id(db: &Db, download_id: i64) -> Result<Option<i64>> {
     Ok(v.flatten())
 }
 
+/// Assign (or clear, with `None`) the download's category. Returns `true` if a
+/// row was updated.
+pub async fn set_category(db: &Db, download_id: i64, category_id: Option<i64>) -> Result<bool> {
+    let affected = sqlx::query("UPDATE downloads SET category_id = ?1 WHERE id = ?2")
+        .bind(category_id)
+        .bind(download_id)
+        .execute(db)
+        .await?
+        .rows_affected();
+    Ok(affected > 0)
+}
+
 /// Status of the download with this root hash, if any. Lets the HTTP layer
 /// answer synchronously (the engine's authoritative `create_pending` runs
 /// asynchronously and its "already completed/active" result is otherwise lost).
@@ -372,7 +382,7 @@ pub struct ChunkRow {
 pub async fn list_resumable(db: &Db) -> Result<Vec<DownloadRow>> {
     let rows = sqlx::query(
         "SELECT id, root_hash, name, total_size, dest_path, status,
-                bytes_done, error_msg, added_at, updated_at
+                bytes_done, error_msg, added_at, updated_at, category_id
          FROM downloads
          WHERE status IN ('finding_providers', 'queued', 'downloading')
          ORDER BY added_at ASC",
@@ -380,21 +390,7 @@ pub async fn list_resumable(db: &Db) -> Result<Vec<DownloadRow>> {
     .fetch_all(db)
     .await?;
 
-    Ok(rows
-        .iter()
-        .map(|r| DownloadRow {
-            id: r.get("id"),
-            root_hash: r.get("root_hash"),
-            name: r.get("name"),
-            total_size: r.get("total_size"),
-            dest_path: r.get("dest_path"),
-            status: r.get("status"),
-            bytes_done: r.get("bytes_done"),
-            error_msg: r.get("error_msg"),
-            added_at: r.get("added_at"),
-            updated_at: r.get("updated_at"),
-        })
-        .collect())
+    Ok(rows.iter().map(row_to_download).collect())
 }
 
 /// Return all chunk rows for the given download, ordered by idx.
@@ -473,7 +469,7 @@ mod tests {
     #[tokio::test]
     async fn enqueue_and_list() {
         let (db, _dir) = test_db().await;
-        let id = create_pending(&db, &hash(1), Some("movie.mkv"), 1_000, true)
+        let id = create_pending(&db, &hash(1), Some("movie.mkv"), 1_000, true, None)
             .await
             .unwrap()
             .id();
@@ -501,7 +497,7 @@ mod tests {
     #[tokio::test]
     async fn chunk_done_updates_bytes() {
         let (db, _dir) = test_db().await;
-        let id = create_pending(&db, &hash(2), Some("file.bin"), 1_000, true)
+        let id = create_pending(&db, &hash(2), Some("file.bin"), 1_000, true, None)
             .await
             .unwrap()
             .id();
@@ -526,7 +522,7 @@ mod tests {
     #[tokio::test]
     async fn chunk_done_twice_accumulates() {
         let (db, _dir) = test_db().await;
-        let id = create_pending(&db, &hash(3), Some("file.bin"), 1_000, true)
+        let id = create_pending(&db, &hash(3), Some("file.bin"), 1_000, true, None)
             .await
             .unwrap()
             .id();
@@ -552,7 +548,7 @@ mod tests {
     #[tokio::test]
     async fn set_status_completed() {
         let (db, _dir) = test_db().await;
-        let id = create_pending(&db, &hash(4), Some("track.flac"), 1_000, true)
+        let id = create_pending(&db, &hash(4), Some("track.flac"), 1_000, true, None)
             .await
             .unwrap()
             .id();
@@ -567,7 +563,7 @@ mod tests {
     #[tokio::test]
     async fn set_status_error_stores_message() {
         let (db, _dir) = test_db().await;
-        let id = create_pending(&db, &hash(5), Some("doc.pdf"), 1_000, true)
+        let id = create_pending(&db, &hash(5), Some("doc.pdf"), 1_000, true, None)
             .await
             .unwrap()
             .id();
@@ -584,7 +580,7 @@ mod tests {
     #[tokio::test]
     async fn download_chunks_cascade_on_delete() {
         let (db, _dir) = test_db().await;
-        let id = create_pending(&db, &hash(6), Some("big.iso"), 1_000, true)
+        let id = create_pending(&db, &hash(6), Some("big.iso"), 1_000, true, None)
             .await
             .unwrap()
             .id();
@@ -608,13 +604,13 @@ mod tests {
     #[tokio::test]
     async fn reactivate_cancelled_download() {
         let (db, _dir) = test_db().await;
-        let id = create_pending(&db, &hash(7), Some("test.bin"), 1_000, false)
+        let id = create_pending(&db, &hash(7), Some("test.bin"), 1_000, false, None)
             .await
             .unwrap()
             .id();
         set_status(&db, id, "cancelled", None).await.unwrap();
 
-        let result = create_pending(&db, &hash(7), Some("test.bin"), 1_000, false)
+        let result = create_pending(&db, &hash(7), Some("test.bin"), 1_000, false, None)
             .await
             .unwrap();
         assert_eq!(result, CreatePendingResult::Reactivated(id));
@@ -625,13 +621,13 @@ mod tests {
     #[tokio::test]
     async fn already_completed_returns_variant() {
         let (db, _dir) = test_db().await;
-        let id = create_pending(&db, &hash(8), Some("done.bin"), 1_000, false)
+        let id = create_pending(&db, &hash(8), Some("done.bin"), 1_000, false, None)
             .await
             .unwrap()
             .id();
         set_status(&db, id, "completed", None).await.unwrap();
 
-        let result = create_pending(&db, &hash(8), Some("done.bin"), 1_000, false)
+        let result = create_pending(&db, &hash(8), Some("done.bin"), 1_000, false, None)
             .await
             .unwrap();
         assert_eq!(result, CreatePendingResult::AlreadyCompleted(id));
@@ -640,12 +636,12 @@ mod tests {
     #[tokio::test]
     async fn already_active_returns_variant() {
         let (db, _dir) = test_db().await;
-        let id = create_pending(&db, &hash(9), Some("active.bin"), 1_000, true)
+        let id = create_pending(&db, &hash(9), Some("active.bin"), 1_000, true, None)
             .await
             .unwrap()
             .id();
 
-        let result = create_pending(&db, &hash(9), Some("active.bin"), 1_000, true)
+        let result = create_pending(&db, &hash(9), Some("active.bin"), 1_000, true, None)
             .await
             .unwrap();
         assert_eq!(result, CreatePendingResult::AlreadyActive(id));

@@ -237,6 +237,9 @@ impl ApiClient {
             .json(&StartDownloadRequest {
                 magnet: magnet.to_string(),
                 providers,
+                // The CLI does not expose categories yet; a `--category` flag
+                // can set this later.
+                category_id: None,
             })
             .send()
             .await
@@ -259,6 +262,7 @@ impl ApiClient {
             .post(&url)
             .json(&StartEd2kDownloadRequest {
                 link: link.to_string(),
+                category_id: None,
             })
             .send()
             .await

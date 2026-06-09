@@ -8,6 +8,10 @@ pub struct StartDownloadRequest {
     /// result enables an immediate fast start while DHT runs in parallel.
     #[serde(default)]
     pub providers: Vec<String>,
+    /// Optional category to file this download under; its pinned directory
+    /// becomes the destination. Omit or null for the global download dir.
+    #[serde(default)]
+    pub category_id: Option<i64>,
 }
 
 /// State of a download.
@@ -41,6 +45,9 @@ pub struct DownloadResponse {
     pub bytes_done: u64,
     pub state: DownloadState,
     pub error: Option<String>,
+    /// Category this download is filed under, if any (null = global dir).
+    #[serde(default)]
+    pub category_id: Option<i64>,
 }
 
 /// GET /api/v1/downloads
@@ -103,6 +110,9 @@ pub struct DownloadDetailResponse {
     /// Live (eMule): best (lowest) queue rank across those sources.
     #[serde(default)]
     pub best_queue_rank: Option<u32>,
+    /// Category this download is filed under, if any (null = global dir).
+    #[serde(default)]
+    pub category_id: Option<i64>,
 }
 
 /// Live per-peer download detail: one source we are pulling chunks from.
@@ -152,6 +162,10 @@ pub struct DownloadPiecesResponse {
 pub struct StartEd2kDownloadRequest {
     /// Full `ed2k://|file|…|…|…|/` link.
     pub link: String,
+    /// Optional category to file this download under; its pinned directory
+    /// becomes the destination. Omit or null for the global download dir.
+    #[serde(default)]
+    pub category_id: Option<i64>,
 }
 
 /// Request body for POST /api/v1/downloads/{id}/rename.

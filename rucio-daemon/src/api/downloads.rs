@@ -5,6 +5,7 @@
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use rucio_core::api::categories::SetCategoryRequest;
 use rucio_core::api::downloads::{
     DownloadDetailResponse, DownloadResponse, DownloadState, DownloadsResponse,
     RenameDownloadRequest, StartDownloadRequest,
@@ -14,7 +15,21 @@ use rucio_core::protocol::chunk::Hash;
 use rucio_core::protocol::magnet::MagnetLink;
 
 use crate::api::{AppState, DownloadRequest};
+use crate::db::Db;
 use crate::transfer::parse_magnet;
+
+/// True if `category_id` is unassigned (None) or refers to an existing category.
+/// Used to reject filing a download under a category that doesn't exist.
+async fn category_exists(db: &Db, category_id: Option<i64>) -> bool {
+    match category_id {
+        None => true,
+        Some(cid) => crate::db::categories::get(db, cid)
+            .await
+            .ok()
+            .flatten()
+            .is_some(),
+    }
+}
 
 /// List downloads
 ///
@@ -76,6 +91,7 @@ pub async fn list_downloads(State(state): State<AppState>) -> Json<DownloadsResp
                     bytes_done,
                     state: db_status_to_state(&r.status),
                     error: r.error_msg,
+                    category_id: r.category_id,
                 },
             ));
         }
@@ -99,6 +115,7 @@ pub async fn list_downloads(State(state): State<AppState>) -> Json<DownloadsResp
                     bytes_done,
                     state: db_status_to_state(&r.status),
                     error: r.error_msg,
+                    category_id: r.category_id,
                 },
             ));
         }
@@ -198,6 +215,7 @@ pub async fn get_download(
             // libp2p has no upload-queue concept; these stay absent.
             queued_sources: live.as_ref().map(|l| l.queued_sources).filter(|&n| n > 0),
             best_queue_rank: live.as_ref().and_then(|l| l.best_queue_rank),
+            category_id: row.category_id,
         }))
     } else {
         // eMule download
@@ -259,6 +277,7 @@ pub async fn get_download(
                 peers: Vec::new(),
                 queued_sources: live.as_ref().map(|l| l.queued_sources).filter(|&n| n > 0),
                 best_queue_rank: live.as_ref().and_then(|l| l.best_queue_rank),
+                category_id: row.category_id,
             }))
         }
         #[cfg(not(feature = "emule-compat"))]
@@ -466,6 +485,11 @@ pub async fn start_download(
         _ => {}
     }
 
+    // A given category must exist before we file the download under it.
+    if !category_exists(&state.db, req.category_id).await {
+        return StatusCode::BAD_REQUEST;
+    }
+
     // Parse provider strings; skip any that are not valid PeerIds with a warning.
     let providers: Vec<String> = req
         .providers
@@ -483,6 +507,7 @@ pub async fn start_download(
     let dl_req = DownloadRequest::Start {
         magnet: req.magnet.clone(),
         providers,
+        category_id: req.category_id,
     };
 
     match state.download_tx.send(dl_req).await {
@@ -1029,6 +1054,11 @@ pub async fn start_ed2k_download(
             tracing::debug!("nodes_dat_path not configured, will use platform default");
         }
 
+        // A given category must exist before we file the download under it.
+        if !category_exists(&state.db, req.category_id).await {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+
         // Check for an existing row *before* sending to the engine so we can
         // return the correct HTTP status synchronously.
         let result = crate::db::emule_downloads::create(
@@ -1038,6 +1068,7 @@ pub async fn start_ed2k_download(
             link.size,
             &req.link,
             now_secs(),
+            req.category_id,
         )
         .await
         .map_err(|e| {
@@ -1141,6 +1172,53 @@ async fn remove_emule_partials(config: &crate::config::Config, ed2k_hash: &[u8])
     let (part, met) = crate::emule::part_paths(config, &hash);
     let _ = tokio::fs::remove_file(&part).await;
     let _ = tokio::fs::remove_file(&met).await;
+}
+
+/// Set (or clear) a download's category
+///
+/// Changes where the download lands on completion: the category's pinned
+/// directory, or the global download dir when cleared (`category_id: null`). A
+/// completed download is only re-labelled — its file is not moved. Use a
+/// **negative ID** for eMule downloads.
+#[utoipa::path(
+    put,
+    path = "/api/v1/downloads/{id}/category",
+    params(("id" = i64, Path, description = "Download ID (negative = eMule).")),
+    request_body = SetCategoryRequest,
+    responses(
+        (status = 204, description = "Category assignment updated."),
+        (status = 400, description = "No category with that id."),
+        (status = 404, description = "No download with that id."),
+    )
+)]
+pub async fn set_download_category(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<SetCategoryRequest>,
+) -> StatusCode {
+    if !category_exists(&state.db, req.category_id).await {
+        return StatusCode::BAD_REQUEST;
+    }
+    let updated = if id < 0 {
+        #[cfg(feature = "emule-compat")]
+        {
+            crate::db::emule_downloads::set_category(&state.db, -id, req.category_id).await
+        }
+        #[cfg(not(feature = "emule-compat"))]
+        {
+            anyhow::Ok(false)
+        }
+    } else {
+        crate::db::downloads::set_category(&state.db, id, req.category_id).await
+    };
+    match updated {
+        Ok(true) => StatusCode::NO_CONTENT,
+        Ok(false) => StatusCode::NOT_FOUND,
+        Err(e) => {
+            tracing::error!("set_download_category: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    }
 }
 
 #[cfg(test)]
