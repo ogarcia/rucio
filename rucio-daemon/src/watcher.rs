@@ -216,9 +216,25 @@ fn watch_dir(
     path: &Path,
 ) {
     let mut set = watched.lock().unwrap();
-    if set.contains(path) {
-        debug!(path = %path.display(), "Already watching, skipping");
+    // Already covered: an equal or ancestor watch is recursive, so it already
+    // sees everything under `path`. Watching `path` too would double-deliver
+    // every event below it (and double-index on rescan). Skip.
+    if set.iter().any(|w| path == w || path.starts_with(w)) {
+        debug!(path = %path.display(), "Already covered by an existing watch, skipping");
         return;
+    }
+    // `path` is an ancestor of one or more existing watches: a recursive watch
+    // here covers them, so they're now redundant — drop them first.
+    let nested: Vec<PathBuf> = set
+        .iter()
+        .filter(|w| w.as_path() != path && w.starts_with(path))
+        .cloned()
+        .collect();
+    for w in &nested {
+        if watcher.lock().unwrap().unwatch(w).is_ok() {
+            set.remove(w);
+            info!(path = %w.display(), parent = %path.display(), "Dropping nested watch covered by parent");
+        }
     }
     match watcher
         .lock()
@@ -487,13 +503,22 @@ pub async fn reconcile_shares(
     ed2k_tx: Option<&mpsc::Sender<PathBuf>>,
     indexing_seen: &AtomicBool,
 ) {
-    let dirs = match db::shared_dirs::list(db).await {
+    let rows = match db::shared_dirs::list(db).await {
         Ok(d) => d,
         Err(e) => {
             warn!("Share rescan: cannot list shared dirs: {e}");
             return;
         }
     };
+    // Scan only top-level dirs: a nested share (e.g. a category dir under the
+    // global download_dir) is already covered by its ancestor's recursive walk,
+    // so scanning it again would double-count and re-stat every file under it.
+    let dirs = top_level_dirs(
+        &rows
+            .iter()
+            .map(|d| PathBuf::from(&d.path))
+            .collect::<Vec<_>>(),
+    );
     // Index snapshot: path -> (size, mtime).
     let db_by_path: HashMap<String, (i64, i64)> = db::shares::list(db)
         .await
@@ -509,8 +534,7 @@ pub async fn reconcile_shares(
     // Without this, a restart's reconcile re-indexes silently (pending stays 0).
     let mut to_upsert: Vec<PathBuf> = Vec::new();
 
-    for d in &dirs {
-        let dir = PathBuf::from(&d.path);
+    for dir in &dirs {
         // Walk + stat off the async worker threads.
         let mut disk: HashMap<String, (i64, i64)> = {
             let dir = dir.clone();
@@ -555,7 +579,7 @@ pub async fn reconcile_shares(
 
         // Indexed files under this dir no longer on disk → de-index.
         for path in db_by_path.keys() {
-            if Path::new(path).starts_with(&dir) && !disk.contains_key(path) {
+            if Path::new(path).starts_with(dir) && !disk.contains_key(path) {
                 on_file_remove(Path::new(path), db, node_tx).await;
                 removed += 1;
             }
@@ -583,6 +607,22 @@ pub async fn reconcile_shares(
     }
 }
 
+/// Reduce a set of directories to the *top-level* ones: drop any directory that
+/// is nested inside another in the set. A recursive watch (or walk) of an
+/// ancestor already covers all its descendants, so watching/scanning a nested
+/// share too would double-index every file under it.
+///
+/// This is the general guard for a user sharing both a directory and a
+/// subdirectory of it — by hand or via a download category whose dir sits under
+/// the global download_dir or another category's dir. `starts_with` is
+/// component-wise, so `/a/bc` is **not** treated as nested in `/a/b`.
+fn top_level_dirs(dirs: &[PathBuf]) -> Vec<PathBuf> {
+    dirs.iter()
+        .filter(|d| !dirs.iter().any(|other| *d != other && d.starts_with(other)))
+        .cloned()
+        .collect()
+}
+
 /// Returns `true` for files that must never be indexed or shared:
 ///
 /// * **Partial downloads** (`*.part`) — incomplete content; sharing one would
@@ -608,6 +648,41 @@ fn is_hidden(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn top_level_dirs_drops_nested_shares() {
+        let dirs = vec![
+            PathBuf::from("/data"),
+            PathBuf::from("/data/movies"),    // nested in /data
+            PathBuf::from("/data/movies/hd"), // nested deeper
+            PathBuf::from("/music"),          // independent top
+        ];
+        let mut tops = top_level_dirs(&dirs);
+        tops.sort();
+        assert_eq!(tops, vec![PathBuf::from("/data"), PathBuf::from("/music")]);
+    }
+
+    #[test]
+    fn top_level_dirs_keeps_siblings_with_shared_prefix() {
+        // /data/bc is NOT nested in /data/b — comparison is component-wise.
+        let dirs = vec![PathBuf::from("/data/b"), PathBuf::from("/data/bc")];
+        let mut tops = top_level_dirs(&dirs);
+        tops.sort();
+        assert_eq!(
+            tops,
+            vec![PathBuf::from("/data/b"), PathBuf::from("/data/bc")]
+        );
+    }
+
+    #[test]
+    fn top_level_dirs_independent_dirs_all_kept() {
+        let dirs = vec![
+            PathBuf::from("/a"),
+            PathBuf::from("/b"),
+            PathBuf::from("/c"),
+        ];
+        assert_eq!(top_level_dirs(&dirs).len(), 3);
+    }
 
     #[test]
     fn is_excluded_covers_part_files_and_temp_dirs() {
