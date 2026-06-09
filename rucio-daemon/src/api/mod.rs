@@ -3,6 +3,7 @@
 //! All handlers live in submodules; this module owns the router, the shared
 //! [`AppState`], and the [`serve`] entry point.
 
+pub mod categories;
 pub mod config;
 pub mod downloads;
 pub mod emule;
@@ -111,6 +112,10 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         config::get_webhooks,
         config::put_webhooks,
         config::test_webhook,
+        categories::list_categories,
+        categories::create_category,
+        categories::update_category,
+        categories::delete_category,
         metrics::get_metrics,
         uploads::list_uploads,
         health::get_health,
@@ -177,6 +182,9 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         rucio_core::api::notifications::WebhookTestResult,
         crate::config::WebhookConfig,
         crate::config::WebhookFormat,
+        rucio_core::api::categories::CategoryRequest,
+        rucio_core::api::categories::CategoryResponse,
+        rucio_core::api::categories::CategoriesResponse,
     ))
 )]
 struct ApiDoc;
@@ -551,6 +559,15 @@ fn v1_router() -> Router<AppState> {
         .route(
             "/config/notifications/webhooks/test",
             routing::post(config::test_webhook),
+        )
+        // download categories
+        .route(
+            "/categories",
+            routing::get(categories::list_categories).post(categories::create_category),
+        )
+        .route(
+            "/categories/{id}",
+            routing::put(categories::update_category).delete(categories::delete_category),
         )
         // notification centre (runtime data: the bell + slideover)
         .route(
