@@ -53,6 +53,17 @@ fn parse_kbps(s: &str) -> u64 {
     s.trim().parse().unwrap_or(0)
 }
 
+/// CSS classes for a per-kind notification pill: reflects its on/off state and
+/// greys it out (non-interactive) while the master switch is off.
+fn notif_pill_class(on: bool, master_enabled: bool) -> &'static str {
+    match (on, master_enabled) {
+        (true, true) => "toggle-pill toggle-on toggle-clickable",
+        (false, true) => "toggle-pill toggle-clickable",
+        (true, false) => "toggle-pill toggle-on toggle-disabled",
+        (false, false) => "toggle-pill toggle-disabled",
+    }
+}
+
 /// Split a textarea value into a list, dropping blank lines.
 fn lines_to_vec(s: &str) -> Vec<String> {
     s.lines()
@@ -476,11 +487,7 @@ pub fn ConfigModal(
                                     <div class="config-field config-field-keep">
                                         <label class="config-label">"Download notifications"</label>
                                         <span
-                                            class=move || if n_downloads.get() {
-                                                "toggle-pill toggle-on toggle-clickable"
-                                            } else {
-                                                "toggle-pill toggle-clickable"
-                                            }
+                                            class=move || notif_pill_class(n_downloads.get(), n_enabled.get())
                                             on:click=move |_| {
                                                 n_downloads.update(|v| *v = !*v);
                                                 save_notif();
@@ -492,11 +499,7 @@ pub fn ConfigModal(
                                     <div class="config-field config-field-keep">
                                         <label class="config-label">"System notifications"</label>
                                         <span
-                                            class=move || if n_system.get() {
-                                                "toggle-pill toggle-on toggle-clickable"
-                                            } else {
-                                                "toggle-pill toggle-clickable"
-                                            }
+                                            class=move || notif_pill_class(n_system.get(), n_enabled.get())
                                             on:click=move |_| {
                                                 n_system.update(|v| *v = !*v);
                                                 save_notif();

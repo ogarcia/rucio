@@ -310,6 +310,7 @@
         }
         .toggle-pill.toggle-on { background: var(--sa); color: var(--sa-fg); }
         .toggle-clickable { cursor: pointer; user-select: none; }
+        .toggle-disabled { opacity: .4; pointer-events: none; }
 
         /* Menu section: a titled group of quick settings in the dropdown. */
         .menu-section-title {
@@ -385,6 +386,26 @@
         .overlay-body { padding: 1rem 1.25rem; }
 
         /* ── Notification centre ─────────────────────────────────────────── */
+        /* A right-edge slideover (not a centred modal), like an OS notification
+           centre — aligned with the header bell. Reuses .overlay-header /
+           .overlay-body for its inner chrome. */
+        .notif-drawer-backdrop {
+            position: fixed; inset: 0; z-index: 200;
+            background: rgba(0,0,0,.4); display: flex; justify-content: flex-end;
+        }
+        .notif-drawer {
+            width: 380px; max-width: 90vw; height: 100%;
+            background: var(--surface); border-left: 1px solid var(--border);
+            display: flex; flex-direction: column;
+            box-shadow: -2px 0 16px rgba(0,0,0,.25);
+            animation: notif-drawer-in 0.15s ease-out;
+        }
+        @keyframes notif-drawer-in {
+            from { transform: translateX(100%); }
+            to   { transform: translateX(0); }
+        }
+        /* The list scrolls; the header stays put. */
+        .notif-drawer .overlay-body { flex: 1; overflow-y: auto; }
         .notif-clear {
             margin-left: auto; margin-right: 0.625rem;
             background: transparent; border: none; color: var(--accent);

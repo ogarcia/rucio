@@ -1,5 +1,6 @@
-//! The notification centre: a right-side drawer listing recent notifications,
-//! opened from the header bell. Reuses the shared overlay shell.
+//! The notification centre: a right-edge slideover listing recent
+//! notifications, opened from the header bell. Reuses the shared overlay header
+//! and body chrome inside a slide-in drawer.
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -56,8 +57,8 @@ pub fn NotificationsPanel(
     };
 
     view! {
-        <div class="overlay-backdrop" on:click=move |_| close()>
-            <div class="overlay" on:click=move |e| e.stop_propagation()>
+        <div class="notif-drawer-backdrop" on:click=move |_| close()>
+            <div class="notif-drawer" on:click=move |e| e.stop_propagation()>
                 <div class="overlay-header">
                     <span class="overlay-title">"Notifications"</span>
                     <Show when=move || !notifications.with(|l| l.is_empty())>
