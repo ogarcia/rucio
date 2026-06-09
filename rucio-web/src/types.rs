@@ -135,6 +135,8 @@ pub struct DownloadResponse {
     pub bytes_done: u64,
     pub state: DownloadState,
     pub error: Option<String>,
+    #[serde(default)]
+    pub category_id: Option<i64>,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -484,6 +486,45 @@ pub struct SearchSummary {
 #[derive(Deserialize, Clone, Debug)]
 pub struct SearchListResponse {
     pub searches: Vec<SearchSummary>,
+}
+
+// ── Categories ─────────────────────────────────────────────────────────────
+
+/// A download category (GET /api/v1/categories). `Serialize` too so the same
+/// struct backs create/update request bodies.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+pub struct Category {
+    #[serde(default)]
+    pub id: i64,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub match_keywords: Option<String>,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct CategoriesResponse {
+    pub categories: Vec<Category>,
+}
+
+/// Pick a readable text colour (`#000`/`#fff`) for a `#rrggbb` badge background
+/// by perceived luminance. Falls back to white for anything else.
+pub fn contrast_text(hex: &str) -> &'static str {
+    let h = hex.trim_start_matches('#');
+    if h.len() == 6
+        && let (Ok(r), Ok(g), Ok(b)) = (
+            u8::from_str_radix(&h[0..2], 16),
+            u8::from_str_radix(&h[2..4], 16),
+            u8::from_str_radix(&h[4..6], 16),
+        )
+    {
+        let lum = 0.299 * r as f64 + 0.587 * g as f64 + 0.114 * b as f64;
+        return if lum > 150.0 { "#000" } else { "#fff" };
+    }
+    "#fff"
 }
 
 // ── Notifications ────────────────────────────────────────────────────────────

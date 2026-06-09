@@ -782,6 +782,15 @@
             min-width: 0;
         }
         .dl-size { font-size: 0.75rem; color: var(--text-3); white-space: nowrap; }
+        /* Category badge: sits next to the name; margin-right:auto pushes the
+           size to the far right. Background/colour come from an inline style
+           when the category has a colour; otherwise this neutral default. */
+        .dl-cat-badge {
+            flex: none; margin-right: auto;
+            padding: 0.05rem 0.45rem; border-radius: 9999px;
+            font-size: 0.65rem; font-weight: 600; white-space: nowrap;
+            background: var(--sn); color: var(--text-2);
+        }
 
         .dl-bar-track {
             height: 4px; background: var(--bar-track); border-radius: 2px;

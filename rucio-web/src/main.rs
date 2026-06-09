@@ -81,9 +81,10 @@ use overlays::{AboutPanel, AddressesPanel, NodeStatusPanel, PeersPanel, StatsPan
 use searches::SearchesTab;
 use shares::SharesTab;
 use types::{
-    ActiveUpload, DownloadResponse, Notification, NotificationList, NotificationSettings,
-    SearchResult, SearchState, SearchSummary, SpeedLimits, StatusResponse, TempLimitRequest,
-    TempLimitStatus, UploadsResponse, WsEvent, format_rate_kbps, is_streamed_state,
+    ActiveUpload, CategoriesResponse, Category, DownloadResponse, Notification, NotificationList,
+    NotificationSettings, SearchResult, SearchState, SearchSummary, SpeedLimits, StatusResponse,
+    TempLimitRequest, TempLimitStatus, UploadsResponse, WsEvent, format_rate_kbps,
+    is_streamed_state,
 };
 use uploads::UploadsTab;
 
@@ -512,6 +513,9 @@ fn App() -> impl IntoView {
     let ws_connected: RwSignal<bool> = RwSignal::new(false);
     let status: RwSignal<Option<StatusResponse>> = RwSignal::new(None);
     let downloads: RwSignal<Vec<DownloadResponse>> = RwSignal::new(vec![]);
+    // Download categories, shared so the listing can badge each download and the
+    // add/detail dialogs can offer them. Reloaded after edits in Settings.
+    let categories: RwSignal<Vec<Category>> = RwSignal::new(vec![]);
     // Peers currently downloading from us (driven by the WS UploadProgress).
     let uploads: RwSignal<Vec<ActiveUpload>> = RwSignal::new(vec![]);
     // Number of files currently being indexed (driven by the WS IndexingCount).
@@ -607,6 +611,14 @@ fn App() -> impl IntoView {
             && let Ok(s) = r.json::<NotificationSettings>().await
         {
             notif_enabled.set(s.enabled);
+        }
+        // Categories, for badges in the download list and the add/detail dialogs.
+        if let Ok(r) = gloo_net::http::Request::get("/api/v1/categories")
+            .send()
+            .await
+            && let Ok(s) = r.json::<CategoriesResponse>().await
+        {
+            categories.set(s.categories);
         }
     });
 
@@ -909,6 +921,7 @@ fn App() -> impl IntoView {
                     Tab::Downloads => view! {
                         <DownloadsTab
                             downloads=downloads
+                            categories=categories
                             dl_speed=dl_speed
                             ul_speed=ul_speed
                             temp_limit=temp_limit

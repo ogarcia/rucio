@@ -11,8 +11,9 @@ use gloo_timers::future::sleep;
 use crate::icons::{self, Icon};
 use crate::statusbar::StatusBar;
 use crate::types::{
-    DownloadDetailResponse, DownloadPiecesResponse, DownloadResponse, DownloadState, PieceState,
-    RenameDownloadRequest, format_eta, format_size, format_speed, is_streamed_state,
+    Category, DownloadDetailResponse, DownloadPiecesResponse, DownloadResponse, DownloadState,
+    PieceState, RenameDownloadRequest, contrast_text, format_eta, format_size, format_speed,
+    is_streamed_state,
 };
 
 // ── Filter ────────────────────────────────────────────────────────────────────
@@ -272,6 +273,7 @@ async fn post_accepts(url: &str, body: &serde_json::Value) -> bool {
 #[component]
 pub fn DownloadsTab(
     downloads: RwSignal<Vec<DownloadResponse>>,
+    categories: RwSignal<Vec<Category>>,
     dl_speed: RwSignal<u64>,
     ul_speed: RwSignal<u64>,
     temp_limit: RwSignal<bool>,
@@ -499,6 +501,7 @@ pub fn DownloadsTab(
                                 <DownloadRow
                                     id=id
                                     downloads=downloads
+                                    categories=categories
                                     selected_ids=selected_ids
                                     on_select=on_row_click
                                 />
@@ -592,6 +595,7 @@ fn pct_for(dl: &DownloadResponse) -> Option<f64> {
 fn DownloadRow(
     id: i64,
     downloads: RwSignal<Vec<DownloadResponse>>,
+    categories: RwSignal<Vec<Category>>,
     selected_ids: RwSignal<HashSet<i64>>,
     on_select: Callback<(i64, bool, bool)>,
 ) -> impl IntoView {
@@ -672,6 +676,17 @@ fn DownloadRow(
     let error_text =
         move || downloads.with(|v| v.iter().find(|d| d.id == id).and_then(|d| d.error.clone()));
 
+    // The download's category as (name, optional colour), resolved live so it
+    // reflects edits and reassignments. None when unassigned or since deleted.
+    let category = move || -> Option<(String, Option<String>)> {
+        let cid = downloads.with(|v| v.iter().find(|d| d.id == id).and_then(|d| d.category_id))?;
+        categories.with(|cs| {
+            cs.iter()
+                .find(|c| c.id == cid)
+                .map(|c| (c.name.clone(), c.color.clone()))
+        })
+    };
+
     view! {
         <li
             class=move || if selected_ids.with(|s| s.contains(&id)) {
@@ -685,6 +700,15 @@ fn DownloadRow(
         >
             <div class="dl-top">
                 <span class="dl-name">{name}</span>
+                {move || category().map(|(cname, color)| {
+                    // Coloured badge: background = category colour, text picked
+                    // for contrast. No colour → a neutral default badge.
+                    let style = match &color {
+                        Some(c) => format!("background:{c};color:{}", contrast_text(c)),
+                        None => String::new(),
+                    };
+                    view! { <span class="dl-cat-badge" style=style>{cname}</span> }
+                })}
                 <span class="dl-size">{size_label}</span>
             </div>
 
