@@ -446,6 +446,15 @@
             display: flex; flex-direction: column; gap: 0.5rem;
         }
         .webhook-row-head { display: flex; align-items: center; gap: 0.5rem; }
+        /* Wider than config-input-sm so "Telegram" fits when selected. */
+        .webhook-format {
+            width: 150px; padding: 0.3rem 0.5rem; background: var(--raised);
+            border: 1px solid var(--border); border-radius: 0.25rem;
+            color: var(--text); font-size: 0.8125rem; font-family: inherit; outline: none;
+        }
+        .webhook-format:focus { border-color: var(--accent); }
+        /* The text fields (URL, secret, content-type) span the row width. */
+        .webhook-row .config-input { width: 100%; box-sizing: border-box; }
         .webhook-del {
             margin-left: auto; background: transparent; border: none;
             color: var(--text-3); cursor: pointer; display: flex; padding: 0.125rem;

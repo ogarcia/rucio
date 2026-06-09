@@ -72,6 +72,18 @@ impl Row {
 
 const FORMATS: [&str; 6] = ["generic", "discord", "slack", "telegram", "ntfy", "custom"];
 
+/// Display label for a format value (the value stays lowercase on the wire).
+fn format_label(f: &str) -> &'static str {
+    match f {
+        "discord" => "Discord",
+        "slack" => "Slack",
+        "telegram" => "Telegram",
+        "ntfy" => "ntfy",
+        "custom" => "Custom",
+        _ => "Generic",
+    }
+}
+
 #[component]
 pub fn WebhooksEditor() -> impl IntoView {
     let rows: RwSignal<Vec<Row>> = RwSignal::new(vec![]);
@@ -139,12 +151,12 @@ pub fn WebhooksEditor() -> impl IntoView {
                 <div class="webhook-row">
                     <div class="webhook-row-head">
                         <select
-                            class="config-input config-input-sm"
+                            class="webhook-format"
                             prop:value=move || row.format.get()
                             on:change=move |e| { row.format.set(event_target_value(&e)); saved.set(false); }
                         >
                             {FORMATS.iter().map(|f| view! {
-                                <option value=*f>{*f}</option>
+                                <option value=*f>{format_label(f)}</option>
                             }).collect_view()}
                         </select>
                         <button
@@ -202,7 +214,7 @@ pub fn WebhooksEditor() -> impl IntoView {
                             on:input=move |e| { row.template.set(event_target_value(&e)); saved.set(false); }
                         />
                         <input
-                            class="config-input config-input-sm"
+                            class="config-input"
                             type="text"
                             placeholder="content-type (default application/json)"
                             prop:value=move || row.content_type.get()
