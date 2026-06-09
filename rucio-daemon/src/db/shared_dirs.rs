@@ -42,33 +42,54 @@ pub async fn insert(db: &Db, path: &str, protected: bool, added_at: u64) -> Resu
     Ok(id)
 }
 
-/// Make `path` the one and only protected shared directory.
+/// Make exactly `paths` the protected shared directories — no more, no less.
 ///
-/// Registers `path` (creating it if needed) with `protected = 1`, and clears
-/// the protected flag from every other directory. Called at startup with the
-/// configured `download_dir`: this way, changing `download_dir` in the config
-/// and restarting leaves the *previous* download dir as an ordinary, removable
-/// share instead of a protected orphan the user can no longer delete — and the
-/// current one is always protected even if it was already shared unprotected.
-pub async fn set_sole_protected(db: &Db, path: &str, added_at: u64) -> Result<()> {
-    let path = path.trim_end_matches('/');
+/// Registers each path (creating it if needed) with `protected = 1`, and clears
+/// the protected flag from every directory not in the set. Idempotent and
+/// order-independent; duplicate paths are harmless.
+///
+/// Called with the set of destination directories that must not be removable:
+/// today just the configured `download_dir`, but designed for several (the
+/// global download dir plus a directory per download category). Passing the
+/// current set on every change reconciles the flag in one shot — a directory
+/// that stops being a destination (a former `download_dir`, or a category whose
+/// directory changed or was deleted) is demoted to an ordinary, removable share
+/// instead of a protected orphan the user can no longer delete, while a path
+/// that was already shared unprotected is promoted.
+pub async fn set_protected_dirs(db: &Db, paths: &[&str], added_at: u64) -> Result<()> {
+    // Normalise (strip trailing slash) and de-duplicate, preserving nothing but
+    // membership — the set is what matters.
+    let normalised: Vec<&str> = {
+        let mut v: Vec<&str> = paths.iter().map(|p| p.trim_end_matches('/')).collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    };
+
     let mut tx = db.begin().await?;
 
-    sqlx::query("INSERT OR IGNORE INTO shared_dirs (path, protected, added_at) VALUES (?1, 1, ?2)")
+    // Demote everything first, then re-protect exactly the current set. Done in
+    // one transaction so no intermediate "nothing protected" state is ever
+    // observable. This keeps all SQL static (no dynamic `NOT IN (…)` list) and
+    // handles the empty set naturally: demote all, protect none.
+    sqlx::query("UPDATE shared_dirs SET protected = 0 WHERE protected = 1")
+        .execute(&mut *tx)
+        .await?;
+
+    for path in &normalised {
+        sqlx::query(
+            "INSERT OR IGNORE INTO shared_dirs (path, protected, added_at) VALUES (?1, 1, ?2)",
+        )
         .bind(path)
         .bind(added_at as i64)
         .execute(&mut *tx)
         .await?;
-    // Force the flag on for the current dir (it may have pre-existed unprotected)
-    // and off for any other dir that was protected (a previous download_dir).
-    sqlx::query("UPDATE shared_dirs SET protected = 1 WHERE path = ?1")
-        .bind(path)
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("UPDATE shared_dirs SET protected = 0 WHERE path <> ?1 AND protected = 1")
-        .bind(path)
-        .execute(&mut *tx)
-        .await?;
+        // Force the flag on (the dir may have pre-existed unprotected).
+        sqlx::query("UPDATE shared_dirs SET protected = 1 WHERE path = ?1")
+            .bind(path)
+            .execute(&mut *tx)
+            .await?;
+    }
 
     tx.commit().await?;
     Ok(())
@@ -193,7 +214,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn set_sole_protected_moves_protection() {
+    async fn set_protected_dirs_moves_protection() {
         let (db, _dir) = test_db().await;
         // Old download_dir (protected) plus a user share that already exists
         // unprotected and happens to be the new download_dir.
@@ -204,7 +225,7 @@ mod tests {
             .await
             .unwrap();
 
-        set_sole_protected(&db, "/new/downloads", 1_000_002)
+        set_protected_dirs(&db, &["/new/downloads"], 1_000_002)
             .await
             .unwrap();
 
@@ -216,13 +237,61 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn set_sole_protected_creates_when_absent() {
+    async fn set_protected_dirs_creates_when_absent() {
         let (db, _dir) = test_db().await;
-        set_sole_protected(&db, "/fresh/downloads", 1_000_000)
+        set_protected_dirs(&db, &["/fresh/downloads"], 1_000_000)
             .await
             .unwrap();
         assert!(is_protected(&db, "/fresh/downloads").await.unwrap());
         assert_eq!(list(&db).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn set_protected_dirs_protects_several_and_demotes_the_rest() {
+        let (db, _dir) = test_db().await;
+        // A previous global download_dir and a previous category dir, both
+        // protected; plus an ordinary user share.
+        insert(&db, "/global", true, 1_000_000).await.unwrap();
+        insert(&db, "/cat/old", true, 1_000_001).await.unwrap();
+        insert(&db, "/user/share", false, 1_000_002).await.unwrap();
+
+        // New set: keep the global, swap the category dir for a fresh one.
+        set_protected_dirs(&db, &["/global", "/cat/new"], 1_000_003)
+            .await
+            .unwrap();
+
+        assert!(is_protected(&db, "/global").await.unwrap());
+        assert!(is_protected(&db, "/cat/new").await.unwrap());
+        // The old category dir is demoted (removable) and the user share is left
+        // alone (still unprotected, still present).
+        assert!(!is_protected(&db, "/cat/old").await.unwrap());
+        assert!(delete(&db, "/cat/old").await.unwrap());
+        assert!(!is_protected(&db, "/user/share").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn set_protected_dirs_is_idempotent_with_duplicates() {
+        let (db, _dir) = test_db().await;
+        set_protected_dirs(&db, &["/d/", "/d", "/d"], 1_000_000)
+            .await
+            .unwrap();
+        // Trailing slash normalised and dedup'd → a single row.
+        let rows = list(&db).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].path, "/d");
+        assert!(rows[0].protected);
+    }
+
+    #[tokio::test]
+    async fn set_protected_dirs_empty_demotes_everything() {
+        let (db, _dir) = test_db().await;
+        insert(&db, "/was/protected", true, 1_000_000)
+            .await
+            .unwrap();
+        set_protected_dirs(&db, &[], 1_000_001).await.unwrap();
+        // Empty set means "nothing is protected" — the dir becomes removable.
+        assert!(!is_protected(&db, "/was/protected").await.unwrap());
+        assert!(delete(&db, "/was/protected").await.unwrap());
     }
 
     #[tokio::test]

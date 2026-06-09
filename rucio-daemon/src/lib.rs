@@ -247,7 +247,9 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
     // ordinary (removable) share rather than left as a protected orphan.
     {
         let dl_path = config.storage.download_dir.to_string_lossy().into_owned();
-        if let Err(e) = db::shared_dirs::set_sole_protected(&db, &dl_path, now_secs()).await {
+        // Today the protected set is just the global download_dir; once download
+        // categories land, their directories join this slice.
+        if let Err(e) = db::shared_dirs::set_protected_dirs(&db, &[&dl_path], now_secs()).await {
             warn!("Could not register download_dir as protected shared dir: {e}");
         }
     }
