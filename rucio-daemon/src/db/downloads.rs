@@ -288,6 +288,17 @@ pub async fn get_status(db: &Db, download_id: i64) -> Result<Option<String>> {
     Ok(row.map(|r| r.get("status")))
 }
 
+/// The download's category id, or `None` if it's unassigned (or there is no
+/// such row). Used to resolve its destination directory on completion.
+pub async fn get_category_id(db: &Db, download_id: i64) -> Result<Option<i64>> {
+    let v: Option<Option<i64>> =
+        sqlx::query_scalar("SELECT category_id FROM downloads WHERE id = ?1")
+            .bind(download_id)
+            .fetch_optional(db)
+            .await?;
+    Ok(v.flatten())
+}
+
 /// Status of the download with this root hash, if any. Lets the HTTP layer
 /// answer synchronously (the engine's authoritative `create_pending` runs
 /// asynchronously and its "already completed/active" result is otherwise lost).

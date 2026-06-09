@@ -1393,22 +1393,28 @@ pub async fn run_ed2k_download(
         Ok(Some(r)) if !r.name.trim().is_empty() => r.name,
         _ => link.name.clone(),
     };
-    let final_path = config.storage.download_dir.join(&final_name);
+    // Resolve where this download lands: its category's pinned dir if it has one,
+    // else the global download_dir. Resolved now (not at start) so a category
+    // edited/deleted mid-download is honoured.
+    let cat_id = crate::db::emule_downloads::get_category_id(db, download_id)
+        .await
+        .ok()
+        .flatten();
+    let dest_dir =
+        crate::db::categories::resolve_dir(db, &config.storage.download_dir, cat_id).await;
+    let final_path = dest_dir.join(&final_name);
     // Persist the finished .part into the download dir. The user may have deleted
     // that dir or revoked write access while we downloaded, so recreate it first
     // and treat any remaining failure as recoverable: keep the .part + .part.met
     // intact, mark the download errored (never a phantom "complete"), notify, and
     // bail so it can be retried once the folder is fixed.
     let saved = async {
-        std::fs::create_dir_all(config.storage.download_dir.as_path())?;
+        std::fs::create_dir_all(&dest_dir)?;
         crate::fsutil::move_file(&part_path, &final_path).await
     }
     .await;
     if let Err(e) = saved {
-        let reason = format!(
-            "Couldn't save to {}: {e}",
-            config.storage.download_dir.display()
-        );
+        let reason = format!("Couldn't save to {}: {e}", dest_dir.display());
         warn!(
             dl = download_id,
             part = %part_path.display(),

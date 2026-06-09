@@ -6,6 +6,8 @@
 //! protected just like the global one — see
 //! [`shared_dirs::set_protected_dirs`](super::shared_dirs::set_protected_dirs).
 
+use std::path::{Path, PathBuf};
+
 use anyhow::Result;
 use sqlx::Row;
 
@@ -95,6 +97,23 @@ pub async fn get(db: &Db, id: i64) -> Result<Option<Category>> {
         .fetch_optional(db)
         .await?;
     Ok(row.as_ref().map(row_to_category))
+}
+
+/// Resolve the destination directory for a download from its `category_id`:
+/// the category's pinned `download_dir` if it has one, otherwise `global`.
+///
+/// Resolved lazily at completion time, so a category edited or deleted while the
+/// download ran is honoured (a deleted category leaves `category_id = NULL` via
+/// the `ON DELETE SET NULL` foreign key → `global`). Any lookup error or missing
+/// row falls back to `global` so a download is never stranded.
+pub async fn resolve_dir(db: &Db, global: &Path, category_id: Option<i64>) -> PathBuf {
+    if let Some(cid) = category_id
+        && let Ok(Some(cat)) = get(db, cid).await
+        && let Some(dir) = cat.download_dir
+    {
+        return PathBuf::from(dir);
+    }
+    global.to_path_buf()
 }
 
 /// Every category-pinned directory (the non-NULL `download_dir` values). These
@@ -206,6 +225,28 @@ mod tests {
         let mut dirs = pinned_dirs(&db).await.unwrap();
         dirs.sort();
         assert_eq!(dirs, vec!["/data/a".to_string(), "/data/c".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn resolve_dir_picks_category_dir_or_falls_back_to_global() {
+        let (db, _d) = test_db().await;
+        let global = Path::new("/global/dl");
+        let pinned = create(&db, "Movies", Some("/data/movies"), 1_000)
+            .await
+            .unwrap();
+        let unpinned = create(&db, "Misc", None, 1_001).await.unwrap();
+
+        // Pinned category → its own dir.
+        assert_eq!(
+            resolve_dir(&db, global, Some(pinned)).await,
+            PathBuf::from("/data/movies")
+        );
+        // Category without a dir → global.
+        assert_eq!(resolve_dir(&db, global, Some(unpinned)).await, global);
+        // Unassigned → global.
+        assert_eq!(resolve_dir(&db, global, None).await, global);
+        // Dangling id (no such category) → global, never stranded.
+        assert_eq!(resolve_dir(&db, global, Some(9999)).await, global);
     }
 
     #[tokio::test]

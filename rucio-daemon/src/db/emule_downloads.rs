@@ -188,6 +188,17 @@ pub async fn set_status(db: &Db, id: i64, status: &str, error_msg: Option<&str>)
     Ok(())
 }
 
+/// The download's category id, or `None` if unassigned (or no such row). Used to
+/// resolve its destination directory on completion.
+pub async fn get_category_id(db: &Db, id: i64) -> Result<Option<i64>> {
+    let v: Option<Option<i64>> =
+        sqlx::query_scalar("SELECT category_id FROM emule_downloads WHERE id = ?1")
+            .bind(id)
+            .fetch_optional(db)
+            .await?;
+    Ok(v.flatten())
+}
+
 /// Update the status, but only while the download is still running — i.e. not
 /// already in a user-controlled stop state (`paused` / `cancelled`).
 ///

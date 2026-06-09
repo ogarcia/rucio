@@ -1378,6 +1378,17 @@ impl DownloadEngine {
                         .unwrap_or_default();
                     let hash_hex = hex::encode(root_hash);
 
+                    // Resolve where this download lands: its category's pinned dir
+                    // if it has one, else the global download_dir (`self.dest_dir`).
+                    // Resolved now, not at start, so a category edited/deleted
+                    // mid-download is honoured.
+                    let cat_id = db::downloads::get_category_id(&self.db, dl_id)
+                        .await
+                        .ok()
+                        .flatten();
+                    let dest_dir =
+                        db::categories::resolve_dir(&self.db, &self.dest_dir, cat_id).await;
+
                     // Persist the fully-verified `.part` into the download dir.
                     // `persist_completed` (re)creates that dir first — the user
                     // may have deleted it while we ran. Any failure (dir gone and
@@ -1385,7 +1396,7 @@ impl DownloadEngine {
                     // the `.part` is left untouched, so we mark the download failed
                     // — never a phantom "completed" — and notify so the user can
                     // fix the folder and retry.
-                    match persist_completed(&self.dest_dir, &part_path).await {
+                    match persist_completed(&dest_dir, &part_path).await {
                         Ok(final_path) => {
                             info!(
                                 from = %part_path.display(),
@@ -1419,11 +1430,10 @@ impl DownloadEngine {
                         Err(e) => {
                             warn!(
                                 part = %part_path.display(),
-                                dir  = %self.dest_dir.display(),
+                                dir  = %dest_dir.display(),
                                 "Download finished but could not be saved (keeping .part): {e}"
                             );
-                            let reason =
-                                format!("Couldn't save to {}: {e}", self.dest_dir.display());
+                            let reason = format!("Couldn't save to {}: {e}", dest_dir.display());
                             if let Err(e2) =
                                 db::downloads::set_status(&self.db, dl_id, "failed", Some(&reason))
                                     .await
