@@ -288,7 +288,13 @@
             position: absolute; top: calc(100% + 4px); right: 0.75rem;
             background: var(--raised); border: 1px solid var(--border);
             border-radius: 0.5rem; min-width: 224px; z-index: 100;
-            box-shadow: 0 8px 24px rgba(0,0,0,.25); overflow: hidden;
+            box-shadow: 0 8px 24px rgba(0,0,0,.25);
+            /* Cap to the viewport below the topbar and scroll inside, so a tall
+               menu on a short screen (e.g. a phone in landscape) doesn't spill
+               off the bottom and push a page-level scrollbar. */
+            max-height: calc(100vh - 64px);
+            max-height: calc(100dvh - 64px);
+            overflow-y: auto;
         }
         .dropdown-item {
             display: block; width: 100%; text-align: left;
