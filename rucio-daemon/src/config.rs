@@ -69,6 +69,14 @@ pub enum WebhookFormat {
     Discord,
     /// Slack incoming webhook: `{"text": "..."}`.
     Slack,
+    /// Telegram Bot API `sendMessage`. The URL is the bot endpoint with the
+    /// chat id in its query, e.g.
+    /// `https://api.telegram.org/bot<TOKEN>/sendMessage?chat_id=<ID>`; the chat
+    /// id is moved into the JSON body (Telegram doesn't mix query + body).
+    Telegram,
+    /// ntfy: the topic is the URL (`https://ntfy.sh/<topic>`); the body is the
+    /// plain-text message and the title is sent as the `Title` header.
+    Ntfy,
     /// A user-supplied body template (see `WebhookConfig::template`).
     Custom,
 }

@@ -204,9 +204,18 @@ Configured under `[[notifications.webhooks]]` in `config.toml`:
 ```toml
 [[notifications.webhooks]]
 url     = "https://discord.com/api/webhooks/…"
-format  = "discord"        # generic | discord | slack | custom
+format  = "discord"        # generic | discord | slack | telegram | ntfy | custom
 kinds   = ["download"]     # empty = all kinds
 secret  = "shared-secret"  # optional: body signed as X-Rucio-Signature: sha256=<hex>
+
+[[notifications.webhooks]]
+format = "telegram"
+# chat id rides in the query; it's moved into the JSON body automatically.
+url    = "https://api.telegram.org/bot<TOKEN>/sendMessage?chat_id=<CHAT_ID>"
+
+[[notifications.webhooks]]
+format = "ntfy"
+url    = "https://ntfy.sh/my-rucio-topic"   # topic is the URL
 
 [[notifications.webhooks]]
 url          = "https://example.com/hook"
@@ -215,12 +224,38 @@ template     = '{"msg":"{title} — {body}"}'   # {title} {body} {kind} {ref} {i
 content_type = "application/json"
 ```
 
-- **generic** sends the `NotificationDto` as JSON; **discord**/**slack** send
-  their native `{"content":…}` / `{"text":…}` shape; **custom** renders a
-  user-supplied body template.
-- The custom template substitutes only the exact known tokens in one pass, so a
-  structural JSON `{` (or a value that happens to contain `{body}`) is never
-  mis-expanded. For a JSON `content_type`, substituted values are
+Formats:
+
+- **generic** — the `NotificationDto` as JSON (the receiver parses it).
+- **discord** / **slack** — their native `{"content":…}` / `{"text":…}` shapes.
+- **telegram** — Telegram Bot API `sendMessage`. Put the bot token in the path
+  and the chat id in the query; the chat id is moved into the JSON body
+  (`{"chat_id":…,"text":…}`) since Telegram doesn't combine query params with a
+  JSON body.
+- **ntfy** — the topic is the URL, the body is the plain-text message, and the
+  title is sent as the `Title` header.
+- **custom** — a user-supplied body template. It substitutes only the exact
+  known tokens in one pass, so a structural JSON `{` (or a value that happens to
+  contain `{body}`) is never mis-expanded. For a JSON `content_type`, values are
   JSON-string-escaped (without the surrounding quotes the template provides), so
   a title with quotes can't produce invalid JSON.
-- A UI for managing webhooks is planned; for now they live in `config.toml`.
+
+The **generic** payload (Content-Type `application/json`, plus `User-Agent:
+rucio` and the optional `X-Rucio-Signature` header):
+
+```json
+{
+  "id": 42,
+  "kind": "download",
+  "title": "Download complete",
+  "body": "ubuntu-24.04.iso",
+  "ref_key": "9f86d0818…",
+  "created_at": 1781000861,
+  "read": false
+}
+```
+
+`kind` is `download` or `system`; `ref_key` is the resource reference (a blake3
+hex for downloads) and is omitted when absent.
+
+A UI for managing webhooks is planned; for now they live in `config.toml`.

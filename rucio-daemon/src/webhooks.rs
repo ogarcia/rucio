@@ -20,6 +20,18 @@ const TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_ATTEMPTS: u32 = 3;
 const RETRY_BACKOFF: Duration = Duration::from_secs(2);
 
+const JSON: &str = "application/json";
+
+/// A fully-built outbound request: where to POST, what, and any extra headers
+/// (e.g. ntfy's `Title`). The URL can differ from `wh.url` — Telegram strips the
+/// chat id out of the query into the body.
+struct Prepared {
+    url: String,
+    body: String,
+    content_type: String,
+    headers: Vec<(&'static str, String)>,
+}
+
 /// Fire every webhook that wants this notification. Returns immediately; each
 /// delivery runs in its own task so a slow endpoint never blocks the notifier.
 pub fn dispatch(client: &reqwest::Client, webhooks: &Arc<Vec<WebhookConfig>>, n: &NotificationDto) {
@@ -31,38 +43,86 @@ pub fn dispatch(client: &reqwest::Client, webhooks: &Arc<Vec<WebhookConfig>>, n:
         if !wh.kinds.is_empty() && !wh.kinds.contains(&n.kind) {
             continue;
         }
-        let (body, content_type) = build_payload(wh, n);
+        let prepared = build_payload(wh, n);
         let client = client.clone();
-        let url = wh.url.clone();
         let secret = wh.secret.clone();
         tokio::spawn(async move {
-            send_with_retries(&client, &url, body, &content_type, secret.as_deref(), idx).await;
+            send_with_retries(&client, prepared, secret.as_deref(), idx).await;
         });
     }
 }
 
-/// Build the request body and its Content-Type for a webhook.
-fn build_payload(wh: &WebhookConfig, n: &NotificationDto) -> (String, String) {
-    const JSON: &str = "application/json";
+/// Build the outbound request (URL, body, Content-Type, extra headers) for a
+/// webhook from a notification.
+fn build_payload(wh: &WebhookConfig, n: &NotificationDto) -> Prepared {
+    let json = |url: String, body: String| Prepared {
+        url,
+        body,
+        content_type: JSON.to_string(),
+        headers: vec![],
+    };
     match wh.format {
-        WebhookFormat::Generic => (
+        WebhookFormat::Generic => json(
+            wh.url.clone(),
             serde_json::to_string(n).unwrap_or_else(|_| "{}".to_string()),
-            JSON.to_string(),
         ),
-        WebhookFormat::Discord => (
+        WebhookFormat::Discord => json(
+            wh.url.clone(),
             serde_json::json!({ "content": format!("**{}**\n{}", n.title, n.body) }).to_string(),
-            JSON.to_string(),
         ),
-        WebhookFormat::Slack => (
+        WebhookFormat::Slack => json(
+            wh.url.clone(),
             serde_json::json!({ "text": format!("*{}*\n{}", n.title, n.body) }).to_string(),
-            JSON.to_string(),
         ),
+        WebhookFormat::Telegram => {
+            // chat_id rides in the URL query; move it into the JSON body since
+            // Telegram doesn't combine query params with a JSON body.
+            let (base, chat_id) = split_telegram_url(&wh.url);
+            let text = format!("{}\n{}", n.title, n.body);
+            json(
+                base,
+                serde_json::json!({ "chat_id": chat_id, "text": text }).to_string(),
+            )
+        }
+        WebhookFormat::Ntfy => Prepared {
+            url: wh.url.clone(),
+            body: n.body.clone(),
+            content_type: "text/plain; charset=utf-8".to_string(),
+            // Strip newlines: a header value must be single-line.
+            headers: vec![("Title", n.title.replace(['\r', '\n'], " "))],
+        },
         WebhookFormat::Custom => {
             let content_type = wh.content_type.clone().unwrap_or_else(|| JSON.to_string());
             let json_escape = content_type.contains("json");
             let body = render_template(wh.template.as_deref().unwrap_or(""), n, json_escape);
-            (body, content_type)
+            Prepared {
+                url: wh.url.clone(),
+                body,
+                content_type,
+                headers: vec![],
+            }
         }
+    }
+}
+
+/// Split a Telegram webhook URL into `(endpoint, chat_id)`, pulling `chat_id`
+/// out of the query string (URL-decoded). The chat id is empty if absent — the
+/// request will then be rejected by Telegram, surfacing the misconfiguration.
+fn split_telegram_url(url: &str) -> (String, String) {
+    match url.split_once('?') {
+        Some((base, query)) => {
+            let chat_id = query
+                .split('&')
+                .find_map(|kv| kv.strip_prefix("chat_id="))
+                .map(|v| {
+                    urlencoding::decode(v)
+                        .map(|c| c.into_owned())
+                        .unwrap_or_else(|_| v.to_string())
+                })
+                .unwrap_or_default();
+            (base.to_string(), chat_id)
+        }
+        None => (url.to_string(), String::new()),
     }
 }
 
@@ -121,23 +181,30 @@ fn sign(secret: &str, body: &[u8]) -> String {
     hex::encode(mac.finalize().into_bytes())
 }
 
-/// POST the body to `url`, retrying a couple of times on transient failure.
+/// POST the prepared request, retrying a couple of times on transient failure.
 async fn send_with_retries(
     client: &reqwest::Client,
-    url: &str,
-    body: String,
-    content_type: &str,
+    prepared: Prepared,
     secret: Option<&str>,
     idx: usize,
 ) {
+    let Prepared {
+        url,
+        body,
+        content_type,
+        headers,
+    } = prepared;
     let signature = secret.map(|s| format!("sha256={}", sign(s, body.as_bytes())));
     for attempt in 1..=MAX_ATTEMPTS {
         let mut req = client
-            .post(url)
-            .header(reqwest::header::CONTENT_TYPE, content_type)
+            .post(&url)
+            .header(reqwest::header::CONTENT_TYPE, &content_type)
             .header(reqwest::header::USER_AGENT, "rucio")
             .timeout(TIMEOUT)
             .body(body.clone());
+        for (k, v) in &headers {
+            req = req.header(*k, v);
+        }
         if let Some(sig) = &signature {
             req = req.header("X-Rucio-Signature", sig);
         }
@@ -189,28 +256,51 @@ mod tests {
 
     #[test]
     fn discord_and_slack_presets() {
-        let (body, ct) = build_payload(&wh(WebhookFormat::Discord, None), &dto("Done", "f.bin"));
-        assert_eq!(ct, "application/json");
-        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let p = build_payload(&wh(WebhookFormat::Discord, None), &dto("Done", "f.bin"));
+        assert_eq!(p.content_type, "application/json");
+        let v: serde_json::Value = serde_json::from_str(&p.body).unwrap();
         assert_eq!(v["content"], "**Done**\nf.bin");
 
-        let (body, _) = build_payload(&wh(WebhookFormat::Slack, None), &dto("Done", "f.bin"));
-        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let p = build_payload(&wh(WebhookFormat::Slack, None), &dto("Done", "f.bin"));
+        let v: serde_json::Value = serde_json::from_str(&p.body).unwrap();
         assert_eq!(v["text"], "*Done*\nf.bin");
+    }
+
+    #[test]
+    fn ntfy_uses_plain_body_and_title_header() {
+        let mut w = wh(WebhookFormat::Ntfy, None);
+        w.url = "https://ntfy.sh/mytopic".to_string();
+        let p = build_payload(&w, &dto("Download complete", "movie.mkv"));
+        assert_eq!(p.url, "https://ntfy.sh/mytopic");
+        assert!(p.content_type.starts_with("text/plain"));
+        assert_eq!(p.body, "movie.mkv");
+        assert_eq!(p.headers, vec![("Title", "Download complete".to_string())]);
+    }
+
+    #[test]
+    fn telegram_moves_chat_id_from_query_to_body() {
+        let mut w = wh(WebhookFormat::Telegram, None);
+        w.url = "https://api.telegram.org/bot123:ABC/sendMessage?chat_id=98765".to_string();
+        let p = build_payload(&w, &dto("Done", "f.bin"));
+        // Query stripped from the URL; chat_id + text in the JSON body.
+        assert_eq!(p.url, "https://api.telegram.org/bot123:ABC/sendMessage");
+        let v: serde_json::Value = serde_json::from_str(&p.body).unwrap();
+        assert_eq!(v["chat_id"], "98765");
+        assert_eq!(v["text"], "Done\nf.bin");
     }
 
     #[test]
     fn custom_template_escapes_into_valid_json() {
         // A title with quotes and a brace must not break a JSON template.
         let n = dto("He said \"hi\" {body}", "done");
-        let (body, _) = build_payload(
+        let p = build_payload(
             &wh(
                 WebhookFormat::Custom,
                 Some(r#"{"msg":"{title}","k":"{kind}"}"#),
             ),
             &n,
         );
-        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&p.body).unwrap();
         // The literal "{body}" inside the title is NOT expanded, and quotes are escaped.
         assert_eq!(v["msg"], "He said \"hi\" {body}");
         assert_eq!(v["k"], "download");
@@ -220,15 +310,15 @@ mod tests {
     fn custom_plain_text_not_escaped() {
         let mut w = wh(WebhookFormat::Custom, Some("{title}: {body}"));
         w.content_type = Some("text/plain".to_string());
-        let (body, ct) = build_payload(&w, &dto("Title", "Body"));
-        assert_eq!(ct, "text/plain");
-        assert_eq!(body, "Title: Body");
+        let p = build_payload(&w, &dto("Title", "Body"));
+        assert_eq!(p.content_type, "text/plain");
+        assert_eq!(p.body, "Title: Body");
     }
 
     #[test]
     fn generic_is_the_dto() {
-        let (body, _) = build_payload(&wh(WebhookFormat::Generic, None), &dto("T", "B"));
-        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let p = build_payload(&wh(WebhookFormat::Generic, None), &dto("T", "B"));
+        let v: serde_json::Value = serde_json::from_str(&p.body).unwrap();
         assert_eq!(v["title"], "T");
         assert_eq!(v["kind"], "download");
     }
