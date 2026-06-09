@@ -1868,7 +1868,7 @@ mod tests {
         let notif_state = crate::notifier::NotificationState::from_config(
             &crate::config::NotificationConfig::default(),
         );
-        let notifier = crate::notifier::Notifier::new(db.clone(), ws_tx, notif_state);
+        let notifier = crate::notifier::Notifier::new(db.clone(), ws_tx, notif_state, vec![]);
         let engine = DownloadEngine::new(
             db,
             cmd_tx,

@@ -14,6 +14,7 @@ pub mod upload_scheduler;
 pub mod upload_stats;
 pub mod upnp;
 pub mod watcher;
+pub mod webhooks;
 
 // The libp2p networking layer lives in the `rucio-net` crate. Re-export it
 // under the historical `node` name so existing `crate::node::…` paths and the
@@ -286,8 +287,12 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
     // record notifications. The notifier holds live toggles seeded from config.
     let (ws_tx, _) = tokio::sync::broadcast::channel::<WsEvent>(256);
     let notif_state = crate::notifier::NotificationState::from_config(&config.notifications);
-    let notifier =
-        crate::notifier::Notifier::new(db.clone(), ws_tx.clone(), Arc::clone(&notif_state));
+    let notifier = crate::notifier::Notifier::new(
+        db.clone(),
+        ws_tx.clone(),
+        Arc::clone(&notif_state),
+        config.notifications.webhooks.clone(),
+    );
 
     let mut engine = transfer::DownloadEngine::new(
         db.clone(),

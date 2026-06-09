@@ -175,12 +175,13 @@ finishing, indexing completing — surfaced in the web UI's bell drawer.
 
 - Records live in the `notifications` table (`kind` + `title` + `body` +
   optional `ref_key` resource reference + `created_at` + `read`). The model is
-  deliberately generic so the same rows can later feed outbound webhooks. Each
-  insert prunes the table to the most recent 200 rows.
-- All recording goes through one `Notifier` (DB pool + WS sender + live
-  toggles). Call sites — the download engine, the eMule task, the indexing tick
-  — just call `notify(kind, title, body, ref)`; gating, persistence and the
-  `WsEvent::Notification` push happen there.
+  deliberately generic so the same rows also feed outbound webhooks (below).
+  Each insert prunes the table to the most recent 200 rows.
+- All recording goes through one `Notifier` (DB pool + WS sender + live toggles
+  + webhook list + HTTP client). Call sites — the download engine, the eMule
+  task, the indexing tick — just call `notify(kind, title, body, ref)`; gating,
+  persistence, the `WsEvent::Notification` push and the webhook fan-out happen
+  there.
 - Two kinds today: **download** (a Rucio or eMule download completed) and
   **system** (e.g. indexing finished — fired on the pending-count → 0 edge via a
   latch, so a sub-second batch still notifies). Per-kind toggles plus a master
@@ -189,3 +190,37 @@ finishing, indexing completing — surfaced in the web UI's bell drawer.
 - New notifications are pushed over the WebSocket bus so the bell badge updates
   without polling; the client seeds its history from `GET /notifications` on
   load.
+
+### Outbound webhooks
+
+Each notification that passes the gates is also POSTed to every configured
+webhook whose `kinds` accept it. Delivery is **best-effort and never queued**: a
+short timeout with two retries, then give up — the row still lives in the centre
+(the source of truth). The fan-out is spawned per webhook so a slow endpoint
+never blocks the notifier.
+
+Configured under `[[notifications.webhooks]]` in `config.toml`:
+
+```toml
+[[notifications.webhooks]]
+url     = "https://discord.com/api/webhooks/…"
+format  = "discord"        # generic | discord | slack | custom
+kinds   = ["download"]     # empty = all kinds
+secret  = "shared-secret"  # optional: body signed as X-Rucio-Signature: sha256=<hex>
+
+[[notifications.webhooks]]
+url          = "https://example.com/hook"
+format       = "custom"
+template     = '{"msg":"{title} — {body}"}'   # {title} {body} {kind} {ref} {id} {created_at}
+content_type = "application/json"
+```
+
+- **generic** sends the `NotificationDto` as JSON; **discord**/**slack** send
+  their native `{"content":…}` / `{"text":…}` shape; **custom** renders a
+  user-supplied body template.
+- The custom template substitutes only the exact known tokens in one pass, so a
+  structural JSON `{` (or a value that happens to contain `{body}`) is never
+  mis-expanded. For a JSON `content_type`, substituted values are
+  JSON-string-escaped (without the surrounding quotes the template provides), so
+  a title with quotes can't produce invalid JSON.
+- A UI for managing webhooks is planned; for now they live in `config.toml`.

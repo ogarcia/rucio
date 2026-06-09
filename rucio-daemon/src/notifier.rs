@@ -40,12 +40,12 @@ impl NotificationState {
         })
     }
 
-    /// Apply a new config to the live state (called after the settings handler
-    /// persists a change).
-    pub fn update(&self, cfg: &NotificationConfig) {
-        self.enabled.store(cfg.enabled, Ordering::Relaxed);
-        self.downloads.store(cfg.downloads, Ordering::Relaxed);
-        self.system.store(cfg.system, Ordering::Relaxed);
+    /// Apply new toggle values to the live state (called after the settings
+    /// handler persists a change).
+    pub fn update(&self, enabled: bool, downloads: bool, system: bool) {
+        self.enabled.store(enabled, Ordering::Relaxed);
+        self.downloads.store(downloads, Ordering::Relaxed);
+        self.system.store(system, Ordering::Relaxed);
     }
 
     /// Current toggle values `(enabled, downloads, system)`. This is the live
@@ -76,11 +76,26 @@ pub struct Notifier {
     db: Db,
     ws_tx: broadcast::Sender<WsEvent>,
     state: Arc<NotificationState>,
+    /// Outbound webhook targets (loaded from config at startup).
+    webhooks: Arc<Vec<crate::config::WebhookConfig>>,
+    /// Shared HTTP client for webhook delivery (cheap to clone).
+    http: reqwest::Client,
 }
 
 impl Notifier {
-    pub fn new(db: Db, ws_tx: broadcast::Sender<WsEvent>, state: Arc<NotificationState>) -> Self {
-        Self { db, ws_tx, state }
+    pub fn new(
+        db: Db,
+        ws_tx: broadcast::Sender<WsEvent>,
+        state: Arc<NotificationState>,
+        webhooks: Vec<crate::config::WebhookConfig>,
+    ) -> Self {
+        Self {
+            db,
+            ws_tx,
+            state,
+            webhooks: Arc::new(webhooks),
+            http: reqwest::Client::new(),
+        }
     }
 
     /// Record a notification and push it to clients — unless its category is
@@ -123,6 +138,10 @@ impl Notifier {
             created_at: now,
             read: false,
         };
+        // Fan out to webhooks (best-effort, spawned) before the dto is moved
+        // into the WS event.
+        crate::webhooks::dispatch(&self.http, &self.webhooks, &dto);
+
         // A send error just means no client is connected; the row is persisted
         // and will be fetched on next load.
         let _ = self.ws_tx.send(WsEvent::Notification(dto));

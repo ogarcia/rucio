@@ -37,6 +37,10 @@ pub struct NotificationConfig {
     /// Notify on system/background events (e.g. indexing finished).
     #[serde(default = "default_true")]
     pub system: bool,
+    /// Outbound webhooks: every notification that passes the master + per-kind
+    /// gates is also POSTed to each webhook whose `kinds` accept it.
+    #[serde(default)]
+    pub webhooks: Vec<WebhookConfig>,
 }
 
 fn default_true() -> bool {
@@ -49,8 +53,51 @@ impl Default for NotificationConfig {
             enabled: true,
             downloads: true,
             system: true,
+            webhooks: Vec::new(),
         }
     }
+}
+
+/// Payload shape for an outbound webhook.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum WebhookFormat {
+    /// Our own `NotificationDto` as JSON. The receiver parses it.
+    #[default]
+    Generic,
+    /// Discord incoming webhook: `{"content": "..."}`.
+    Discord,
+    /// Slack incoming webhook: `{"text": "..."}`.
+    Slack,
+    /// A user-supplied body template (see `WebhookConfig::template`).
+    Custom,
+}
+
+/// A single outbound webhook target.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WebhookConfig {
+    /// Destination URL (POSTed to).
+    pub url: String,
+    /// Payload shape. Default: `generic`.
+    #[serde(default)]
+    pub format: WebhookFormat,
+    /// Which notification kinds to forward (`download`, `system`). Empty = all.
+    #[serde(default)]
+    pub kinds: Vec<rucio_core::api::notifications::NotificationKind>,
+    /// Optional shared secret. When set, the body is signed with HMAC-SHA256 and
+    /// sent as the `X-Rucio-Signature: sha256=<hex>` header.
+    #[serde(default)]
+    pub secret: Option<String>,
+    /// Body template for `format = "custom"`. Supports the placeholders
+    /// `{title}`, `{body}`, `{kind}`, `{ref}`, `{id}`, `{created_at}`. Each value
+    /// is inserted JSON-string-escaped (without the surrounding quotes), so a
+    /// value with quotes can't break a JSON template.
+    #[serde(default)]
+    pub template: Option<String>,
+    /// Content-Type for `format = "custom"`. Default: `application/json`. When
+    /// set to a non-JSON type, placeholder values are inserted verbatim.
+    #[serde(default)]
+    pub content_type: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -8,7 +8,6 @@ use axum::http::StatusCode;
 use rucio_core::api::notifications::{NotificationList, NotificationSettings};
 
 use crate::api::AppState;
-use crate::config::NotificationConfig;
 
 const LIST_LIMIT: i64 = 200;
 
@@ -129,21 +128,20 @@ pub async fn put_settings(
     State(state): State<AppState>,
     Json(req): Json<NotificationSettings>,
 ) -> StatusCode {
-    let new = NotificationConfig {
-        enabled: req.enabled,
-        downloads: req.downloads,
-        system: req.system,
-    };
     // Apply to the live notifier immediately so the change takes effect now.
-    state.notifications.update(&new);
+    state
+        .notifications
+        .update(req.enabled, req.downloads, req.system);
 
-    // Persist: load what is currently on disk, swap the notifications block,
-    // and save — so we never clobber other settings changed since startup.
+    // Persist: load what is currently on disk, swap only the toggles (keeping
+    // the configured webhooks), and save — so we never clobber other settings.
     let mut cfg = match crate::config::Config::load(state.config_path.as_deref()) {
         Ok(c) => c,
         Err(_) => (*state.config).clone(),
     };
-    cfg.notifications = new;
+    cfg.notifications.enabled = req.enabled;
+    cfg.notifications.downloads = req.downloads;
+    cfg.notifications.system = req.system;
     match cfg.save() {
         Ok(()) => StatusCode::NO_CONTENT,
         Err(e) => {
