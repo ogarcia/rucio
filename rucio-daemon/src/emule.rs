@@ -1401,7 +1401,7 @@ pub async fn run_ed2k_download(
     // bail so it can be retried once the folder is fixed.
     let saved = async {
         std::fs::create_dir_all(config.storage.download_dir.as_path())?;
-        tokio::fs::rename(&part_path, &final_path).await
+        crate::fsutil::move_file(&part_path, &final_path).await
     }
     .await;
     if let Err(e) = saved {

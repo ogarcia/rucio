@@ -5,6 +5,7 @@ pub mod db;
 pub mod emule;
 #[cfg(feature = "emule-compat")]
 pub mod emule_identity;
+mod fsutil;
 pub mod live_stats;
 pub mod metrics;
 pub mod notifier;
