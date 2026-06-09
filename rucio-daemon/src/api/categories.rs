@@ -20,7 +20,23 @@ fn to_response(c: db::categories::Category) -> CategoryResponse {
         id: c.id,
         name: c.name,
         download_dir: c.download_dir,
+        color: c.color,
+        match_keywords: c.match_keywords,
     }
+}
+
+/// Validate an optional badge colour: a non-blank value must be a hex string
+/// `#rgb` or `#rrggbb` (what a colour picker sends). Blank/None is fine.
+fn validate_color(color: Option<&str>) -> Result<(), StatusCode> {
+    if let Some(c) = color.map(str::trim).filter(|c| !c.is_empty()) {
+        let ok = c.starts_with('#')
+            && matches!(c.len(), 4 | 7)
+            && c[1..].chars().all(|ch| ch.is_ascii_hexdigit());
+        if !ok {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+    }
+    Ok(())
 }
 
 /// Validate a category's directory: a non-blank value must be an absolute path
@@ -101,11 +117,14 @@ pub async fn create_category(
         return Err(StatusCode::BAD_REQUEST);
     }
     validate_dir(req.download_dir.as_deref())?;
+    validate_color(req.color.as_deref())?;
 
     let id = db::categories::create(
         &state.db,
         name,
         req.download_dir.as_deref(),
+        req.color.as_deref(),
+        req.match_keywords.as_deref(),
         crate::now_secs(),
     )
     .await
@@ -156,10 +175,18 @@ pub async fn update_category(
         return Err(StatusCode::NOT_FOUND);
     }
     validate_dir(req.download_dir.as_deref())?;
+    validate_color(req.color.as_deref())?;
 
-    db::categories::update(&state.db, id, name, req.download_dir.as_deref())
-        .await
-        .map_err(write_err)?;
+    db::categories::update(
+        &state.db,
+        id,
+        name,
+        req.download_dir.as_deref(),
+        req.color.as_deref(),
+        req.match_keywords.as_deref(),
+    )
+    .await
+    .map_err(write_err)?;
 
     reconcile(&state).await;
 

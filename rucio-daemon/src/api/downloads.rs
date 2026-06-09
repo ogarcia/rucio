@@ -489,6 +489,16 @@ pub async fn start_download(
     if !category_exists(&state.db, req.category_id).await {
         return StatusCode::BAD_REQUEST;
     }
+    // No explicit category → try to auto-file by the file name's keywords.
+    let category_id = match req.category_id {
+        Some(_) => req.category_id,
+        None => match info.name.as_deref() {
+            Some(name) => crate::db::categories::auto_match(&state.db, name)
+                .await
+                .unwrap_or(None),
+            None => None,
+        },
+    };
 
     // Parse provider strings; skip any that are not valid PeerIds with a warning.
     let providers: Vec<String> = req
@@ -507,7 +517,7 @@ pub async fn start_download(
     let dl_req = DownloadRequest::Start {
         magnet: req.magnet.clone(),
         providers,
-        category_id: req.category_id,
+        category_id,
     };
 
     match state.download_tx.send(dl_req).await {
@@ -1058,6 +1068,13 @@ pub async fn start_ed2k_download(
         if !category_exists(&state.db, req.category_id).await {
             return Err(StatusCode::BAD_REQUEST);
         }
+        // No explicit category → try to auto-file by the file name's keywords.
+        let category_id = match req.category_id {
+            Some(_) => req.category_id,
+            None => crate::db::categories::auto_match(&state.db, &link.name)
+                .await
+                .unwrap_or(None),
+        };
 
         // Check for an existing row *before* sending to the engine so we can
         // return the correct HTTP status synchronously.
@@ -1068,7 +1085,7 @@ pub async fn start_ed2k_download(
             link.size,
             &req.link,
             now_secs(),
-            req.category_id,
+            category_id,
         )
         .await
         .map_err(|e| {

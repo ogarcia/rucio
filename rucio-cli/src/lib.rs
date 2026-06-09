@@ -163,8 +163,15 @@ pub enum CategoryAction {
         /// Omit to use the global download directory.
         #[arg(long, value_name = "PATH")]
         dir: Option<String>,
+        /// Badge colour as a hex string, e.g. #3b82f6
+        #[arg(long, value_name = "HEX")]
+        color: Option<String>,
+        /// Auto-assign new downloads whose name contains one of these
+        /// '|'-separated substrings, e.g. "1080p|bluray"
+        #[arg(long, value_name = "A|B|C")]
+        r#match: Option<String>,
     },
-    /// Update a category's name and directory
+    /// Update a category's name, directory, colour and match keywords
     Set {
         /// Category id (from `rucio category list`)
         id: i64,
@@ -173,6 +180,12 @@ pub enum CategoryAction {
         /// New directory (absolute path); omit to use the global download directory
         #[arg(long, value_name = "PATH")]
         dir: Option<String>,
+        /// Badge colour as a hex string, e.g. #3b82f6 (omit to clear)
+        #[arg(long, value_name = "HEX")]
+        color: Option<String>,
+        /// '|'-separated auto-assign substrings (omit to clear)
+        #[arg(long, value_name = "A|B|C")]
+        r#match: Option<String>,
     },
     /// Delete a category (its downloads fall back to the global download dir)
     Remove {
@@ -321,11 +334,37 @@ pub async fn run() -> Result<()> {
         },
         Commands::Category { action } => match action {
             CategoryAction::List => cmd::categories::list(&client).await,
-            CategoryAction::Add { name, dir } => {
-                cmd::categories::add(&client, &name, dir.as_deref()).await
+            CategoryAction::Add {
+                name,
+                dir,
+                color,
+                r#match,
+            } => {
+                cmd::categories::add(
+                    &client,
+                    &name,
+                    dir.as_deref(),
+                    color.as_deref(),
+                    r#match.as_deref(),
+                )
+                .await
             }
-            CategoryAction::Set { id, name, dir } => {
-                cmd::categories::set(&client, id, &name, dir.as_deref()).await
+            CategoryAction::Set {
+                id,
+                name,
+                dir,
+                color,
+                r#match,
+            } => {
+                cmd::categories::set(
+                    &client,
+                    id,
+                    &name,
+                    dir.as_deref(),
+                    color.as_deref(),
+                    r#match.as_deref(),
+                )
+                .await
             }
             CategoryAction::Remove { id } => cmd::categories::remove(&client, id).await,
         },

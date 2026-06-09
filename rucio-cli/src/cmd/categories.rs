@@ -22,6 +22,10 @@ pub async fn list(client: &ApiClient) -> Result<()> {
         name: String,
         #[tabled(rename = "Download dir")]
         dir: String,
+        #[tabled(rename = "Color")]
+        color: String,
+        #[tabled(rename = "Match")]
+        keywords: String,
     }
 
     let rows: Vec<Row> = resp
@@ -35,6 +39,8 @@ pub async fn list(client: &ApiClient) -> Result<()> {
                 Some(d) => color::value(d),
                 None => "(global)".to_string(),
             },
+            color: c.color.clone().unwrap_or_else(|| "-".to_string()),
+            keywords: c.match_keywords.clone().unwrap_or_else(|| "-".to_string()),
         })
         .collect();
 
@@ -42,8 +48,14 @@ pub async fn list(client: &ApiClient) -> Result<()> {
     Ok(())
 }
 
-pub async fn add(client: &ApiClient, name: &str, dir: Option<&str>) -> Result<()> {
-    match client.create_category(name, dir).await {
+pub async fn add(
+    client: &ApiClient,
+    name: &str,
+    dir: Option<&str>,
+    color: Option<&str>,
+    keywords: Option<&str>,
+) -> Result<()> {
+    match client.create_category(name, dir, color, keywords).await {
         Ok(c) => println!(
             "{}",
             color::success(&format!("Created category '{}' (id {}).", c.name, c.id))
@@ -56,8 +68,15 @@ pub async fn add(client: &ApiClient, name: &str, dir: Option<&str>) -> Result<()
     Ok(())
 }
 
-pub async fn set(client: &ApiClient, id: i64, name: &str, dir: Option<&str>) -> Result<()> {
-    match client.update_category(id, name, dir).await {
+pub async fn set(
+    client: &ApiClient,
+    id: i64,
+    name: &str,
+    dir: Option<&str>,
+    color: Option<&str>,
+    keywords: Option<&str>,
+) -> Result<()> {
+    match client.update_category(id, name, dir, color, keywords).await {
         Ok(()) => println!("{}", color::success(&format!("Updated category {id}."))),
         Err(e) => {
             eprintln!("{}", color::error(&format!("Error: {e}")));

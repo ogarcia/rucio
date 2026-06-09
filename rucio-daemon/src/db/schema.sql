@@ -60,10 +60,12 @@ CREATE INDEX IF NOT EXISTS idx_chunks_hash ON chunks(hash);
 -- and protected exactly like the global download_dir.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS categories (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    name          TEXT    NOT NULL UNIQUE,
-    download_dir  TEXT,                       -- absolute path, no trailing slash; NULL = use global
-    added_at      INTEGER NOT NULL
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    name           TEXT    NOT NULL UNIQUE,
+    download_dir   TEXT,                       -- absolute path, no trailing slash; NULL = use global
+    color          TEXT,                       -- badge colour as a hex string, e.g. #3b82f6; NULL = UI default
+    match_keywords TEXT,                       -- '|'-separated substrings; a new download whose name contains one is auto-filed here
+    added_at       INTEGER NOT NULL
 );
 
 -- ---------------------------------------------------------------------------

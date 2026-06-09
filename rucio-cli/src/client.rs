@@ -185,12 +185,16 @@ impl ApiClient {
         &self,
         name: &str,
         download_dir: Option<&str>,
+        color: Option<&str>,
+        match_keywords: Option<&str>,
     ) -> Result<CategoryResponse> {
         self.post(
             "/api/v1/categories",
             &CategoryRequest {
                 name: name.to_string(),
                 download_dir: download_dir.map(str::to_string),
+                color: color.map(str::to_string),
+                match_keywords: match_keywords.map(str::to_string),
             },
         )
         .await
@@ -201,12 +205,16 @@ impl ApiClient {
         id: i64,
         name: &str,
         download_dir: Option<&str>,
+        color: Option<&str>,
+        match_keywords: Option<&str>,
     ) -> Result<()> {
         self.put(
             &format!("/api/v1/categories/{id}"),
             &CategoryRequest {
                 name: name.to_string(),
                 download_dir: download_dir.map(str::to_string),
+                color: color.map(str::to_string),
+                match_keywords: match_keywords.map(str::to_string),
             },
         )
         .await

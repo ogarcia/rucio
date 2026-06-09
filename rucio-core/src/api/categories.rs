@@ -13,6 +13,14 @@ pub struct CategoryRequest {
     /// null to use the global download directory.
     #[serde(default)]
     pub download_dir: Option<String>,
+    /// Badge colour as a hex string (e.g. `#3b82f6`). Null = UI default.
+    #[serde(default)]
+    pub color: Option<String>,
+    /// `'|'`-separated substrings (e.g. `1080p|bluray`). A new download whose
+    /// name contains one of these is auto-filed under this category when no
+    /// category is given explicitly. Null/empty = no auto-matching.
+    #[serde(default)]
+    pub match_keywords: Option<String>,
 }
 
 /// A category as returned by the API.
@@ -22,6 +30,10 @@ pub struct CategoryResponse {
     pub name: String,
     #[serde(default)]
     pub download_dir: Option<String>,
+    #[serde(default)]
+    pub color: Option<String>,
+    #[serde(default)]
+    pub match_keywords: Option<String>,
 }
 
 /// GET /api/v1/categories
