@@ -497,7 +497,11 @@
         .cat-row .config-input { width: 100%; box-sizing: border-box; }
         /* Category selector in the Add-downloads modal. */
         .add-cat-row { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.625rem; }
-        .add-cat-row .config-label { margin: 0; }
+        .add-cat-row .config-label { margin: 0; flex: none; }
+        /* The selector fills the remaining width so it lines up with the textarea
+           above; min-width:0 lets it shrink (and clip a long name) instead of
+           overflowing, and overrides the shared 14rem cap. */
+        .add-cat-row .dl-filter-select { flex: 1; min-width: 0; max-width: none; }
 
         /* ── Panel contents ──────────────────────────────────────────────── */
 
@@ -712,6 +716,9 @@
             background: var(--raised); border: 1px solid var(--border);
             border-radius: 0.25rem; color: var(--text);
             font-size: 0.75rem; font-family: inherit; cursor: pointer;
+            /* Cap the width so an absurdly long category name can't blow up the
+               control; the selected label is clipped instead. */
+            max-width: 14rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
         }
         .dl-filter-input {
             padding: 0.25rem 0.5rem;
