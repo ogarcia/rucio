@@ -379,6 +379,17 @@ pub async fn show(client: &ApiClient, target: &str) -> Result<()> {
     println!("  ID:         {} ({})", d.id, d.kind);
     println!("  Hash:       {}", color::value(&d.root_hash));
     println!("  State:      {}", color::download_state(&d.state));
+    // Resolve the category name (falls back to "#id" if it was since deleted).
+    if let Some(cid) = d.category_id {
+        let name = client
+            .list_categories()
+            .await
+            .ok()
+            .and_then(|r| r.categories.into_iter().find(|c| c.id == cid))
+            .map(|c| c.name)
+            .unwrap_or_else(|| format!("#{cid}"));
+        println!("  Category:   {}", color::value(&name));
+    }
     println!(
         "  Size:       {}",
         d.size.map(human_size).unwrap_or_else(|| "-".to_string())
