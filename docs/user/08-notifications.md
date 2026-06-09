@@ -28,7 +28,8 @@ Add one in **Settings → Notifications → Add webhook**. Each webhook has:
 - **Kinds** — tick which kinds to forward. Tick none to forward all.
 - **Secret** (optional) — if set, the request body is signed with HMAC-SHA256
   and sent in the `X-Rucio-Signature: sha256=<hex>` header, so your receiver can
-  verify it really came from your daemon.
+  verify it really came from your daemon (see
+  [Verifying the signature](#verifying-the-signature)).
 
 Webhooks are saved together with the rest of the settings when you click
 **Save** at the bottom of the dialog — there's no separate button. Delivery is
@@ -113,6 +114,53 @@ Example template for a JSON endpoint:
 ```json
 {"event":"{kind}","message":"{title} — {body}"}
 ```
+
+## Verifying the signature
+
+Only relevant when the receiver is your own service (the **Generic** or
+**Custom** formats) — third-party presets like Discord or ntfy ignore the
+header. When you set a **Secret**, Rucio computes
+`HMAC-SHA256(secret, request_body)` and sends it hex-encoded as:
+
+```
+X-Rucio-Signature: sha256=3b8e...c1
+```
+
+To verify, recompute the HMAC over the **raw request body** (the exact bytes you
+received, before any JSON parsing or re-formatting — re-serializing can change
+bytes and break the match) with the same secret, and compare. Three things
+matter: use the raw body, keep the `sha256=` prefix, and compare in constant
+time.
+
+A minimal receiver in Python (Flask):
+
+```python
+import hmac, hashlib
+from flask import Flask, request, abort
+
+SECRET = b"the-secret-you-set-on-the-webhook"
+app = Flask(__name__)
+
+@app.post("/rucio-hook")
+def hook():
+    body = request.get_data()  # raw bytes, do NOT use request.json here
+    sent = request.headers.get("X-Rucio-Signature", "")
+    expected = "sha256=" + hmac.new(SECRET, body, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(sent, expected):
+        abort(401)  # forged or misconfigured — reject
+    # genuine: now it's safe to parse and act on `body`
+    return "", 204
+```
+
+To eyeball it from a shell, this prints the hex digest Rucio would send (prepend
+`sha256=`):
+
+```sh
+printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$SECRET"
+```
+
+The secret never travels with the request — only the signature does — so a
+receiver that doesn't know the secret can't forge a valid one.
 
 ## Editing `config.toml` directly
 
