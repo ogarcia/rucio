@@ -2,13 +2,24 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 use crate::icons::{self, Icon};
-use crate::types::{ConfigResponse, ConfigSnapshot, EmuleStatusResponse};
+use crate::types::{ConfigResponse, ConfigSnapshot, EmuleStatusResponse, NotificationSettings};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ConfigTab {
     Network,
     Storage,
     Emule,
+    Notifications,
+}
+
+async fn api_get_notif_settings() -> Option<NotificationSettings> {
+    gloo_net::http::Request::get("/api/v1/notifications/settings")
+        .send()
+        .await
+        .ok()?
+        .json::<NotificationSettings>()
+        .await
+        .ok()
 }
 
 async fn api_get_config() -> Option<ConfigResponse> {
@@ -95,6 +106,11 @@ pub fn ConfigModal(
     let f_em_maxconc = RwSignal::new(String::new());
     let f_em_nick = RwSignal::new(String::new());
     let f_em_minspeed = RwSignal::new(String::new());
+    // Notification toggles. Applied immediately on change (dedicated endpoint),
+    // independent of the Save button which only persists the config above.
+    let n_enabled = RwSignal::new(true);
+    let n_downloads = RwSignal::new(true);
+    let n_system = RwSignal::new(true);
 
     // Load once on open.
     Effect::new(move |_| {
@@ -130,8 +146,29 @@ pub fn ConfigModal(
                 base.set(Some(snap));
                 loaded.set(true);
             }
+            if let Some(s) = api_get_notif_settings().await {
+                n_enabled.set(s.enabled);
+                n_downloads.set(s.downloads);
+                n_system.set(s.system);
+            }
         });
     });
+
+    // Push the current notification toggles to the daemon (applied live there).
+    let save_notif = move || {
+        let body = NotificationSettings {
+            enabled: n_enabled.get_untracked(),
+            downloads: n_downloads.get_untracked(),
+            system: n_system.get_untracked(),
+        };
+        spawn_local(async move {
+            if let Ok(req) =
+                gloo_net::http::Request::put("/api/v1/notifications/settings").json(&body)
+            {
+                let _ = req.send().await;
+            }
+        });
+    };
 
     let save = move || {
         let Some(mut snap) = base.get_untracked() else {
@@ -234,6 +271,8 @@ pub fn ConfigModal(
                         <button class=move || tab_class(ConfigTab::Emule)
                             on:click=move |_| tab.set(ConfigTab::Emule)>"eMule"</button>
                     </Show>
+                    <button class=move || tab_class(ConfigTab::Notifications)
+                        on:click=move |_| tab.set(ConfigTab::Notifications)>"Notifications"</button>
                 </div>
 
                 <div class="modal-body">
@@ -412,6 +451,59 @@ pub fn ConfigModal(
                                             disabled=em_locked
                                             prop:value=move || f_em_minspeed.get()
                                             on:input=move |e| f_em_minspeed.set(event_target_value(&e))/>
+                                    </div>
+                                </div>
+                            }.into_any(),
+                            ConfigTab::Notifications => view! {
+                                <div class="config-section">
+                                    <p class="config-hint">"Changes apply immediately. The per-type switches only matter while notifications are enabled."</p>
+                                    <div class="config-field config-field-keep">
+                                        <label class="config-label">"Enable notifications"</label>
+                                        <span
+                                            class=move || if n_enabled.get() {
+                                                "toggle-pill toggle-on toggle-clickable"
+                                            } else {
+                                                "toggle-pill toggle-clickable"
+                                            }
+                                            on:click=move |_| {
+                                                n_enabled.update(|v| *v = !*v);
+                                                save_notif();
+                                            }
+                                        >
+                                            {move || if n_enabled.get() { "On" } else { "Off" }}
+                                        </span>
+                                    </div>
+                                    <div class="config-field config-field-keep">
+                                        <label class="config-label">"Download notifications"</label>
+                                        <span
+                                            class=move || if n_downloads.get() {
+                                                "toggle-pill toggle-on toggle-clickable"
+                                            } else {
+                                                "toggle-pill toggle-clickable"
+                                            }
+                                            on:click=move |_| {
+                                                n_downloads.update(|v| *v = !*v);
+                                                save_notif();
+                                            }
+                                        >
+                                            {move || if n_downloads.get() { "On" } else { "Off" }}
+                                        </span>
+                                    </div>
+                                    <div class="config-field config-field-keep">
+                                        <label class="config-label">"System notifications"</label>
+                                        <span
+                                            class=move || if n_system.get() {
+                                                "toggle-pill toggle-on toggle-clickable"
+                                            } else {
+                                                "toggle-pill toggle-clickable"
+                                            }
+                                            on:click=move |_| {
+                                                n_system.update(|v| *v = !*v);
+                                                save_notif();
+                                            }
+                                        >
+                                            {move || if n_system.get() { "On" } else { "Off" }}
+                                        </span>
                                     </div>
                                 </div>
                             }.into_any(),

@@ -243,6 +243,8 @@ pub struct DownloadEngine {
     live_stats: crate::live_stats::LiveStatsMap,
     /// Per-peer active-upload statistics, shared with the API handlers.
     upload_stats: Arc<crate::upload_stats::UploadRegistry>,
+    /// Notification service — records a notification when a download completes.
+    notifier: crate::notifier::Notifier,
 }
 
 impl DownloadEngine {
@@ -259,6 +261,7 @@ impl DownloadEngine {
         download_throttle: Arc<TokenBucket>,
         live_stats: crate::live_stats::LiveStatsMap,
         upload_stats: Arc<crate::upload_stats::UploadRegistry>,
+        notifier: crate::notifier::Notifier,
     ) -> Self {
         Self {
             db,
@@ -275,6 +278,7 @@ impl DownloadEngine {
             download_throttle,
             live_stats,
             upload_stats,
+            notifier,
         }
     }
 
@@ -1412,6 +1416,18 @@ impl DownloadEngine {
                         warn!("set_status completed error: {e}");
                     }
                     info!(root_hash = hex::encode(root_hash), "Download completed");
+                    let name = final_path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    self.notifier
+                        .notify(
+                            rucio_core::api::notifications::NotificationKind::Download,
+                            "Download complete",
+                            name,
+                            Some(hex::encode(root_hash)),
+                        )
+                        .await;
                     self.live_stats.write().await.remove(&dl_id);
                     self.active.remove(&root_hash);
                 } else {
@@ -1848,6 +1864,11 @@ mod tests {
         let (db, db_dir) = make_db().await;
         let (cmd_tx, cmd_rx) = mpsc::channel(64);
         let metrics = Arc::new(crate::metrics::Metrics::default());
+        let (ws_tx, _) = tokio::sync::broadcast::channel(16);
+        let notif_state = crate::notifier::NotificationState::from_config(
+            &crate::config::NotificationConfig::default(),
+        );
+        let notifier = crate::notifier::Notifier::new(db.clone(), ws_tx, notif_state);
         let engine = DownloadEngine::new(
             db,
             cmd_tx,
@@ -1860,6 +1881,7 @@ mod tests {
             Arc::new(crate::throttle::TokenBucket::new(0)),
             Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             Arc::new(crate::upload_stats::UploadRegistry::new()),
+            notifier,
         );
         (engine, cmd_rx, db_dir)
     }

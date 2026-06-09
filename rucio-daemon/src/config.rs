@@ -16,6 +16,41 @@ pub struct Config {
     pub storage: StorageConfig,
     #[serde(default)]
     pub emule: EmuleConfig,
+    #[serde(default)]
+    pub notifications: NotificationConfig,
+}
+
+/// In-app notification centre settings.
+///
+/// `enabled` is the master switch; the per-kind flags let the user opt out of a
+/// category while keeping the rest. A notification is generated only when both
+/// `enabled` and the matching per-kind flag are set, so filtering happens at the
+/// source — disabled categories are never persisted or pushed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NotificationConfig {
+    /// Master switch for the whole notification centre.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Notify when a download (Rucio or eMule) finishes.
+    #[serde(default = "default_true")]
+    pub downloads: bool,
+    /// Notify on system/background events (e.g. indexing finished).
+    #[serde(default = "default_true")]
+    pub system: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for NotificationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            downloads: true,
+            system: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

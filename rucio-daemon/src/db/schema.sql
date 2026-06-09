@@ -155,3 +155,21 @@ CREATE TABLE IF NOT EXISTS known_peers (
     last_seen   INTEGER NOT NULL,
     high_id     INTEGER NOT NULL DEFAULT 1 -- 1 = HighID, 0 = LowID
 );
+
+-- ---------------------------------------------------------------------------
+-- notifications
+-- In-app notification centre records (download finished, indexing done, ...).
+-- Generic on purpose so the same rows can later feed outbound webhooks.
+-- Retention is bounded by the insert path, not the schema.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS notifications (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind        TEXT    NOT NULL,          -- download, system
+    title       TEXT    NOT NULL,
+    body        TEXT    NOT NULL,
+    ref_key     TEXT,                      -- optional resource reference (e.g. blake3 hex)
+    created_at  INTEGER NOT NULL,
+    read        INTEGER NOT NULL DEFAULT 0 -- 1 = seen, 0 = unread
+);
+
+CREATE INDEX IF NOT EXISTS idx_notifications_created ON notifications(created_at);

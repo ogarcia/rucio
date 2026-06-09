@@ -486,6 +486,44 @@ pub struct SearchListResponse {
     pub searches: Vec<SearchSummary>,
 }
 
+// ── Notifications ────────────────────────────────────────────────────────────
+
+#[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NotificationKind {
+    Download,
+    System,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct Notification {
+    pub id: i64,
+    pub kind: NotificationKind,
+    pub title: String,
+    pub body: String,
+    // Kept for a future deep-link (click a notification to open its resource);
+    // deserialized now so the field round-trips, not yet read by the UI.
+    #[allow(dead_code)]
+    #[serde(default)]
+    pub ref_key: Option<String>,
+    pub created_at: i64,
+    #[serde(default)]
+    pub read: bool,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct NotificationList {
+    pub items: Vec<Notification>,
+    pub unread: i64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct NotificationSettings {
+    pub enabled: bool,
+    pub downloads: bool,
+    pub system: bool,
+}
+
 // ── WebSocket events ─────────────────────────────────────────────────────────
 
 // Mirrors the daemon's WsEvent: { "type": "...", "data": ... }
@@ -526,6 +564,7 @@ pub enum WsEvent {
     NodeClassChanged {
         class: String,
     },
+    Notification(Notification),
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

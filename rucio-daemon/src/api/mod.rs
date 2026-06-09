@@ -8,6 +8,7 @@ pub mod downloads;
 pub mod emule;
 pub mod health;
 pub mod metrics;
+pub mod notifications;
 pub mod search;
 pub mod searches;
 pub mod shares;
@@ -110,6 +111,12 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         health::get_health,
         emule::get_emule_status,
         emule::post_emule_bootstrap,
+        notifications::list_notifications,
+        notifications::mark_all_read,
+        notifications::clear_notifications,
+        notifications::delete_notification,
+        notifications::get_settings,
+        notifications::put_settings,
     ),
     components(schemas(
         rucio_core::api::status::StatusResponse,
@@ -160,6 +167,10 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         rucio_core::api::emule::EmuleBootstrapRequest,
         rucio_core::api::emule::EmuleBootstrapResponse,
         rucio_core::api::emule::EmuleStatusResponse,
+        rucio_core::api::notifications::NotificationKind,
+        rucio_core::api::notifications::NotificationDto,
+        rucio_core::api::notifications::NotificationList,
+        rucio_core::api::notifications::NotificationSettings,
     ))
 )]
 struct ApiDoc;
@@ -412,6 +423,13 @@ pub struct AppState {
     pub live_stats: crate::live_stats::LiveStatsMap,
     /// Per-peer active-upload statistics (who is downloading from us, rate).
     pub upload_stats: Arc<crate::upload_stats::UploadRegistry>,
+    /// Live notification toggles, updated by the settings handler and read by
+    /// the notifier when deciding whether to record an event.
+    pub notifications: Arc<crate::notifier::NotificationState>,
+    /// Latched by any indexing producer when it enqueues work; the main loop
+    /// clears it and fires an "indexing complete" notification once the pending
+    /// count drains to 0.
+    pub indexing_seen: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Live node status kept in memory and updated by the event loop.
@@ -514,6 +532,24 @@ fn v1_router() -> Router<AppState> {
         .route(
             "/config/limits",
             routing::get(config::get_limits).put(config::put_limits),
+        )
+        // notifications
+        .route(
+            "/notifications",
+            routing::get(notifications::list_notifications)
+                .delete(notifications::clear_notifications),
+        )
+        .route(
+            "/notifications/read",
+            routing::post(notifications::mark_all_read),
+        )
+        .route(
+            "/notifications/settings",
+            routing::get(notifications::get_settings).put(notifications::put_settings),
+        )
+        .route(
+            "/notifications/{id}",
+            routing::delete(notifications::delete_notification),
         )
         // metrics
         .route("/metrics", routing::get(metrics::get_metrics))

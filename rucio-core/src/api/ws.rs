@@ -68,4 +68,8 @@ pub enum WsEvent {
 
     /// The node's connectivity class changed (e.g. Unknown → HighId).
     NodeClassChanged { class: NodeClass },
+
+    /// A new notification was created. Pushed so the client's notification
+    /// centre and bell badge update live without polling.
+    Notification(crate::api::notifications::NotificationDto),
 }

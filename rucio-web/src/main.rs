@@ -1,6 +1,7 @@
 mod config;
 mod downloads;
 mod icons;
+mod notifications;
 mod overlays;
 mod searches;
 mod shares;
@@ -74,13 +75,14 @@ use downloads::{
     DownloadsTab, any_pausable, any_paused, any_terminal, api_add_links, clear_history, pause_all,
     refresh_downloads, resume_all,
 };
+use notifications::NotificationsPanel;
 use overlays::{AboutPanel, AddressesPanel, NodeStatusPanel, PeersPanel, StatsPanel};
 use searches::SearchesTab;
 use shares::SharesTab;
 use types::{
-    ActiveUpload, DownloadResponse, SearchResult, SearchState, SearchSummary, SpeedLimits,
-    StatusResponse, TempLimitRequest, TempLimitStatus, UploadsResponse, WsEvent, format_rate_kbps,
-    is_streamed_state,
+    ActiveUpload, DownloadResponse, Notification, NotificationList, SearchResult, SearchState,
+    SearchSummary, SpeedLimits, StatusResponse, TempLimitRequest, TempLimitStatus, UploadsResponse,
+    WsEvent, format_rate_kbps, is_streamed_state,
 };
 use uploads::UploadsTab;
 
@@ -186,6 +188,7 @@ pub enum Panel {
     Peers,
     Stats,
     About,
+    Notifications,
 }
 
 // ── WebSocket ────────────────────────────────────────────────────────────────
@@ -213,6 +216,8 @@ fn start_ws_loop(
     ul_speed: RwSignal<u64>,
     search: SearchStore,
     indexing: RwSignal<usize>,
+    notifs: RwSignal<Vec<Notification>>,
+    unread: RwSignal<i64>,
 ) {
     spawn_local(async move {
         // Reconnect backoff. The daemon binds to loopback, so retries are cheap;
@@ -277,7 +282,7 @@ fn start_ws_loop(
                                 {
                                     handle_event(
                                         event, downloads, uploads, status, dl_speed, ul_speed,
-                                        search, indexing,
+                                        search, indexing, notifs, unread,
                                     );
                                 }
                             }
@@ -310,6 +315,8 @@ fn handle_event(
     ul_speed: RwSignal<u64>,
     search: SearchStore,
     indexing: RwSignal<usize>,
+    notifs: RwSignal<Vec<Notification>>,
+    unread: RwSignal<i64>,
 ) {
     match event {
         WsEvent::UploadProgress(list) => {
@@ -468,6 +475,16 @@ fn handle_event(
             }
         }
 
+        WsEvent::Notification(n) => {
+            if !n.read {
+                unread.update(|u| *u += 1);
+            }
+            notifs.update(|list| {
+                list.insert(0, n);
+                list.truncate(200);
+            });
+        }
+
         // Liveness keepalive — receiving it already flipped the connection
         // indicator to connected in the WS loop; nothing else to do.
         WsEvent::Ping => {}
@@ -515,6 +532,9 @@ fn App() -> impl IntoView {
     // Full configuration modal open/closed.
     let config_open: RwSignal<bool> = RwSignal::new(false);
     let temp_down: RwSignal<u64> = RwSignal::new(0);
+    // Notification centre: the list (newest first) and the unread badge count.
+    let notifications: RwSignal<Vec<Notification>> = RwSignal::new(vec![]);
+    let unread: RwSignal<i64> = RwSignal::new(0);
 
     // PWA protocol handler: when launched via an `ed2k:` link (manifest
     // `protocol_handlers`), the app opens at `/?handle=<link>`. Add it as a
@@ -567,6 +587,15 @@ fn App() -> impl IntoView {
         {
             uploads.set(s.uploads);
         }
+        // Seed the notification centre and bell badge from persisted history.
+        if let Ok(r) = gloo_net::http::Request::get("/api/v1/notifications")
+            .send()
+            .await
+            && let Ok(s) = r.json::<NotificationList>().await
+        {
+            notifications.set(s.items);
+            unread.set(s.unread);
+        }
     });
 
     // Start the persistent WebSocket loop.
@@ -579,6 +608,8 @@ fn App() -> impl IntoView {
         ul_speed,
         search,
         indexing,
+        notifications,
+        unread,
     );
 
     view! {
@@ -617,6 +648,41 @@ fn App() -> impl IntoView {
                             ></svg>
                         }
                     }}
+
+                    // Notification bell with unread badge.
+                    <button
+                        class="bell-btn"
+                        title="Notifications"
+                        on:click=move |_| {
+                            active_panel.set(Some(Panel::Notifications));
+                            // Opening the centre marks everything read.
+                            if unread.get_untracked() > 0 {
+                                unread.set(0);
+                                notifications.update(|list| {
+                                    for n in list.iter_mut() {
+                                        n.read = true;
+                                    }
+                                });
+                                spawn_local(async move {
+                                    let _ = gloo_net::http::Request::post(
+                                        "/api/v1/notifications/read",
+                                    )
+                                    .send()
+                                    .await;
+                                });
+                            }
+                        }
+                    >
+                        <icons::Icon paths=icons::BELL/>
+                        <Show when=move || { unread.get() > 0 }>
+                            <span class="bell-badge">
+                                {move || {
+                                    let u = unread.get();
+                                    if u > 99 { "99+".to_string() } else { u.to_string() }
+                                }}
+                            </span>
+                        </Show>
+                    </button>
 
                     <button
                         class="menu-btn"
@@ -901,6 +967,12 @@ fn App() -> impl IntoView {
             }.into_any(),
             Panel::About => view! {
                 <AboutPanel active_panel=active_panel/>
+            }.into_any(),
+            Panel::Notifications => view! {
+                <NotificationsPanel
+                    notifications=notifications
+                    active_panel=active_panel
+                />
             }.into_any(),
         })}
 

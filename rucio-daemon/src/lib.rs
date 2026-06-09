@@ -7,6 +7,7 @@ pub mod emule;
 pub mod emule_identity;
 pub mod live_stats;
 pub mod metrics;
+pub mod notifier;
 pub mod throttle;
 pub mod transfer;
 pub mod upload_scheduler;
@@ -280,6 +281,14 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
     // Per-peer active-upload registry, shared between the rucio engine, the
     // eMule upload server, the per-second sampler in this loop, and the API.
     let upload_stats = Arc::new(upload_stats::UploadRegistry::new());
+    // WebSocket broadcast bus and the notification service are created up front
+    // so the download engine (and later the eMule task and indexing tick) can
+    // record notifications. The notifier holds live toggles seeded from config.
+    let (ws_tx, _) = tokio::sync::broadcast::channel::<WsEvent>(256);
+    let notif_state = crate::notifier::NotificationState::from_config(&config.notifications);
+    let notifier =
+        crate::notifier::Notifier::new(db.clone(), ws_tx.clone(), Arc::clone(&notif_state));
+
     let mut engine = transfer::DownloadEngine::new(
         db.clone(),
         handle.cmd_tx.clone(),
@@ -292,6 +301,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         Arc::clone(&download_throttle),
         Arc::clone(&live_stats),
         Arc::clone(&upload_stats),
+        notifier.clone(),
     );
 
     let (download_tx, mut download_rx) = tokio::sync::mpsc::channel::<api::DownloadRequest>(32);
@@ -315,12 +325,18 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
     // Shared with AppState so watcher-driven indexing shows up in the indexing
     // status endpoint / WS, the same as manual `share add`.
     let indexing_count = Arc::new(AtomicUsize::new(0));
+    // Set to true by any indexing producer the moment it enqueues work, cleared
+    // by the ws_tick when the pending count is back to 0. A latch (rather than
+    // sampling the count) so a batch that starts and finishes between two ticks
+    // — e.g. a single small file — still fires the "indexing complete" event.
+    let indexing_seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let (watcher, watcher_task) = watcher::spawn(
         db.clone(),
         handle.cmd_tx.clone(),
         Arc::clone(&indexing_count),
         Arc::clone(&excluded_index_dirs),
         ed2k_index_tx.clone(),
+        Arc::clone(&indexing_seen),
     );
 
     // Register all known shared dirs with the watcher (including download_dir
@@ -343,6 +359,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         let indexing_count = indexing_count.clone();
         let excluded = Arc::clone(&excluded_index_dirs);
         let ed2k_tx = ed2k_index_tx.clone();
+        let indexing_seen = Arc::clone(&indexing_seen);
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(24 * 3600));
             loop {
@@ -353,6 +370,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                     &indexing_count,
                     &excluded,
                     ed2k_tx.as_ref(),
+                    &indexing_seen,
                 )
                 .await;
             }
@@ -360,7 +378,6 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
     };
 
     // --- API server ---------------------------------------------------------
-    let (ws_tx, _) = tokio::sync::broadcast::channel::<WsEvent>(256);
 
     // In-memory whitelist of files currently being downloaded via eMule, shared
     // between the download engine (registers entries) and the upload handler
@@ -554,6 +571,8 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         external_ip,
         live_stats: Arc::clone(&live_stats),
         upload_stats: Arc::clone(&upload_stats),
+        notifications: Arc::clone(&notif_state),
+        indexing_seen: Arc::clone(&indexing_seen),
     };
 
     // --- eMule: republish our shared files as Kad sources (good citizen) ----
@@ -658,6 +677,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                 let met = Arc::clone(&session_metrics);
                 let dt = Arc::clone(&download_throttle);
                 let reg = emule_cancel.clone();
+                let notif = notifier.clone();
                 tokio::spawn(async move {
                     if let Err(e) = crate::emule::run_ed2k_download(
                         &row.ed2k_link,
@@ -670,6 +690,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                         &ls,
                         &met,
                         &dt,
+                        &notif,
                         cancel,
                         reg,
                     )
@@ -841,11 +862,30 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                 }
             }
             _ = ws_tick.tick() => {
+                // Indexing-complete notification: a producer latched `indexing_seen`
+                // when it enqueued work; once the pending count drains to 0 we fire
+                // once and clear the latch. Robust even if a small batch starts and
+                // finishes between two ticks, and works with no WS clients connected.
+                let pending = app_state.indexing_count.load(std::sync::atomic::Ordering::Relaxed);
+                if pending == 0
+                    && app_state
+                        .indexing_seen
+                        .swap(false, std::sync::atomic::Ordering::Relaxed)
+                {
+                    notifier
+                        .notify(
+                            rucio_core::api::notifications::NotificationKind::System,
+                            "Indexing complete",
+                            "Your shared files are up to date",
+                            None,
+                        )
+                        .await;
+                }
+
                 if ws_tx.receiver_count() == 0 {
                     continue;
                 }
                 // IndexingCount
-                let pending = app_state.indexing_count.load(std::sync::atomic::Ordering::Relaxed);
                 let _ = ws_tx.send(WsEvent::IndexingCount { pending });
                 // Aggregate session speeds (5-second moving average from the
                 // metrics sampler).  Lets the client show live rates without
@@ -1022,10 +1062,11 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                                             let met = Arc::clone(&session_metrics);
                                             let dt = Arc::clone(&download_throttle);
                                             let reg = emule_cancel.clone();
+                                            let notif = notifier.clone();
                                             tokio::spawn(async move {
                                                 if let Err(e) = crate::emule::run_ed2k_download(
                                                     &link, download_id, &config, &db, &kad, &ad,
-                                                    &slots, &ls, &met, &dt, cancel, reg,
+                                                    &slots, &ls, &met, &dt, &notif, cancel, reg,
                                                 )
                                                 .await
                                                 {

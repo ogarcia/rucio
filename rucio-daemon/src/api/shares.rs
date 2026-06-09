@@ -267,6 +267,9 @@ pub async fn add_share(
     let cmd_tx = state.node_cmd.clone();
     let indexing_count = state.indexing_count.clone();
     indexing_count.fetch_add(total, Ordering::Relaxed);
+    // Latch so the main loop fires an "indexing complete" notification once this
+    // batch drains, even if it finishes between two ws ticks.
+    state.indexing_seen.store(true, Ordering::Relaxed);
     tokio::spawn(async move {
         let mut errors: Vec<String> = vec![];
         for path in paths {

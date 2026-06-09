@@ -1,0 +1,159 @@
+//! Notification-centre endpoints: list/clear/mark-read the in-app
+//! notifications, and read/update the per-kind toggles.
+
+use axum::Json;
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+
+use rucio_core::api::notifications::{NotificationList, NotificationSettings};
+
+use crate::api::AppState;
+use crate::config::NotificationConfig;
+
+const LIST_LIMIT: i64 = 200;
+
+/// List notifications (newest first) and the unread count.
+#[utoipa::path(
+    get,
+    path = "/api/v1/notifications",
+    tag = "notifications",
+    summary = "List notifications",
+    responses(
+        (status = 200, description = "Recent notifications and unread count", body = NotificationList),
+    )
+)]
+pub async fn list_notifications(
+    State(state): State<AppState>,
+) -> Result<Json<NotificationList>, StatusCode> {
+    let items = crate::db::notifications::list(&state.db, LIST_LIMIT)
+        .await
+        .map_err(internal)?;
+    let unread = crate::db::notifications::unread_count(&state.db)
+        .await
+        .map_err(internal)?;
+    Ok(Json(NotificationList { items, unread }))
+}
+
+/// Mark every notification as read.
+#[utoipa::path(
+    post,
+    path = "/api/v1/notifications/read",
+    tag = "notifications",
+    summary = "Mark all notifications read",
+    responses((status = 204, description = "All notifications marked read")),
+)]
+pub async fn mark_all_read(State(state): State<AppState>) -> StatusCode {
+    match crate::db::notifications::mark_all_read(&state.db).await {
+        Ok(_) => StatusCode::NO_CONTENT,
+        Err(e) => {
+            tracing::error!("mark_all_read: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    }
+}
+
+/// Delete every notification.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/notifications",
+    tag = "notifications",
+    summary = "Clear all notifications",
+    responses((status = 204, description = "All notifications deleted")),
+)]
+pub async fn clear_notifications(State(state): State<AppState>) -> StatusCode {
+    match crate::db::notifications::clear(&state.db).await {
+        Ok(()) => StatusCode::NO_CONTENT,
+        Err(e) => {
+            tracing::error!("clear_notifications: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    }
+}
+
+/// Delete a single notification by id.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/notifications/{id}",
+    tag = "notifications",
+    summary = "Delete a notification",
+    params(("id" = i64, Path, description = "Notification id")),
+    responses(
+        (status = 204, description = "Notification deleted"),
+        (status = 404, description = "No such notification"),
+    )
+)]
+pub async fn delete_notification(State(state): State<AppState>, Path(id): Path<i64>) -> StatusCode {
+    match crate::db::notifications::delete(&state.db, id).await {
+        Ok(true) => StatusCode::NO_CONTENT,
+        Ok(false) => StatusCode::NOT_FOUND,
+        Err(e) => {
+            tracing::error!("delete_notification: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    }
+}
+
+/// Read the notification toggles.
+#[utoipa::path(
+    get,
+    path = "/api/v1/notifications/settings",
+    tag = "notifications",
+    summary = "Get notification settings",
+    responses((status = 200, description = "Current notification toggles", body = NotificationSettings)),
+)]
+pub async fn get_settings(State(state): State<AppState>) -> Json<NotificationSettings> {
+    // Read the live toggles, not the startup config snapshot (which goes stale
+    // after a PUT).
+    let (enabled, downloads, system) = state.notifications.snapshot();
+    Json(NotificationSettings {
+        enabled,
+        downloads,
+        system,
+    })
+}
+
+/// Update the notification toggles: apply them to the live notifier and persist
+/// them to `config.toml`.
+#[utoipa::path(
+    put,
+    path = "/api/v1/notifications/settings",
+    tag = "notifications",
+    request_body = NotificationSettings,
+    summary = "Update notification settings",
+    responses(
+        (status = 204, description = "Settings applied and persisted"),
+        (status = 500, description = "Could not persist settings"),
+    )
+)]
+pub async fn put_settings(
+    State(state): State<AppState>,
+    Json(req): Json<NotificationSettings>,
+) -> StatusCode {
+    let new = NotificationConfig {
+        enabled: req.enabled,
+        downloads: req.downloads,
+        system: req.system,
+    };
+    // Apply to the live notifier immediately so the change takes effect now.
+    state.notifications.update(&new);
+
+    // Persist: load what is currently on disk, swap the notifications block,
+    // and save — so we never clobber other settings changed since startup.
+    let mut cfg = match crate::config::Config::load(state.config_path.as_deref()) {
+        Ok(c) => c,
+        Err(_) => (*state.config).clone(),
+    };
+    cfg.notifications = new;
+    match cfg.save() {
+        Ok(()) => StatusCode::NO_CONTENT,
+        Err(e) => {
+            tracing::error!("Failed to save notification settings: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    }
+}
+
+fn internal<E: std::fmt::Display>(e: E) -> StatusCode {
+    tracing::error!("notifications: {e}");
+    StatusCode::INTERNAL_SERVER_ERROR
+}

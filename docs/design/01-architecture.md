@@ -155,9 +155,37 @@ The daemon exposes a JSON REST API on `http://127.0.0.1:3003/api/v1/`.
 | `GET` | `/search/:query_id` | Poll accumulated search results |
 | `GET` | `/config` | Current configuration |
 | `PUT` | `/config` | Update configuration |
+| `GET` | `/notifications` | Recent notifications + unread count |
+| `POST` | `/notifications/read` | Mark all notifications read |
+| `DELETE` | `/notifications` | Clear all notifications |
+| `DELETE` | `/notifications/:id` | Delete one notification |
+| `GET` | `/notifications/settings` | Notification toggles |
+| `PUT` | `/notifications/settings` | Update notification toggles (applied live) |
 | `GET` | `/metrics` | Transfer metrics (bytes up/down, active chunks) |
 | `GET` | `/emule/status` | Kad2 contact count and nodes.dat status — emule-compat |
 | `GET` | `/health` | Liveness probe (always `200 OK`) |
 
 All endpoints return JSON. Error responses follow the shape
 `{ "error": "message" }`.
+
+## Notification centre
+
+The daemon keeps a small, persisted log of user-facing events — a download
+finishing, indexing completing — surfaced in the web UI's bell drawer.
+
+- Records live in the `notifications` table (`kind` + `title` + `body` +
+  optional `ref_key` resource reference + `created_at` + `read`). The model is
+  deliberately generic so the same rows can later feed outbound webhooks. Each
+  insert prunes the table to the most recent 200 rows.
+- All recording goes through one `Notifier` (DB pool + WS sender + live
+  toggles). Call sites — the download engine, the eMule task, the indexing tick
+  — just call `notify(kind, title, body, ref)`; gating, persistence and the
+  `WsEvent::Notification` push happen there.
+- Two kinds today: **download** (a Rucio or eMule download completed) and
+  **system** (e.g. indexing finished — fired on the pending-count → 0 edge via a
+  latch, so a sub-second batch still notifies). Per-kind toggles plus a master
+  switch (`[notifications]` in `config.toml`) are honoured at the source: a
+  disabled kind is never persisted or pushed. Toggles apply live (no restart).
+- New notifications are pushed over the WebSocket bus so the bell badge updates
+  without polling; the client seeds its history from `GET /notifications` on
+  load.

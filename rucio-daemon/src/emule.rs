@@ -548,6 +548,7 @@ pub async fn run_ed2k_download(
     live_stats: &crate::live_stats::LiveStatsMap,
     metrics: &Arc<crate::metrics::Metrics>,
     download_throttle: &Arc<crate::throttle::TokenBucket>,
+    notifier: &crate::notifier::Notifier,
     cancel: Arc<AtomicBool>,
     cancel_registry: EmuleCancelRegistry,
 ) -> Result<()> {
@@ -1391,6 +1392,15 @@ pub async fn run_ed2k_download(
         blake3 = %blake3_hex,
         "eMule download complete — file ready in download directory"
     );
+
+    notifier
+        .notify(
+            rucio_core::api::notifications::NotificationKind::Download,
+            "Download complete",
+            final_name.clone(),
+            Some(blake3_hex.clone()),
+        )
+        .await;
 
     // Keep seeding the finished file to the Kad network (good-citizen policy),
     // decoupled from the downloads list: record it as a shared file and repoint

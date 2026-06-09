@@ -29,7 +29,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -79,17 +79,29 @@ impl WatcherHandle {
 /// - `node_tx` — channel to send `NodeCmd` to the libp2p node task
 /// - `excluded` — directory prefixes whose files must never be indexed (the
 ///   temp dirs); guards against a `temp_dir` nested inside the `download_dir`.
+#[allow(clippy::too_many_arguments)]
 pub fn spawn(
     db: Db,
     node_tx: mpsc::Sender<NodeCmd>,
     indexing_count: Arc<AtomicUsize>,
     excluded: Arc<Vec<PathBuf>>,
     ed2k_tx: Option<mpsc::Sender<PathBuf>>,
+    indexing_seen: Arc<AtomicBool>,
 ) -> (WatcherHandle, tokio::task::JoinHandle<()>) {
     let (cmd_tx, cmd_rx) = mpsc::channel::<WatcherCmd>(64);
 
     let task = tokio::spawn(async move {
-        if let Err(e) = run(db, node_tx, cmd_rx, indexing_count, excluded, ed2k_tx).await {
+        if let Err(e) = run(
+            db,
+            node_tx,
+            cmd_rx,
+            indexing_count,
+            excluded,
+            ed2k_tx,
+            indexing_seen,
+        )
+        .await
+        {
             warn!("WatcherService exited with error: {e}");
         }
     });
@@ -101,6 +113,7 @@ pub fn spawn(
 // Internal service loop
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 async fn run(
     db: Db,
     node_tx: mpsc::Sender<NodeCmd>,
@@ -108,6 +121,7 @@ async fn run(
     indexing_count: Arc<AtomicUsize>,
     excluded: Arc<Vec<PathBuf>>,
     ed2k_tx: Option<mpsc::Sender<PathBuf>>,
+    indexing_seen: Arc<AtomicBool>,
 ) -> Result<()> {
     // Bridge: notify (sync) → tokio (async)
     let (ev_tx, mut ev_rx) = mpsc::channel::<notify::Result<Event>>(256);
@@ -178,6 +192,7 @@ async fn run(
                     &node_tx,
                     &indexing_count,
                     ed2k_tx.as_ref(),
+                    &indexing_seen,
                 ).await;
             }
         }
@@ -300,6 +315,7 @@ async fn flush_pending(
     node_tx: &mpsc::Sender<NodeCmd>,
     indexing_count: &AtomicUsize,
     ed2k_tx: Option<&mpsc::Sender<PathBuf>>,
+    indexing_seen: &AtomicBool,
 ) {
     let now = Instant::now();
     let ready: Vec<PathBuf> = pending
@@ -315,6 +331,9 @@ async fn flush_pending(
     // status endpoint (and WS), decrementing as each one completes — so the
     // CLI/web report watcher-driven indexing, not just manual `share add`.
     let to_index: Vec<&PathBuf> = ready.iter().filter(|p| p.is_file()).collect();
+    if !to_index.is_empty() {
+        indexing_seen.store(true, Ordering::Relaxed);
+    }
     indexing_count.fetch_add(to_index.len(), Ordering::Relaxed);
     for path in to_index {
         on_file_upsert(path, db, node_tx, ed2k_tx).await;
@@ -381,12 +400,14 @@ async fn on_file_remove(path: &Path, db: &Db, node_tx: &mpsc::Sender<NodeCmd>) {
 /// are de-indexed, and files whose `size` or `mtime` differ are re-hashed.
 /// Unchanged files are skipped, so on a stable library this is just a directory
 /// walk + `stat` (no hashing). Run at startup and then on a long interval.
+#[allow(clippy::too_many_arguments)]
 pub async fn reconcile_shares(
     db: &Db,
     node_tx: &mpsc::Sender<NodeCmd>,
     indexing_count: &AtomicUsize,
     excluded: &[PathBuf],
     ed2k_tx: Option<&mpsc::Sender<PathBuf>>,
+    indexing_seen: &AtomicBool,
 ) {
     let dirs = match db::shared_dirs::list(db).await {
         Ok(d) => d,
@@ -465,6 +486,9 @@ pub async fn reconcile_shares(
 
     // (Re)index the collected files, tracking progress so the work is visible
     // after a restart — not only for runtime `share add` / live watcher events.
+    if !to_upsert.is_empty() {
+        indexing_seen.store(true, Ordering::Relaxed);
+    }
     indexing_count.fetch_add(to_upsert.len(), Ordering::Relaxed);
     for path in &to_upsert {
         on_file_upsert(path, db, node_tx, ed2k_tx).await;
