@@ -361,7 +361,11 @@
             left: 50%; transform: translateX(-50%);
             width: min(560px, calc(100vw - 2rem));
             max-height: calc(100vh - 72px);
-            max-height: calc(100dvh - 72px); overflow-y: auto;
+            max-height: calc(100dvh - 72px);
+            /* The overlay itself doesn't scroll; only .overlay-body does, so the
+               scrollbar stays inside the body and never crosses the fixed
+               header. overflow:hidden also keeps the rounded corners clean. */
+            display: flex; flex-direction: column; overflow: hidden;
             background: var(--surface); border: 1px solid var(--border);
             border-radius: 0.5rem; box-shadow: 0 12px 36px rgba(0,0,0,.2);
             z-index: 201;
@@ -369,10 +373,7 @@
         .overlay-header {
             display: flex; align-items: center; justify-content: space-between;
             padding: 0.875rem 1.25rem; border-bottom: 1px solid var(--border);
-            /* Pin the title + close button while the overlay body scrolls, so
-               the X is always reachable on tall/scrolling modals. */
-            position: sticky; top: 0; z-index: 1;
-            background: var(--surface);
+            background: var(--surface); flex-shrink: 0;
         }
         .overlay-title { font-size: 0.8125rem; font-weight: 600; color: var(--text); }
         .overlay-close {
@@ -383,7 +384,7 @@
         }
         .overlay-close .icon { width: 1.125rem; height: 1.125rem; }
         .overlay-close:hover { color: var(--text); background: var(--row-hover); }
-        .overlay-body { padding: 1rem 1.25rem; }
+        .overlay-body { padding: 1rem 1.25rem; flex: 1; overflow-y: auto; }
 
         /* ── Notification centre ─────────────────────────────────────────── */
         /* A right-edge slideover (not a centred modal), like an OS notification
@@ -404,8 +405,6 @@
             from { transform: translateX(100%); }
             to   { transform: translateX(0); }
         }
-        /* The list scrolls; the header stays put. */
-        .notif-drawer .overlay-body { flex: 1; overflow-y: auto; }
         .notif-clear {
             margin-left: auto; margin-right: 0.625rem;
             background: transparent; border: none; color: var(--accent);
