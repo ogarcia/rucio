@@ -225,6 +225,7 @@ async fn api_fetch_pieces(id: i64) -> Option<DownloadPiecesResponse> {
 pub async fn api_add_links(
     text: String,
     downloads: RwSignal<Vec<DownloadResponse>>,
+    category_id: Option<i64>,
 ) -> Vec<String> {
     let mut rejected = Vec::new();
     for line in text.lines() {
@@ -233,17 +234,17 @@ pub async fn api_add_links(
             continue;
         }
         let accepted = if link.starts_with("ed2k://") {
-            post_accepts(
-                "/api/v1/downloads/ed2k",
-                &serde_json::json!({ "link": link }),
-            )
-            .await
+            let mut body = serde_json::json!({ "link": link });
+            if let Some(c) = category_id {
+                body["category_id"] = c.into();
+            }
+            post_accepts("/api/v1/downloads/ed2k", &body).await
         } else if link.starts_with("rucio:") {
-            post_accepts(
-                "/api/v1/downloads",
-                &serde_json::json!({ "magnet": link, "providers": [] }),
-            )
-            .await
+            let mut body = serde_json::json!({ "magnet": link, "providers": [] });
+            if let Some(c) = category_id {
+                body["category_id"] = c.into();
+            }
+            post_accepts("/api/v1/downloads", &body).await
         } else {
             // Not a rucio: or ed2k:// link — don't even send it.
             false
@@ -563,6 +564,7 @@ pub fn DownloadsTab(
         <Show when=move || add_open.get()>
             <AddModal
                 downloads=downloads
+                categories=categories
                 on_close=move || add_open.set(false)
             />
         </Show>
@@ -733,12 +735,15 @@ fn DownloadRow(
 #[component]
 fn AddModal(
     downloads: RwSignal<Vec<DownloadResponse>>,
+    categories: RwSignal<Vec<Category>>,
     on_close: impl Fn() + Copy + 'static,
 ) -> impl IntoView {
     let text = RwSignal::new(String::new());
     let busy = RwSignal::new(false);
     // Lines the daemon couldn't accept; shown so the user can fix them.
     let rejected: RwSignal<Vec<String>> = RwSignal::new(vec![]);
+    // Selected category id; None = "Auto / none" (let keyword auto-match decide).
+    let selected_cat: RwSignal<Option<i64>> = RwSignal::new(None);
 
     let submit = move || {
         let t = text.get();
@@ -746,8 +751,9 @@ fn AddModal(
             return;
         }
         busy.set(true);
+        let cat = selected_cat.get_untracked();
         spawn_local(async move {
-            let rej = api_add_links(t, downloads).await;
+            let rej = api_add_links(t, downloads, cat).await;
             busy.set(false);
             if rej.is_empty() {
                 on_close();
@@ -804,6 +810,23 @@ fn AddModal(
                             </p>
                         })
                     }}
+                    <Show when=move || !categories.get().is_empty()>
+                        <div class="add-cat-row">
+                            <label class="config-label">"Category"</label>
+                            <select
+                                class="dl-filter-select"
+                                on:change=move |e| {
+                                    let v = event_target_value(&e);
+                                    selected_cat.set(v.parse::<i64>().ok());
+                                }
+                            >
+                                <option value="" selected=true>"Auto / none"</option>
+                                <For each=move || categories.get() key=|c| c.id let:c>
+                                    <option value=c.id.to_string()>{c.name.clone()}</option>
+                                </For>
+                            </select>
+                        </div>
+                    </Show>
                 </div>
                 <div class="modal-footer">
                     <button class="btn-sm" on:click=move |_| on_close()>"Cancel"</button>

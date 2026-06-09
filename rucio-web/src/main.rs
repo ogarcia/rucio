@@ -560,7 +560,9 @@ fn App() -> impl IntoView {
             let _ = hist.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some("/"));
         }
         spawn_local(async move {
-            api_add_links(link, downloads).await;
+            // Launched via a protocol handler — no category chosen; let the
+            // daemon's keyword auto-match decide.
+            api_add_links(link, downloads, None).await;
         });
     }
 
