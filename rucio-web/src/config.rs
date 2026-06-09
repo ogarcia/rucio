@@ -143,6 +143,9 @@ pub fn ConfigModal(
     let cat_rows: RwSignal<Vec<CatRow>> = RwSignal::new(vec![]);
     let cat_next_id = RwSignal::new(0usize);
     let cat_deleted: RwSignal<Vec<i64>> = RwSignal::new(vec![]);
+    // The modal's owner: per-row editors create their added rows' signals under
+    // it so they survive tab switches (the editors are disposed and remounted).
+    let modal_owner = Owner::current();
 
     // Load once on open.
     Effect::new(move |_| {
@@ -566,10 +569,10 @@ pub fn ConfigModal(
                                         </span>
                                     </div>
                                 </div>
-                                <WebhooksEditor rows=webhook_rows next_id=webhook_next_id/>
+                                <WebhooksEditor rows=webhook_rows next_id=webhook_next_id owner=modal_owner.clone()/>
                             }.into_any(),
                             ConfigTab::Categories => view! {
-                                <CategoriesEditor rows=cat_rows next_id=cat_next_id deleted=cat_deleted/>
+                                <CategoriesEditor rows=cat_rows next_id=cat_next_id deleted=cat_deleted owner=modal_owner.clone()/>
                             }.into_any(),
                         }
                     }}

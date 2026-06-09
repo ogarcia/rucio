@@ -164,10 +164,17 @@ pub fn CategoriesEditor(
     rows: RwSignal<Vec<Row>>,
     next_id: RwSignal<usize>,
     deleted: RwSignal<Vec<i64>>,
+    // The modal's reactive owner. New rows' signals must be created under it (not
+    // this editor's, which is disposed on every tab switch) or returning to this
+    // tab would read disposed signals and panic.
+    owner: Option<Owner>,
 ) -> impl IntoView {
     let add = move |_| {
-        let row = blank_row(next_id);
-        rows.update(|r| r.push(row));
+        let push = || rows.update(|r| r.push(blank_row(next_id)));
+        match &owner {
+            Some(o) => o.with(push),
+            None => push(),
+        }
     };
 
     // Remove a row: queue its id for deletion (if persisted) and drop it.

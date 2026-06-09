@@ -137,16 +137,29 @@ fn format_label(f: &str) -> &'static str {
 /// survives tab switches and is saved by the modal's "Save" button — this
 /// component only renders and mutates the row list, it never persists.
 #[component]
-pub fn WebhooksEditor(rows: RwSignal<Vec<Row>>, next_id: RwSignal<usize>) -> impl IntoView {
+pub fn WebhooksEditor(
+    rows: RwSignal<Vec<Row>>,
+    next_id: RwSignal<usize>,
+    // The modal's reactive owner; new rows' signals are created under it so they
+    // outlive this editor being disposed on a tab switch (see CategoriesEditor).
+    owner: Option<Owner>,
+) -> impl IntoView {
     let add = move |_| {
-        let row = mint_row(
-            next_id,
-            &WebhookDef {
-                format: "generic".to_string(),
-                ..Default::default()
-            },
-        );
-        rows.update(|r| r.push(row));
+        let push = || {
+            rows.update(|r| {
+                r.push(mint_row(
+                    next_id,
+                    &WebhookDef {
+                        format: "generic".to_string(),
+                        ..Default::default()
+                    },
+                ))
+            })
+        };
+        match &owner {
+            Some(o) => o.with(push),
+            None => push(),
+        }
     };
 
     view! {
