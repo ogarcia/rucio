@@ -13,6 +13,7 @@ pub type WsStream =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 use rucio_core::api::{
+    categories::{CategoriesResponse, CategoryRequest, CategoryResponse},
     config::ConfigResponse,
     downloads::{
         DownloadDetailResponse, DownloadResponse, DownloadsResponse, StartDownloadRequest,
@@ -170,6 +171,49 @@ impl ApiClient {
 
     pub async fn remove_share(&self, hash: &str) -> Result<()> {
         self.delete(&format!("/api/v1/shares/{hash}")).await
+    }
+
+    // -----------------------------------------------------------------------
+    // Categories
+    // -----------------------------------------------------------------------
+
+    pub async fn list_categories(&self) -> Result<CategoriesResponse> {
+        self.get("/api/v1/categories").await
+    }
+
+    pub async fn create_category(
+        &self,
+        name: &str,
+        download_dir: Option<&str>,
+    ) -> Result<CategoryResponse> {
+        self.post(
+            "/api/v1/categories",
+            &CategoryRequest {
+                name: name.to_string(),
+                download_dir: download_dir.map(str::to_string),
+            },
+        )
+        .await
+    }
+
+    pub async fn update_category(
+        &self,
+        id: i64,
+        name: &str,
+        download_dir: Option<&str>,
+    ) -> Result<()> {
+        self.put(
+            &format!("/api/v1/categories/{id}"),
+            &CategoryRequest {
+                name: name.to_string(),
+                download_dir: download_dir.map(str::to_string),
+            },
+        )
+        .await
+    }
+
+    pub async fn delete_category(&self, id: i64) -> Result<()> {
+        self.delete(&format!("/api/v1/categories/{id}")).await
     }
 
     /// Retrieve the magnet link for a locally shared file by hash (full or prefix).

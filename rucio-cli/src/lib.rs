@@ -27,6 +27,11 @@ pub enum Commands {
         #[command(subcommand)]
         action: DownloadAction,
     },
+    /// Manage download categories
+    Category {
+        #[command(subcommand)]
+        action: CategoryAction,
+    },
     /// Inspect active uploads (peers downloading from us)
     Upload {
         #[command(subcommand)]
@@ -138,6 +143,37 @@ pub enum DownloadAction {
     Clean {
         /// Row number from `rucio download list` (e.g. 1) or root hash prefix (omit to remove all finished downloads)
         hash: Option<String>,
+    },
+}
+
+/// `rucio category …` — manage download categories.
+#[derive(Subcommand, Debug)]
+pub enum CategoryAction {
+    /// List categories
+    List,
+    /// Create a category
+    Add {
+        /// Unique category name
+        name: String,
+        /// Directory where this category's downloads are saved (absolute path).
+        /// Omit to use the global download directory.
+        #[arg(long, value_name = "PATH")]
+        dir: Option<String>,
+    },
+    /// Update a category's name and directory
+    Set {
+        /// Category id (from `rucio category list`)
+        id: i64,
+        /// New name
+        name: String,
+        /// New directory (absolute path); omit to use the global download directory
+        #[arg(long, value_name = "PATH")]
+        dir: Option<String>,
+    },
+    /// Delete a category (its downloads fall back to the global download dir)
+    Remove {
+        /// Category id (from `rucio category list`)
+        id: i64,
     },
 }
 
@@ -276,6 +312,16 @@ pub async fn run() -> Result<()> {
             DownloadAction::Pause { hash } => cmd::downloads::pause(&client, &hash).await,
             DownloadAction::Resume { hash } => cmd::downloads::resume(&client, &hash).await,
             DownloadAction::Clean { hash } => cmd::downloads::clean(&client, hash.as_deref()).await,
+        },
+        Commands::Category { action } => match action {
+            CategoryAction::List => cmd::categories::list(&client).await,
+            CategoryAction::Add { name, dir } => {
+                cmd::categories::add(&client, &name, dir.as_deref()).await
+            }
+            CategoryAction::Set { id, name, dir } => {
+                cmd::categories::set(&client, id, &name, dir.as_deref()).await
+            }
+            CategoryAction::Remove { id } => cmd::categories::remove(&client, id).await,
         },
         Commands::Upload { action } => match action {
             UploadAction::List { watch } => cmd::uploads::list(&client, watch).await,

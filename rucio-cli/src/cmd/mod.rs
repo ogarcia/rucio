@@ -1,3 +1,4 @@
+pub mod categories;
 pub mod config;
 pub mod downloads;
 pub mod emule;
