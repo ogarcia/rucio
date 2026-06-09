@@ -8,7 +8,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 use crate::icons::{self, Icon};
-use crate::types::{NotificationKind, WebhookDef};
+use crate::types::{NotificationKind, WebhookDef, WebhookTestResult};
 
 /// One editable webhook row. `RwSignal` is `Copy`, so the whole struct is.
 #[derive(Clone, Copy)]
@@ -21,6 +21,8 @@ struct Row {
     secret: RwSignal<String>,
     template: RwSignal<String>,
     content_type: RwSignal<String>,
+    /// Latest test result line (empty until the user hits Test).
+    test: RwSignal<String>,
 }
 
 impl Row {
@@ -39,6 +41,7 @@ impl Row {
             secret: RwSignal::new(def.secret.clone().unwrap_or_default()),
             template: RwSignal::new(def.template.clone().unwrap_or_default()),
             content_type: RwSignal::new(def.content_type.clone().unwrap_or_default()),
+            test: RwSignal::new(String::new()),
         }
     }
 
@@ -68,6 +71,31 @@ impl Row {
             },
         }
     }
+}
+
+/// POST the row's current definition to the test endpoint and show the result.
+fn test_webhook(row: Row) {
+    let def = row.to_def();
+    if def.url.is_empty() {
+        row.test.set("✗ enter a URL first".to_string());
+        return;
+    }
+    row.test.set("Testing…".to_string());
+    spawn_local(async move {
+        let msg =
+            match gloo_net::http::Request::post("/api/v1/notifications/webhooks/test").json(&def) {
+                Ok(req) => match req.send().await {
+                    Ok(resp) => match resp.json::<WebhookTestResult>().await {
+                        Ok(r) if r.ok => "✓ Delivered".to_string(),
+                        Ok(r) => format!("✗ {}", r.error.unwrap_or_else(|| "failed".to_string())),
+                        Err(_) => "✗ bad response".to_string(),
+                    },
+                    Err(_) => "✗ request failed".to_string(),
+                },
+                Err(_) => "✗ invalid request".to_string(),
+            };
+        row.test.set(msg);
+    });
 }
 
 const FORMATS: [&str; 6] = ["generic", "discord", "slack", "telegram", "ntfy", "custom"];
@@ -159,6 +187,17 @@ pub fn WebhooksEditor() -> impl IntoView {
                                 <option value=*f>{format_label(f)}</option>
                             }).collect_view()}
                         </select>
+                        <button
+                            class="btn-sm"
+                            title="Send a test notification to this webhook"
+                            on:click=move |_| test_webhook(row)
+                        >"Test"</button>
+                        <span class=move || {
+                            let t = row.test.get();
+                            if t.starts_with('\u{2713}') { "webhook-test webhook-test-ok" }
+                            else if t.is_empty() { "webhook-test" }
+                            else { "webhook-test webhook-test-err" }
+                        }>{move || row.test.get()}</span>
                         <button
                             class="webhook-del"
                             title="Remove webhook"

@@ -31,6 +31,11 @@ Add one in **Settings → Notifications → Add webhook**. Each webhook has:
 Click **Save webhooks** when done. Delivery is best-effort (a short retry, then
 it gives up); the event always stays in the notification centre regardless.
 
+Use the **Test** button on a row to send a sample notification right away and
+see whether it was delivered — handy for checking the URL and any secret before
+you rely on it. You don't need to save first; it tests the row as currently
+filled in.
+
 What to put in each field, by format:
 
 ### Discord

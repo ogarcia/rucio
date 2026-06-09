@@ -180,6 +180,69 @@ fn sign(secret: &str, body: &[u8]) -> String {
     hex::encode(mac.finalize().into_bytes())
 }
 
+/// Build the POST request for a prepared payload: content-type, user-agent,
+/// any extra headers, and the optional HMAC signature.
+fn build_request(
+    client: &reqwest::Client,
+    prepared: &Prepared,
+    secret: Option<&str>,
+) -> reqwest::RequestBuilder {
+    let mut req = client
+        .post(&prepared.url)
+        .header(reqwest::header::CONTENT_TYPE, &prepared.content_type)
+        .header(reqwest::header::USER_AGENT, "rucio")
+        .timeout(TIMEOUT)
+        .body(prepared.body.clone());
+    for (k, v) in &prepared.headers {
+        req = req.header(*k, v);
+    }
+    if let Some(s) = secret {
+        req = req.header(
+            "X-Rucio-Signature",
+            format!("sha256={}", sign(s, prepared.body.as_bytes())),
+        );
+    }
+    req
+}
+
+/// Send a one-off test delivery to a webhook and report the outcome. Unlike the
+/// fire-and-forget [`dispatch`], this awaits the response (one attempt, no
+/// retries) so the UI can tell the user whether the webhook is set up right.
+pub async fn send_test(
+    client: &reqwest::Client,
+    wh: &WebhookConfig,
+) -> rucio_core::api::notifications::WebhookTestResult {
+    use rucio_core::api::notifications::{NotificationKind, WebhookTestResult};
+    let probe = NotificationDto {
+        id: 0,
+        kind: NotificationKind::System,
+        title: "Rucio test notification".to_string(),
+        body: "If you can read this, your webhook is configured correctly.".to_string(),
+        ref_key: None,
+        created_at: 0,
+        read: false,
+    };
+    let prepared = build_payload(wh, &probe);
+    match build_request(client, &prepared, wh.secret.as_deref())
+        .send()
+        .await
+    {
+        Ok(resp) => {
+            let status = resp.status();
+            WebhookTestResult {
+                ok: status.is_success(),
+                status: Some(status.as_u16()),
+                error: (!status.is_success()).then(|| format!("HTTP {status}")),
+            }
+        }
+        Err(e) => WebhookTestResult {
+            ok: false,
+            status: None,
+            error: Some(e.to_string()),
+        },
+    }
+}
+
 /// POST the prepared request, retrying a couple of times on transient failure.
 async fn send_with_retries(
     client: &reqwest::Client,
@@ -187,27 +250,8 @@ async fn send_with_retries(
     secret: Option<&str>,
     idx: usize,
 ) {
-    let Prepared {
-        url,
-        body,
-        content_type,
-        headers,
-    } = prepared;
-    let signature = secret.map(|s| format!("sha256={}", sign(s, body.as_bytes())));
     for attempt in 1..=MAX_ATTEMPTS {
-        let mut req = client
-            .post(&url)
-            .header(reqwest::header::CONTENT_TYPE, &content_type)
-            .header(reqwest::header::USER_AGENT, "rucio")
-            .timeout(TIMEOUT)
-            .body(body.clone());
-        for (k, v) in &headers {
-            req = req.header(*k, v);
-        }
-        if let Some(sig) = &signature {
-            req = req.header("X-Rucio-Signature", sig);
-        }
-        match req.send().await {
+        match build_request(client, &prepared, secret).send().await {
             Ok(resp) if resp.status().is_success() => {
                 debug!(webhook = idx, status = %resp.status(), "webhook delivered");
                 return;

@@ -5,7 +5,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 
-use rucio_core::api::notifications::{NotificationList, NotificationSettings};
+use rucio_core::api::notifications::{NotificationList, NotificationSettings, WebhookTestResult};
 
 use crate::api::AppState;
 
@@ -198,6 +198,23 @@ pub async fn put_webhooks(
             StatusCode::INTERNAL_SERVER_ERROR
         }
     }
+}
+
+/// Send a one-off test delivery to a webhook (as posted, not necessarily saved)
+/// and report whether it succeeded — lets the user verify their setup.
+#[utoipa::path(
+    post,
+    path = "/api/v1/notifications/webhooks/test",
+    tag = "notifications",
+    request_body = crate::config::WebhookConfig,
+    summary = "Send a test notification to a webhook",
+    responses((status = 200, description = "Test delivery outcome", body = WebhookTestResult)),
+)]
+pub async fn test_webhook(
+    Json(webhook): Json<crate::config::WebhookConfig>,
+) -> Json<rucio_core::api::notifications::WebhookTestResult> {
+    let client = reqwest::Client::new();
+    Json(crate::webhooks::send_test(&client, &webhook).await)
 }
 
 fn internal<E: std::fmt::Display>(e: E) -> StatusCode {

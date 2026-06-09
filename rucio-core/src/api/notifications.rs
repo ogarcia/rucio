@@ -76,3 +76,15 @@ pub struct NotificationSettings {
     pub downloads: bool,
     pub system: bool,
 }
+
+/// Outcome of `POST /api/v1/notifications/webhooks/test`: whether a test
+/// delivery to a webhook succeeded, with the HTTP status (if the request
+/// completed) or the transport error (if it didn't).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+pub struct WebhookTestResult {
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}

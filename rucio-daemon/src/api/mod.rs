@@ -119,6 +119,7 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         notifications::put_settings,
         notifications::get_webhooks,
         notifications::put_webhooks,
+        notifications::test_webhook,
     ),
     components(schemas(
         rucio_core::api::status::StatusResponse,
@@ -173,6 +174,7 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         rucio_core::api::notifications::NotificationDto,
         rucio_core::api::notifications::NotificationList,
         rucio_core::api::notifications::NotificationSettings,
+        rucio_core::api::notifications::WebhookTestResult,
         crate::config::WebhookConfig,
         crate::config::WebhookFormat,
     ))
@@ -554,6 +556,10 @@ fn v1_router() -> Router<AppState> {
         .route(
             "/notifications/webhooks",
             routing::get(notifications::get_webhooks).put(notifications::put_webhooks),
+        )
+        .route(
+            "/notifications/webhooks/test",
+            routing::post(notifications::test_webhook),
         )
         .route(
             "/notifications/{id}",

@@ -522,6 +522,15 @@ pub struct NotificationSettings {
     pub system: bool,
 }
 
+/// Outcome of `POST /notifications/webhooks/test`. The daemon also sends a
+/// numeric `status`, but the UI only needs ok + error.
+#[derive(Deserialize, Clone, Debug)]
+pub struct WebhookTestResult {
+    pub ok: bool,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
 /// A webhook target, round-tripped with `GET`/`PUT /notifications/webhooks`.
 /// Mirrors the daemon's `WebhookConfig`; `format` is a plain string here so it
 /// binds straight to a `<select>`.
