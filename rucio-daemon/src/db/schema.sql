@@ -53,6 +53,20 @@ CREATE TABLE IF NOT EXISTS chunks (
 CREATE INDEX IF NOT EXISTS idx_chunks_hash ON chunks(hash);
 
 -- ---------------------------------------------------------------------------
+-- categories
+-- Optional download categories. A category may pin its own download_dir so the
+-- user can route downloads to different folders; download_dir NULL means the
+-- category uses the global storage.download_dir. A category directory is shared
+-- and protected exactly like the global download_dir.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS categories (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    name          TEXT    NOT NULL UNIQUE,
+    download_dir  TEXT,                       -- absolute path, no trailing slash; NULL = use global
+    added_at      INTEGER NOT NULL
+);
+
+-- ---------------------------------------------------------------------------
 -- downloads
 -- Files being downloaded (or queued).
 -- ---------------------------------------------------------------------------
@@ -66,6 +80,7 @@ CREATE TABLE IF NOT EXISTS downloads (
     -- 'queued' | 'downloading' | 'paused' | 'completed' | 'error'
     bytes_done      INTEGER NOT NULL DEFAULT 0,
     error_msg       TEXT,
+    category_id     INTEGER REFERENCES categories(id) ON DELETE SET NULL,  -- NULL = global download_dir
     added_at        INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL
 );
@@ -86,6 +101,7 @@ CREATE TABLE IF NOT EXISTS emule_downloads (
     bytes_done  INTEGER NOT NULL DEFAULT 0,
     dest_path   TEXT    NOT NULL DEFAULT '',
     error_msg   TEXT,
+    category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,  -- NULL = global download_dir
     added_at    INTEGER NOT NULL,
     updated_at  INTEGER NOT NULL
 );

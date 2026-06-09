@@ -4,6 +4,7 @@
 //! every startup.  If the schema changes, delete the DB file and restart.
 //! No migrations, no versioning until the project reaches a stable release.
 
+pub mod categories;
 pub mod downloads;
 pub mod emule_downloads;
 pub mod emule_shared_files;

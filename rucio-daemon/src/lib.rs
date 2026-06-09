@@ -247,10 +247,24 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
     // ordinary (removable) share rather than left as a protected orphan.
     {
         let dl_path = config.storage.download_dir.to_string_lossy().into_owned();
-        // Today the protected set is just the global download_dir; once download
-        // categories land, their directories join this slice.
-        if let Err(e) = db::shared_dirs::set_protected_dirs(&db, &[&dl_path], now_secs()).await {
-            warn!("Could not register download_dir as protected shared dir: {e}");
+        // The protected set is the global download_dir plus every category-pinned
+        // directory: each is a destination the user must not be able to remove.
+        let cat_dirs = db::categories::pinned_dirs(&db).await.unwrap_or_else(|e| {
+            warn!("Could not load category download dirs: {e}");
+            Vec::new()
+        });
+        // Create each category dir on disk so the watcher can index it (the
+        // global download_dir and temp_dir were already created above).
+        for d in &cat_dirs {
+            if let Err(e) = std::fs::create_dir_all(d) {
+                warn!(dir = %d, "Could not create category download dir: {e}");
+            }
+        }
+        let mut protected: Vec<&str> = Vec::with_capacity(1 + cat_dirs.len());
+        protected.push(&dl_path);
+        protected.extend(cat_dirs.iter().map(String::as_str));
+        if let Err(e) = db::shared_dirs::set_protected_dirs(&db, &protected, now_secs()).await {
+            warn!("Could not register protected shared dirs: {e}");
         }
     }
 
