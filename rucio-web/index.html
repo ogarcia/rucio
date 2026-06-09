@@ -780,6 +780,8 @@
             .dl-statusbar:has(.dl-filter-select) .dl-active-count  { grid-row: 2; grid-column: 1 / -1; justify-self: start; }
             /* Row 2, right side: speeds + button stay together as one group. */
             .dl-statusbar:has(.dl-filter-select) .dl-status-right  { grid-row: 2; grid-column: 1 / -1; justify-self: end; margin-left: 0; }
+            /* Tighter badge cap on narrow screens so it leaves room for name+size. */
+            .dl-cat-badge { max-width: 6rem; }
         }
 
         /* ── Downloads ───────────────────────────────────────────────────── */
@@ -816,6 +818,8 @@
             padding: 0.05rem 0.45rem; border-radius: 9999px;
             font-size: 0.65rem; font-weight: 600; white-space: nowrap;
             background: var(--sn); color: var(--text-2);
+            /* Clip an over-long category name so the badge can't grow unbounded. */
+            max-width: 10rem; overflow: hidden; text-overflow: ellipsis;
         }
 
         .dl-bar-track {
