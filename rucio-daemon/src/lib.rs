@@ -296,6 +296,21 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
 
     let (download_tx, mut download_rx) = tokio::sync::mpsc::channel::<api::DownloadRequest>(32);
 
+    // Channel by which the share watcher hands freshly-indexed file paths to the
+    // eMule layer so each Rucio share is also seeded to Kad as a source. Only
+    // wired up when eMule is enabled; otherwise `None` and the watcher skips it.
+    // Bounded + non-blocking on the watcher side, so eMule seeding can never
+    // throttle the Rucio share pipeline.
+    #[cfg(feature = "emule-compat")]
+    let (ed2k_index_tx, ed2k_index_rx) = if config.emule.enabled {
+        let (tx, rx) = tokio::sync::mpsc::channel::<std::path::PathBuf>(512);
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
+    #[cfg(not(feature = "emule-compat"))]
+    let ed2k_index_tx: Option<tokio::sync::mpsc::Sender<std::path::PathBuf>> = None;
+
     // --- Watcher service ----------------------------------------------------
     // Shared with AppState so watcher-driven indexing shows up in the indexing
     // status endpoint / WS, the same as manual `share add`.
@@ -305,6 +320,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         handle.cmd_tx.clone(),
         Arc::clone(&indexing_count),
         Arc::clone(&excluded_index_dirs),
+        ed2k_index_tx.clone(),
     );
 
     // Register all known shared dirs with the watcher (including download_dir
@@ -326,11 +342,19 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         let node_tx = handle.cmd_tx.clone();
         let indexing_count = indexing_count.clone();
         let excluded = Arc::clone(&excluded_index_dirs);
+        let ed2k_tx = ed2k_index_tx.clone();
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(24 * 3600));
             loop {
                 tick.tick().await; // fires immediately on the first iteration
-                watcher::reconcile_shares(&db, &node_tx, &indexing_count, &excluded).await;
+                watcher::reconcile_shares(
+                    &db,
+                    &node_tx,
+                    &indexing_count,
+                    &excluded,
+                    ed2k_tx.as_ref(),
+                )
+                .await;
             }
         })
     };
@@ -542,6 +566,14 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
             emule_last_inbound_at.clone(),
             app_state.external_ip.clone(),
         );
+        // Seed files shared on the Rucio network on the eMule Kad DHT as sources
+        // too — anyone holding the ed2k link finds us. One-shot catch-up for
+        // pre-existing shares, plus an event-driven consumer for files indexed
+        // while running (fed by the share watcher). No periodic rescan.
+        crate::emule::spawn_ed2k_startup_backfill(db.clone(), active_downloads.clone());
+        if let Some(rx) = ed2k_index_rx {
+            crate::emule::spawn_ed2k_indexer(db.clone(), active_downloads.clone(), rx);
+        }
     }
 
     let listen_addr = config.api.listen.clone();

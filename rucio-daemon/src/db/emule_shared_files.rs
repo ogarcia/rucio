@@ -1,9 +1,11 @@
 //! Queries for the `emule_shared_files` table.
 //!
-//! Files downloaded from eMule that we keep serving to the Kad network after
-//! the download finishes (good-citizen seeding). Decoupled from
-//! `emule_downloads` on purpose: clearing the completed-downloads list must not
-//! stop sharing. A file is shared until it changes or disappears on disk.
+//! Every file we offer to the eMule Kad network as a source, keyed by its ed2k
+//! (MD4) hash. Two populations live here: completed eMule downloads we keep
+//! seeding (good-citizen policy), and Rucio-network shares the backfill task has
+//! hashed so we seed them on eMule too. Decoupled from `emule_downloads` on
+//! purpose: clearing the completed-downloads list must not stop sharing. A file
+//! is shared until it changes or disappears on disk.
 
 use anyhow::Result;
 use sqlx::Row;
@@ -77,6 +79,42 @@ pub async fn list(db: &Db) -> Result<Vec<EmuleSharedFile>> {
         .collect())
 }
 
+/// A Rucio share (from `shared_files`) that has no ed2k hash yet, i.e. a
+/// candidate for the eMule backfill so we can seed it to Kad as a source too.
+#[derive(Debug, Clone)]
+pub struct BackfillCandidate {
+    pub path: String,
+    pub name: String,
+    pub size: i64,
+    pub mtime: i64,
+}
+
+/// List Rucio shared files that are not yet registered for eMule seeding,
+/// oldest-indexed first. Cross-referenced by on-disk path: a share is a
+/// candidate when no `emule_shared_files` row points at the same path.
+pub async fn list_backfill_candidates(db: &Db, limit: i64) -> Result<Vec<BackfillCandidate>> {
+    let rows = sqlx::query(
+        "SELECT s.path, s.name, s.size, s.mtime \
+         FROM shared_files s \
+         LEFT JOIN emule_shared_files e ON e.path = s.path \
+         WHERE e.path IS NULL \
+         ORDER BY s.added_at \
+         LIMIT ?1",
+    )
+    .bind(limit)
+    .fetch_all(db)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| BackfillCandidate {
+            path: r.get("path"),
+            name: r.get("name"),
+            size: r.get("size"),
+            mtime: r.get("mtime"),
+        })
+        .collect())
+}
+
 /// Remove a shared file by its ed2k hash. Returns `true` if a row was deleted.
 pub async fn delete_by_hash(db: &Db, ed2k_hash: &[u8]) -> Result<bool> {
     let res = sqlx::query("DELETE FROM emule_shared_files WHERE ed2k_hash = ?1")
@@ -102,4 +140,64 @@ pub async fn get_by_path(db: &Db, path: &str) -> Result<Option<EmuleSharedFile>>
         mtime: r.get("mtime"),
         hashset: r.get("hashset"),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    async fn test_db() -> (Db, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("sqlite://{}?mode=rwc", dir.path().join("test.db").display());
+        let pool = SqlitePoolOptions::new()
+            .max_connections(4)
+            .connect(&url)
+            .await
+            .unwrap();
+        crate::db::apply_schema(&pool).await.unwrap();
+        (pool, dir)
+    }
+
+    async fn insert_share(db: &Db, path: &str, seed: u8) {
+        let hash = [seed; 32];
+        let chunks = [(0u32, [seed; 32], 4096u32)];
+        crate::db::shares::insert(
+            db,
+            crate::db::shares::NewSharedFile {
+                root_hash: &hash,
+                name: "file.bin",
+                size: 4096,
+                mime_type: None,
+                path,
+                chunk_size: 4096,
+                added_at: 1_000_000,
+                mtime: 42,
+                chunks: &chunks,
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn backfill_candidates_excludes_already_seeded() {
+        let (db, _dir) = test_db().await;
+        insert_share(&db, "/tmp/a.bin", 1).await;
+        insert_share(&db, "/tmp/b.bin", 2).await;
+
+        // Both Rucio shares lack an ed2k hash → both are candidates.
+        let cands = list_backfill_candidates(&db, 10).await.unwrap();
+        assert_eq!(cands.len(), 2);
+        assert_eq!(cands[0].path, "/tmp/a.bin");
+        assert_eq!(cands[0].mtime, 42);
+
+        // Once one is registered for eMule seeding, it drops out by path.
+        upsert(&db, &[9u8; 16], "file.bin", 4096, "/tmp/a.bin", 42, &[], 1)
+            .await
+            .unwrap();
+        let cands = list_backfill_candidates(&db, 10).await.unwrap();
+        assert_eq!(cands.len(), 1);
+        assert_eq!(cands[0].path, "/tmp/b.bin");
+    }
 }

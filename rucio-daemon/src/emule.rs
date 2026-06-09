@@ -262,6 +262,150 @@ pub fn spawn_source_republisher(
     });
 }
 
+/// Spacing between hashing two files during the one-shot startup backfill, so
+/// catching up on a large pre-existing library does not monopolise disk I/O —
+/// this is best-effort seeding, never urgent. Live indexing events (the channel
+/// path) are not spaced: they arrive one at a time at the watcher's own pace.
+const ED2K_BACKFILL_SPACING: Duration = Duration::from_secs(3);
+
+/// Compute the ed2k hashes of files already shared on the Rucio network so they
+/// can be seeded to the eMule Kad DHT as sources too — a one-shot catch-up for
+/// files that existed before this run (they generate no filesystem event, so
+/// the live channel never sees them).
+///
+/// Runs once at startup, gently: each file is hashed off the async runtime
+/// (`spawn_blocking`) with [`ED2K_BACKFILL_SPACING`] between files. Files added
+/// or changed *while running* are handled by [`spawn_ed2k_indexer`] instead, so
+/// this is not a loop — no periodic CPU spikes.
+pub fn spawn_ed2k_startup_backfill(db: Db, active_downloads: ActiveDownloads) {
+    tokio::spawn(async move {
+        // Snapshot the candidates once. Anything indexed after this point comes
+        // in through the live channel, and anything that fails here is retried
+        // on the next startup — we never re-poll on a timer.
+        let candidates =
+            match crate::db::emule_shared_files::list_backfill_candidates(&db, i64::MAX).await {
+                Ok(c) => c,
+                Err(e) => {
+                    warn!("ed2k startup backfill: cannot list candidates: {e}");
+                    return;
+                }
+            };
+        if candidates.is_empty() {
+            return;
+        }
+        info!(
+            count = candidates.len(),
+            "Computing ed2k hashes for existing Rucio shares to seed on eMule"
+        );
+        for cand in candidates {
+            backfill_path(&db, &active_downloads, std::path::PathBuf::from(cand.path)).await;
+            tokio::time::sleep(ED2K_BACKFILL_SPACING).await;
+        }
+    });
+}
+
+/// Consume freshly-indexed Rucio share paths and seed each on eMule, hashing it
+/// the moment it becomes a share — event-driven, so no periodic rescan is ever
+/// needed. The sender side is the share watcher's `on_file_upsert` (live events
+/// and offline-reconcile alike); it uses `try_send`, so a burst that overflows
+/// the channel simply drops the surplus, which the next startup backfill picks
+/// up. eMule seeding must never throttle the Rucio share pipeline.
+pub fn spawn_ed2k_indexer(
+    db: Db,
+    active_downloads: ActiveDownloads,
+    mut rx: tokio::sync::mpsc::Receiver<std::path::PathBuf>,
+) {
+    tokio::spawn(async move {
+        while let Some(path) = rx.recv().await {
+            backfill_path(&db, &active_downloads, path).await;
+        }
+    });
+}
+
+/// Hash one shared file and register it for eMule source seeding. Self-contained
+/// and best-effort: it stats the file itself, and any error (file vanished,
+/// unreadable, or changed mid-hash) is logged at debug and skipped — a later
+/// startup backfill or re-index event retries it.
+async fn backfill_path(db: &Db, active_downloads: &ActiveDownloads, path: std::path::PathBuf) {
+    let Ok(md) = std::fs::metadata(&path) else {
+        return; // gone since it was indexed
+    };
+    if !md.is_file() {
+        return;
+    }
+    let size0 = md.len() as i64;
+    let mtime0 = crate::api::shares::file_mtime_secs(&path);
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
+    let hash_path = path.clone();
+    let computed = tokio::task::spawn_blocking(move || {
+        let file = std::fs::File::open(&hash_path)?;
+        rucio_emule::ed2k::hash_reader_full(std::io::BufReader::new(file))
+    })
+    .await;
+    let (hash, parts) = match computed {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => {
+            debug!(path = %path.display(), "ed2k backfill: cannot hash file: {e}");
+            return;
+        }
+        Err(e) => {
+            debug!(path = %path.display(), "ed2k backfill: hashing task failed: {e}");
+            return;
+        }
+    };
+
+    // Re-stat after hashing: if size or mtime moved while we were reading, the
+    // file changed under us — skip; the change will re-trigger indexing and we
+    // pick up the new state from there.
+    let disk_size = std::fs::metadata(&path)
+        .map(|m| m.len() as i64)
+        .unwrap_or(-1);
+    if disk_size != size0 || crate::api::shares::file_mtime_secs(&path) != mtime0 {
+        debug!(path = %path.display(), "ed2k backfill: file changed mid-hash, skipping");
+        return;
+    }
+
+    let size = size0.max(0) as u64;
+    let hashset = rucio_emule::ed2k::finalize_hashset(&parts, size, &hash);
+    let hash_bytes = *hash.as_bytes();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if let Err(e) = crate::db::emule_shared_files::upsert(
+        db,
+        &hash_bytes,
+        &name,
+        size,
+        &path.to_string_lossy(),
+        mtime0,
+        &hashset,
+        now,
+    )
+    .await
+    {
+        warn!(path = %path.display(), "ed2k backfill: cannot record share: {e}");
+        return;
+    }
+    let num_slices = size.div_ceil(CHUNK_SIZE as u64) as usize;
+    active_downloads.write().await.insert(
+        hash_bytes,
+        UploadInfo {
+            name,
+            total_size: size,
+            num_slices,
+            path,
+            complete: true,
+            hashset,
+        },
+    );
+    debug!(hash = %hash, "ed2k backfill: now seeding Rucio share on eMule");
+}
+
 /// The `.part` and `.part.met` paths for an eMule download identified by its raw
 /// 16-byte ed2k hash. Single source of truth for the temp-file naming, shared
 /// by the download task and the API (cancel/delete cleanup).

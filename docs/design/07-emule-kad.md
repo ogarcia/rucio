@@ -19,6 +19,9 @@ Rucio includes an opt-in compatible Kad2 client that can:
 5. Keep seeding completed eMule downloads back to the network — including
    serving the ed2k hashset — as a good Kad citizen (see
    [Seeding completed downloads](#seeding-completed-downloads)).
+6. Offer **every Rucio-network share** to eMule as a source too (source-only,
+   not keyword-published), so anyone holding the ed2k link can fetch it from us
+   (see [Seeding Rucio-native shares](#seeding-rucio-native-shares-source-only)).
 
 The implementation lives in the `rucio-emule` crate. It has no dependency on
 `rucio-daemon` — the two communicate exclusively via `KadHandle`, a
@@ -303,6 +306,40 @@ file_hash(16) | part_count(u16 LE) | part_hash(16) * part_count
   size) and verifies `MD4(concat(parts))` reproduces the file's ed2k hash before
   serving, so we never hand a peer a hashset that would fail verification.
 - Single-chunk files have no hashset (their ed2k hash is `MD4(data)`).
+
+### Seeding Rucio-native shares (source-only)
+
+Good citizenship is not limited to files that *came from* eMule: every file
+shared on the Rucio network is also offered to the eMule Kad DHT as a source, so
+anyone holding its ed2k link finds us as a provider.
+
+- This is **event-driven, never polled** — no periodic rescan that would cause
+  recurring CPU spikes. Two paths feed it:
+  - **At startup**, `spawn_ed2k_startup_backfill` does a one-shot catch-up of
+    pre-existing shares (`shared_files` rows with no matching
+    `emule_shared_files` row, joined on disk `path`) — these generate no
+    filesystem event so nothing else would pick them up. It hashes one file at a
+    time off the runtime, spaced out, since catching up a large library must not
+    contend with normal disk I/O.
+  - **While running**, the share watcher hands every freshly-indexed path to
+    `spawn_ed2k_indexer` over a bounded channel, so a file is hashed for eMule
+    the moment it becomes a Rucio share (live events and offline-reconcile
+    alike). The watcher uses a non-blocking `try_send`: eMule seeding can never
+    throttle the Rucio share pipeline, and a path dropped on overflow is
+    recovered by the next startup backfill.
+- Each hashed file is recorded in `emule_shared_files` exactly like a completed
+  download, so the **republisher and upload server pick it up unchanged**, and
+  the share watcher drops it on modification/removal regardless of origin. The
+  feature therefore reuses the whole completed-downloads machinery; the only new
+  work is computing the MD4 hash (a second read of the file, since the Rucio
+  indexer only computes BLAKE3 — `rucio-core` does not depend on MD4).
+- This is **source publishing only**: we announce *"we have the file with hash
+  X"* (`KADEMLIA2_PUBLISH_SOURCE_REQ`). We do **not** publish keywords, so a
+  Rucio-native file is not discoverable by *name* on eMule — only reachable by
+  someone who already has its ed2k link. That is a deliberate scope choice:
+  source seeding makes us a good citizen for files the network already knows,
+  without injecting Rucio's catalogue into eMule's keyword index.
+- Runs only when eMule is enabled (`emule.enabled`); no separate config switch.
 
 ---
 

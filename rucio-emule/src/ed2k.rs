@@ -76,9 +76,23 @@ pub fn hash_bytes(data: &[u8]) -> Ed2kHash {
 /// Compute the ed2k hash of data from a `Read` source.
 ///
 /// Reads in `CHUNK_SIZE` blocks; memory usage is O(CHUNK_SIZE).
-pub fn hash_reader<R: std::io::Read>(mut reader: R) -> std::io::Result<Ed2kHash> {
+pub fn hash_reader<R: std::io::Read>(reader: R) -> std::io::Result<Ed2kHash> {
+    Ok(hash_reader_full(reader)?.0)
+}
+
+/// Like [`hash_reader`], but also returns the per-`CHUNK_SIZE` MD4 part hashes.
+///
+/// The part hashes are what [`finalize_hashset`] needs to build the hashset we
+/// serve to peers, so callers that intend to share the file (not just identify
+/// it) should use this and feed the returned parts into `finalize_hashset`.
+///
+/// Reads in `CHUNK_SIZE` blocks; memory usage is O(CHUNK_SIZE) plus 16 bytes
+/// per chunk for the accumulated part hashes.
+pub fn hash_reader_full<R: std::io::Read>(
+    mut reader: R,
+) -> std::io::Result<(Ed2kHash, Vec<[u8; 16]>)> {
     let mut buf = vec![0u8; CHUNK_SIZE];
-    let mut chunk_hashes: Vec<u8> = Vec::new();
+    let mut parts: Vec<[u8; 16]> = Vec::new();
     let mut total_bytes: u64 = 0;
 
     loop {
@@ -100,23 +114,23 @@ pub fn hash_reader<R: std::io::Read>(mut reader: R) -> std::io::Result<Ed2kHash>
             break;
         }
         total_bytes += offset as u64;
-        let h = Md4::digest(&buf[..offset]);
-        chunk_hashes.extend_from_slice(&h);
+        parts.push(Md4::digest(&buf[..offset]).into());
         if offset < CHUNK_SIZE {
             break;
         }
     }
 
-    let hash = if total_bytes <= CHUNK_SIZE as u64 && chunk_hashes.len() == 16 {
+    let hash = if total_bytes <= CHUNK_SIZE as u64 && parts.len() == 1 {
         // Single chunk: the hash IS the chunk hash.
-        let mut arr = [0u8; 16];
-        arr.copy_from_slice(&chunk_hashes);
-        Ed2kHash(arr)
+        Ed2kHash(parts[0])
     } else {
-        let digest = Md4::digest(&chunk_hashes);
-        Ed2kHash(digest.into())
+        let mut concat = Vec::with_capacity(parts.len() * 16);
+        for p in &parts {
+            concat.extend_from_slice(p);
+        }
+        Ed2kHash(Md4::digest(&concat).into())
     };
-    Ok(hash)
+    Ok((hash, parts))
 }
 
 /// Build the ed2k part-hash set ("hashset") to serve to peers, from the list of
@@ -291,6 +305,18 @@ mod tests {
         let expected = hash_bytes(&data);
         let computed = hash_reader(std::io::Cursor::new(&data)).unwrap();
         assert_eq!(expected, computed);
+    }
+
+    #[test]
+    fn test_hash_reader_full_parts_rebuild_hash_and_hashset() {
+        // A two-chunk file: hash_reader_full's parts must feed finalize_hashset
+        // back to the same root hash it returned.
+        let data = vec![7u8; CHUNK_SIZE + 100];
+        let (hash, parts) = hash_reader_full(std::io::Cursor::new(&data)).unwrap();
+        assert_eq!(hash, hash_bytes(&data));
+        assert_eq!(parts.len(), 2);
+        let hashset = finalize_hashset(&parts, data.len() as u64, &hash);
+        assert_eq!(hashset.len(), 32); // two 16-byte part hashes, verified
     }
 
     #[test]

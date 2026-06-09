@@ -84,11 +84,12 @@ pub fn spawn(
     node_tx: mpsc::Sender<NodeCmd>,
     indexing_count: Arc<AtomicUsize>,
     excluded: Arc<Vec<PathBuf>>,
+    ed2k_tx: Option<mpsc::Sender<PathBuf>>,
 ) -> (WatcherHandle, tokio::task::JoinHandle<()>) {
     let (cmd_tx, cmd_rx) = mpsc::channel::<WatcherCmd>(64);
 
     let task = tokio::spawn(async move {
-        if let Err(e) = run(db, node_tx, cmd_rx, indexing_count, excluded).await {
+        if let Err(e) = run(db, node_tx, cmd_rx, indexing_count, excluded, ed2k_tx).await {
             warn!("WatcherService exited with error: {e}");
         }
     });
@@ -106,6 +107,7 @@ async fn run(
     mut cmd_rx: mpsc::Receiver<WatcherCmd>,
     indexing_count: Arc<AtomicUsize>,
     excluded: Arc<Vec<PathBuf>>,
+    ed2k_tx: Option<mpsc::Sender<PathBuf>>,
 ) -> Result<()> {
     // Bridge: notify (sync) → tokio (async)
     let (ev_tx, mut ev_rx) = mpsc::channel::<notify::Result<Event>>(256);
@@ -175,6 +177,7 @@ async fn run(
                     &db,
                     &node_tx,
                     &indexing_count,
+                    ed2k_tx.as_ref(),
                 ).await;
             }
         }
@@ -296,6 +299,7 @@ async fn flush_pending(
     db: &Db,
     node_tx: &mpsc::Sender<NodeCmd>,
     indexing_count: &AtomicUsize,
+    ed2k_tx: Option<&mpsc::Sender<PathBuf>>,
 ) {
     let now = Instant::now();
     let ready: Vec<PathBuf> = pending
@@ -313,13 +317,23 @@ async fn flush_pending(
     let to_index: Vec<&PathBuf> = ready.iter().filter(|p| p.is_file()).collect();
     indexing_count.fetch_add(to_index.len(), Ordering::Relaxed);
     for path in to_index {
-        on_file_upsert(path, db, node_tx).await;
+        on_file_upsert(path, db, node_tx, ed2k_tx).await;
         indexing_count.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
 /// Index (or re-index) a file and announce it in the DHT.
-async fn on_file_upsert(path: &Path, db: &Db, node_tx: &mpsc::Sender<NodeCmd>) {
+///
+/// `ed2k_tx`, when present, receives the path of every successfully-indexed file
+/// so the eMule layer can hash it and seed it as a Kad source too. It is a
+/// non-blocking `try_send`: seeding eMule must never throttle the Rucio share
+/// pipeline, and a dropped path is recovered by the next startup backfill.
+async fn on_file_upsert(
+    path: &Path,
+    db: &Db,
+    node_tx: &mpsc::Sender<NodeCmd>,
+    ed2k_tx: Option<&mpsc::Sender<PathBuf>>,
+) {
     // If the file already exists in the DB with the same path, remove the old
     // record first so we get a fresh hash (content may have changed).
     // Re-indexing one file: drop just that path's old row (exact match → uses
@@ -336,6 +350,9 @@ async fn on_file_upsert(path: &Path, db: &Db, node_tx: &mpsc::Sender<NodeCmd>) {
             let _ = node_tx
                 .send(NodeCmd::StartProviding(root_hash.to_vec()))
                 .await;
+            if let Some(tx) = ed2k_tx {
+                let _ = tx.try_send(path.to_path_buf());
+            }
         }
         Err(e) => warn!(path = %path.display(), "Watcher: failed to index: {e}"),
     }
@@ -369,6 +386,7 @@ pub async fn reconcile_shares(
     node_tx: &mpsc::Sender<NodeCmd>,
     indexing_count: &AtomicUsize,
     excluded: &[PathBuf],
+    ed2k_tx: Option<&mpsc::Sender<PathBuf>>,
 ) {
     let dirs = match db::shared_dirs::list(db).await {
         Ok(d) => d,
@@ -449,7 +467,7 @@ pub async fn reconcile_shares(
     // after a restart — not only for runtime `share add` / live watcher events.
     indexing_count.fetch_add(to_upsert.len(), Ordering::Relaxed);
     for path in &to_upsert {
-        on_file_upsert(path, db, node_tx).await;
+        on_file_upsert(path, db, node_tx, ed2k_tx).await;
         indexing_count.fetch_sub(1, Ordering::Relaxed);
     }
 
