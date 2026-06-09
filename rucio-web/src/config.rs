@@ -1,7 +1,9 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::categories::CategoriesEditor;
+use crate::categories::{
+    CategoriesEditor, Row as CatRow, mint_row as mint_cat, persist as persist_cats,
+};
 use crate::icons::{self, Icon};
 use crate::types::{
     Category, ConfigResponse, ConfigSnapshot, EmuleStatusResponse, NotificationSettings, WebhookDef,
@@ -137,6 +139,10 @@ pub fn ConfigModal(
     // switches and are persisted by this modal's Save button.
     let webhook_rows: RwSignal<Vec<Row>> = RwSignal::new(vec![]);
     let webhook_next_id = RwSignal::new(0usize);
+    // Category rows + deleted ids likewise live here, saved by the Save button.
+    let cat_rows: RwSignal<Vec<CatRow>> = RwSignal::new(vec![]);
+    let cat_next_id = RwSignal::new(0usize);
+    let cat_deleted: RwSignal<Vec<i64>> = RwSignal::new(vec![]);
 
     // Load once on open.
     Effect::new(move |_| {
@@ -183,6 +189,18 @@ pub fn ConfigModal(
                 && let Ok(list) = r.json::<Vec<WebhookDef>>().await
             {
                 webhook_rows.set(list.iter().map(|d| mint_row(webhook_next_id, d)).collect());
+            }
+            if let Ok(r) = gloo_net::http::Request::get("/api/v1/categories")
+                .send()
+                .await
+                && let Ok(s) = r.json::<crate::types::CategoriesResponse>().await
+            {
+                cat_rows.set(
+                    s.categories
+                        .iter()
+                        .map(|c| mint_cat(cat_next_id, c))
+                        .collect(),
+                );
             }
         });
     });
@@ -268,13 +286,18 @@ pub fn ConfigModal(
             {
                 let _ = req.send().await;
             }
+            // Categories: each is its own REST resource; persist writes per-row
+            // errors back and reports whether all succeeded.
+            let cats_ok = persist_cats(cat_rows, cat_deleted, categories).await;
             let ok = api_put_config(&ConfigResponse {
                 current: snap,
                 pending: None,
             })
             .await;
             saving.set(false);
-            if ok {
+            // Stay open if a category failed (e.g. duplicate name) so the user
+            // sees the per-row error; otherwise close.
+            if ok && cats_ok {
                 base_down.set(dl);
                 base_up.set(ul);
                 temp_down.set(tdl);
@@ -310,14 +333,14 @@ pub fn ConfigModal(
                         on:click=move |_| tab.set(ConfigTab::Network)>"Network"</button>
                     <button class=move || tab_class(ConfigTab::Storage)
                         on:click=move |_| tab.set(ConfigTab::Storage)>"Storage"</button>
+                    <button class=move || tab_class(ConfigTab::Categories)
+                        on:click=move |_| tab.set(ConfigTab::Categories)>"Categories"</button>
                     <Show when=move || emule_available.get() fallback=|| ()>
                         <button class=move || tab_class(ConfigTab::Emule)
                             on:click=move |_| tab.set(ConfigTab::Emule)>"eMule"</button>
                     </Show>
                     <button class=move || tab_class(ConfigTab::Notifications)
                         on:click=move |_| tab.set(ConfigTab::Notifications)>"Notifications"</button>
-                    <button class=move || tab_class(ConfigTab::Categories)
-                        on:click=move |_| tab.set(ConfigTab::Categories)>"Categories"</button>
                 </div>
 
                 <div class="modal-body">
@@ -546,7 +569,7 @@ pub fn ConfigModal(
                                 <WebhooksEditor rows=webhook_rows next_id=webhook_next_id/>
                             }.into_any(),
                             ConfigTab::Categories => view! {
-                                <CategoriesEditor categories=categories/>
+                                <CategoriesEditor rows=cat_rows next_id=cat_next_id deleted=cat_deleted/>
                             }.into_any(),
                         }
                     }}
