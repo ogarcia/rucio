@@ -35,6 +35,7 @@ use tokio::sync::{Semaphore, mpsc, oneshot};
 use tracing::{debug, info, warn};
 
 use rucio_core::protocol::{
+    chunk::CHUNK_SIZE,
     manifest::{ManifestRequest, ManifestResponse},
     transfer::{ChunkRequest, ChunkResponse},
 };
@@ -51,8 +52,11 @@ use crate::upload_scheduler::UploadScheduler;
 
 /// Maximum simultaneous chunk requests **per provider peer**.
 const SLOTS_PER_PEER: usize = 4;
-/// Fallback chunk size used when recovering a download with no chunks in the DB.
-const DEFAULT_CHUNK_SIZE: u32 = 256 * 1024; // 256 KiB
+/// Fallback chunk size for recovering a download whose chunk rows are missing
+/// from the DB (a degenerate case — a real download always carries its manifest
+/// chunk sizes). Kept equal to the canonical [`CHUNK_SIZE`] so the fallback can
+/// never disagree with how files are actually chunked.
+const DEFAULT_CHUNK_SIZE: u32 = CHUNK_SIZE;
 
 /// How long to wait for a manifest response before trying another peer.
 const MANIFEST_TIMEOUT_SECS: u64 = 10;
@@ -1770,7 +1774,7 @@ async fn read_chunk_from_partial(
     let path: String = row.get("dest_path");
     let size: i64 = row.get("size");
     // Downloads use the fixed rucio chunk size; the offset is idx * CHUNK_SIZE.
-    let offset = request.chunk_idx as u64 * rucio_core::protocol::chunk::CHUNK_SIZE as u64;
+    let offset = request.chunk_idx as u64 * CHUNK_SIZE as u64;
     match read_file_range(&path, offset, size as usize).await {
         Ok(data) => ChunkResponse::Ok {
             data,

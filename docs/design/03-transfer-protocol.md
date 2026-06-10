@@ -7,15 +7,30 @@ Built on libp2p `request_response`. All messages are encoded with
 
 ## Chunk layout
 
-Files are split into fixed-size chunks of **256 KiB** (`DEFAULT_CHUNK_SIZE`).
-The last chunk may be smaller. Chunks are identified by their zero-based index.
+Files are split into fixed-size chunks of **4 MiB**
+(`rucio_core::protocol::chunk::CHUNK_SIZE`). The last chunk may be smaller.
+Chunks are identified by their zero-based index.
 
 ```
 file = [chunk_0 | chunk_1 | ... | chunk_n]
-         256 KiB   256 KiB         ≤ 256 KiB
+          4 MiB     4 MiB          ≤ 4 MiB
 ```
 
-The total number of chunks for a file of size `S` is `ceil(S / 256_KiB)`.
+The total number of chunks for a file of size `S` is `ceil(S / 4_MiB)`.
+
+The chunk size is **per-file** metadata: it is recorded in the manifest
+(the `chunk_size` field) and the downloader uses that value rather than
+assuming a constant. The producer side (`hashing::hash_file`, used when
+indexing a shared file) always splits at `CHUNK_SIZE` (4 MiB), so every
+manifest in practice carries 4 MiB — but a future change to the chunk size
+stays backward-compatible because each file declares its own.
+
+> The daemon also defines a `DEFAULT_CHUNK_SIZE` in `transfer.rs`. Despite the
+> name it is **not** the chunk size used for transfers: it is only a fallback
+> for recovering a download whose chunk rows are missing from the database (a
+> degenerate case — a real download always carries its manifest chunk sizes).
+> It is kept equal to `CHUNK_SIZE` so it can never disagree with the real
+> layout.
 
 ## Manifest request
 
