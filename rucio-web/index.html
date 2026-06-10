@@ -1155,6 +1155,13 @@
         .pin-state-fetching  { background: var(--sa); color: var(--sa-fg); }
         .pin-state-missing   { background: var(--sn); color: var(--sn-fg); }
 
+        /* Subscription storage meter: the used/quota bar under the peer id. */
+        .sub-meter { margin: 0.35rem 0; max-width: 18rem; }
+        /* Quota input + unit selector row in the subscribe modal. */
+        .sub-quota-row { display: flex; gap: 0.5rem; margin-top: 0.5rem; }
+        .sub-quota-row .search-input { flex: 1; }
+        .sub-unit { width: auto; flex: 0 0 auto; }
+
         .share-file-row {
             display: grid; grid-template-columns: 1fr auto auto;
             align-items: center; gap: 1rem;

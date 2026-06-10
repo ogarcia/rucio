@@ -8,6 +8,7 @@ mod pins;
 mod searches;
 mod shares;
 mod statusbar;
+mod subscriptions;
 mod types;
 mod uploads;
 mod webhooks;
@@ -83,6 +84,7 @@ use overlays::{AboutPanel, AddressesPanel, NodeStatusPanel, PeersPanel, StatsPan
 use pins::PinsTab;
 use searches::SearchesTab;
 use shares::SharesTab;
+use subscriptions::SubscriptionsTab;
 use types::{
     ActiveUpload, CategoriesResponse, Category, DownloadResponse, Notification, NotificationList,
     NotificationSettings, SearchResult, SearchState, SearchSummary, SpeedLimits, StatusResponse,
@@ -139,6 +141,7 @@ enum Tab {
     Searches,
     Shares,
     Pins,
+    Subscriptions,
 }
 
 impl Tab {
@@ -149,6 +152,7 @@ impl Tab {
             Tab::Searches => "searches",
             Tab::Shares => "shares",
             Tab::Pins => "pins",
+            Tab::Subscriptions => "subscriptions",
         }
     }
 
@@ -159,6 +163,7 @@ impl Tab {
             "searches" => Some(Tab::Searches),
             "shares" => Some(Tab::Shares),
             "pins" => Some(Tab::Pins),
+            "subscriptions" => Some(Tab::Subscriptions),
             _ => None,
         }
     }
@@ -182,12 +187,13 @@ fn save_tab(t: Tab) {
 
 /// The navigation sections, shown as top-bar tabs (wide) or sidebar items
 /// (narrow). One source so both stay in sync.
-const TABS: [(Tab, &str); 5] = [
+const TABS: [(Tab, &str); 6] = [
     (Tab::Downloads, "Downloads"),
     (Tab::Uploads, "Uploads"),
     (Tab::Searches, "Searches"),
     (Tab::Shares, "Shares"),
     (Tab::Pins, "Pins"),
+    (Tab::Subscriptions, "Subscriptions"),
 ];
 
 #[derive(Clone, Copy, PartialEq)]
@@ -963,6 +969,13 @@ fn App() -> impl IntoView {
                     }.into_any(),
                     Tab::Pins => view! {
                         <PinsTab
+                            dl_speed=dl_speed
+                            ul_speed=ul_speed
+                            temp_limit=temp_limit
+                        />
+                    }.into_any(),
+                    Tab::Subscriptions => view! {
+                        <SubscriptionsTab
                             dl_speed=dl_speed
                             ul_speed=ul_speed
                             temp_limit=temp_limit

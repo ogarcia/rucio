@@ -123,6 +123,25 @@ pub struct PinsResponse {
     pub pins: Vec<Pin>,
 }
 
+/// A subscription: another node's pin-set we mirror within a quota.
+/// GET /api/v1/subscriptions.
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+pub struct Subscription {
+    pub peer_id: String,
+    pub quota_bytes: u64,
+    pub used_bytes: u64,
+    pub wanted_count: usize,
+    pub skipped_count: usize,
+    pub last_version: i64,
+    pub last_synced_at: i64,
+    pub added_at: i64,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct SubscriptionsResponse {
+    pub subscriptions: Vec<Subscription>,
+}
+
 /// Response to POST /api/v1/shares.
 #[derive(Deserialize, Clone, Debug)]
 pub struct AddShareResponse {
