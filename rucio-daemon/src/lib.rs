@@ -143,6 +143,19 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
              sharing, but consider moving temp_dir outside the download directory"
         );
     }
+    // pin_dir under (or equal to) a temp dir is excluded from indexing, so pinned
+    // content there would silently never be shared. Nesting pin_dir inside
+    // download_dir, or making them the same dir, is fine (the watcher de-nests
+    // and the protected set de-dups) — only the temp overlap is a problem.
+    if config.storage.pin_dir.starts_with(&config.storage.temp_dir)
+        || config.storage.pin_dir.starts_with(&config.emule.temp_dir)
+    {
+        warn!(
+            pin_dir = %config.storage.pin_dir.display(),
+            "pin_dir is inside a temp directory, which is excluded from indexing; \
+             pinned files there will not be shared. Move pin_dir out of the temp dir"
+        );
+    }
 
     // --- Database -----------------------------------------------------------
     let db = db::open(&config.storage.database_path).await?;
