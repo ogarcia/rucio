@@ -12,8 +12,8 @@ use crate::icons::{self, Icon};
 use crate::statusbar::StatusBar;
 use crate::types::{
     Category, DownloadDetailResponse, DownloadPiecesResponse, DownloadResponse, DownloadState,
-    PieceState, RenameDownloadRequest, contrast_text, format_eta, format_size, format_speed,
-    is_streamed_state,
+    NEUTRAL_CATEGORY_COLOR, PieceState, RenameDownloadRequest, contrast_text, format_eta,
+    format_size, format_speed, is_streamed_state,
 };
 
 // ── Filter ────────────────────────────────────────────────────────────────────
@@ -750,11 +750,10 @@ fn DownloadRow(
                 <span class="dl-name">{name}</span>
                 {move || category().map(|(cname, color)| {
                     // Coloured badge: background = category colour, text picked
-                    // for contrast. No colour → a neutral default badge.
-                    let style = match &color {
-                        Some(c) => format!("background:{c};color:{}", contrast_text(c)),
-                        None => String::new(),
-                    };
+                    // for contrast. A colourless category falls back to the
+                    // shared neutral grey, matching the Settings colour picker.
+                    let c = color.unwrap_or_else(|| NEUTRAL_CATEGORY_COLOR.to_string());
+                    let style = format!("background:{c};color:{}", contrast_text(&c));
                     view! { <span class="dl-cat-badge" style=style>{cname}</span> }
                 })}
                 <span class="dl-size">{size_label}</span>

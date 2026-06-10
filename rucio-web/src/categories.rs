@@ -10,9 +10,10 @@
 use leptos::prelude::*;
 
 use crate::icons::{self, Icon};
-use crate::types::{CategoriesResponse, Category};
+use crate::types::{CategoriesResponse, Category, NEUTRAL_CATEGORY_COLOR};
 
-/// Colour a freshly-added (or colourless) row's picker starts at.
+/// Colour a freshly-added row's picker starts at (an existing colourless
+/// category instead starts at [`NEUTRAL_CATEGORY_COLOR`]).
 const DEFAULT_COLOR: &str = "#3b82f6";
 
 /// One editable category row. `RwSignal` is `Copy`, so the whole struct is.
@@ -37,7 +38,13 @@ impl Row {
             cat_id: RwSignal::new((c.id != 0).then_some(c.id)),
             name: RwSignal::new(c.name.clone()),
             dir: RwSignal::new(c.download_dir.clone().unwrap_or_default()),
-            color: RwSignal::new(c.color.clone().unwrap_or_else(|| DEFAULT_COLOR.to_string())),
+            // A colourless category starts the picker at the shared neutral
+            // grey, so it shows the same colour the list badge does.
+            color: RwSignal::new(
+                c.color
+                    .clone()
+                    .unwrap_or_else(|| NEUTRAL_CATEGORY_COLOR.to_string()),
+            ),
             keywords: RwSignal::new(c.match_keywords.clone().unwrap_or_default()),
             status: RwSignal::new(String::new()),
         }

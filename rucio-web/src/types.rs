@@ -512,6 +512,12 @@ pub struct CategoriesResponse {
     pub categories: Vec<Category>,
 }
 
+/// Colour used to render a category that has no colour of its own. The web
+/// can't express "no colour" with an `<input type="color">`, so a colourless
+/// category is shown as this neutral grey — consistently in both the list badge
+/// and the Settings colour picker. A mid grey stays legible on light and dark.
+pub const NEUTRAL_CATEGORY_COLOR: &str = "#64748b";
+
 /// Pick a readable text colour (`#000`/`#fff`) for a `#rrggbb` badge background
 /// by perceived luminance. Falls back to white for anything else.
 pub fn contrast_text(hex: &str) -> &'static str {
