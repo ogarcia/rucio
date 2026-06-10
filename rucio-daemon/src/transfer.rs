@@ -52,11 +52,6 @@ use crate::upload_scheduler::UploadScheduler;
 
 /// Maximum simultaneous chunk requests **per provider peer**.
 const SLOTS_PER_PEER: usize = 4;
-/// Fallback chunk size for recovering a download whose chunk rows are missing
-/// from the DB (a degenerate case — a real download always carries its manifest
-/// chunk sizes). Kept equal to the canonical [`CHUNK_SIZE`] so the fallback can
-/// never disagree with how files are actually chunked.
-const DEFAULT_CHUNK_SIZE: u32 = CHUNK_SIZE;
 
 /// How long to wait for a manifest response before trying another peer.
 const MANIFEST_TIMEOUT_SECS: u64 = 10;
@@ -484,11 +479,14 @@ impl DownloadEngine {
         }
 
         // Derive chunk_size from the first non-last chunk (largest size).
+        // Falling back to the canonical CHUNK_SIZE only matters in the
+        // degenerate case of a download with no chunk rows — a real one always
+        // carries its manifest chunk sizes.
         let chunk_size = chunk_rows
             .iter()
             .map(|c| c.size)
             .max()
-            .unwrap_or(DEFAULT_CHUNK_SIZE);
+            .unwrap_or(CHUNK_SIZE);
 
         let dest_path = PathBuf::from(&row.dest_path);
 

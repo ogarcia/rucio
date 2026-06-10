@@ -25,13 +25,6 @@ indexing a shared file) always splits at `CHUNK_SIZE` (4 MiB), so every
 manifest in practice carries 4 MiB — but a future change to the chunk size
 stays backward-compatible because each file declares its own.
 
-> The daemon also defines a `DEFAULT_CHUNK_SIZE` in `transfer.rs`. Despite the
-> name it is **not** the chunk size used for transfers: it is only a fallback
-> for recovering a download whose chunk rows are missing from the database (a
-> degenerate case — a real download always carries its manifest chunk sizes).
-> It is kept equal to `CHUNK_SIZE` so it can never disagree with the real
-> layout.
-
 ## Manifest request
 
 Before downloading any data, the downloader fetches the **manifest** from a
