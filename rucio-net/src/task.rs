@@ -14,6 +14,7 @@ use libp2p::{
 use rucio_core::protocol::{
     manifest::{ManifestRequest, ManifestResponse},
     node::NodeClass,
+    pinset::{PinsetRequest, PinsetResponse},
     search::{SearchQuery, SearchResult},
     transfer::{ChunkRequest, ChunkResponse},
 };
@@ -211,6 +212,8 @@ struct LoopState {
     pending_chunk_channels: HashMap<u64, ResponseChannel<ChunkResponse>>,
     /// Pending inbound manifest request channels keyed by a monotonic id.
     pending_manifest_channels: HashMap<u64, ResponseChannel<ManifestResponse>>,
+    /// Pending inbound pin-set request channels keyed by a monotonic id.
+    pending_pinset_channels: HashMap<u64, ResponseChannel<PinsetResponse>>,
     next_channel_id: u64,
     /// Gossipsub messages that failed with InsufficientPeers, queued for
     /// retry when a peer subscribes to the relevant topic.
@@ -251,6 +254,7 @@ impl LoopState {
             classifier: ClassificationState::default(),
             pending_chunk_channels: HashMap::new(),
             pending_manifest_channels: HashMap::new(),
+            pending_pinset_channels: HashMap::new(),
             next_channel_id: 0,
             pending_publishes: Vec::new(),
             retry_dials: HashMap::new(),
@@ -275,6 +279,13 @@ impl LoopState {
         let id = self.next_channel_id;
         self.next_channel_id += 1;
         self.pending_manifest_channels.insert(id, ch);
+        id
+    }
+
+    fn store_pinset_channel(&mut self, ch: ResponseChannel<PinsetResponse>) -> u64 {
+        let id = self.next_channel_id;
+        self.next_channel_id += 1;
+        self.pending_pinset_channels.insert(id, ch);
         id
     }
 }
@@ -406,6 +417,25 @@ async fn run_loop(
                             }
                         } else {
                             warn!(%channel_id, "RespondManifest: unknown channel id");
+                        }
+                    }
+                    Some(NodeCmd::RequestPinset { peer, request, id_tx }) => {
+                        if let Some(pinset) = swarm.behaviour_mut().pinset.as_mut() {
+                            let request_id = pinset.send_request(&peer, request);
+                            let _ = id_tx.send(request_id);
+                        } else {
+                            warn!("RequestPinset ignored: pinset protocol disabled");
+                        }
+                    }
+                    Some(NodeCmd::RespondPinset { channel_id, response }) => {
+                        if let Some(ch) = state.pending_pinset_channels.remove(&channel_id) {
+                            if let Some(pinset) = swarm.behaviour_mut().pinset.as_mut()
+                                && pinset.send_response(ch, response).is_err()
+                            {
+                                debug!(%channel_id, "Pinset response dropped: requester no longer reachable");
+                            }
+                        } else {
+                            warn!(%channel_id, "RespondPinset: unknown channel id");
                         }
                     }
                     // WatchDir / UnwatchDir are handled by the WatcherService,
@@ -884,6 +914,10 @@ async fn on_swarm_event(
                 on_manifest_event(mn_event, event_tx, state).await;
             }
 
+            RucioBehaviourEvent::Pinset(ps_event) => {
+                on_pinset_event(ps_event, event_tx, state).await;
+            }
+
             RucioBehaviourEvent::Relay(relay_event) => {
                 use relay::Event;
                 match relay_event {
@@ -1122,6 +1156,67 @@ async fn on_manifest_event(
         }
         request_response::Event::InboundFailure { peer, error, .. } => {
             warn!(%peer, %error, "Inbound manifest request failed");
+        }
+        request_response::Event::ResponseSent { .. } => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pin-set (request-response) handler — cooperative pinning
+// ---------------------------------------------------------------------------
+
+async fn on_pinset_event(
+    event: request_response::Event<PinsetRequest, PinsetResponse>,
+    event_tx: &EventTx,
+    state: &mut LoopState,
+) {
+    match event {
+        request_response::Event::Message {
+            peer,
+            message:
+                request_response::Message::Response {
+                    request_id,
+                    response,
+                },
+            ..
+        } => {
+            debug!(%peer, "Received pin-set response");
+            let _ = event_tx
+                .emit(NodeEvent::PinsetReceived {
+                    request_id,
+                    peer,
+                    response,
+                })
+                .await;
+        }
+
+        request_response::Event::Message {
+            peer,
+            message:
+                request_response::Message::Request {
+                    request, channel, ..
+                },
+            ..
+        } => {
+            debug!(%peer, "Received pin-set request");
+            let channel_id = state.store_pinset_channel(channel);
+            let delivered = event_tx
+                .emit(NodeEvent::PinsetRequested {
+                    peer,
+                    request,
+                    channel_id,
+                })
+                .await;
+            if !delivered {
+                state.pending_pinset_channels.remove(&channel_id);
+            }
+        }
+
+        request_response::Event::OutboundFailure { peer, error, .. } => {
+            warn!(%peer, %error, "Outbound pin-set request failed");
+        }
+        request_response::Event::InboundFailure { peer, error, .. } => {
+            warn!(%peer, %error, "Inbound pin-set request failed");
         }
         request_response::Event::ResponseSent { .. } => {}
     }

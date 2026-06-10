@@ -9,6 +9,7 @@ mod fsutil;
 pub mod live_stats;
 pub mod metrics;
 pub mod notifier;
+pub mod pinset;
 pub mod throttle;
 pub mod transfer;
 pub mod upload_scheduler;
@@ -1227,6 +1228,9 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                     }
                     Some(node::messages::NodeEvent::ManifestRequested { peer, request, channel_id }) => {
                         engine.serve_manifest(peer, request, channel_id).await;
+                    }
+                    Some(node::messages::NodeEvent::PinsetRequested { channel_id, .. }) => {
+                        crate::pinset::serve_pinset(&db, &handle.cmd_tx, channel_id);
                     }
                     Some(node::messages::NodeEvent::FatalError(e)) => {
                         tracing::error!("Node fatal error: {e}");

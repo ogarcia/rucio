@@ -5,6 +5,7 @@ use libp2p::{Multiaddr, PeerId, request_response::OutboundRequestId};
 use rucio_core::protocol::{
     manifest::{ManifestRequest, ManifestResponse},
     node::NodeClass,
+    pinset::{PinsetRequest, PinsetResponse},
     search::{SearchQuery, SearchResult},
     transfer::{ChunkRequest, ChunkResponse},
 };
@@ -53,6 +54,17 @@ pub enum NodeCmd {
     RespondManifest {
         channel_id: u64,
         response: ManifestResponse,
+    },
+    /// Ask a peer for its pin-set (cooperative pinning).
+    RequestPinset {
+        peer: PeerId,
+        request: PinsetRequest,
+        id_tx: oneshot::Sender<OutboundRequestId>,
+    },
+    /// Answer an inbound pin-set request.
+    RespondPinset {
+        channel_id: u64,
+        response: PinsetResponse,
     },
     /// All bootstrap peer addresses have been submitted via `AddBootstrapPeer`.
     /// The node task will call `Kademlia::bootstrap()` as soon as the first
@@ -147,6 +159,18 @@ pub enum NodeEvent {
     ManifestRequested {
         peer: PeerId,
         request: ManifestRequest,
+        channel_id: u64,
+    },
+    /// A peer answered our pin-set request.
+    PinsetReceived {
+        request_id: OutboundRequestId,
+        peer: PeerId,
+        response: PinsetResponse,
+    },
+    /// A peer asked us for our pin-set; answer with `RespondPinset`.
+    PinsetRequested {
+        peer: PeerId,
+        request: PinsetRequest,
         channel_id: u64,
     },
     /// A fatal error in the node task.
