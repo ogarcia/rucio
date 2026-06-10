@@ -227,14 +227,22 @@ impl RucioBehaviour {
         let transfer = cfg.transfer.then(|| {
             request_response::Behaviour::new(
                 vec![(TransferProtocol, request_response::ProtocolSupport::Full)],
-                // A chunk is up to 4 MiB; the request_response default request
-                // timeout is only 10 s, which covers the full round-trip
-                // including transferring the 4 MiB response. Over a modest or
-                // relayed link — and with several chunk requests sharing the
-                // connection — 10 s is too tight and every request times out.
-                // Give chunk transfers a generous budget.
+                // A chunk is up to 4 MiB and the timeout covers the whole
+                // round-trip, including transferring that 4 MiB response. The
+                // budget has to survive the worst realistic case: a
+                // bandwidth-limited uploader whose cap is also shared with eMule,
+                // serving `SLOTS_PER_PEER` chunks at once. Because the upload
+                // throttle round-robins its tokens across all in-flight chunks,
+                // those concurrent requests all finish together near the end of
+                // the batch (≈ total_bytes / effective_rate), not one by one —
+                // so the per-request time scales with concurrency. At 60 s this
+                // sat right on the boundary for a ~500 KB/s cap and timed out;
+                // once a request times out the requester retries while our
+                // serve task keeps draining the cap for a response nobody waits
+                // for, so it never converges. 180 s gives ample margin (covers
+                // ~16 MiB down to ~90 KB/s effective) and breaks that spiral.
                 request_response::Config::default()
-                    .with_request_timeout(std::time::Duration::from_secs(60)),
+                    .with_request_timeout(std::time::Duration::from_secs(180)),
             )
         });
 
