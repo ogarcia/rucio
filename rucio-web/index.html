@@ -616,12 +616,17 @@
         .config-tabs {
             display: flex; gap: 0.25rem;
             padding: 0 1.25rem; border-bottom: 1px solid var(--border);
+            /* Scroll horizontally instead of overflowing when the tabs don't
+               fit (small mobile screens). */
+            overflow-x: auto; flex-wrap: nowrap;
+            scrollbar-width: thin; -webkit-overflow-scrolling: touch;
         }
         .config-tab {
             padding: 0.5rem 0.75rem; background: transparent; border: none;
             border-bottom: 2px solid transparent; margin-bottom: -1px;
             color: var(--text-3); cursor: pointer;
             font-size: 0.8125rem; font-family: inherit;
+            flex: 0 0 auto; white-space: nowrap;
         }
         .config-tab:hover { color: var(--text); }
         .config-tab-active { color: var(--text); border-bottom-color: var(--accent); }
