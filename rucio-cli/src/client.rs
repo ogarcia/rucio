@@ -20,6 +20,7 @@ use rucio_core::api::{
     },
     emule::{EmuleBootstrapRequest, EmuleBootstrapResponse, EmuleStatusResponse},
     metrics::{HealthResponse, MetricsResponse},
+    pins::{PinRequest, PinResponse, PinsResponse},
     searches::{
         SearchDetailResponse, SearchListResponse, SearchStartedResponse, StartSearchRequest,
     },
@@ -222,6 +223,27 @@ impl ApiClient {
 
     pub async fn delete_category(&self, id: i64) -> Result<()> {
         self.delete(&format!("/api/v1/categories/{id}")).await
+    }
+
+    // --- Pins --------------------------------------------------------------
+
+    pub async fn list_pins(&self) -> Result<PinsResponse> {
+        self.get("/api/v1/pins").await
+    }
+
+    pub async fn create_pin(&self, magnet: &str, providers: Vec<String>) -> Result<PinResponse> {
+        self.post(
+            "/api/v1/pins",
+            &PinRequest {
+                magnet: magnet.to_string(),
+                providers,
+            },
+        )
+        .await
+    }
+
+    pub async fn delete_pin(&self, hash: &str) -> Result<()> {
+        self.delete(&format!("/api/v1/pins/{hash}")).await
     }
 
     /// Assign (or clear, with `None`) a download's category. `id` may be negative

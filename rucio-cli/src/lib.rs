@@ -32,6 +32,11 @@ pub enum Commands {
         #[command(subcommand)]
         action: CategoryAction,
     },
+    /// Keep content available on this node (pin: fetch-and-retain)
+    Pin {
+        #[command(subcommand)]
+        action: PinAction,
+    },
     /// Inspect active uploads (peers downloading from us)
     Upload {
         #[command(subcommand)]
@@ -198,6 +203,26 @@ pub enum CategoryAction {
     Remove {
         /// Category id (from `rucio category list`)
         id: i64,
+    },
+}
+
+/// `rucio pin …` — keep content available on this node (fetch-and-retain).
+#[derive(Subcommand, Debug)]
+pub enum PinAction {
+    /// List pinned content
+    List,
+    /// Pin a magnet (fetched if not already present)
+    Add {
+        /// A rucio: magnet link
+        magnet: String,
+        /// Provider PeerId hint to seed the fetch (repeatable)
+        #[arg(long, value_name = "PEER_ID")]
+        provider: Vec<String>,
+    },
+    /// Unpin a root hash (removes the intent; content stays on disk)
+    Remove {
+        /// Root hash (hex), from `rucio pin list`
+        hash: String,
     },
 }
 
@@ -377,6 +402,11 @@ pub async fn run() -> Result<()> {
                 .await
             }
             CategoryAction::Remove { id } => cmd::categories::remove(&client, id).await,
+        },
+        Commands::Pin { action } => match action {
+            PinAction::List => cmd::pins::list(&client).await,
+            PinAction::Add { magnet, provider } => cmd::pins::add(&client, &magnet, provider).await,
+            PinAction::Remove { hash } => cmd::pins::remove(&client, &hash).await,
         },
         Commands::Upload { action } => match action {
             UploadAction::List { watch } => cmd::uploads::list(&client, watch).await,
