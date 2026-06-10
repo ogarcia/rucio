@@ -65,6 +65,40 @@ CREATE TABLE IF NOT EXISTS pins (
 );
 
 -- ---------------------------------------------------------------------------
+-- pin_subscriptions (cooperative pinning)
+-- Peers whose published pin-set we mirror. quota_bytes is the hard ceiling of
+-- disk we devote to mirroring this peer (best-effort up to it, never beyond).
+-- last_version is the pin-set version we last synced, so we skip unchanged ones.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS pin_subscriptions (
+    peer_id        TEXT    PRIMARY KEY,   -- libp2p PeerId (base58)
+    quota_bytes    INTEGER NOT NULL,      -- max bytes we mirror for this peer
+    last_version   INTEGER NOT NULL DEFAULT 0,
+    last_synced_at INTEGER NOT NULL DEFAULT 0,
+    added_at       INTEGER NOT NULL
+);
+
+-- ---------------------------------------------------------------------------
+-- mirror_pins (cooperative pinning)
+-- Content we mirror on behalf of a subscription. A root hash may be wanted by
+-- several subscriptions (composite key). state is one of: 'wanted' (selected,
+-- to fetch/keep), 'skipped' (over quota, intentionally not mirrored). A hash is
+-- retained on disk while it is a manual pin OR 'wanted' by >=1 subscription.
+-- ON DELETE CASCADE: removing a subscription drops its mirror rows.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS mirror_pins (
+    root_hash   BLOB    NOT NULL,         -- 32 bytes, BLAKE3
+    peer_id     TEXT    NOT NULL REFERENCES pin_subscriptions(peer_id) ON DELETE CASCADE,
+    name        TEXT,
+    size        INTEGER NOT NULL DEFAULT 0,
+    state       TEXT    NOT NULL DEFAULT 'wanted',
+    added_at    INTEGER NOT NULL,
+    PRIMARY KEY (root_hash, peer_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_mirror_pins_peer ON mirror_pins(peer_id);
+
+-- ---------------------------------------------------------------------------
 -- categories
 -- Optional download categories. A category may pin its own download_dir so the
 -- user can route downloads to different folders; download_dir NULL means the
