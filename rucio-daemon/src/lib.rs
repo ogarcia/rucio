@@ -866,6 +866,9 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
             }
             _ = manifest_tick.tick() => {
                 engine.tick_manifest_timeouts().await;
+                // Resume any download stalled waiting for a shared provider's
+                // global per-peer slots to free up.
+                engine.dispatch_idle().await;
                 engine.publish_live_stats().await;
             }
             _ = provider_refresh_tick.tick() => {

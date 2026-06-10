@@ -167,20 +167,16 @@ struct PendingManifest {
     refind_count: u32,
 }
 
-/// Per-peer slot tracking for an active download.
+/// Per-peer slot tracking for an active download. Records which chunks are
+/// in-flight to the peer (for re-queue on failure) and per-peer stats. The
+/// concurrency *limit* lives in [`PeerCap`] (global across downloads), not here.
+#[derive(Default)]
 struct PeerState {
     /// chunk_idx values currently in-flight to this peer.
     in_flight: HashSet<u32>,
     /// Network-level failures in a row (no successful chunk in between).
     /// Reset to 0 on any verified chunk; drives provider eviction.
     consecutive_failures: u32,
-    /// Adaptive concurrency cap for this peer: how many chunks we'll keep
-    /// in-flight at once. Starts at [`SLOTS_PER_PEER`], halved on a timeout
-    /// (down to [`MIN_SLOTS_PER_PEER`]) so a slow peer's chunks complete one at
-    /// a time within the request deadline, and slowly recovered on success.
-    max_slots: usize,
-    /// Verified chunks since the last concurrency change, for slow recovery.
-    ok_streak: u32,
     /// Cumulative bytes received from this peer for the current download.
     bytes_downloaded: u64,
     /// Per-peer rate sampler state, advanced by `publish_live_stats`.
@@ -194,26 +190,23 @@ struct PeerState {
     addr_resolved: bool,
 }
 
-impl Default for PeerState {
-    fn default() -> Self {
-        Self {
-            in_flight: HashSet::new(),
-            consecutive_failures: 0,
-            max_slots: SLOTS_PER_PEER,
-            ok_streak: 0,
-            bytes_downloaded: 0,
-            last_sample_bytes: 0,
-            last_sample_at: None,
-            rate_bps: 0,
-            address: None,
-            addr_resolved: false,
-        }
-    }
+/// Adaptive concurrency cap for a provider peer, shared across all downloads
+/// from that peer. Starts at [`SLOTS_PER_PEER`], halved on a chunk timeout
+/// (down to [`MIN_SLOTS_PER_PEER`]) so a slow peer ends up serving one chunk at
+/// a time — that chunk gets the whole link and completes in chunk/rate, the
+/// shortest possible time — and slowly recovered after a run of good chunks.
+struct PeerCap {
+    max_slots: usize,
+    /// Verified chunks since the last cap change, for slow recovery.
+    ok_streak: u32,
 }
 
-impl PeerState {
-    fn slots_free(&self) -> usize {
-        self.max_slots.saturating_sub(self.in_flight.len())
+impl Default for PeerCap {
+    fn default() -> Self {
+        Self {
+            max_slots: SLOTS_PER_PEER,
+            ok_streak: 0,
+        }
     }
 }
 
@@ -270,6 +263,10 @@ pub struct DownloadEngine {
     /// Updated by add_providers() regardless of whether a download is active.
     /// Used by serve_chunk() to populate PEX data in chunk responses.
     known_providers: HashMap<[u8; 32], Vec<PeerId>>,
+    /// Adaptive concurrency cap per provider peer, **global across all active
+    /// downloads** — so N simultaneous downloads from the same peer don't flood
+    /// it with N × cap concurrent chunk requests. Backs off on a timeout.
+    peer_caps: HashMap<PeerId, PeerCap>,
     /// Shared session metrics — updated on every chunk event.
     metrics: Arc<Metrics>,
     /// Cap on concurrent chunk-upload tasks (semaphore with configurable permits).
@@ -314,6 +311,7 @@ impl DownloadEngine {
             pending_manifests: HashMap::new(),
             active: HashMap::new(),
             known_providers: HashMap::new(),
+            peer_caps: HashMap::new(),
             metrics,
             upload_semaphore,
             upload_scheduler,
@@ -1213,26 +1211,40 @@ impl DownloadEngine {
     // -----------------------------------------------------------------------
 
     async fn dispatch_requests(&mut self, root_hash: [u8; 32]) {
-        let dl = match self.active.get_mut(&root_hash) {
-            Some(d) => d,
-            None => return,
+        // Snapshot this download's providers (don't hold a borrow — we need
+        // `&self.active` below to sum the *global* per-peer in-flight count).
+        let providers: Vec<PeerId> = match self.active.get(&root_hash) {
+            Some(d) if !d.queued.is_empty() => d.providers.clone(),
+            _ => return,
         };
-
-        // Collect (peer, free_slots) for peers that have capacity.
-        // We iterate providers in order to keep round-robin stable.
-        let mut work: Vec<(PeerId, usize)> = dl
-            .providers
-            .iter()
-            .map(|&p| {
-                let free = dl.peer_state.entry(p).or_default().slots_free();
-                (p, free)
-            })
-            .filter(|(_, free)| *free > 0)
-            .collect();
-
-        if work.is_empty() || dl.queued.is_empty() {
+        if providers.is_empty() {
             return;
         }
+
+        // Free slots per provider, bounded by the GLOBAL per-peer cap: the cap
+        // counts chunks in-flight to that peer across *all* active downloads, so
+        // many simultaneous downloads from one peer (e.g. a batch of mirror
+        // fetches) can't flood it with cap × N concurrent requests — which would
+        // share its bandwidth so thinly that every request times out.
+        let mut work: Vec<(PeerId, usize)> = Vec::new();
+        for p in providers {
+            let used: usize = self
+                .active
+                .values()
+                .filter_map(|d| d.peer_state.get(&p))
+                .map(|ps| ps.in_flight.len())
+                .sum();
+            let cap = self.peer_caps.entry(p).or_default().max_slots;
+            let free = cap.saturating_sub(used);
+            if free > 0 {
+                work.push((p, free));
+            }
+        }
+        if work.is_empty() {
+            return;
+        }
+
+        let dl = self.active.get_mut(&root_hash).unwrap();
 
         // Assign queued chunks to peers round-robin.
         let mut assigned: Vec<(PeerId, u32)> = Vec::new();
@@ -1290,6 +1302,24 @@ impl DownloadEngine {
                     .insert(chunk_idx);
             }
             debug!(chunk_idx, %peer, "Dispatched chunk request");
+        }
+    }
+
+    /// Re-dispatch every active download that still has queued chunks. Called
+    /// periodically: with the global per-peer cap, a download can hold none of a
+    /// peer's slots while another download uses them, and then has no event of
+    /// its own to resume it when those slots free up. This safety tick picks it
+    /// back up (within the tick interval) so downloads don't stall behind each
+    /// other on a shared, capacity-limited provider.
+    pub async fn dispatch_idle(&mut self) {
+        let hashes: Vec<[u8; 32]> = self
+            .active
+            .iter()
+            .filter(|(_, dl)| !dl.queued.is_empty())
+            .map(|(h, _)| *h)
+            .collect();
+        for h in hashes {
+            self.dispatch_requests(h).await;
         }
     }
 
@@ -1377,17 +1407,22 @@ impl DownloadEngine {
 
                 // A good chunk clears this peer's failure streak and adds to its
                 // per-peer byte tally (drives the per-peer rate in live stats).
-                // After a sustained good run, recover one of the concurrency
-                // slots we backed off on a timeout, so a peer that was only
-                // transiently slow ramps back up.
                 if let Some(ps) = dl.peer_state.get_mut(&peer) {
                     ps.consecutive_failures = 0;
                     ps.bytes_downloaded += chunk_bytes;
-                    ps.ok_streak += 1;
-                    if ps.max_slots < SLOTS_PER_PEER && ps.ok_streak >= SLOT_RECOVER_STREAK {
-                        ps.max_slots += 1;
-                        ps.ok_streak = 0;
+                }
+                // After a sustained good run, recover one global concurrency
+                // slot for this peer, so one that was only transiently slow
+                // (or backed off by an unrelated download) ramps back up.
+                let cap = self.peer_caps.entry(peer).or_default();
+                if cap.max_slots < SLOTS_PER_PEER {
+                    cap.ok_streak += 1;
+                    if cap.ok_streak >= SLOT_RECOVER_STREAK {
+                        cap.max_slots += 1;
+                        cap.ok_streak = 0;
                     }
+                } else {
+                    cap.ok_streak = 0;
                 }
 
                 dl.done.insert(chunk_idx);
@@ -1587,25 +1622,38 @@ impl DownloadEngine {
         };
         dl.in_flight.remove(&chunk_idx);
 
-        let mut evict = false;
-        let mut backed_off_to = None;
         if let Some(ps) = dl.peer_state.get_mut(&peer) {
             ps.in_flight.remove(&chunk_idx);
-            ps.ok_streak = 0;
-            if ps.max_slots > MIN_SLOTS_PER_PEER {
+        }
+
+        // Back off the GLOBAL per-peer concurrency cap (shared across all
+        // downloads from this peer), or — if already at the floor — grow this
+        // download's failure streak toward eviction.
+        let backed_off_to = {
+            let cap = self.peer_caps.entry(peer).or_default();
+            cap.ok_streak = 0;
+            if cap.max_slots > MIN_SLOTS_PER_PEER {
                 // Likely over-pipelined for this peer's speed (its concurrent
                 // chunks share the link and all miss the deadline together).
-                // Back off concurrency and give it a clean slate instead of
-                // evicting — it's probably just slow, not gone.
-                ps.max_slots = (ps.max_slots / 2).max(MIN_SLOTS_PER_PEER);
-                ps.consecutive_failures = 0;
-                backed_off_to = Some(ps.max_slots);
+                // Back off and give it a clean slate instead of evicting — it's
+                // probably just slow, not gone.
+                cap.max_slots = (cap.max_slots / 2).max(MIN_SLOTS_PER_PEER);
+                Some(cap.max_slots)
             } else {
-                // Already down to one in-flight chunk and still failing → the
-                // peer is genuinely unusable.
-                ps.consecutive_failures += 1;
-                evict = ps.consecutive_failures >= MAX_PEER_FAILURES;
+                None
             }
+        };
+
+        let mut evict = false;
+        if backed_off_to.is_some() {
+            if let Some(ps) = dl.peer_state.get_mut(&peer) {
+                ps.consecutive_failures = 0;
+            }
+        } else if let Some(ps) = dl.peer_state.get_mut(&peer) {
+            // Already down to one in-flight chunk and still failing → the peer
+            // is genuinely unusable.
+            ps.consecutive_failures += 1;
+            evict = ps.consecutive_failures >= MAX_PEER_FAILURES;
         }
 
         if evict {
@@ -2755,12 +2803,20 @@ mod tests {
             )
             .await;
 
-        // Snapshot (max_slots, consecutive_failures) for the only provider.
+        // Snapshot (global max_slots, this download's consecutive_failures).
         let state = |e: &DownloadEngine| {
-            let dl = e.active.get(&hash).unwrap();
-            dl.peer_state
+            let max_slots = e
+                .peer_caps
                 .get(&p)
-                .map(|ps| (ps.max_slots, ps.consecutive_failures))
+                .map(|c| c.max_slots)
+                .unwrap_or(SLOTS_PER_PEER);
+            let cf = e
+                .active
+                .get(&hash)
+                .and_then(|dl| dl.peer_state.get(&p))
+                .map(|ps| ps.consecutive_failures)
+                .unwrap_or(0);
+            (max_slots, cf)
         };
         // Fail whatever chunk is in-flight to `p` right now.
         async fn fail_once(e: &mut DownloadEngine, hash: &[u8; 32], p: PeerId) {
@@ -2774,16 +2830,16 @@ mod tests {
             e.on_chunk_request_failed(req_id, p).await;
         }
 
-        assert_eq!(state(&engine), Some((SLOTS_PER_PEER, 0)));
+        assert_eq!(state(&engine), (SLOTS_PER_PEER, 0));
         // Each timeout halves concurrency (4→2→1) without counting toward
         // eviction — the peer is slow, not gone.
         fail_once(&mut engine, &hash, p).await;
-        assert_eq!(state(&engine), Some((2, 0)));
+        assert_eq!(state(&engine), (2, 0));
         fail_once(&mut engine, &hash, p).await;
-        assert_eq!(state(&engine), Some((1, 0)));
+        assert_eq!(state(&engine), (1, 0));
         // At the floor, further timeouts grow the failure streak instead.
         fail_once(&mut engine, &hash, p).await;
-        assert_eq!(state(&engine), Some((1, 1)));
+        assert_eq!(state(&engine), (1, 1));
         // Still a provider (not yet at MAX_PEER_FAILURES).
         assert!(engine.active.get(&hash).unwrap().providers.contains(&p));
 
