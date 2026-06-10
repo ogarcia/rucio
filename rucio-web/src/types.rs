@@ -407,6 +407,8 @@ pub struct NetworkConfig {
 pub struct StorageConfig {
     pub download_dir: String,
     pub temp_dir: String,
+    #[serde(default)]
+    pub pin_dir: String,
     pub database_path: String,
 }
 

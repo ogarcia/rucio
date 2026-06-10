@@ -132,5 +132,8 @@ fn default_temp_limit() -> u64 {
 pub struct StorageConfig {
     pub download_dir: String,
     pub temp_dir: String,
+    /// Directory where pinned (fetched-and-kept) content lives.
+    #[serde(default)]
+    pub pin_dir: String,
     pub database_path: String,
 }

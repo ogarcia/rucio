@@ -104,6 +104,7 @@ fn build_snapshot(
         storage: StorageConfig {
             download_dir: cfg.storage.download_dir.to_string_lossy().into_owned(),
             temp_dir: cfg.storage.temp_dir.to_string_lossy().into_owned(),
+            pin_dir: cfg.storage.pin_dir.to_string_lossy().into_owned(),
             database_path: cfg.storage.database_path.to_string_lossy().into_owned(),
         },
         emule: EmuleConfig {
@@ -177,6 +178,11 @@ pub async fn put_config(
     new_cfg.network.exclusive_bootstrap = c.network.exclusive_bootstrap;
     new_cfg.storage.download_dir = c.storage.download_dir.into();
     new_cfg.storage.temp_dir = c.storage.temp_dir.into();
+    // pin_dir was added later (serde default ""); an older client that doesn't
+    // send it must not blank the configured value.
+    if !c.storage.pin_dir.trim().is_empty() {
+        new_cfg.storage.pin_dir = c.storage.pin_dir.into();
+    }
     new_cfg.emule.enabled = c.emule.enabled;
     new_cfg.emule.temp_dir = c.emule.temp_dir.into();
     new_cfg.emule.udp_port = c.emule.udp_port;
