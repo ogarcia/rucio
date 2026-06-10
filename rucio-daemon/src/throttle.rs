@@ -97,8 +97,20 @@ impl Inner {
     }
 }
 
+/// Fairness quantum: the most one acquirer consumes before releasing the FIFO
+/// turn. Splitting every `acquire` into quanta and re-queuing between them makes
+/// the bucket round-robin its tokens by *bytes* across all waiting transfers, so
+/// a large-chunk transfer (e.g. a 4 MiB libp2p chunk) can't starve a
+/// small-chunk one (e.g. a ~180 KiB eMule block) when the cap is saturated.
+const FAIR_QUANTUM: u64 = 64 * 1024;
+
 pub struct TokenBucket {
     inner: Mutex<Inner>,
+    /// FIFO turnstile ordering concurrent acquirers. tokio's `Mutex` grants in
+    /// request order, so holding it for one [`FAIR_QUANTUM`] at a time shares
+    /// the cap fairly instead of letting whoever wins the lock race monopolise
+    /// it. Only contended (and only meaningfully held) when a limit is set.
+    turn: tokio::sync::Mutex<()>,
 }
 
 impl TokenBucket {
@@ -106,22 +118,41 @@ impl TokenBucket {
     pub fn new(rate_kbps: u64) -> Self {
         Self {
             inner: Mutex::new(Inner::new(rate_kbps)),
+            turn: tokio::sync::Mutex::new(()),
         }
     }
 
     /// Block the current async task until `bytes` tokens are available.
     ///
-    /// When the limit is 0 this returns immediately without any sleep.
+    /// When the limit is 0 this returns immediately without any sleep or
+    /// queueing. Under a limit, the request is consumed in [`FAIR_QUANTUM`]-sized
+    /// steps through a FIFO turnstile, so concurrent transfers round-robin the
+    /// available tokens by bytes rather than one monopolising the cap.
     pub async fn acquire(&self, bytes: u64) {
-        loop {
-            let wait = {
-                let mut g = self.inner.lock().unwrap();
-                g.try_consume(bytes)
-            };
-            match wait {
-                Ok(()) => return,
-                Err(d) => tokio::time::sleep(d).await,
+        // Unlimited: no throttling, and no serialisation (taking the turnstile
+        // would needlessly cap concurrency when there is no rate to share).
+        if self.rate_kbps() == 0 {
+            return;
+        }
+        let mut remaining = bytes;
+        while remaining > 0 {
+            let take = remaining.min(FAIR_QUANTUM);
+            // Hold the turn only while consuming this quantum; dropping it
+            // between quanta lets the next waiter take its turn (round-robin).
+            {
+                let _turn = self.turn.lock().await;
+                loop {
+                    let wait = {
+                        let mut g = self.inner.lock().unwrap();
+                        g.try_consume(take)
+                    };
+                    match wait {
+                        Ok(()) => break,
+                        Err(d) => tokio::time::sleep(d).await,
+                    }
+                }
             }
+            remaining -= take;
         }
     }
 
@@ -335,10 +366,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn acquire_oversized_completes_on_full_bucket() {
-        // A 4 MiB chunk under a 100 KB/s limit (burst 200 KB) would otherwise
-        // hang forever; on a full bucket it must complete immediately.
-        let tb = TokenBucket::new(100);
-        tb.acquire(4 * 1024 * 1024).await;
+    async fn acquire_quantum_over_burst_completes_on_full_bucket() {
+        // A single quantum larger than the burst cap (1 KB/s → burst 2 KiB)
+        // would otherwise loop forever; on a full bucket the oversized special
+        // case grants it immediately, so acquire returns instead of hanging.
+        let tb = TokenBucket::new(1);
+        tb.acquire(3 * 1024).await;
+    }
+
+    #[tokio::test]
+    async fn acquire_still_rate_limits_after_burst() {
+        // Fairness splits a request into quanta but must not relax the rate:
+        // after draining the burst, a further 500 KiB at 1000 KB/s cannot be
+        // delivered faster than ~0.5 s. Lower-bound only, so it's not flaky.
+        let tb = TokenBucket::new(1000);
+        tb.acquire(2000 * 1024).await; // drain the full burst
+        let t0 = Instant::now();
+        tb.acquire(500 * 1024).await;
+        assert!(t0.elapsed() >= Duration::from_millis(350));
     }
 }
