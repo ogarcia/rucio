@@ -72,33 +72,46 @@ pub async fn insert(db: &Db, f: NewSharedFile<'_>) -> Result<i64> {
     Ok(file_id)
 }
 
-/// List all shared files, including their chunk count.
+/// List all shared files (no chunk join).
+///
+/// `chunk_count` is derived as `ceil(size / chunk_size)` — the number of chunks
+/// a fully-indexed file has — rather than counted from the `chunks` table. Every
+/// caller of this full-table listing (watcher reconcile, magnet-by-prefix
+/// lookup, search responses) needs only the file metadata, and the
+/// `COUNT(c.id) … GROUP BY` over the whole `chunks` table was the dominant cost
+/// once a library reaches a few thousand files (seconds per rescan). The
+/// paginated [`list_page`] still returns the exact stored count for the UI.
 pub async fn list(db: &Db) -> Result<Vec<SharedFileRow>> {
     let rows = sqlx::query(
-        "SELECT sf.id, sf.root_hash, sf.name, sf.size, sf.mime_type, sf.path,
-                sf.chunk_size, sf.added_at, sf.mtime,
-                COUNT(c.id) AS chunk_count
-         FROM shared_files sf
-         LEFT JOIN chunks c ON c.shared_file_id = sf.id
-         GROUP BY sf.id
-         ORDER BY sf.added_at DESC",
+        "SELECT id, root_hash, name, size, mime_type, path, chunk_size, added_at, mtime
+         FROM shared_files
+         ORDER BY added_at DESC",
     )
     .fetch_all(db)
     .await?;
 
     Ok(rows
         .iter()
-        .map(|r| SharedFileRow {
-            id: r.get("id"),
-            root_hash: r.get("root_hash"),
-            name: r.get("name"),
-            size: r.get("size"),
-            mime_type: r.get("mime_type"),
-            path: r.get("path"),
-            chunk_size: r.get("chunk_size"),
-            added_at: r.get("added_at"),
-            mtime: r.get("mtime"),
-            chunk_count: r.get("chunk_count"),
+        .map(|r| {
+            let size: i64 = r.get("size");
+            let chunk_size: i64 = r.get("chunk_size");
+            let chunk_count = if chunk_size > 0 {
+                (size as u64).div_ceil(chunk_size as u64) as i64
+            } else {
+                0
+            };
+            SharedFileRow {
+                id: r.get("id"),
+                root_hash: r.get("root_hash"),
+                name: r.get("name"),
+                size,
+                mime_type: r.get("mime_type"),
+                path: r.get("path"),
+                chunk_size,
+                added_at: r.get("added_at"),
+                mtime: r.get("mtime"),
+                chunk_count,
+            }
         })
         .collect())
 }
@@ -425,6 +438,9 @@ mod tests {
         assert_eq!(rows[0].name, "hello.txt");
         assert_eq!(rows[0].size, 12288);
         assert_eq!(rows[0].root_hash, hash);
+        // chunk_count is derived as ceil(size / chunk_size), not counted from
+        // the chunks table — 12288 / 4096 = 3.
+        assert_eq!(rows[0].chunk_count, 3);
     }
 
     #[tokio::test]
