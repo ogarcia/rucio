@@ -105,6 +105,24 @@ pub struct SharesFilesResponse {
     pub total: u64,
 }
 
+/// A pinned item (content kept available on purpose). GET /api/v1/pins.
+/// `state` is `available` (present and shared), `fetching`, or `missing`.
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+pub struct Pin {
+    pub root_hash: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub size: Option<u64>,
+    pub state: String,
+    pub added_at: i64,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct PinsResponse {
+    pub pins: Vec<Pin>,
+}
+
 /// Response to POST /api/v1/shares.
 #[derive(Deserialize, Clone, Debug)]
 pub struct AddShareResponse {

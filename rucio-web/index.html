@@ -1143,6 +1143,18 @@
             padding: 0.1rem 0.45rem; border-radius: 9999px; white-space: nowrap;
         }
 
+        /* Pin state pill (Pins tab): green when present, blue while fetching,
+           neutral grey when pinned-but-absent. Uses the theme status vars so it
+           adapts to light/dark. */
+        .pin-state {
+            font-size: 0.625rem; font-weight: 700; letter-spacing: 0.03em;
+            padding: 0.1rem 0.45rem; border-radius: 9999px; white-space: nowrap;
+            background: var(--sn); color: var(--sn-fg);
+        }
+        .pin-state-available { background: var(--sd); color: var(--sd-fg); }
+        .pin-state-fetching  { background: var(--sa); color: var(--sa-fg); }
+        .pin-state-missing   { background: var(--sn); color: var(--sn-fg); }
+
         .share-file-row {
             display: grid; grid-template-columns: 1fr auto auto;
             align-items: center; gap: 1rem;
@@ -1173,9 +1185,13 @@
         /* ── Shared atoms ────────────────────────────────────────────────── */
 
         .empty-state {
-            display: flex; align-items: center; justify-content: center;
+            display: flex; flex-direction: column; gap: 0.35rem;
+            align-items: center; justify-content: center;
             height: 240px; color: var(--text-4); font-size: 0.875rem;
+            text-align: center; padding: 0 1rem;
         }
+        /* Secondary line under an empty-state heading (e.g. the Pins tab). */
+        .empty-hint { font-size: 0.75rem; color: var(--text-4); opacity: 0.8; }
 
         .btn-sm {
             padding: 0.25rem 0.625rem; border-radius: 0.25rem;

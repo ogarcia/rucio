@@ -4,6 +4,7 @@ mod downloads;
 mod icons;
 mod notifications;
 mod overlays;
+mod pins;
 mod searches;
 mod shares;
 mod statusbar;
@@ -79,6 +80,7 @@ use downloads::{
 };
 use notifications::NotificationsPanel;
 use overlays::{AboutPanel, AddressesPanel, NodeStatusPanel, PeersPanel, StatsPanel};
+use pins::PinsTab;
 use searches::SearchesTab;
 use shares::SharesTab;
 use types::{
@@ -136,6 +138,7 @@ enum Tab {
     Uploads,
     Searches,
     Shares,
+    Pins,
 }
 
 impl Tab {
@@ -145,6 +148,7 @@ impl Tab {
             Tab::Uploads => "uploads",
             Tab::Searches => "searches",
             Tab::Shares => "shares",
+            Tab::Pins => "pins",
         }
     }
 
@@ -154,6 +158,7 @@ impl Tab {
             "uploads" => Some(Tab::Uploads),
             "searches" => Some(Tab::Searches),
             "shares" => Some(Tab::Shares),
+            "pins" => Some(Tab::Pins),
             _ => None,
         }
     }
@@ -177,11 +182,12 @@ fn save_tab(t: Tab) {
 
 /// The navigation sections, shown as top-bar tabs (wide) or sidebar items
 /// (narrow). One source so both stay in sync.
-const TABS: [(Tab, &str); 4] = [
+const TABS: [(Tab, &str); 5] = [
     (Tab::Downloads, "Downloads"),
     (Tab::Uploads, "Uploads"),
     (Tab::Searches, "Searches"),
     (Tab::Shares, "Shares"),
+    (Tab::Pins, "Pins"),
 ];
 
 #[derive(Clone, Copy, PartialEq)]
@@ -950,6 +956,13 @@ fn App() -> impl IntoView {
                     Tab::Shares => view! {
                         <SharesTab
                             indexing=indexing
+                            dl_speed=dl_speed
+                            ul_speed=ul_speed
+                            temp_limit=temp_limit
+                        />
+                    }.into_any(),
+                    Tab::Pins => view! {
+                        <PinsTab
                             dl_speed=dl_speed
                             ul_speed=ul_speed
                             temp_limit=temp_limit
