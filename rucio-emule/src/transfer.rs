@@ -126,18 +126,42 @@ const OP_QUEUE_FULL: u8 = 0x93;
 const OP_HASHSETREQUEST: u8 = 0x51;
 /// Hashset answer — payload: file_hash(16) + part_count(u16 LE) + part_hash(16)*N.
 const OP_HASHSETANSWER: u8 = 0x52;
+/// Extended-protocol (0xc5) eMule capability handshake.
+const OP_EMULEINFO: u8 = 0x01;
+const OP_EMULEINFOANSWER: u8 = 0x02;
+/// eMule extended-protocol version we speak (eMule's `EMULE_PROTOCOL`). A peer
+/// that reads a different value ignores the whole packet.
+const EMULE_PROTOCOL_VERSION: u8 = 0x01;
+/// Client version byte advertised in OP_EMULEINFOANSWER. A value in `0x25..=0x27`
+/// makes eMule recognise us as an eMule client *without* inferring any implicit
+/// extended feature (UDP reask, source exchange, shared-dir browsing) — we
+/// expose none, which matches what we actually implement.
+const EMULE_VERSION_SHORT: u8 = 0x27;
 
 // ── Framing ───────────────────────────────────────────────────────────────────
 
-/// Build a framed eMule TCP message.
-fn build_message(opcode: u8, payload: &[u8]) -> Vec<u8> {
+/// Build a framed message on an explicit protocol header byte: `PROTO_ED2K`
+/// (0xe3) for standard messages, `PROTO_EMULE` (0xc5) for the extended protocol
+/// (e.g. the eMule capability handshake).
+fn build_message_proto(proto: u8, opcode: u8, payload: &[u8]) -> Vec<u8> {
     let len = (payload.len() + 1) as u32; // +1 for opcode byte
     let mut msg = Vec::with_capacity(6 + payload.len());
-    msg.push(PROTO_ED2K);
+    msg.push(proto);
     msg.extend_from_slice(&len.to_le_bytes());
     msg.push(opcode);
     msg.extend_from_slice(payload);
     msg
+}
+
+/// Build the `OP_EMULEINFOANSWER` payload: our advertised client version, the
+/// extended-protocol version, and an empty tag list (no extended features).
+/// Enough for a peer to recognise us as an eMule client.
+fn build_emule_info() -> Vec<u8> {
+    let mut p = Vec::with_capacity(6);
+    p.push(EMULE_VERSION_SHORT);
+    p.push(EMULE_PROTOCOL_VERSION);
+    p.extend_from_slice(&0u32.to_le_bytes()); // tag count = 0
+    p
 }
 
 /// RC4 stream pair for a connection. eMule uses **two independent** RC4 streams
@@ -218,7 +242,19 @@ async fn write_frame(
     opcode: u8,
     payload: &[u8],
 ) -> io::Result<()> {
-    let mut msg = build_message(opcode, payload);
+    write_frame_proto(stream, ciphers, PROTO_ED2K, opcode, payload).await
+}
+
+/// Like [`write_frame`] but on an explicit protocol header byte (for extended-
+/// protocol messages such as `OP_EMULEINFOANSWER` on `PROTO_EMULE`).
+async fn write_frame_proto(
+    stream: &mut TcpStream,
+    ciphers: &mut ObfCiphers,
+    proto: u8,
+    opcode: u8,
+    payload: &[u8],
+) -> io::Result<()> {
+    let mut msg = build_message_proto(proto, opcode, payload);
     if let Some(rc4) = ciphers.send.as_mut() {
         rc4.apply(&mut msg);
     }
@@ -1279,11 +1315,27 @@ async fn handle_incoming(mut stream: TcpStream, peer: SocketAddr, ctx: Arc<Uploa
         // A peer may request several files in the same connection; serve or
         // reject each one before the connection is closed.
         loop {
-            let (_proto, opcode, payload) =
+            let (proto, opcode, payload) =
                 match timeout(OP_TIMEOUT, read_frame(&mut stream, &mut ciphers)).await {
                     Ok(Ok(f)) => f,
                     _ => break,
                 };
+
+            // eMule capability handshake: a peer sends OP_EMULEINFO on the
+            // extended protocol after HELLO; answer it so we are recognised as
+            // an eMule client (otherwise we look like a plain eDonkey peer).
+            if proto == PROTO_EMULE && opcode == OP_EMULEINFO {
+                write_frame_proto(
+                    &mut stream,
+                    &mut ciphers,
+                    PROTO_EMULE,
+                    OP_EMULEINFOANSWER,
+                    &build_emule_info(),
+                )
+                .await?;
+                debug!(%peer, "answered OP_EMULEINFO");
+                continue;
+            }
 
             if opcode != OP_FILEREQUEST {
                 debug!(%peer, "ignoring opcode 0x{opcode:02x} before FILEREQUEST");
@@ -1561,12 +1613,26 @@ mod tests {
 
     #[test]
     fn test_build_message_framing() {
-        let msg = build_message(OP_HELLO, &[0xaa, 0xbb]);
+        let msg = build_message_proto(PROTO_ED2K, OP_HELLO, &[0xaa, 0xbb]);
         assert_eq!(msg.len(), 8);
         assert_eq!(msg[0], PROTO_ED2K);
         assert_eq!(&msg[1..5], &[3, 0, 0, 0]);
         assert_eq!(msg[5], OP_HELLO);
         assert_eq!(&msg[6..], &[0xaa, 0xbb]);
+        // Extended protocol uses the 0xc5 header byte.
+        let ext = build_message_proto(PROTO_EMULE, OP_EMULEINFOANSWER, &[]);
+        assert_eq!(ext[0], PROTO_EMULE);
+        assert_eq!(ext[5], OP_EMULEINFOANSWER);
+    }
+
+    #[test]
+    fn emule_info_payload() {
+        // version + EMULE_PROTOCOL + tagcount(0): recognised as eMule, no tags.
+        let info = build_emule_info();
+        assert_eq!(
+            info,
+            [EMULE_VERSION_SHORT, EMULE_PROTOCOL_VERSION, 0, 0, 0, 0]
+        );
     }
 
     #[test]
