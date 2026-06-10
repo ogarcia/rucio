@@ -6,4 +6,5 @@ pub mod pins;
 pub mod search;
 pub mod shares;
 pub mod status;
+pub mod subscriptions;
 pub mod uploads;

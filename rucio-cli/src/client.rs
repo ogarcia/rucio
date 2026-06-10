@@ -28,6 +28,7 @@ use rucio_core::api::{
         AddShareRequest, AddShareResponse, ShareResponse, SharedDirsResponse, SharesResponse,
     },
     status::{PeersResponse, StatusResponse},
+    subscriptions::{SubscriptionRequest, SubscriptionResponse, SubscriptionsResponse},
     uploads::UploadsResponse,
 };
 
@@ -276,6 +277,32 @@ impl ApiClient {
 
     pub async fn delete_pin(&self, hash: &str) -> Result<()> {
         self.delete(&format!("/api/v1/pins/{hash}")).await
+    }
+
+    // --- Subscriptions -----------------------------------------------------
+
+    pub async fn list_subscriptions(&self) -> Result<SubscriptionsResponse> {
+        self.get("/api/v1/subscriptions").await
+    }
+
+    pub async fn create_subscription(
+        &self,
+        peer: &str,
+        quota_bytes: u64,
+    ) -> Result<SubscriptionResponse> {
+        self.post(
+            "/api/v1/subscriptions",
+            &SubscriptionRequest {
+                peer: peer.to_string(),
+                quota_bytes,
+            },
+        )
+        .await
+    }
+
+    pub async fn delete_subscription(&self, peer_id: &str) -> Result<()> {
+        self.delete(&format!("/api/v1/subscriptions/{peer_id}"))
+            .await
     }
 
     /// Assign (or clear, with `None`) a download's category. `id` may be negative

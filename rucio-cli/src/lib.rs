@@ -37,6 +37,11 @@ pub enum Commands {
         #[command(subcommand)]
         action: PinAction,
     },
+    /// Mirror other nodes' pinned content (cooperative pinning)
+    Subscription {
+        #[command(subcommand)]
+        action: SubscriptionAction,
+    },
     /// Inspect active uploads (peers downloading from us)
     Upload {
         #[command(subcommand)]
@@ -240,6 +245,28 @@ pub enum PinAction {
     },
 }
 
+/// `rucio subscription …` — mirror other nodes' pinned content.
+#[derive(Subcommand, Debug)]
+pub enum SubscriptionAction {
+    /// List subscriptions and their mirror progress
+    List,
+    /// Subscribe to a peer's pin-set, mirroring it within a disk quota
+    Add {
+        /// The peer to mirror: a PeerId or a `rucio-peer:` link (from the
+        /// peer's `rucio subscription link`)
+        peer: String,
+        /// Disk quota to devote to this peer, e.g. 10G, 500M, 1.5T
+        quota: String,
+    },
+    /// Unsubscribe from a peer (drops the mirror and evicts orphaned content)
+    Remove {
+        /// The peer's PeerId, from `rucio subscription list`
+        peer_id: String,
+    },
+    /// Print this node's shareable link, so others can mirror you
+    Link,
+}
+
 /// `rucio upload …` — inspect peers downloading from us.
 #[derive(Subcommand, Debug)]
 pub enum UploadAction {
@@ -427,6 +454,16 @@ pub async fn run() -> Result<()> {
             PinAction::List => cmd::pins::list(&client).await,
             PinAction::Add { target, provider } => cmd::pins::add(&client, &target, provider).await,
             PinAction::Remove { hash } => cmd::pins::remove(&client, &hash).await,
+        },
+        Commands::Subscription { action } => match action {
+            SubscriptionAction::List => cmd::subscriptions::list(&client).await,
+            SubscriptionAction::Add { peer, quota } => {
+                cmd::subscriptions::add(&client, &peer, &quota).await
+            }
+            SubscriptionAction::Remove { peer_id } => {
+                cmd::subscriptions::remove(&client, &peer_id).await
+            }
+            SubscriptionAction::Link => cmd::subscriptions::link(&client).await,
         },
         Commands::Upload { action } => match action {
             UploadAction::List { watch } => cmd::uploads::list(&client, watch).await,
