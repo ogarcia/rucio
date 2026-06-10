@@ -1389,22 +1389,28 @@ impl DownloadEngine {
                         .unwrap_or_default();
                     let hash_hex = hex::encode(root_hash);
 
-                    // Resolve where this download lands. A pinned hash goes to
-                    // pin_dir (kept separate from the user's downloads); otherwise
-                    // its category's pinned dir if it has one, else the global
-                    // download_dir. Resolved now, not at start, so a category (or
-                    // the pin) edited/removed mid-download is honoured.
-                    let dest_dir = if db::pins::exists(&self.db, &root_hash)
+                    // Resolve where this download lands, in precedence order:
+                    //   1. an explicit category the user assigned (its dir, or the
+                    //      global dir if the category pins none) — user intent wins,
+                    //      even when the download is also pinned;
+                    //   2. otherwise, if pinned, the dedicated pin_dir;
+                    //   3. otherwise the global download_dir.
+                    // Pinning keeps content shared/re-provided wherever it lives, so
+                    // honouring the category doesn't weaken the pin. Resolved now,
+                    // not at start, so a category/pin edited mid-download is honoured.
+                    let cat_id = db::downloads::get_category_id(&self.db, dl_id)
+                        .await
+                        .ok()
+                        .flatten();
+                    let dest_dir = if cat_id.is_some() {
+                        db::categories::resolve_dir(&self.db, &self.dest_dir, cat_id).await
+                    } else if db::pins::exists(&self.db, &root_hash)
                         .await
                         .unwrap_or(false)
                     {
                         self.pin_dir.clone()
                     } else {
-                        let cat_id = db::downloads::get_category_id(&self.db, dl_id)
-                            .await
-                            .ok()
-                            .flatten();
-                        db::categories::resolve_dir(&self.db, &self.dest_dir, cat_id).await
+                        self.dest_dir.clone()
                     };
 
                     // Persist the fully-verified `.part` into the download dir.
