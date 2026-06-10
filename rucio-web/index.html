@@ -617,8 +617,10 @@
             display: flex; gap: 0.25rem;
             padding: 0 1.25rem; border-bottom: 1px solid var(--border);
             /* Scroll horizontally instead of overflowing when the tabs don't
-               fit (small mobile screens). */
-            overflow-x: auto; flex-wrap: nowrap;
+               fit (small mobile screens). overflow-y must be explicit hidden:
+               setting overflow-x:auto would otherwise make y compute to auto
+               too, and the tabs' -1px overlap triggers a stray vertical bar. */
+            overflow-x: auto; overflow-y: hidden; flex-wrap: nowrap;
             scrollbar-width: thin; -webkit-overflow-scrolling: touch;
         }
         .config-tab {
