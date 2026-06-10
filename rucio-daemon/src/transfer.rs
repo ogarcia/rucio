@@ -42,7 +42,7 @@ use rucio_core::protocol::{
 use crate::db::{self, Db};
 use crate::metrics::Metrics;
 use crate::node::messages::NodeCmd;
-use crate::throttle::TokenBucket;
+use crate::throttle::{Priority, TokenBucket};
 use crate::upload_scheduler::UploadScheduler;
 
 // ---------------------------------------------------------------------------
@@ -1311,8 +1311,11 @@ impl DownloadEngine {
                     return;
                 }
 
-                // Throttle download bandwidth before writing to disk.
-                self.download_throttle.acquire(data.len() as u64).await;
+                // Throttle download bandwidth before writing to disk. Rucio
+                // transfers take priority over eMule on the shared cap.
+                self.download_throttle
+                    .acquire(data.len() as u64, Priority::High)
+                    .await;
 
                 // Write to disk.
                 let offset = chunk_idx as u64 * dl.chunk_size as u64;
@@ -1623,10 +1626,10 @@ impl DownloadEngine {
                 let bytes = data.len() as u64;
                 if is_high_id {
                     let _guard = scheduler.highid_guard();
-                    upload_throttle.acquire(bytes).await;
+                    upload_throttle.acquire(bytes, Priority::High).await;
                 } else {
                     scheduler.wait_for_lowid_turn().await;
-                    upload_throttle.acquire(bytes).await;
+                    upload_throttle.acquire(bytes, Priority::High).await;
                 }
                 metrics.record_upload(bytes);
                 // Track this peer in the active-upload registry. The name is

@@ -481,9 +481,11 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                 // Gate eMule uploads on the same upload throttle as libp2p, so
                 // the temporary speed limit (and any base cap) covers them too.
                 let up = Arc::clone(&upload_throttle);
+                // eMule uploads run at Low priority so a Rucio (libp2p) upload
+                // always wins the shared cap — eMule is the lure, not the product.
                 let upload_limiter: rucio_emule::transfer::ByteLimiter = Arc::new(move |bytes| {
                     let up = Arc::clone(&up);
-                    Box::pin(async move { up.acquire(bytes).await })
+                    Box::pin(async move { up.acquire(bytes, crate::throttle::Priority::Low).await })
                 });
                 let upload_ctx = std::sync::Arc::new(rucio_emule::transfer::UploadContext {
                     slots: emule_upload_slots.clone(),

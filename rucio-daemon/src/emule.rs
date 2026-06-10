@@ -1244,8 +1244,14 @@ pub async fn run_ed2k_download(
                                 // Charge this slice against the download cap. With
                                 // the cap off this is instant; otherwise the worker
                                 // waits here before fetching its next slice, which
-                                // bounds the aggregate download rate.
-                                throttle_w.acquire(slice_end - slice_start).await;
+                                // bounds the aggregate download rate. Low priority:
+                                // Rucio downloads win the shared cap over eMule.
+                                throttle_w
+                                    .acquire(
+                                        slice_end - slice_start,
+                                        crate::throttle::Priority::Low,
+                                    )
+                                    .await;
                                 save_progress(&met, &snapshot);
                                 // Update DB with the true cumulative total so it
                                 // never regresses when slices are downloaded out of
