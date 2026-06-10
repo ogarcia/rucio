@@ -1156,7 +1156,33 @@
         .pin-state-missing   { background: var(--sn); color: var(--sn-fg); }
 
         /* Subscription storage meter: the used/quota bar under the peer id. */
-        .sub-meter { margin: 0.35rem 0; width: 100%; }
+        /* Two-tone subscription meter: lighter = committed (selected within
+           quota), solid = actually present on disk. Both overlay the track. */
+        .sub-meter { margin: 0.35rem 0; width: 100%; position: relative; }
+        .sub-meter-committed {
+            position: absolute; left: 0; top: 0; height: 100%;
+            background: var(--accent); opacity: 0.3;
+            border-radius: 2px; transition: width 0.4s ease;
+        }
+        .sub-meter .dl-bar-fill { position: absolute; left: 0; top: 0; }
+
+        /* Subscription info modal: peer id, info lines, file list + state pills. */
+        .modal-wide { width: 620px; }
+        .sub-info-peer {
+            font-size: 0.75rem; color: var(--text-2); word-break: break-all;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        }
+        .sub-info-line { font-size: 0.8125rem; color: var(--text-2); }
+        .sub-file-list { max-height: 50vh; overflow-y: auto; }
+        .mirror-state {
+            font-size: 0.625rem; font-weight: 700; letter-spacing: 0.03em;
+            padding: 0.1rem 0.45rem; border-radius: 9999px; white-space: nowrap;
+            background: var(--sn); color: var(--sn-fg);
+        }
+        .mirror-state-present  { background: var(--sd); color: var(--sd-fg); }
+        .mirror-state-fetching { background: var(--sa); color: var(--sa-fg); }
+        .mirror-state-missing  { background: var(--sn); color: var(--sn-fg); }
+        .mirror-state-skipped  { background: var(--sn); color: var(--sn-fg); }
         /* Quota input + unit selector row in the subscribe modal. */
         .sub-quota-row { display: flex; gap: 0.5rem; margin-top: 0.5rem; }
         .sub-quota-row .search-input { flex: 1; }

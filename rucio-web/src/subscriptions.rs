@@ -10,7 +10,10 @@ use leptos::task::spawn_local;
 
 use crate::icons::{self, Icon};
 use crate::statusbar::StatusBar;
-use crate::types::{StatusResponse, Subscription, SubscriptionsResponse, format_size};
+use crate::types::{
+    MirrorFile, StatusResponse, Subscription, SubscriptionFilesResponse, SubscriptionsResponse,
+    format_size,
+};
 
 // ── API ─────────────────────────────────────────────────────────────────────
 
@@ -50,6 +53,19 @@ async fn api_remove(peer_id: &str) {
     let _ = gloo_net::http::Request::delete(&url).send().await;
 }
 
+/// The mirror files of a subscription, with their resolved state.
+async fn api_files(peer_id: &str) -> Vec<MirrorFile> {
+    let url = format!("/api/v1/subscriptions/{peer_id}/files");
+    match gloo_net::http::Request::get(&url).send().await {
+        Ok(resp) => resp
+            .json::<SubscriptionFilesResponse>()
+            .await
+            .map(|r| r.files)
+            .unwrap_or_default(),
+        Err(_) => Vec::new(),
+    }
+}
+
 /// Fetch this node's own shareable `rucio-peer:` link from the status endpoint.
 async fn api_my_link() -> Option<String> {
     let status = gloo_net::http::Request::get("/api/v1/status")
@@ -85,6 +101,8 @@ pub fn SubscriptionsTab(
     let subs: RwSignal<Vec<Subscription>> = RwSignal::new(vec![]);
     let add_open: RwSignal<bool> = RwSignal::new(false);
     let copied: RwSignal<bool> = RwSignal::new(false);
+    // The subscription whose info modal is open (None = closed).
+    let info_for: RwSignal<Option<Subscription>> = RwSignal::new(None);
 
     let reload = move || {
         spawn_local(async move {
@@ -150,34 +168,39 @@ pub fn SubscriptionsTab(
                                 let peer_rm = s.peer_id.clone();
                                 let peer_full = s.peer_id.clone();
                                 let peer_title = s.peer_id.clone();
-                                let pct = if s.quota_bytes > 0 {
-                                    (s.used_bytes as f64 / s.quota_bytes as f64 * 100.0)
-                                        .clamp(0.0, 100.0)
+                                let sub_info = s.clone();
+                                // Two-tone meter: lighter = committed (selected within
+                                // quota), solid = actually present on disk.
+                                let committed_pct = if s.quota_bytes > 0 {
+                                    (s.used_bytes as f64 / s.quota_bytes as f64 * 100.0).clamp(0.0, 100.0)
+                                } else {
+                                    0.0
+                                };
+                                let present_pct = if s.quota_bytes > 0 {
+                                    (s.present_bytes as f64 / s.quota_bytes as f64 * 100.0).clamp(0.0, 100.0)
                                 } else {
                                     0.0
                                 };
                                 let meter_text = format!(
                                     "{} / {}",
-                                    format_size(s.used_bytes),
+                                    format_size(s.present_bytes),
                                     format_size(s.quota_bytes)
                                 );
-                                let files = if s.skipped_count > 0 {
-                                    format!(
-                                        "{} mirrored (+{} over quota)",
-                                        s.wanted_count, s.skipped_count
-                                    )
-                                } else {
-                                    format!("{} mirrored", s.wanted_count)
-                                };
-                                // Only show the positive "synced" marker once a sync has
-                                // actually happened. We never show "not synced yet": with
-                                // nothing mirrored that reads like a failure, when in fact
-                                // it's just pending (a fresh subscription syncs within
-                                // seconds) or the peer simply has nothing to mirror.
-                                let mut meta = format!("{meter_text} · {files}");
-                                if s.last_synced_at != 0 {
-                                    meta.push_str(" · synced");
+                                // Genuinely mirrored vs still fetching — don't conflate them.
+                                let fetching = s.wanted_count.saturating_sub(s.present_count);
+                                let mut parts = vec![format!("{} mirrored", s.present_count)];
+                                if fetching > 0 {
+                                    parts.push(format!("{fetching} fetching"));
                                 }
+                                if s.skipped_count > 0 {
+                                    parts.push(format!("+{} over quota", s.skipped_count));
+                                }
+                                // Only the positive "synced" marker, never "not synced yet"
+                                // (which reads like a failure when it's just pending).
+                                if s.last_synced_at != 0 {
+                                    parts.push("synced".to_string());
+                                }
+                                let meta = format!("{meter_text} · {}", parts.join(" · "));
                                 view! {
                                     <li class="share-dir-row">
                                         <span class="share-dir-icon"><Icon paths=icons::NETWORK/></span>
@@ -185,12 +208,23 @@ pub fn SubscriptionsTab(
                                             <span class="share-dir-path" title=peer_title>{peer_full}</span>
                                             <div class="dl-bar-track sub-meter">
                                                 <div
+                                                    class="sub-meter-committed"
+                                                    style=move || format!("width:{committed_pct:.1}%")
+                                                ></div>
+                                                <div
                                                     class="dl-bar-fill"
-                                                    style=move || format!("width:{pct:.1}%")
+                                                    style=move || format!("width:{present_pct:.1}%")
                                                 ></div>
                                             </div>
                                             <span class="share-dir-meta">{meta}</span>
                                         </div>
+                                        <button
+                                            class="icon-btn"
+                                            title="Details and mirrored files"
+                                            on:click=move |_| info_for.set(Some(sub_info.clone()))
+                                        >
+                                            <Icon paths=icons::INFO_CIRCLE/>
+                                        </button>
                                         <button
                                             class="icon-btn icon-btn-danger"
                                             title="Unsubscribe (evicts mirrored content nobody else wants)"
@@ -236,6 +270,13 @@ pub fn SubscriptionsTab(
             <AddSubscriptionModal
                 on_added=move || reload()
                 on_close=move || add_open.set(false)
+            />
+        </Show>
+
+        <Show when=move || info_for.get().is_some()>
+            <SubscriptionInfoModal
+                sub=info_for.get().unwrap()
+                on_close=move || info_for.set(None)
             />
         </Show>
     }
@@ -335,6 +376,98 @@ fn AddSubscriptionModal(
                     >
                         {move || if busy.get() { "Subscribing…" } else { "Subscribe" }}
                     </button>
+                </div>
+            </div>
+        </div>
+    }
+}
+
+// ── Subscription info modal ─────────────────────────────────────────────────
+
+#[component]
+fn SubscriptionInfoModal(sub: Subscription, on_close: impl Fn() + Copy + 'static) -> impl IntoView {
+    let files: RwSignal<Vec<MirrorFile>> = RwSignal::new(vec![]);
+    let loaded = RwSignal::new(false);
+    {
+        let peer = sub.peer_id.clone();
+        spawn_local(async move {
+            files.set(api_files(&peer).await);
+            loaded.set(true);
+        });
+    }
+
+    let peer_id = sub.peer_id.clone();
+    let fetching = sub.wanted_count.saturating_sub(sub.present_count);
+    let usage = format!(
+        "{} on disk · {} committed of {} quota",
+        format_size(sub.present_bytes),
+        format_size(sub.used_bytes),
+        format_size(sub.quota_bytes)
+    );
+    let summary = format!(
+        "{} mirrored · {} fetching · {} over quota",
+        sub.present_count, fetching, sub.skipped_count
+    );
+
+    view! {
+        <div class="modal-backdrop" on:click=move |_| on_close()>
+            <div class="modal modal-wide" on:click=move |e| e.stop_propagation()>
+                <div class="modal-header">
+                    <span class="modal-title">"Subscription"</span>
+                    <button class="overlay-close" on:click=move |_| on_close()>
+                        <Icon paths=icons::X/>
+                    </button>
+                </div>
+                <div class="modal-body">
+                    <p class="sub-info-peer">{peer_id}</p>
+                    <p class="sub-info-line">{usage}</p>
+                    <p class="sub-info-line">{summary}</p>
+                    <div class="sub-file-list">
+                        <Show
+                            when=move || loaded.get()
+                            fallback=|| view! { <p class="empty-hint">"Loading…"</p> }
+                        >
+                            <Show
+                                when=move || !files.get().is_empty()
+                                fallback=|| view! {
+                                    <p class="empty-hint">"No files mirrored for this peer yet."</p>
+                                }
+                            >
+                                <ul class="share-file-list">
+                                    <For
+                                        each=move || files.get()
+                                        key=|f| f.root_hash.clone()
+                                        children=move |f| {
+                                            let st = f.state.clone();
+                                            let label = match st.as_str() {
+                                                "present" => "mirrored",
+                                                "fetching" => "fetching",
+                                                "missing" => "pending",
+                                                "skipped" => "over quota",
+                                                other => other,
+                                            }
+                                            .to_string();
+                                            let pill_class = format!("mirror-state mirror-state-{st}");
+                                            let name = f
+                                                .name
+                                                .clone()
+                                                .unwrap_or_else(|| f.root_hash.chars().take(16).collect());
+                                            view! {
+                                                <li class="share-file-row">
+                                                    <span class="share-file-name">{name}</span>
+                                                    <span class="share-file-size">{format_size(f.size)}</span>
+                                                    <span class=pill_class>{label}</span>
+                                                </li>
+                                            }
+                                        }
+                                    />
+                                </ul>
+                            </Show>
+                        </Show>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn-sm" on:click=move |_| on_close()>"Close"</button>
                 </div>
             </div>
         </div>

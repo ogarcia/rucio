@@ -129,8 +129,15 @@ pub struct PinsResponse {
 pub struct Subscription {
     pub peer_id: String,
     pub quota_bytes: u64,
+    /// Bytes selected within quota (present + still-fetching).
     pub used_bytes: u64,
+    /// Bytes actually on disk so far.
+    #[serde(default)]
+    pub present_bytes: u64,
     pub wanted_count: usize,
+    /// Wanted entries already on disk; `wanted_count - present_count` are fetching.
+    #[serde(default)]
+    pub present_count: usize,
     pub skipped_count: usize,
     pub last_version: i64,
     pub last_synced_at: i64,
@@ -140,6 +147,22 @@ pub struct Subscription {
 #[derive(Deserialize, Clone, Debug)]
 pub struct SubscriptionsResponse {
     pub subscriptions: Vec<Subscription>,
+}
+
+/// One file in a subscription's mirror set. GET /subscriptions/{peer}/files.
+/// `state` is `present`, `fetching`, `missing` or `skipped`.
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+pub struct MirrorFile {
+    pub root_hash: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    pub size: u64,
+    pub state: String,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct SubscriptionFilesResponse {
+    pub files: Vec<MirrorFile>,
 }
 
 /// Response to POST /api/v1/shares.
