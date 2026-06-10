@@ -89,6 +89,89 @@ never auto-deletes content; to actually stop hosting a pinned file, remove its
 directory from sharing (see [Sharing files](03-sharing-files.md)) or delete it
 on disk.
 
+# Subscriptions (cooperative pinning)
+
+Pinning keeps *your* chosen content available. A **subscription** keeps
+**someone else's** pinned content available: you subscribe to a peer and your
+node mirrors that peer's pin-set — within a disk quota you set — fetching it,
+sharing it, and re-announcing it. You become an extra provider for that
+content, so it survives even if the original node goes offline.
+
+This is what makes Rucio durable: a handful of nodes subscribing to each other
+turns one person's pins into many redundant copies. (Everything on the network
+is public, so a subscription is simply a public offer to help host content —
+there is nothing private about it.)
+
+## Sharing your node so others can mirror you
+
+Others subscribe to you using your **node link** — a `rucio-peer:` string
+wrapping your PeerId:
+
+```sh
+rucio subscription link
+# rucio-peer:12D3KooW…
+```
+
+In the web UI, the **Subscriptions** tab has a **Copy my link** button. Share
+that link with whoever wants to help keep your pinned content alive.
+
+## Subscribing to a peer
+
+```sh
+rucio subscription add rucio-peer:12D3KooW… 10G
+```
+
+The first argument is the peer (a `rucio-peer:` link or a bare PeerId); the
+second is the **quota** — the most disk you'll devote to mirroring that peer.
+Sizes accept `K`/`M`/`G`/`T` suffixes (base 1024), e.g. `500M`, `1.5T`.
+
+How the mirror is built:
+
+- Rucio fetches the peer's pin-set and selects files **smallest-first** until
+  the quota is reached. Small files are preferred so one huge pin can't crowd
+  out many useful smaller ones.
+- Files that don't fit are recorded as **over quota** (skipped) and shown in the
+  listing, but not fetched.
+- Mirrored files land in the **pin directory** (`storage.pin_dir`), shared and
+  re-announced like any pin.
+- The node re-syncs each subscription periodically (every few minutes); a fresh
+  subscription is synced immediately.
+
+The quota is a **hard ceiling** — Rucio mirrors up to it, never beyond.
+
+## Listing subscriptions
+
+```sh
+rucio subscription list
+```
+
+```
+ Peer               Mirrored          Files                    Synced
+ 12D3KooWAbc…        3.2 GB / 10 GB    18 (+4 over quota)       yes
+```
+
+`Mirrored` is a used / quota meter; `Files` is how many files are mirrored
+(with any over-quota count). The web **Subscriptions** tab shows the same as a
+progress bar per peer.
+
+## Unsubscribing
+
+```sh
+rucio subscription remove 12D3KooW…
+```
+
+Unsubscribing drops the mirror and then **evicts** the content that was kept
+only for that subscription — i.e. files that no other subscription still wants
+and that you haven't pinned yourself. Eviction is deliberately conservative:
+
+- it only ever deletes content the node **fetched as a mirror** (your own
+  downloads and shares are never touched), and
+- only when the file lives under `pin_dir`.
+
+So removing a subscription frees the disk it was using without any risk to your
+own files — even if you've configured `pin_dir` and `download_dir` to be the
+same folder.
+
 ---
 
 See [Downloading](04-downloading.md) for the fetch side and
