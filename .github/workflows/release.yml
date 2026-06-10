@@ -55,6 +55,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Load build versions
+        shell: bash
+        run: grep -E '^[A-Za-z_]+=' versions.env >> "$GITHUB_ENV"
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }},wasm32-unknown-unknown
@@ -78,7 +82,7 @@ jobs:
       - name: Install trunk
         uses: taiki-e/install-action@v2
         with:
-          tool: trunk
+          tool: trunk@${{ env.TRUNK_VERSION }}
 
       # The release binary is the complete client (web panel embedded via the
       # web-ui feature / rust-embed), matching the `latest` container image, so
@@ -126,6 +130,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Load build versions
+        shell: bash
+        run: grep -E '^[A-Za-z_]+=' versions.env >> "$GITHUB_ENV"
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
@@ -137,7 +145,7 @@ jobs:
       - name: Install trunk
         uses: taiki-e/install-action@v2
         with:
-          tool: trunk
+          tool: trunk@${{ env.TRUNK_VERSION }}
 
       - name: Build frontend
         run: cd rucio-web && trunk build --release
@@ -168,6 +176,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Load build versions
+        shell: bash
+        run: grep -E '^[A-Za-z_]+=' versions.env >> "$GITHUB_ENV"
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown,x86_64-pc-windows-msvc
@@ -179,7 +191,7 @@ jobs:
       - name: Install trunk
         uses: taiki-e/install-action@v2
         with:
-          tool: trunk
+          tool: trunk@${{ env.TRUNK_VERSION }}
 
       # The embedded daemon serves the web UI (web-ui feature / rust-embed), so
       # the frontend has to be built before the crate is compiled.

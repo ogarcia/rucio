@@ -55,12 +55,15 @@
 # --build-arg BUILDER=prebuilt to skip compilation and use dist/.
 ARG BUILDER=builder
 
-# trunk version used to build the Leptos WASM frontend.
-# Override at build time if you need a different version:
-#   podman build --build-arg TRUNK_VERSION=x.y.z ...
+# Base-image and build-tool versions. Defaults mirror versions.env (the single
+# source of truth); CI overrides them with --build-arg from that file. Declared
+# before the first FROM so they apply to every FROM below. Override locally with
+# e.g. --build-arg TRUNK_VERSION=x.y.z.
+ARG ALPINE_VERSION=3.23
+ARG RUST_VERSION=1
 ARG TRUNK_VERSION=0.21.14
 
-FROM docker.io/rust:1-alpine3.23 AS builder
+FROM docker.io/rust:${RUST_VERSION}-alpine${ALPINE_VERSION} AS builder
 
 ARG TRUNK_VERSION
 
@@ -106,7 +109,7 @@ FROM ${BUILDER} AS bins
 
 # ── Stage 2: runtime – complete (tag: master / 0.1.0 / latest) ───────────────
 
-FROM docker.io/alpine:3.23 AS complete
+FROM docker.io/alpine:${ALPINE_VERSION} AS complete
 
 RUN apk add --no-cache ca-certificates && \
     addgroup -S -g 10001 rucio && \
@@ -139,7 +142,7 @@ ENTRYPOINT ["/usr/bin/ruciod"]
 
 # ── Stage 3: runtime – headless daemon (tag: …-headless) ─────────────────────
 
-FROM docker.io/alpine:3.23 AS headless
+FROM docker.io/alpine:${ALPINE_VERSION} AS headless
 
 RUN apk add --no-cache ca-certificates && \
     addgroup -S -g 10001 rucio && \
@@ -168,7 +171,7 @@ ENTRYPOINT ["/usr/bin/ruciod"]
 
 # ── Stage 4: runtime – standalone CLI client (tag: …-cli) ────────────────────
 
-FROM docker.io/alpine:3.23 AS cli
+FROM docker.io/alpine:${ALPINE_VERSION} AS cli
 
 RUN apk add --no-cache ca-certificates
 
@@ -182,7 +185,7 @@ ENTRYPOINT ["/usr/bin/rucio"]
 
 # ── Stage 5: runtime – bootstrap node (tag: …-bootstrap) ─────────────────────
 
-FROM docker.io/alpine:3.23 AS bootstrap
+FROM docker.io/alpine:${ALPINE_VERSION} AS bootstrap
 
 RUN apk add --no-cache ca-certificates && \
     addgroup -S -g 10001 rucio && \

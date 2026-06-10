@@ -28,8 +28,9 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
-  # Keep in sync with the TRUNK_VERSION ARG in Containerfile.
-  TRUNK_VERSION: "0.21.14"
+  # Build-tool/base-image versions (TRUNK_VERSION, ALPINE_VERSION, …) come from
+  # versions.env, loaded into $GITHUB_ENV by the "Load build versions" step in
+  # each job below.
 
 jobs:
   # ── Compile binaries once ──────────────────────────────────────────────────
@@ -38,6 +39,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+
+      - name: Load build versions
+        shell: bash
+        run: grep -E '^[A-Za-z_]+=' versions.env >> "$GITHUB_ENV"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -97,6 +102,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Load build versions
+        shell: bash
+        run: grep -E '^[A-Za-z_]+=' versions.env >> "$GITHUB_ENV"
+
       - uses: actions/download-artifact@v7
         with:
           name: binaries
@@ -137,7 +146,9 @@ jobs:
           context: .
           file: Containerfile
           target: complete
-          build-args: BUILDER=prebuilt
+          build-args: |
+            BUILDER=prebuilt
+            ALPINE_VERSION=${{ env.ALPINE_VERSION }}
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -155,6 +166,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+
+      - name: Load build versions
+        shell: bash
+        run: grep -E '^[A-Za-z_]+=' versions.env >> "$GITHUB_ENV"
 
       - uses: actions/download-artifact@v7
         with:
@@ -196,7 +211,9 @@ jobs:
           context: .
           file: Containerfile
           target: headless
-          build-args: BUILDER=prebuilt
+          build-args: |
+            BUILDER=prebuilt
+            ALPINE_VERSION=${{ env.ALPINE_VERSION }}
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -214,6 +231,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+
+      - name: Load build versions
+        shell: bash
+        run: grep -E '^[A-Za-z_]+=' versions.env >> "$GITHUB_ENV"
 
       - uses: actions/download-artifact@v7
         with:
@@ -255,7 +276,9 @@ jobs:
           context: .
           file: Containerfile
           target: cli
-          build-args: BUILDER=prebuilt
+          build-args: |
+            BUILDER=prebuilt
+            ALPINE_VERSION=${{ env.ALPINE_VERSION }}
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -273,6 +296,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+
+      - name: Load build versions
+        shell: bash
+        run: grep -E '^[A-Za-z_]+=' versions.env >> "$GITHUB_ENV"
 
       - uses: actions/download-artifact@v7
         with:
@@ -314,7 +341,9 @@ jobs:
           context: .
           file: Containerfile
           target: bootstrap
-          build-args: BUILDER=prebuilt
+          build-args: |
+            BUILDER=prebuilt
+            ALPINE_VERSION=${{ env.ALPINE_VERSION }}
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

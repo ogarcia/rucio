@@ -42,6 +42,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - name: Load build versions
+        shell: bash
+        run: grep -E '^[A-Za-z_]+=' versions.env >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -61,7 +64,7 @@ jobs:
       - name: Install trunk
         uses: taiki-e/install-action@v2
         with:
-          tool: trunk
+          tool: trunk@${{ env.TRUNK_VERSION }}
       - name: Build frontend
         run: cd rucio-web && trunk build --release
       - name: Clippy desktop shell
