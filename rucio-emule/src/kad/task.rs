@@ -285,6 +285,13 @@ pub struct KadTaskConfig {
     /// Known external IPv4 (from UPnP or config).  Used for UDP obfuscation.
     /// If unspecified (0.0.0.0), the task will try to learn it from peer responses.
     pub initial_external_ip: std::net::Ipv4Addr,
+    /// Our eMule user hash (16 bytes). Published as the **source owner ID** when
+    /// we announce ourselves as a Kad source — eMule downloaders read it back as
+    /// the source's user hash and key their TCP-obfuscation RC4 stream with it
+    /// (`DownloadQueue.cpp`: `SetUserHash(cID)`), so it must match the hash we
+    /// advertise in HELLO and decrypt inbound obfuscation with. This is distinct
+    /// from the node's routing `KadId`.
+    pub user_hash: [u8; 16],
 }
 
 impl Default for KadTaskConfig {
@@ -300,6 +307,7 @@ impl Default for KadTaskConfig {
             min_contacts: 4,
             keepalive_interval: Duration::from_secs(60),
             initial_external_ip: std::net::Ipv4Addr::UNSPECIFIED,
+            user_hash: [0u8; 16],
         }
     }
 }
@@ -536,8 +544,12 @@ async fn run_task(
                             continue;
                         }
                         let deadline = Instant::now() + cfg.search_timeout;
+                        // The source owner ID is our user hash in eMule's CUInt128
+                        // wire form (swapped) — NOT the node's routing id — so a
+                        // downloader recovers our user hash and can obfuscate to us.
+                        let source_owner = kad_id_from_hash(&cfg.user_hash);
                         let (search, pkts) = ActiveSearch::new_publish(
-                            target, our_id, cfg.tcp_port, our_udp_port, file_size,
+                            target, source_owner, cfg.tcp_port, our_udp_port, file_size,
                             crate::transfer::TCP_CONNECT_OPTIONS, deadline,
                             PUBLISH_STORE_TARGET, &initial_candidates, cfg.alpha, reply,
                         );

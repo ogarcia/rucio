@@ -510,12 +510,17 @@ pub async fn start_kad_task(config: &Config) -> Result<KadHandle> {
     info!(port, "Kad2 UDP socket bound");
 
     let our_id = KadId::random();
+    // Our persistent eMule user hash: published as the Kad source owner ID so
+    // downloaders can key TCP obfuscation to us (separate from the node KadId).
+    let user_hash = crate::emule_identity::load_or_create(&crate::emule_identity::path(config))
+        .unwrap_or([0u8; 16]);
     let task_cfg = KadTaskConfig {
         tcp_port: config.emule.tcp_port,
         initial_external_ip: config
             .emule
             .external_ip
             .unwrap_or(std::net::Ipv4Addr::UNSPECIFIED),
+        user_hash,
         ..KadTaskConfig::default()
     };
 

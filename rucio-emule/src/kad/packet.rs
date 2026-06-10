@@ -1304,6 +1304,19 @@ mod tests {
     }
 
     #[test]
+    fn published_source_owner_id_recovers_user_hash() {
+        // The source owner ID we publish (kad_id_from_hash of our user hash) must
+        // read back as our raw user hash on the downloader side, so the peer keys
+        // TCP obfuscation with the exact hash we decrypt and HELLO-advertise with.
+        let user_hash: [u8; 16] = [
+            0x9a, 0x13, 0x7c, 0x42, 0x05, 0xde, 0xad, 0xbe, 0xef, 0x10, 0x20, 0x30, 0x40, 0x50,
+            0x60, 0x70,
+        ];
+        let published = kad_id_from_hash(&user_hash);
+        assert_eq!(user_hash_from_source_id(&published), user_hash);
+    }
+
+    #[test]
     fn test_publish_res_decode() {
         let mut pkt = vec![KAD2_PROTO, Opcode::PublishRes as u8];
         pkt.extend_from_slice(&[0xcc; 16]); // file id
