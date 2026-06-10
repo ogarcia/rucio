@@ -121,6 +121,56 @@ pub async fn list(
     Ok(())
 }
 
+/// List the directories being shared (the watched set), with how many files
+/// each contains and their total size. Protected dirs (the download/pin dirs
+/// and any category dir) cannot be removed with `share remove`.
+pub async fn dirs(client: &ApiClient) -> Result<()> {
+    let resp = client.list_shared_dirs().await?;
+    if resp.dirs.is_empty() {
+        println!("No directories shared.");
+        return Ok(());
+    }
+
+    #[derive(Tabled)]
+    struct Row {
+        #[tabled(rename = "Directory")]
+        path: String,
+        #[tabled(rename = "Files")]
+        files: u64,
+        #[tabled(rename = "Size")]
+        size: String,
+        #[tabled(rename = "Protected")]
+        protected: String,
+    }
+
+    let rows: Vec<Row> = resp
+        .dirs
+        .iter()
+        .map(|d| Row {
+            path: color::value(&d.path),
+            files: d.file_count,
+            size: human_size(d.total_size),
+            protected: if d.protected { "yes" } else { "-" }.to_string(),
+        })
+        .collect();
+
+    let tw = term_width();
+    let max_path = rows
+        .iter()
+        .map(|r| r.path.chars().count())
+        .max()
+        .unwrap_or(0);
+    let mut table = Table::new(rows);
+    fit_column(&mut table, 0, max_path, tw);
+    println!("{table}");
+    println!(
+        "{} director{} · protected = cannot be removed (download/pin/category dir)",
+        resp.dirs.len(),
+        if resp.dirs.len() == 1 { "y" } else { "ies" }
+    );
+    Ok(())
+}
+
 pub async fn add(client: &ApiClient, path: &str) -> Result<()> {
     match client.add_share(path).await {
         Ok(resp) => {

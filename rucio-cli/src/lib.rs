@@ -69,8 +69,9 @@ pub enum Commands {
 pub enum ShareAction {
     /// List shared files (first page by default; see --page/--all)
     List {
-        /// Only show files whose name contains this string (case-insensitive)
-        #[arg(long)]
+        /// Optional name filter: only files whose name contains this string
+        /// (case-insensitive). Omit to list everything.
+        #[arg(value_name = "FILTER")]
         filter: Option<String>,
         /// Fetch every file, no paging (can be a lot on a large library)
         #[arg(long)]
@@ -82,6 +83,8 @@ pub enum ShareAction {
         #[arg(long)]
         limit: Option<i64>,
     },
+    /// List the directories being shared (with file count and size)
+    Dirs,
     /// Share a directory
     Add {
         /// Path to the directory to share (individual files are not accepted)
@@ -357,6 +360,7 @@ pub async fn run() -> Result<()> {
                 page,
                 limit,
             } => cmd::shares::list(&client, filter.as_deref(), all, page, limit).await,
+            ShareAction::Dirs => cmd::shares::dirs(&client).await,
             ShareAction::Remove { target } => cmd::shares::remove(&client, &target).await,
             ShareAction::Magnet { target, file } => {
                 cmd::shares::magnet(&client, target.as_deref(), file.as_deref()).await

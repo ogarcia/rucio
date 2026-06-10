@@ -24,7 +24,9 @@ use rucio_core::api::{
     searches::{
         SearchDetailResponse, SearchListResponse, SearchStartedResponse, StartSearchRequest,
     },
-    shares::{AddShareRequest, AddShareResponse, ShareResponse, SharesResponse},
+    shares::{
+        AddShareRequest, AddShareResponse, ShareResponse, SharedDirsResponse, SharesResponse,
+    },
     status::{PeersResponse, StatusResponse},
     uploads::UploadsResponse,
 };
@@ -154,6 +156,11 @@ impl ApiClient {
     // -----------------------------------------------------------------------
     // Shares
     // -----------------------------------------------------------------------
+
+    /// The directories being shared (watched), with file count and total size.
+    pub async fn list_shared_dirs(&self) -> Result<SharedDirsResponse> {
+        self.get("/api/v1/shares").await
+    }
 
     /// One page of shared files. `GET /api/v1/shares/files` is paginated
     /// (`GET /api/v1/shares` lists the watched directories instead).
