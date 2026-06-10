@@ -27,11 +27,12 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-/// Scheduling priority for an [`TokenBucket::acquire`] call. When the cap is
-/// saturated, `High` transfers are served first and `Low` ones yield until no
-/// `High` transfer is active (work-conserving: `Low` still uses idle
-/// bandwidth). Rucio (libp2p) transfers use `High`; eMule transfers use `Low`,
-/// so the lure protocol never crowds out the real network.
+/// Scheduling priority for a [`TokenBucket::acquire`] call. When the cap is
+/// saturated, `High` transfers get the larger share but `Low` keeps a reserved
+/// floor (see [`HIGH_QUANTA_PER_LOW`]) rather than being starved — and either
+/// gets the whole cap when the other is idle (work-conserving). Rucio (libp2p)
+/// transfers use `High`; eMule transfers use `Low`, so the lure protocol yields
+/// to the real network without us becoming a bad eMule citizen.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Priority {
     High,
@@ -115,6 +116,14 @@ impl Inner {
 /// small-chunk one (e.g. a ~180 KiB eMule block) when the cap is saturated.
 const FAIR_QUANTUM: u64 = 64 * 1024;
 
+/// How many [`Priority::High`] quanta are served before a waiting
+/// [`Priority::Low`] one is let through, when both saturate the cap. This
+/// reserves Low (eMule) a floor of ~`1/(N+1)` of the bandwidth — good-citizen
+/// seeding to the eMule network is never fully starved by Rucio traffic — while
+/// still giving Rucio the lion's share. A user who wants 100% for Rucio just
+/// disables eMule.
+const HIGH_QUANTA_PER_LOW: usize = 4;
+
 pub struct TokenBucket {
     inner: Mutex<Inner>,
     /// FIFO turnstile ordering concurrent acquirers. tokio's `Mutex` grants in
@@ -123,10 +132,14 @@ pub struct TokenBucket {
     /// it. Only contended (and only meaningfully held) when a limit is set.
     turn: tokio::sync::Mutex<()>,
     /// Number of [`Priority::High`] transfers currently inside `acquire`.
-    /// [`Priority::Low`] callers wait until this is zero before each quantum.
+    /// [`Priority::Low`] callers defer to these (see [`HIGH_QUANTA_PER_LOW`]).
     high_active: AtomicUsize,
-    /// Woken when `high_active` falls back to zero, so parked `Low` callers
-    /// re-check and proceed.
+    /// High quanta served since the last Low quantum. Once it reaches
+    /// [`HIGH_QUANTA_PER_LOW`], a waiting Low caller is let through and resets
+    /// it — this is what reserves Low its bandwidth floor.
+    high_quanta: AtomicUsize,
+    /// Woken when High yields a turn (count drained to zero, or the weighted
+    /// allowance reached), so parked `Low` callers re-check and proceed.
     low_gate: tokio::sync::Notify,
 }
 
@@ -137,6 +150,7 @@ impl TokenBucket {
             inner: Mutex::new(Inner::new(rate_kbps)),
             turn: tokio::sync::Mutex::new(()),
             high_active: AtomicUsize::new(0),
+            high_quanta: AtomicUsize::new(0),
             low_gate: tokio::sync::Notify::new(),
         }
     }
@@ -162,13 +176,16 @@ impl TokenBucket {
         let mut remaining = bytes;
         while remaining > 0 {
             let take = remaining.min(FAIR_QUANTUM);
-            // Low priority defers to any in-flight High transfer before each
-            // quantum. The `notified()` future is armed before the check so a
-            // High caller dropping to zero between the two can't be missed.
+            // Low priority defers to in-flight High transfers — but only until
+            // High has spent its weighted allowance, then Low takes a guaranteed
+            // turn (its reserved share). The `notified()` future is armed before
+            // the check so a High caller yielding between the two isn't missed.
             if prio == Priority::Low {
                 loop {
                     let notified = self.low_gate.notified();
-                    if self.high_active.load(Ordering::Acquire) == 0 {
+                    if self.high_active.load(Ordering::Acquire) == 0
+                        || self.high_quanta.load(Ordering::Acquire) >= HIGH_QUANTA_PER_LOW
+                    {
                         break;
                     }
                     notified.await;
@@ -188,6 +205,16 @@ impl TokenBucket {
                         Err(d) => tokio::time::sleep(d).await,
                     }
                 }
+            }
+            // Weighted bookkeeping: count High quanta and, on reaching the
+            // allowance, release a Low turn; a Low quantum resets the allowance.
+            match prio {
+                Priority::High => {
+                    if self.high_quanta.fetch_add(1, Ordering::AcqRel) + 1 == HIGH_QUANTA_PER_LOW {
+                        self.low_gate.notify_waiters();
+                    }
+                }
+                Priority::Low => self.high_quanta.store(0, Ordering::Release),
             }
             remaining -= take;
         }
@@ -447,30 +474,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn low_priority_yields_to_high() {
-        // With the cap saturated, a Low transfer must wait for an active High
-        // one even though Low's own request is tiny.
-        let tb = Arc::new(TokenBucket::new(100)); // 100 KB/s, burst 200 KiB
-        tb.acquire(200 * 1024, Priority::High).await; // drain the burst
+    async fn high_priority_gets_the_larger_share_but_low_is_not_starved() {
+        use std::sync::atomic::AtomicU64;
 
-        let order = Arc::new(tokio::sync::Mutex::new(Vec::<&str>::new()));
+        let tb = Arc::new(TokenBucket::new(1000)); // 1000 KB/s
+        tb.acquire(2000 * 1024, Priority::High).await; // drain the burst
 
-        let (tb_h, o_h) = (tb.clone(), order.clone());
+        let (hi, lo) = (Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(0)));
+
+        // Two transfers contend flat-out for the saturated cap.
+        let (tbh, h) = (tb.clone(), hi.clone());
         let high = tokio::spawn(async move {
-            tb_h.acquire(50 * 1024, Priority::High).await; // ~0.5 s from empty
-            o_h.lock().await.push("high");
+            loop {
+                tbh.acquire(64 * 1024, Priority::High).await;
+                h.fetch_add(64 * 1024, Ordering::Relaxed);
+            }
         });
-
-        // Let the High transfer register as active before Low starts.
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        let (tb_l, o_l) = (tb.clone(), order.clone());
+        let (tbl, l) = (tb.clone(), lo.clone());
         let low = tokio::spawn(async move {
-            tb_l.acquire(1024, Priority::Low).await; // tiny, but must defer
-            o_l.lock().await.push("low");
+            loop {
+                tbl.acquire(64 * 1024, Priority::Low).await;
+                l.fetch_add(64 * 1024, Ordering::Relaxed);
+            }
         });
 
-        let _ = tokio::join!(high, low);
-        assert_eq!(*order.lock().await, vec!["high", "low"]);
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        high.abort();
+        low.abort();
+
+        let (h, l) = (hi.load(Ordering::Relaxed), lo.load(Ordering::Relaxed));
+        // High wins the larger share, but Low keeps its reserved floor.
+        assert!(l > 0, "Low (eMule) was starved");
+        assert!(h > l, "High (Rucio) did not get the larger share");
     }
 }
