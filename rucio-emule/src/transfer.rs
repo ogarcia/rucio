@@ -120,6 +120,9 @@ const OP_FILESTATUS: u8 = 0x50;
 const OP_STARTUPLOAD_REQ: u8 = 0x54;
 const OP_ACCEPTUPLOAD_REQ: u8 = 0x55;
 const OP_ENDOFDOWNLOAD: u8 = 0x48;
+/// Downloader aborts the current transfer (null payload). Treated like
+/// `OP_ENDOFDOWNLOAD`: end the session and free the upload slot at once.
+const OP_CANCELTRANSFER: u8 = 0x56;
 const OP_QUEUE_RANK: u8 = 0x5c;
 const OP_QUEUE_FULL: u8 = 0x93;
 /// Hashset request — payload: 16-byte file hash.
@@ -1487,7 +1490,7 @@ async fn run_upload_session(
                 .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "STARTUPLOADREQ timeout"))??;
         match opcode {
             OP_STARTUPLOAD_REQ => break,
-            OP_ENDOFDOWNLOAD => return Ok(()),
+            OP_ENDOFDOWNLOAD | OP_CANCELTRANSFER => return Ok(()),
             // A peer often asks for the hashset before starting the transfer.
             OP_HASHSETREQUEST => send_hashset_answer(stream, ciphers, hash, info).await?,
             _ => debug!("ignoring 0x{opcode:02x} waiting for STARTUPLOADREQ"),
@@ -1516,7 +1519,9 @@ async fn run_upload_session(
         };
 
         match opcode {
-            OP_ENDOFDOWNLOAD => break,
+            // Peer finished or aborted this transfer: stop serving and let the
+            // permit drop, freeing the slot immediately.
+            OP_ENDOFDOWNLOAD | OP_CANCELTRANSFER => break,
             OP_HASHSETREQUEST => send_hashset_answer(stream, ciphers, hash, info).await?,
             OP_REQUESTPARTS => {
                 if payload.len() < 40 {
