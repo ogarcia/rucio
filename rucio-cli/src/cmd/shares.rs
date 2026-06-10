@@ -226,18 +226,17 @@ pub async fn remove(client: &ApiClient, target: &str) -> Result<()> {
         return Ok(());
     }
 
-    // Otherwise: a 64-char hex string is a file root hash; anything else is a
-    // filesystem path (file or directory).
-    if target.len() == 64 && target.chars().all(|c| c.is_ascii_hexdigit()) {
-        client.remove_share(target).await?;
-        println!("Removed share: {}", color::value(target));
-    } else {
-        let n = client.remove_shares_by_path(target).await?;
-        match n {
-            0 => println!("No shares found under: {}", color::value(target)),
-            1 => println!("{}", color::success("Removed 1 share.")),
-            n => println!("{}", color::success(&format!("Removed {n} shares."))),
-        }
+    // Otherwise treat it as a directory path. Removing a single file is not a
+    // real operation — its directory stays watched and the file is re-indexed —
+    // so only whole directories can be un-shared.
+    let n = client.remove_shares_by_path(target).await?;
+    match n {
+        0 => println!("No shared directory at: {}", color::value(target)),
+        1 => println!("{}", color::success("Stopped sharing (1 file).")),
+        n => println!(
+            "{}",
+            color::success(&format!("Stopped sharing ({n} files)."))
+        ),
     }
     Ok(())
 }

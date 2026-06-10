@@ -206,10 +206,6 @@ impl ApiClient {
         .await
     }
 
-    pub async fn remove_share(&self, hash: &str) -> Result<()> {
-        self.delete(&format!("/api/v1/shares/{hash}")).await
-    }
-
     // -----------------------------------------------------------------------
     // Categories
     // -----------------------------------------------------------------------
