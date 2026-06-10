@@ -85,6 +85,10 @@ use tracing::{debug, info, warn};
 
 /// Protocol header byte for standard ed2k TCP messages.
 const PROTO_ED2K: u8 = 0xe3;
+/// `OP_EMULEPROT` — header byte for eMule-extended TCP messages (plaintext).
+const PROTO_EMULE: u8 = 0xc5;
+/// `OP_PACKEDPROT` — header byte for zlib-packed TCP messages (plaintext).
+const PROTO_PACKED: u8 = 0xd4;
 
 // eMule TCP obfuscation handshake constants (CEncryptedStreamSocket).
 /// `MAGICVALUE_SYNC` — confirms a working encrypted stream (sent encrypted).
@@ -1143,16 +1147,108 @@ pub async fn serve_incoming(listener: TcpListener, ctx: Arc<UploadContext>) {
     }
 }
 
+/// Negotiate inbound TCP obfuscation as the **receiver** (eMule
+/// `CEncryptedStreamSocket`), the mirror of [`Session::connect_obfuscated`].
+///
+/// Peeks the first byte without consuming it: a protocol header byte
+/// (`0xe3`/`0xc5`/`0xd4`) means a plaintext stream, so we return
+/// [`ObfCiphers::default`] and the caller reads the frame untouched. Anything
+/// else is the obfuscation marker — we read the `marker[1] + rand[4]` preamble,
+/// derive the RC4 streams, validate the requester's sync magic, send our own,
+/// and return the live ciphers.
+///
+/// The requester keyed its streams to **our** user hash (the connection target),
+/// so we need only our own hash: its send key ([`MAGIC_REQUESTER`]) is our recv
+/// key and its recv key ([`MAGIC_SERVER`]) is our send key. eMule discards the
+/// first 1024 RC4 bytes on TCP.
+async fn negotiate_inbound_obfuscation(
+    stream: &mut TcpStream,
+    our_hash: &[u8; 16],
+    op_timeout: Duration,
+) -> io::Result<ObfCiphers> {
+    // Peek (non-consuming) so the plaintext path can read the full frame,
+    // header byte included, exactly as before.
+    let mut first = [0u8; 1];
+    let n = timeout(op_timeout, stream.peek(&mut first))
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "obfuscation peek timeout"))??;
+    if n == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "peer closed before handshake",
+        ));
+    }
+    if matches!(first[0], PROTO_ED2K | PROTO_EMULE | PROTO_PACKED) {
+        return Ok(ObfCiphers::default()); // plaintext stream
+    }
+
+    // Obfuscated: consume marker[1] + rand[4].
+    let mut preamble = [0u8; 5];
+    timeout(op_timeout, stream.read_exact(&mut preamble))
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "obfuscation preamble timeout"))??;
+    let rand: [u8; 4] = preamble[1..5].try_into().unwrap();
+
+    let mut recv = Rc4::new(&tcp_obf_rc4_key(our_hash, MAGIC_REQUESTER, &rand));
+    let mut send = Rc4::new(&tcp_obf_rc4_key(our_hash, MAGIC_SERVER, &rand));
+    recv.discard(1024);
+    send.discard(1024);
+
+    // Requester's negotiation: SYNC[4] + supported[1] + preferred[1] + pad_len[1]
+    // (then pad_len padding bytes), all encrypted with its send key (our recv).
+    let mut head = [0u8; 7];
+    timeout(op_timeout, stream.read_exact(&mut head))
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "obfuscation request timeout"))??;
+    recv.apply(&mut head);
+    let magic = u32::from_le_bytes([head[0], head[1], head[2], head[3]]);
+    if magic != MAGICVALUE_SYNC {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("obfuscation handshake failed: bad sync magic 0x{magic:08x}"),
+        ));
+    }
+    let pad_len = head[6] as usize;
+    if pad_len > 0 {
+        let mut pad = vec![0u8; pad_len];
+        timeout(op_timeout, stream.read_exact(&mut pad))
+            .await
+            .map_err(|_| {
+                io::Error::new(io::ErrorKind::TimedOut, "obfuscation padding timeout")
+            })??;
+        recv.apply(&mut pad); // discarded, but keeps the keystream aligned
+    }
+
+    // Our reply: SYNC[4] + selected method[1] + pad_len[1] (no padding),
+    // encrypted with our send key — matches what `read_obf_response` reads.
+    let mut resp = Vec::with_capacity(6);
+    resp.extend_from_slice(&MAGICVALUE_SYNC.to_le_bytes());
+    resp.push(ENM_OBFUSCATION); // selected method
+    resp.push(0); // no padding
+    send.apply(&mut resp);
+    stream.write_all(&resp).await?;
+
+    Ok(ObfCiphers {
+        send: Some(send),
+        recv: Some(recv),
+    })
+}
+
 /// Handle one incoming eMule TCP connection.
 async fn handle_incoming(mut stream: TcpStream, peer: SocketAddr, ctx: Arc<UploadContext>) {
     debug!(%peer, "Incoming eMule TCP connection");
     let our_hash = ctx.user_hash;
-    // Inbound connections are served plain only (we don't yet negotiate
-    // obfuscation as the receiver); an obfuscation-requiring peer will fail here.
-    let mut ciphers = ObfCiphers::default();
     const OP_TIMEOUT: Duration = Duration::from_secs(30);
 
     let result: io::Result<()> = async {
+        // ── Obfuscation negotiation ───────────────────────────────────────────
+        // Plaintext streams pass through with default (no-op) ciphers; an
+        // obfuscated peer is decrypted from here on.
+        let mut ciphers = negotiate_inbound_obfuscation(&mut stream, &our_hash, OP_TIMEOUT).await?;
+        if ciphers.is_obfuscated() {
+            debug!(%peer, "Negotiated inbound TCP obfuscation");
+        }
+
         // ── HELLO handshake ───────────────────────────────────────────────────
         loop {
             let (_proto, opcode, _payload) =
@@ -1515,6 +1611,101 @@ mod tests {
         let mut dec = header[5..].to_vec();
         Rc4::new(&tcp_obf_rc4_key(&peer_hash, MAGIC_REQUESTER, &rand)).apply(&mut dec);
         assert_eq!(&dec[..4], &MAGICVALUE_SYNC.to_le_bytes());
+    }
+
+    /// Full obfuscated handshake against a real localhost socket: a requester
+    /// (mirroring `connect_obfuscated`) negotiates with `negotiate_inbound_
+    /// obfuscation` and a HELLO frame round-trips both ways. This is the real
+    /// guard for keystream alignment — the part most likely to silently break.
+    #[tokio::test]
+    async fn inbound_obfuscation_roundtrip() {
+        let our_hash = [0x5au8; 16];
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // Receiver: negotiate as server, read the HELLO, echo it as HELLOANSWER.
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut ciphers =
+                negotiate_inbound_obfuscation(&mut stream, &our_hash, Duration::from_secs(5))
+                    .await
+                    .unwrap();
+            assert!(ciphers.is_obfuscated(), "server must detect obfuscation");
+            let (_p, opcode, payload) = read_frame(&mut stream, &mut ciphers).await.unwrap();
+            assert_eq!(opcode, OP_HELLO);
+            write_frame(&mut stream, &mut ciphers, OP_HELLOANSWER, &payload)
+                .await
+                .unwrap();
+        });
+
+        // Requester: mirror connect_obfuscated, keyed to the receiver's hash.
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        let rand = random_tcp_key();
+        let mut send = Rc4::new(&tcp_obf_rc4_key(&our_hash, MAGIC_REQUESTER, &rand));
+        let mut recv = Rc4::new(&tcp_obf_rc4_key(&our_hash, MAGIC_SERVER, &rand));
+        send.discard(1024);
+        recv.discard(1024);
+        let mut header = vec![obf_marker_byte()];
+        header.extend_from_slice(&rand);
+        let mut enc = Vec::new();
+        enc.extend_from_slice(&MAGICVALUE_SYNC.to_le_bytes());
+        enc.push(ENM_OBFUSCATION);
+        enc.push(ENM_OBFUSCATION);
+        enc.push(0);
+        send.apply(&mut enc);
+        header.extend_from_slice(&enc);
+        stream.write_all(&header).await.unwrap();
+
+        // Read the server's negotiation response: SYNC(4) + method(1) + pad_len(1).
+        let mut resp = [0u8; 6];
+        stream.read_exact(&mut resp).await.unwrap();
+        recv.apply(&mut resp);
+        assert_eq!(&resp[..4], &MAGICVALUE_SYNC.to_le_bytes());
+        assert_eq!(resp[5], 0);
+
+        // A HELLO frame must survive both encryption directions intact.
+        let mut ciphers = ObfCiphers {
+            send: Some(send),
+            recv: Some(recv),
+        };
+        let hello = build_hello(&[0x11u8; 16], 4662, "tester");
+        write_frame(&mut stream, &mut ciphers, OP_HELLO, &hello)
+            .await
+            .unwrap();
+        let (_p, opcode, payload) = read_frame(&mut stream, &mut ciphers).await.unwrap();
+        assert_eq!(opcode, OP_HELLOANSWER);
+        assert_eq!(payload, hello, "payload must round-trip through RC4");
+
+        server.await.unwrap();
+    }
+
+    /// A plaintext stream (first byte is a protocol header) is detected as such:
+    /// the negotiator consumes nothing and returns no-op ciphers, so the regular
+    /// frame reader sees the untouched frame.
+    #[tokio::test]
+    async fn inbound_plaintext_passthrough() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut ciphers =
+                negotiate_inbound_obfuscation(&mut stream, &[0u8; 16], Duration::from_secs(5))
+                    .await
+                    .unwrap();
+            assert!(!ciphers.is_obfuscated(), "0xe3 first byte is plaintext");
+            let (proto, opcode, _payload) = read_frame(&mut stream, &mut ciphers).await.unwrap();
+            assert_eq!(proto, PROTO_ED2K);
+            assert_eq!(opcode, OP_HELLO);
+        });
+
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        let mut ciphers = ObfCiphers::default();
+        let hello = build_hello(&[0u8; 16], 4662, "");
+        write_frame(&mut stream, &mut ciphers, OP_HELLO, &hello)
+            .await
+            .unwrap();
+        server.await.unwrap();
     }
 
     // ── PackedReassembler ──────────────────────────────────────────────────
