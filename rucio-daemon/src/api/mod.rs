@@ -17,6 +17,7 @@ pub mod shares;
 #[cfg(feature = "web-ui")]
 mod static_files;
 pub mod status;
+pub mod subscriptions;
 #[cfg(test)]
 mod tests;
 pub mod uploads;
@@ -121,6 +122,9 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         pins::list_pins,
         pins::create_pin,
         pins::delete_pin,
+        subscriptions::list_subscriptions,
+        subscriptions::create_subscription,
+        subscriptions::delete_subscription,
         metrics::get_metrics,
         uploads::list_uploads,
         health::get_health,
@@ -195,6 +199,9 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         rucio_core::api::pins::PinResponse,
         rucio_core::api::pins::PinState,
         rucio_core::api::pins::PinsResponse,
+        rucio_core::api::subscriptions::SubscriptionRequest,
+        rucio_core::api::subscriptions::SubscriptionResponse,
+        rucio_core::api::subscriptions::SubscriptionsResponse,
     ))
 )]
 struct ApiDoc;
@@ -591,6 +598,16 @@ fn v1_router() -> Router<AppState> {
             routing::get(pins::list_pins).post(pins::create_pin),
         )
         .route("/pins/{hash}", routing::delete(pins::delete_pin))
+        // subscriptions (cooperative pinning: mirror a peer's pin-set)
+        .route(
+            "/subscriptions",
+            routing::get(subscriptions::list_subscriptions)
+                .post(subscriptions::create_subscription),
+        )
+        .route(
+            "/subscriptions/{peer_id}",
+            routing::delete(subscriptions::delete_subscription),
+        )
         // notification centre (runtime data: the bell + slideover)
         .route(
             "/notifications",

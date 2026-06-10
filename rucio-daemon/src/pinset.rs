@@ -84,20 +84,26 @@ pub async fn request_all_pinsets(db: &db::Db, cmd_tx: &Sender<NodeCmd>) {
             warn!(peer = %sub.peer_id, "reconcile: invalid peer id in subscription");
             continue;
         };
-        // Warm the routing table so `send_request` can dial peers we're not
-        // connected to (no-op for already-connected LAN peers).
-        let _ = cmd_tx.send(NodeCmd::DiscoverPeer { peer }).await;
-        // We correlate the response by its `peer`, not by request id, so the
-        // returned id is discarded.
-        let (id_tx, _id_rx) = oneshot::channel();
-        let _ = cmd_tx
-            .send(NodeCmd::RequestPinset {
-                peer,
-                request: PinsetRequest,
-                id_tx,
-            })
-            .await;
+        request_one_pinset(cmd_tx, peer).await;
     }
+}
+
+/// Ask a single peer for its pin-set now (used on a fresh subscription so the
+/// first sync doesn't wait for the next reconcile tick).
+pub async fn request_one_pinset(cmd_tx: &Sender<NodeCmd>, peer: PeerId) {
+    // Warm the routing table so `send_request` can dial peers we're not
+    // connected to (no-op for already-connected LAN peers).
+    let _ = cmd_tx.send(NodeCmd::DiscoverPeer { peer }).await;
+    // We correlate the response by its `peer`, not by request id, so the
+    // returned id is discarded.
+    let (id_tx, _id_rx) = oneshot::channel();
+    let _ = cmd_tx
+        .send(NodeCmd::RequestPinset {
+            peer,
+            request: PinsetRequest,
+            id_tx,
+        })
+        .await;
 }
 
 /// Apply a peer's pin-set: select within quota, persist the mirror set, record
