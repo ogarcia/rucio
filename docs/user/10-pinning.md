@@ -167,9 +167,14 @@ that distinguishes files **mirrored** (present on disk) from those still
 **fetching** — so you can tell at a glance whether a peer is actively syncing.
 The meter is two-tone: the lighter fill is what's committed within the quota,
 the solid fill is what's actually on disk. The **info** button (ⓘ) opens a
-panel with the peer's full id, usage, and the list of mirror files with a state
-pill each (mirrored / fetching / pending / over quota); the trash button
-unsubscribes.
+panel with the peer's full id, usage, an editable **quota** (change it and the
+mirror is re-evaluated on the next sync), and the scrollable list of mirror
+files with a state pill each (mirrored / fetching / pending / over quota); the
+trash button unsubscribes.
+
+Lowering a quota that no longer fits everything makes the now-over-quota files
+`skipped` and evicts them on the next sync (respecting manual pins and other
+subscriptions); raising it pulls more of the peer's pin-set in.
 
 ## Unsubscribing
 

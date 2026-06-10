@@ -26,12 +26,15 @@ fn row_to_sub(r: &sqlx::sqlite::SqliteRow) -> SubscriptionRow {
 }
 
 /// Subscribe to (or re-configure) a peer. Re-subscribing updates the quota and
-/// keeps the original `added_at`, `last_version` and `last_synced_at`.
+/// keeps the original `added_at` and `last_synced_at`, but resets `last_version`
+/// to 0 so the next reconcile re-applies the peer's pin-set under the new quota
+/// (the reconcile skips unchanged versions, so without this a quota change
+/// wouldn't take effect until the peer's pin-set itself changed).
 pub async fn upsert(db: &Db, peer_id: &str, quota_bytes: i64, added_at: u64) -> Result<()> {
     sqlx::query(
         "INSERT INTO pin_subscriptions (peer_id, quota_bytes, added_at)
          VALUES (?1, ?2, ?3)
-         ON CONFLICT(peer_id) DO UPDATE SET quota_bytes = excluded.quota_bytes",
+         ON CONFLICT(peer_id) DO UPDATE SET quota_bytes = excluded.quota_bytes, last_version = 0",
     )
     .bind(peer_id)
     .bind(quota_bytes)

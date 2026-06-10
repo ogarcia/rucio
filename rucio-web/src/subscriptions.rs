@@ -90,6 +90,35 @@ fn confirm(message: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Convert a quota input (value + unit) into bytes. Base 1024.
+fn quota_to_bytes(value: f64, unit: &str) -> u64 {
+    let mult: u64 = match unit {
+        "MB" => 1024 * 1024,
+        "TB" => 1024u64 * 1024 * 1024 * 1024,
+        _ => 1024 * 1024 * 1024, // GB
+    };
+    (value * mult as f64) as u64
+}
+
+/// Split a byte quota into a (value, unit) pair for the editor, picking the
+/// largest unit that yields a value ≥ 1 and trimming trailing zeros.
+fn split_quota(bytes: u64) -> (String, &'static str) {
+    const TB: f64 = (1u64 << 40) as f64;
+    const GB: f64 = (1u64 << 30) as f64;
+    const MB: f64 = (1u64 << 20) as f64;
+    let b = bytes as f64;
+    let (v, u) = if b >= TB {
+        (b / TB, "TB")
+    } else if b >= GB {
+        (b / GB, "GB")
+    } else {
+        (b / MB, "MB")
+    };
+    let s = format!("{v:.2}");
+    let s = s.trim_end_matches('0').trim_end_matches('.').to_string();
+    (s, u)
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 #[component]
@@ -276,6 +305,7 @@ pub fn SubscriptionsTab(
         <Show when=move || info_for.get().is_some()>
             <SubscriptionInfoModal
                 sub=info_for.get().unwrap()
+                on_saved=move || reload()
                 on_close=move || info_for.set(None)
             />
         </Show>
@@ -302,12 +332,7 @@ fn AddSubscriptionModal(
             error.set(Some("Enter a peer link and a positive quota.".to_string()));
             return;
         }
-        let mult: u64 = match unit.get().as_str() {
-            "MB" => 1024 * 1024,
-            "TB" => 1024u64 * 1024 * 1024 * 1024,
-            _ => 1024 * 1024 * 1024, // GB
-        };
-        let quota_bytes = (q * mult as f64) as u64;
+        let quota_bytes = quota_to_bytes(q, &unit.get());
         busy.set(true);
         error.set(None);
         spawn_local(async move {
@@ -385,7 +410,11 @@ fn AddSubscriptionModal(
 // ── Subscription info modal ─────────────────────────────────────────────────
 
 #[component]
-fn SubscriptionInfoModal(sub: Subscription, on_close: impl Fn() + Copy + 'static) -> impl IntoView {
+fn SubscriptionInfoModal(
+    sub: Subscription,
+    on_saved: impl Fn() + Copy + 'static,
+    on_close: impl Fn() + Copy + 'static,
+) -> impl IntoView {
     let files: RwSignal<Vec<MirrorFile>> = RwSignal::new(vec![]);
     let loaded = RwSignal::new(false);
     {
@@ -409,6 +438,40 @@ fn SubscriptionInfoModal(sub: Subscription, on_close: impl Fn() + Copy + 'static
         sub.present_count, fetching, sub.skipped_count
     );
 
+    // Quota editor, prefilled from the current quota. Copy-able peer id via a
+    // StoredValue so the save closure can be reused in two handlers.
+    let peer_sv = StoredValue::new(sub.peer_id.clone());
+    let (init_val, init_unit) = split_quota(sub.quota_bytes);
+    let quota = RwSignal::new(init_val);
+    let unit = RwSignal::new(init_unit.to_string());
+    let saving = RwSignal::new(false);
+    let error: RwSignal<Option<String>> = RwSignal::new(None);
+    let (is_mb, is_gb, is_tb) = (init_unit == "MB", init_unit == "GB", init_unit == "TB");
+
+    let save = move || {
+        let q: f64 = quota.get().trim().parse().unwrap_or(0.0);
+        if q <= 0.0 {
+            error.set(Some("Enter a positive quota.".to_string()));
+            return;
+        }
+        let quota_bytes = quota_to_bytes(q, &unit.get());
+        let peer = peer_sv.get_value();
+        saving.set(true);
+        error.set(None);
+        spawn_local(async move {
+            match api_add(peer, quota_bytes).await {
+                Ok(()) => {
+                    on_saved();
+                    on_close();
+                }
+                Err(msg) => {
+                    error.set(Some(msg));
+                    saving.set(false);
+                }
+            }
+        });
+    };
+
     view! {
         <div class="modal-backdrop" on:click=move |_| on_close()>
             <div class="modal modal-wide" on:click=move |e| e.stop_propagation()>
@@ -422,6 +485,33 @@ fn SubscriptionInfoModal(sub: Subscription, on_close: impl Fn() + Copy + 'static
                     <p class="sub-info-peer">{peer_id}</p>
                     <p class="sub-info-line">{usage}</p>
                     <p class="sub-info-line">{summary}</p>
+                    <div class="sub-quota-row">
+                        <input
+                            class="search-input"
+                            type="number"
+                            min="0"
+                            step="any"
+                            prop:value=move || quota.get()
+                            on:input=move |e| quota.set(event_target_value(&e))
+                            on:keydown=move |e| { if e.key() == "Enter" { save(); } }
+                        />
+                        <select
+                            class="config-input sub-unit"
+                            on:change=move |e| unit.set(event_target_value(&e))
+                        >
+                            <option value="MB" selected=is_mb>"MB"</option>
+                            <option value="GB" selected=is_gb>"GB"</option>
+                            <option value="TB" selected=is_tb>"TB"</option>
+                        </select>
+                        <button
+                            class="btn-sm btn-primary"
+                            disabled=move || saving.get()
+                            on:click=move |_| save()
+                        >
+                            {move || if saving.get() { "Saving…" } else { "Update quota" }}
+                        </button>
+                    </div>
+                    {move || error.get().map(|e| view! { <p class="error-msg">{e}</p> })}
                     <div class="sub-file-list">
                         <Show
                             when=move || loaded.get()
