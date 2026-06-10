@@ -1,6 +1,6 @@
 //! `rucio pin list`, `rucio pin add <magnet>`, `rucio pin remove <hash>`.
 
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 use tabled::{Table, Tabled};
 
 use rucio_core::api::pins::PinState;
@@ -52,8 +52,41 @@ pub async fn list(client: &ApiClient) -> Result<()> {
     Ok(())
 }
 
-pub async fn add(client: &ApiClient, magnet: &str, providers: Vec<String>) -> Result<()> {
-    match client.create_pin(magnet, providers).await {
+/// Turn a `pin add` target into a `rucio:` magnet:
+/// - a `rucio:` magnet is used as-is (fetched if missing);
+/// - a 64-char hex string is treated as a root hash to pin directly;
+/// - a positive integer is a download id resolved to its root hash (pinning
+///   something you already have — no re-fetch).
+async fn resolve_to_magnet(client: &ApiClient, target: &str) -> Result<String> {
+    let t = target.trim();
+    if t.starts_with("rucio:") {
+        return Ok(t.to_string());
+    }
+    if t.len() == 64 && t.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Ok(format!("rucio:{}", t.to_lowercase()));
+    }
+    if let Ok(id) = t.parse::<i64>() {
+        if id <= 0 {
+            bail!("pin works on Rucio downloads only (use a positive download id)");
+        }
+        let dl = client
+            .get_download(id)
+            .await
+            .with_context(|| format!("no Rucio download with id {id}"))?;
+        return Ok(format!("rucio:{}", dl.root_hash));
+    }
+    bail!("'{target}' is not a rucio: magnet, a download id, or a 64-char root hash");
+}
+
+pub async fn add(client: &ApiClient, target: &str, providers: Vec<String>) -> Result<()> {
+    let magnet = match resolve_to_magnet(client, target).await {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("{}", color::error(&format!("Error: {e}")));
+            std::process::exit(1);
+        }
+    };
+    match client.create_pin(&magnet, providers).await {
         Ok(p) => {
             let name = p.name.as_deref().unwrap_or("(unknown)");
             println!(

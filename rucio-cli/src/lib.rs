@@ -211,10 +211,12 @@ pub enum CategoryAction {
 pub enum PinAction {
     /// List pinned content
     List,
-    /// Pin a magnet (fetched if not already present)
+    /// Pin content: a magnet (fetched if missing), or a numeric download id /
+    /// 64-char root hash for something you already have.
     Add {
-        /// A rucio: magnet link
-        magnet: String,
+        /// A `rucio:` magnet, a download id (from `rucio download list`), or a
+        /// full root hash (hex).
+        target: String,
         /// Provider PeerId hint to seed the fetch (repeatable)
         #[arg(long, value_name = "PEER_ID")]
         provider: Vec<String>,
@@ -405,7 +407,7 @@ pub async fn run() -> Result<()> {
         },
         Commands::Pin { action } => match action {
             PinAction::List => cmd::pins::list(&client).await,
-            PinAction::Add { magnet, provider } => cmd::pins::add(&client, &magnet, provider).await,
+            PinAction::Add { target, provider } => cmd::pins::add(&client, &target, provider).await,
             PinAction::Remove { hash } => cmd::pins::remove(&client, &hash).await,
         },
         Commands::Upload { action } => match action {
