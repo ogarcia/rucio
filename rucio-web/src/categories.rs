@@ -190,8 +190,7 @@ pub fn CategoriesEditor(
             <p class="config-hint">
                 "Categories route downloads to their own folder and tag them with a "
                 "coloured badge. A download with no explicit category is auto-filed by "
-                "the match keywords (the first matching category wins). Saved with the "
-                "Save button below."
+                "the match keywords (the first matching category wins)."
             </p>
 
             <For each=move || rows.get() key=|r| r.id let:row>
@@ -226,7 +225,7 @@ pub fn CategoriesEditor(
                     <input
                         class="config-input"
                         type="text"
-                        placeholder="auto-match keywords, e.g. 1080p|bluray (empty = none)"
+                        placeholder="auto-match keywords, | separated, e.g. 1080p|bluray (empty = none)"
                         prop:value=move || row.keywords.get()
                         on:input=move |e| row.keywords.set(event_target_value(&e))
                     />

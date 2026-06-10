@@ -338,12 +338,14 @@ pub fn ConfigModal(
                         on:click=move |_| tab.set(ConfigTab::Storage)>"Storage"</button>
                     <button class=move || tab_class(ConfigTab::Categories)
                         on:click=move |_| tab.set(ConfigTab::Categories)>"Categories"</button>
+                    <button class=move || tab_class(ConfigTab::Notifications)
+                        on:click=move |_| tab.set(ConfigTab::Notifications)>"Notifications"</button>
+                    // eMule sits last: when the daemon lacks eMule support the
+                    // tab is hidden, and being last means its absence shifts nothing.
                     <Show when=move || emule_available.get() fallback=|| ()>
                         <button class=move || tab_class(ConfigTab::Emule)
                             on:click=move |_| tab.set(ConfigTab::Emule)>"eMule"</button>
                     </Show>
-                    <button class=move || tab_class(ConfigTab::Notifications)
-                        on:click=move |_| tab.set(ConfigTab::Notifications)>"Notifications"</button>
                 </div>
 
                 <div class="modal-body">

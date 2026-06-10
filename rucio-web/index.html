@@ -717,8 +717,9 @@
             border-radius: 0.25rem; color: var(--text);
             font-size: 0.75rem; font-family: inherit; cursor: pointer;
             /* Cap the width so an absurdly long category name can't blow up the
-               control; the selected label is clipped instead. */
-            max-width: 14rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+               control; the selected label is clipped instead. 8rem fits one or
+               two words and keeps the bar visually tidy. */
+            max-width: 8rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
         }
         .dl-filter-input {
             padding: 0.25rem 0.5rem;
@@ -766,22 +767,39 @@
            flex layout, which already wraps cleanly. Scoped via :has() so an
            empty filter row never appears on those tabs. Declared after the base
            rules so it wins the cascade at ≤540px. */
-        @media (max-width: 540px) {
+        /* Intermediate tier: two rows. Row 1 carries both selects (natural
+           width, 8rem cap kept) plus the text filter; row 2 the count + speeds.
+           This is the original mobile model, restored for the wider phones. */
+        @media (max-width: 640px) {
             .dl-statusbar:has(.dl-filter-select) {
                 display: grid;
-                grid-template-columns: auto 1fr;
+                grid-template-columns: auto auto 1fr;
                 gap: 0.5rem; padding: 0.5rem 1rem;
             }
-            /* Row 1: select keeps its natural width, input fills the rest. */
-            .dl-statusbar:has(.dl-filter-select) .dl-filter-select { grid-row: 1; grid-column: 1; }
-            .dl-statusbar:has(.dl-filter-select) .dl-filter-input  { grid-row: 1; grid-column: 2; width: auto; min-width: 0; }
-            /* Row 2 spans both columns so the count's text width never widens
-               the select column — robust against longer translated strings. */
+            .dl-statusbar:has(.dl-filter-select) .dl-filter-select { grid-row: 1; min-width: 0; }
+            .dl-statusbar:has(.dl-filter-select) .dl-filter-select:nth-of-type(1) { grid-column: 1; }
+            /* Absent category select leaves col 2 empty; an auto track with no
+               content collapses, so the input still butts up to the status one. */
+            .dl-statusbar:has(.dl-filter-select) .dl-filter-select:nth-of-type(2) { grid-column: 2; }
+            .dl-statusbar:has(.dl-filter-select) .dl-filter-input  { grid-row: 1; grid-column: 3; width: auto; min-width: 0; }
+            /* Row 2 spans all columns so its text width never widens a track. */
             .dl-statusbar:has(.dl-filter-select) .dl-active-count  { grid-row: 2; grid-column: 1 / -1; justify-self: start; }
-            /* Row 2, right side: speeds + button stay together as one group. */
             .dl-statusbar:has(.dl-filter-select) .dl-status-right  { grid-row: 2; grid-column: 1 / -1; justify-self: end; margin-left: 0; }
             /* Tighter badge cap on narrow screens so it leaves room for name+size. */
             .dl-cat-badge { max-width: 6rem; }
+        }
+
+        /* Narrowest tier: three rows. The selects no longer share a row with the
+           text filter — they sit side by side filling half each (cap lifted),
+           the filter drops to its own full-width row, count + speeds to a third. */
+        @media (max-width: 400px) {
+            .dl-statusbar:has(.dl-filter-select) {
+                grid-template-columns: 1fr 1fr;
+            }
+            .dl-statusbar:has(.dl-filter-select) .dl-filter-select { max-width: none; }
+            .dl-statusbar:has(.dl-filter-select) .dl-filter-input  { grid-row: 2; grid-column: 1 / -1; }
+            .dl-statusbar:has(.dl-filter-select) .dl-active-count  { grid-row: 3; grid-column: 1; }
+            .dl-statusbar:has(.dl-filter-select) .dl-status-right  { grid-row: 3; grid-column: 2; }
         }
 
         /* ── Downloads ───────────────────────────────────────────────────── */
