@@ -477,7 +477,7 @@ pub fn SharesTab(
                                         <span class="share-file-name" title=f.path.clone()>{f.name.clone()}</span>
                                         <span class="share-file-size">{format_size(f.size)}</span>
                                         <button
-                                            class="btn-sm share-copy-btn"
+                                            class="btn-sm share-copy-btn share-pin-btn"
                                             title=move || if pinned_set.get().contains(&h_title) {
                                                 "Unpin this file (stops keeping it on purpose; the file stays shared)"
                                             } else {

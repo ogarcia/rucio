@@ -1203,6 +1203,9 @@
             display: inline-flex; align-items: center; gap: 0.3rem; white-space: nowrap;
         }
         .share-copy-btn .icon { width: 0.875rem; height: 0.875rem; }
+        /* Fixed width for the Pin/Unpin toggle so the label (Pin/Pinned!/Unpin)
+           doesn't resize the button and shift the columns. */
+        .share-pin-btn { min-width: 5.5rem; justify-content: center; }
 
         /* "Load more" button for the paginated shared-files list. */
         .share-load-more {
