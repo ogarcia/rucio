@@ -1258,8 +1258,10 @@ async fn handle_incoming(mut stream: TcpStream, peer: SocketAddr, ctx: Arc<Uploa
             if opcode == OP_HELLO {
                 let answer = build_hello(&our_hash, ctx.tcp_port, &ctx.nick);
                 write_frame(&mut stream, &mut ciphers, OP_HELLOANSWER, &answer).await?;
+                debug!(%peer, "eMule HELLO done; awaiting file request");
                 break;
             }
+            debug!(%peer, "got 0x{opcode:02x} before HELLO");
         }
 
         // ── File request loop ─────────────────────────────────────────────────
@@ -1282,13 +1284,18 @@ async fn handle_incoming(mut stream: TcpStream, peer: SocketAddr, ctx: Arc<Uploa
             let mut hash = [0u8; 16];
             hash.copy_from_slice(&payload[..16]);
 
-            // Look up in the active-download whitelist.
-            let info = ctx.downloads.read().await.get(&hash).cloned();
+            // Look up in the active-download whitelist (also note how many files
+            // we are seeding, to tell "empty whitelist" from "hash we don't have").
+            let (info, seeding) = {
+                let guard = ctx.downloads.read().await;
+                (guard.get(&hash).cloned(), guard.len())
+            };
             let Some(info) = info else {
                 write_frame(&mut stream, &mut ciphers, OP_FILENOTFOUND, &hash).await?;
-                debug!(%peer, hash = %hex::encode(hash), "FILENOTFOUND (not downloading)");
+                debug!(%peer, hash = %hex::encode(hash), seeding, "FILENOTFOUND (not in seeding set)");
                 continue;
             };
+            debug!(%peer, hash = %hex::encode(hash), "FILEREQUEST matched a seeded file");
 
             // Try to claim an upload slot (non-blocking).
             let _permit = match ctx.slots.try_acquire() {
