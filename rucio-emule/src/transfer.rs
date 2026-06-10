@@ -112,6 +112,14 @@ const OP_FILEREQUEST_ANSWER: u8 = 0x59;
 const OP_FILENOTFOUND: u8 = 0x92;
 const OP_REQUESTPARTS: u8 = 0x47;
 const OP_SENDINGPART: u8 = 0x46;
+/// 64-bit-offset variants (extended protocol 0xc5) for files larger than 4 GiB,
+/// where the 32-bit offsets above overflow. Layouts:
+///   REQUESTPARTS_I64: hash[16] + start[8]*3 + end[8]*3
+///   SENDINGPART_I64:  hash[16] + start[8] + end[8] + data
+///   COMPRESSEDPART_I64: hash[16] + start[8] + packed_size[4] + zlib_fragment
+const OP_REQUESTPARTS_I64: u8 = 0xa3;
+const OP_SENDINGPART_I64: u8 = 0xa2;
+const OP_COMPRESSEDPART_I64: u8 = 0xa1;
 /// Extended-protocol (0xc5) opcode: zlib-compressed file data block.
 /// Payload: hash[16] + start_offset[4 LE] + zlib_data[…]
 /// Range end is implicit: start_offset + decompressed.len()
@@ -765,6 +773,9 @@ impl Session {
         F: FnMut(DownloadEvent),
     {
         const PART_WINDOW: u64 = 180 * 1024;
+        // Files over 4 GiB need 64-bit-offset request/data opcodes; the 32-bit
+        // fields would overflow past 4 GiB (the download would stall there).
+        let large_file = self.file_size > u32::MAX as u64;
 
         let mut bytes_received = start;
         let mut part_buf: Vec<u8> = Vec::new();
@@ -791,6 +802,7 @@ impl Session {
             start,
             end,
             PART_WINDOW,
+            large_file,
         )
         .await?;
 
@@ -827,18 +839,21 @@ impl Session {
             .context("read data frame")?;
 
             match opcode {
-                OP_SENDINGPART => {
-                    if payload.len() < 24 {
+                OP_SENDINGPART | OP_SENDINGPART_I64 => {
+                    // 32-bit: hash[16] + start[4] + end[4] + data (header 24).
+                    // 64-bit: hash[16] + start[8] + end[8] + data (header 32).
+                    let i64 = opcode == OP_SENDINGPART_I64;
+                    let hdr = if i64 { 32 } else { 24 };
+                    if payload.len() < hdr {
                         warn!("malformed SENDINGPART (too short: {} bytes)", payload.len());
                         continue;
                     }
-                    let _range_start =
-                        u32::from_le_bytes([payload[16], payload[17], payload[18], payload[19]])
-                            as u64;
-                    let range_end =
-                        u32::from_le_bytes([payload[20], payload[21], payload[22], payload[23]])
-                            as u64;
-                    let data = &payload[24..];
+                    let range_end = if i64 {
+                        u64::from_le_bytes(payload[24..32].try_into().unwrap())
+                    } else {
+                        u32::from_le_bytes(payload[20..24].try_into().unwrap()) as u64
+                    };
+                    let data = &payload[hdr..];
 
                     out_writer
                         .write_all(data)
@@ -869,33 +884,42 @@ impl Session {
                             bytes_received,
                             end,
                             PART_WINDOW,
+                            large_file,
                         )
                         .await?;
                         batch_end = (bytes_received + 3 * PART_WINDOW).min(end);
                     }
                 }
-                OP_COMPRESSEDPART => {
-                    // Per-sub-packet wire format:
-                    //   hash[16] + block_start[4 LE] + packed_size[4 LE] + zlib_fragment[…]
+                OP_COMPRESSEDPART | OP_COMPRESSEDPART_I64 => {
+                    // Per-sub-packet wire format (32-bit / 64-bit start):
+                    //   hash[16] + block_start[4|8 LE] + packed_size[4 LE] + zlib_fragment[…]
                     // `packed_size` is the TOTAL compressed length of the block;
                     // the zlib stream is delivered across several sub-packets that
                     // all repeat this same header.  Accumulate the fragments and
                     // decompress only once the whole stream has arrived.
-                    if payload.len() < 24 {
+                    let i64 = opcode == OP_COMPRESSEDPART_I64;
+                    let hdr = if i64 { 28 } else { 24 };
+                    if payload.len() < hdr {
                         warn!(
                             "malformed OP_COMPRESSEDPART (too short: {} bytes)",
                             payload.len()
                         );
                         continue;
                     }
-                    let range_start =
-                        u32::from_le_bytes([payload[16], payload[17], payload[18], payload[19]])
-                            as u64;
-                    let packed_size =
-                        u32::from_le_bytes([payload[20], payload[21], payload[22], payload[23]])
-                            as usize;
+                    let (range_start, packed_size) = if i64 {
+                        (
+                            u64::from_le_bytes(payload[16..24].try_into().unwrap()),
+                            u32::from_le_bytes(payload[24..28].try_into().unwrap()) as usize,
+                        )
+                    } else {
+                        (
+                            u32::from_le_bytes(payload[16..20].try_into().unwrap()) as u64,
+                            u32::from_le_bytes(payload[20..24].try_into().unwrap()) as usize,
+                        )
+                    };
 
-                    let decompressed = match packed.push(range_start, packed_size, &payload[24..]) {
+                    let decompressed = match packed.push(range_start, packed_size, &payload[hdr..])
+                    {
                         Ok(Some(data)) => data,
                         Ok(None) => continue, // waiting for more sub-packets
                         Err(e) => {
@@ -940,6 +964,7 @@ impl Session {
                             bytes_received,
                             end,
                             PART_WINDOW,
+                            large_file,
                         )
                         .await?;
                         batch_end = (bytes_received + 3 * PART_WINDOW).min(end);
@@ -987,6 +1012,9 @@ where
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Send a `REQUESTPARTS` message for up to 3 consecutive 180 KB windows.
+///
+/// `large_file` selects the 64-bit-offset opcode (`OP_REQUESTPARTS_I64`) for
+/// files over 4 GiB, whose offsets do not fit in the 32-bit fields.
 async fn send_request_parts(
     stream: &mut TcpStream,
     ciphers: &mut ObfCiphers,
@@ -994,31 +1022,57 @@ async fn send_request_parts(
     offset: u64,
     max_end: u64,
     window: u64,
+    large_file: bool,
 ) -> Result<()> {
-    let mut payload = Vec::with_capacity(16 + 6 * 4);
-    payload.extend_from_slice(file_hash);
-
-    let mut starts = [0u32; 3];
-    let mut ends = [0u32; 3];
-    for i in 0..3 {
-        let s = offset + (i as u64) * window;
-        if s >= max_end {
-            starts[i] = s.min(max_end) as u32;
-            ends[i] = starts[i];
-        } else {
-            starts[i] = s as u32;
-            ends[i] = (s + window).min(max_end) as u32;
-        }
-    }
-    for s in &starts {
-        payload.extend_from_slice(&s.to_le_bytes());
-    }
-    for e in &ends {
-        payload.extend_from_slice(&e.to_le_bytes());
-    }
-    write_frame(stream, ciphers, OP_REQUESTPARTS, &payload)
+    let (proto, opcode, payload) =
+        build_request_parts(file_hash, offset, max_end, window, large_file);
+    write_frame_proto(stream, ciphers, proto, opcode, &payload)
         .await
         .context("send REQUESTPARTS")
+}
+
+/// Build a REQUESTPARTS payload for up to 3 consecutive windows, returning the
+/// protocol header byte and opcode to frame it under. `large_file` selects the
+/// 64-bit-offset variant (`OP_REQUESTPARTS_I64` on the extended protocol) so
+/// offsets beyond 4 GiB are not truncated.
+fn build_request_parts(
+    file_hash: &[u8; 16],
+    offset: u64,
+    max_end: u64,
+    window: u64,
+    large_file: bool,
+) -> (u8, u8, Vec<u8>) {
+    // Each window is clamped to the file end; one starting at/after the end is
+    // an empty (start == end) filler slot.
+    let mut starts = [0u64; 3];
+    let mut ends = [0u64; 3];
+    for i in 0..3 {
+        let s = (offset + (i as u64) * window).min(max_end);
+        starts[i] = s;
+        ends[i] = (s + window).min(max_end).max(s);
+    }
+
+    if large_file {
+        let mut payload = Vec::with_capacity(16 + 6 * 8);
+        payload.extend_from_slice(file_hash);
+        for s in &starts {
+            payload.extend_from_slice(&s.to_le_bytes());
+        }
+        for e in &ends {
+            payload.extend_from_slice(&e.to_le_bytes());
+        }
+        (PROTO_EMULE, OP_REQUESTPARTS_I64, payload)
+    } else {
+        let mut payload = Vec::with_capacity(16 + 6 * 4);
+        payload.extend_from_slice(file_hash);
+        for s in &starts {
+            payload.extend_from_slice(&(*s as u32).to_le_bytes());
+        }
+        for e in &ends {
+            payload.extend_from_slice(&(*e as u32).to_le_bytes());
+        }
+        (PROTO_ED2K, OP_REQUESTPARTS, payload)
+    }
 }
 
 /// Reassembles a fragmented eMule `OP_PACKEDPART` compressed block.
@@ -1523,18 +1577,32 @@ async fn run_upload_session(
             // permit drop, freeing the slot immediately.
             OP_ENDOFDOWNLOAD | OP_CANCELTRANSFER => break,
             OP_HASHSETREQUEST => send_hashset_answer(stream, ciphers, hash, info).await?,
-            OP_REQUESTPARTS => {
-                if payload.len() < 40 {
+            OP_REQUESTPARTS | OP_REQUESTPARTS_I64 => {
+                // 32-bit: hash[16] + start[4]*3 + end[4]*3  (min 40 bytes)
+                // 64-bit: hash[16] + start[8]*3 + end[8]*3  (min 64 bytes)
+                let i64_req = opcode == OP_REQUESTPARTS_I64;
+                let need = if i64_req { 16 + 48 } else { 16 + 24 };
+                if payload.len() < need {
                     break;
                 }
-                // Payload: hash[16] + start[4]*3 + end[4]*3 (all LE u32)
-                for i in 0..3usize {
-                    let start =
-                        u32::from_le_bytes(payload[16 + i * 4..20 + i * 4].try_into().unwrap())
-                            as u64;
-                    let end =
-                        u32::from_le_bytes(payload[28 + i * 4..32 + i * 4].try_into().unwrap())
-                            as u64;
+                let mut ranges = [(0u64, 0u64); 3];
+                for (i, r) in ranges.iter_mut().enumerate() {
+                    *r = if i64_req {
+                        (
+                            u64::from_le_bytes(payload[16 + i * 8..24 + i * 8].try_into().unwrap()),
+                            u64::from_le_bytes(payload[40 + i * 8..48 + i * 8].try_into().unwrap()),
+                        )
+                    } else {
+                        (
+                            u32::from_le_bytes(payload[16 + i * 4..20 + i * 4].try_into().unwrap())
+                                as u64,
+                            u32::from_le_bytes(payload[28 + i * 4..32 + i * 4].try_into().unwrap())
+                                as u64,
+                        )
+                    };
+                }
+
+                for (start, end) in ranges {
                     if start >= end {
                         continue; // empty range — filler slot
                     }
@@ -1552,7 +1620,7 @@ async fn run_upload_session(
                         return Ok(());
                     }
 
-                    // Read and send the range.
+                    // Read the range from disk.
                     let len = (end - start) as usize;
                     let mut buf = vec![0u8; len];
                     {
@@ -1563,18 +1631,30 @@ async fn run_upload_session(
                         file.read_exact(&mut buf).await?;
                     }
 
-                    // SENDINGPART payload: hash[16] + start[4] + end[4] + data
-                    let mut sp = Vec::with_capacity(24 + len);
-                    sp.extend_from_slice(hash);
-                    sp.extend_from_slice(&(start as u32).to_le_bytes());
-                    sp.extend_from_slice(&(end as u32).to_le_bytes());
-                    sp.extend_from_slice(&buf);
                     // Gate on the upload rate limiter before sending (no-op
                     // when no limit is set).
                     if let Some(limiter) = &ctx.upload_limiter {
                         limiter(len as u64).await;
                     }
-                    write_frame(stream, ciphers, OP_SENDINGPART, &sp).await?;
+
+                    // Use the 64-bit data opcode when an offset exceeds 4 GiB,
+                    // exactly as eMule's uploader does (CUploadClient).
+                    if start > u32::MAX as u64 || end > u32::MAX as u64 {
+                        let mut sp = Vec::with_capacity(32 + len);
+                        sp.extend_from_slice(hash);
+                        sp.extend_from_slice(&start.to_le_bytes());
+                        sp.extend_from_slice(&end.to_le_bytes());
+                        sp.extend_from_slice(&buf);
+                        write_frame_proto(stream, ciphers, PROTO_EMULE, OP_SENDINGPART_I64, &sp)
+                            .await?;
+                    } else {
+                        let mut sp = Vec::with_capacity(24 + len);
+                        sp.extend_from_slice(hash);
+                        sp.extend_from_slice(&(start as u32).to_le_bytes());
+                        sp.extend_from_slice(&(end as u32).to_le_bytes());
+                        sp.extend_from_slice(&buf);
+                        write_frame(stream, ciphers, OP_SENDINGPART, &sp).await?;
+                    }
                     ctx.uploaded_bytes.fetch_add(len as u64, Ordering::Relaxed);
                     ctx.chunks_served.fetch_add(1, Ordering::Relaxed);
                     if let Some(s) = &session {
@@ -1628,6 +1708,34 @@ mod tests {
         let ext = build_message_proto(PROTO_EMULE, OP_EMULEINFOANSWER, &[]);
         assert_eq!(ext[0], PROTO_EMULE);
         assert_eq!(ext[5], OP_EMULEINFOANSWER);
+    }
+
+    #[test]
+    fn request_parts_i64_preserves_offsets_beyond_4gib() {
+        let hash = [0u8; 16];
+        let offset = 5 * 1024 * 1024 * 1024u64; // 5 GiB — overflows a u32
+        let window = 180 * 1024u64;
+
+        // Large-file mode: 64-bit opcode on the extended protocol, offsets intact.
+        let (proto, opcode, p) =
+            build_request_parts(&hash, offset, offset + 3 * window, window, true);
+        assert_eq!(proto, PROTO_EMULE);
+        assert_eq!(opcode, OP_REQUESTPARTS_I64);
+        assert_eq!(p.len(), 16 + 6 * 8);
+        assert_eq!(u64::from_le_bytes(p[16..24].try_into().unwrap()), offset);
+        assert_eq!(
+            u64::from_le_bytes(p[40..48].try_into().unwrap()),
+            offset + window
+        );
+
+        // 32-bit mode would silently truncate the same offset — the bug this
+        // fixes (downloads stalling exactly at 4 GiB).
+        let (_, op32, p32) = build_request_parts(&hash, offset, offset + window, window, false);
+        assert_eq!(op32, OP_REQUESTPARTS);
+        assert_eq!(
+            u32::from_le_bytes(p32[16..20].try_into().unwrap()) as u64,
+            offset & 0xffff_ffff
+        );
     }
 
     #[test]
