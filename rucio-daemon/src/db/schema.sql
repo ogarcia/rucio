@@ -99,6 +99,20 @@ CREATE TABLE IF NOT EXISTS mirror_pins (
 CREATE INDEX IF NOT EXISTS idx_mirror_pins_peer ON mirror_pins(peer_id);
 
 -- ---------------------------------------------------------------------------
+-- mirror_owned (cooperative pinning)
+-- Hashes whose local copy exists ONLY because the reconcile fetched it to
+-- mirror a subscription (the user did not already hold it). This is the
+-- discriminator that lets eviction delete mirror content without ever touching
+-- the user's own downloads or shares. A row is added when the reconcile decides
+-- to fetch a missing wanted hash, and removed when that content is evicted.
+-- Eviction also requires the file to live under pin_dir as a second guard.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS mirror_owned (
+    root_hash   BLOB    PRIMARY KEY,    -- 32 bytes, BLAKE3
+    added_at    INTEGER NOT NULL
+);
+
+-- ---------------------------------------------------------------------------
 -- categories
 -- Optional download categories. A category may pin its own download_dir so the
 -- user can route downloads to different folders; download_dir NULL means the

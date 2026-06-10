@@ -861,6 +861,9 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
             }
             _ = pinset_reconcile_tick.tick() => {
                 crate::pinset::request_all_pinsets(&db, &handle.cmd_tx).await;
+                // Safety sweep: catches content orphaned by a removed
+                // subscription (no PinsetReceived ever fires for that peer).
+                crate::pinset::evict_unwanted(&db, &handle.cmd_tx, &config.storage.pin_dir).await;
             }
             _ = manifest_tick.tick() => {
                 engine.tick_manifest_timeouts().await;
@@ -1265,6 +1268,14 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                                 Err(e) => debug!("Mirror fetch not started: {e}"),
                             }
                         }
+                        // The applied pin-set may have dropped hashes this peer
+                        // no longer wants — sweep them if nobody else does.
+                        crate::pinset::evict_unwanted(
+                            &db,
+                            &handle.cmd_tx,
+                            &config.storage.pin_dir,
+                        )
+                        .await;
                     }
                     Some(node::messages::NodeEvent::FatalError(e)) => {
                         tracing::error!("Node fatal error: {e}");

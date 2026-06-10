@@ -179,14 +179,86 @@ pub async fn on_pinset_received(
         }
         match db::shares::get_by_hash(db, &e.root_hash).await {
             Ok(Some(_)) => {}
-            Ok(None) => fetch.push(FetchItem {
-                root_hash: e.root_hash,
-                name: e.name.clone(),
-            }),
+            Ok(None) => {
+                // We don't hold it, so this copy will exist only because we
+                // mirror it: mark it owned so eviction may later delete it
+                // (the user's own content is never marked, never evicted).
+                if let Err(err) = db::mirror_owned::mark(db, &e.root_hash, now).await {
+                    warn!("reconcile: marking mirror-owned failed: {err}");
+                }
+                fetch.push(FetchItem {
+                    root_hash: e.root_hash,
+                    name: e.name.clone(),
+                });
+            }
             Err(err) => warn!("reconcile: share lookup failed: {err}"),
         }
     }
     fetch
+}
+
+/// Evict mirror content nobody wants any more. A hash is evicted only when it is
+/// mirror-owned (we fetched it solely to mirror), is neither a manual pin nor
+/// wanted by any subscription, and its file lives under `pin_dir`. That triple
+/// guard means we never delete the user's own downloads or shares. Returns how
+/// many hashes were evicted.
+pub async fn evict_unwanted(
+    db: &db::Db,
+    cmd_tx: &Sender<NodeCmd>,
+    pin_dir: &std::path::Path,
+) -> usize {
+    let owned = match db::mirror_owned::list(db).await {
+        Ok(o) => o,
+        Err(e) => {
+            warn!("eviction: cannot list mirror-owned hashes: {e}");
+            return 0;
+        }
+    };
+    let mut evicted = 0usize;
+    for hash in owned {
+        // Still wanted (manual pin or some subscription): keep it.
+        let pinned = db::pins::exists(db, &hash).await.unwrap_or(false);
+        let wanted = db::mirror_pins::is_wanted(db, &hash).await.unwrap_or(false);
+        if pinned || wanted {
+            continue;
+        }
+
+        // No longer wanted. Find where its copy lives.
+        match db::shares::get_by_hash(db, &hash).await {
+            Ok(Some(share)) => {
+                let path = std::path::Path::new(&share.path);
+                if path.starts_with(pin_dir) {
+                    // Mirror copy under pin_dir — safe to delete.
+                    if let Err(e) = tokio::fs::remove_file(path).await
+                        && e.kind() != std::io::ErrorKind::NotFound
+                    {
+                        warn!(path = %share.path, "eviction: could not delete file: {e}");
+                    }
+                    let _ = db::shares::delete_by_hash(db, &hash).await;
+                    let _ = cmd_tx.send(NodeCmd::StopProviding(hash.to_vec())).await;
+                    info!(hash = %hex::encode(hash), "Evicted mirror content (no longer wanted)");
+                    evicted += 1;
+                } else {
+                    // Outside pin_dir: the user keeps it elsewhere (e.g. a
+                    // manual download of the same hash). Don't touch the file
+                    // or the share — just drop our ownership claim.
+                    info!(hash = %hex::encode(hash), "Mirror no longer wanted but file is outside pin_dir — leaving it, dropping ownership");
+                }
+            }
+            // No local copy (fetch never completed / already gone): nothing to
+            // delete; just drop the ownership row below.
+            Ok(None) => {}
+            Err(e) => {
+                warn!("eviction: share lookup failed: {e}");
+                continue; // keep the owned row; retry next sweep
+            }
+        }
+        let _ = db::mirror_owned::unmark(db, &hash).await;
+    }
+    if evicted > 0 {
+        info!(count = evicted, "eviction sweep complete");
+    }
+    evicted
 }
 
 #[cfg(test)]
@@ -354,5 +426,110 @@ mod tests {
         assert!(db::mirror_pins::is_wanted(&db, &need).await.unwrap());
         assert_eq!(fetch.len(), 1);
         assert_eq!(fetch[0].root_hash, need);
+    }
+
+    /// Insert a share whose `path` is a real file in `dir`, return its path.
+    async fn share_file(db: &db::Db, dir: &std::path::Path, hash: &[u8; 32], name: &str) -> String {
+        let path = dir.join(name);
+        tokio::fs::write(&path, b"data").await.unwrap();
+        let path_str = path.to_str().unwrap().to_string();
+        db::shares::insert(
+            db,
+            NewSharedFile {
+                root_hash: hash,
+                name,
+                size: 4,
+                mime_type: None,
+                path: &path_str,
+                chunk_size: 4,
+                added_at: 1,
+                mtime: 0,
+                chunks: &[(0, [3u8; 32], 4)],
+            },
+        )
+        .await
+        .unwrap();
+        path_str
+    }
+
+    #[tokio::test]
+    async fn eviction_respects_ownership_pins_and_location() {
+        let (db, dir) = test_db().await;
+        let pin_dir = dir.path().join("pins");
+        let other_dir = dir.path().join("downloads");
+        tokio::fs::create_dir_all(&pin_dir).await.unwrap();
+        tokio::fs::create_dir_all(&other_dir).await.unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::channel::<NodeCmd>(16);
+
+        // 1. Owned mirror under pin_dir, nobody wants it -> evicted.
+        let gone = [1u8; 32];
+        let gone_path = share_file(&db, &pin_dir, &gone, "gone.bin").await;
+        db::mirror_owned::mark(&db, &gone, 1).await.unwrap();
+
+        // 2. Owned but still manually pinned -> kept.
+        let pinned = [2u8; 32];
+        let pinned_path = share_file(&db, &pin_dir, &pinned, "pinned.bin").await;
+        db::mirror_owned::mark(&db, &pinned, 1).await.unwrap();
+        db::pins::add(&db, &pinned, 1).await.unwrap();
+
+        // 3. Owned but still wanted by a subscription -> kept.
+        let peer = PeerId::random();
+        db::pin_subscriptions::upsert(&db, &peer.to_string(), 10_000, 1)
+            .await
+            .unwrap();
+        let wanted = [3u8; 32];
+        let wanted_path = share_file(&db, &pin_dir, &wanted, "wanted.bin").await;
+        db::mirror_owned::mark(&db, &wanted, 1).await.unwrap();
+        db::mirror_pins::set_for_peer(
+            &db,
+            &peer.to_string(),
+            &[db::mirror_pins::MirrorEntry {
+                root_hash: wanted,
+                name: Some("wanted.bin".into()),
+                size: 4,
+                state: db::mirror_pins::STATE_WANTED.into(),
+            }],
+            1,
+        )
+        .await
+        .unwrap();
+
+        // 4. NOT owned (the user's own share), unwanted -> never touched.
+        let user = [4u8; 32];
+        let user_path = share_file(&db, &pin_dir, &user, "user.bin").await;
+
+        // 5. Owned + unwanted but the file lives outside pin_dir -> file kept,
+        //    ownership dropped.
+        let elsewhere = [5u8; 32];
+        let elsewhere_path = share_file(&db, &other_dir, &elsewhere, "elsewhere.bin").await;
+        db::mirror_owned::mark(&db, &elsewhere, 1).await.unwrap();
+
+        let n = evict_unwanted(&db, &tx, &pin_dir).await;
+        assert_eq!(n, 1, "only the one unwanted owned file under pin_dir");
+
+        // 1. Evicted: file, share and ownership all gone.
+        assert!(!std::path::Path::new(&gone_path).exists());
+        assert!(db::shares::get_by_hash(&db, &gone).await.unwrap().is_none());
+        assert!(!db::mirror_owned::is_owned(&db, &gone).await.unwrap());
+
+        // 2/3. Kept entirely.
+        assert!(std::path::Path::new(&pinned_path).exists());
+        assert!(db::mirror_owned::is_owned(&db, &pinned).await.unwrap());
+        assert!(std::path::Path::new(&wanted_path).exists());
+        assert!(db::mirror_owned::is_owned(&db, &wanted).await.unwrap());
+
+        // 4. User content untouched.
+        assert!(std::path::Path::new(&user_path).exists());
+        assert!(db::shares::get_by_hash(&db, &user).await.unwrap().is_some());
+
+        // 5. File kept, but no longer claimed as ours.
+        assert!(std::path::Path::new(&elsewhere_path).exists());
+        assert!(
+            db::shares::get_by_hash(&db, &elsewhere)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(!db::mirror_owned::is_owned(&db, &elsewhere).await.unwrap());
     }
 }

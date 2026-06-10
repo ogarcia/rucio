@@ -9,6 +9,7 @@ pub mod downloads;
 pub mod emule_downloads;
 pub mod emule_shared_files;
 pub mod metrics;
+pub mod mirror_owned;
 pub mod mirror_pins;
 pub mod notifications;
 pub mod peers;
