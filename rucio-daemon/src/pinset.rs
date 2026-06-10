@@ -91,8 +91,11 @@ pub async fn request_all_pinsets(db: &db::Db, cmd_tx: &Sender<NodeCmd>) {
 /// Ask a single peer for its pin-set now (used on a fresh subscription so the
 /// first sync doesn't wait for the next reconcile tick).
 pub async fn request_one_pinset(cmd_tx: &Sender<NodeCmd>, peer: PeerId) {
-    // Warm the routing table so `send_request` can dial peers we're not
-    // connected to (no-op for already-connected LAN peers).
+    // Resolve the peer's current addresses by PeerId via its signed DHT record,
+    // then warm the routing table. Both add addresses so `send_request` can dial
+    // a subscription peer we've never connected to — without baking volatile IPs
+    // into the subscription, which is just the stable PeerId.
+    let _ = cmd_tx.send(NodeCmd::ResolvePeer { peer }).await;
     let _ = cmd_tx.send(NodeCmd::DiscoverPeer { peer }).await;
     // We correlate the response by its `peer`, not by request id, so the
     // returned id is discarded.

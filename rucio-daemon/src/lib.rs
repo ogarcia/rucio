@@ -754,6 +754,14 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         tokio::time::Instant::now() + tokio::time::Duration::from_secs(20),
         tokio::time::Duration::from_secs(3 * 60),
     );
+    // Publish our signed peer-address record to the DHT so peers that only know
+    // our PeerId (e.g. a subscriber) can resolve our current addresses. First
+    // pass once addresses are likely known, then refreshed to survive IP/NAT
+    // changes (the record points stable PeerId → current addresses).
+    let mut peer_record_tick = tokio::time::interval_at(
+        tokio::time::Instant::now() + tokio::time::Duration::from_secs(30),
+        tokio::time::Duration::from_secs(15 * 60),
+    );
     // Per-download download-speed sampler state: id → (rolling window, last bytes_done).
     let mut speed_samples: std::collections::HashMap<i64, (metrics::SpeedWindow, u64)> =
         std::collections::HashMap::new();
@@ -857,6 +865,9 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                 if let Err(e) = db::metrics::add(&db, &delta).await {
                     warn!("Could not flush metrics to DB: {e}");
                 }
+            }
+            _ = peer_record_tick.tick() => {
+                let _ = handle.cmd_tx.send(node::messages::NodeCmd::PublishPeerRecord).await;
             }
             _ = pinset_reconcile_tick.tick() => {
                 crate::pinset::request_all_pinsets(&db, &handle.cmd_tx).await;

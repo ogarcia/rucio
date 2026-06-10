@@ -143,6 +143,9 @@ pub async fn spawn(cfg: &NetConfig) -> Result<NodeHandle> {
 
     let peer_id_copy = peer_id;
     let behaviour_cfg = cfg.behaviour;
+    // Keep a clone of the keypair to sign our DHT peer-address record (the
+    // builder consumes the original).
+    let sign_keypair = keypair.clone();
     let mut swarm = SwarmBuilder::with_existing_identity(keypair)
         .with_tokio()
         .with_tcp(
@@ -194,7 +197,13 @@ pub async fn spawn(cfg: &NetConfig) -> Result<NodeHandle> {
         }
     }
 
-    tokio::spawn(run_loop(swarm, peer_id, cmd_rx, EventTx::new(event_tx)));
+    tokio::spawn(run_loop(
+        swarm,
+        peer_id,
+        sign_keypair,
+        cmd_rx,
+        EventTx::new(event_tx),
+    ));
 
     Ok(NodeHandle { cmd_tx, event_rx })
 }
@@ -294,9 +303,83 @@ impl LoopState {
 // Event loop
 // ---------------------------------------------------------------------------
 
+/// Publish our signed peer-address record into the DHT, keyed by our PeerId, so
+/// a peer that only knows our PeerId can resolve our current addresses. No-op
+/// until we actually have a dialable address. The record is signed with our
+/// identity key, so resolvers can trust the addresses really belong to us.
+fn publish_peer_record(
+    swarm: &mut libp2p::Swarm<RucioBehaviour>,
+    keypair: &libp2p::identity::Keypair,
+    peer_id: &PeerId,
+) {
+    // Confirmed external addresses first (reachable across the internet), then
+    // our listen addresses (useful on the LAN); drop loopback.
+    let mut addrs: Vec<Multiaddr> = swarm.external_addresses().cloned().collect();
+    for a in swarm.listeners() {
+        if !addrs.contains(a) {
+            addrs.push(a.clone());
+        }
+    }
+    addrs.retain(|a| !is_loopback(a));
+    if addrs.is_empty() {
+        debug!("PublishPeerRecord: no dialable address yet — skipping");
+        return;
+    }
+    let record = match libp2p::core::PeerRecord::new(keypair, addrs) {
+        Ok(r) => r,
+        Err(e) => {
+            warn!("Could not sign peer-address record: {e}");
+            return;
+        }
+    };
+    let value = record.into_signed_envelope().into_protobuf_encoding();
+    let key = kad::RecordKey::new(&peer_id.to_bytes());
+    match swarm
+        .behaviour_mut()
+        .kademlia
+        .put_record(kad::Record::new(key, value), kad::Quorum::One)
+    {
+        Ok(_) => debug!("Published peer-address record to the DHT"),
+        Err(e) => debug!("put_record (peer-address) failed: {e}"),
+    }
+}
+
+/// Verify a signed peer-address record (from a `get_record` result) and add its
+/// addresses to the routing table so `send_request` can dial that peer.
+/// `from_signed_envelope` checks the signature and binds the addresses to the
+/// signer's PeerId, so a forged record under someone else's key is rejected.
+fn add_resolved_peer_addresses(swarm: &mut libp2p::Swarm<RucioBehaviour>, value: &[u8]) {
+    let Ok(envelope) = libp2p::core::SignedEnvelope::from_protobuf_encoding(value) else {
+        return;
+    };
+    let Ok(record) = libp2p::core::PeerRecord::from_signed_envelope(envelope) else {
+        return;
+    };
+    let peer = record.peer_id();
+    let n = record.addresses().len();
+    for addr in record.addresses() {
+        swarm
+            .behaviour_mut()
+            .kademlia
+            .add_address(&peer, addr.clone());
+    }
+    debug!(%peer, addrs = n, "Resolved peer addresses from a DHT record");
+}
+
+/// Whether a multiaddr's IP component is loopback (not worth publishing).
+fn is_loopback(addr: &Multiaddr) -> bool {
+    use libp2p::multiaddr::Protocol;
+    addr.iter().any(|p| match p {
+        Protocol::Ip4(ip) => ip.is_loopback(),
+        Protocol::Ip6(ip) => ip.is_loopback(),
+        _ => false,
+    })
+}
+
 async fn run_loop(
     mut swarm: libp2p::Swarm<RucioBehaviour>,
     peer_id: PeerId,
+    sign_keypair: libp2p::identity::Keypair,
     mut cmd_rx: mpsc::Receiver<NodeCmd>,
     event_tx: EventTx,
 ) {
@@ -444,6 +527,17 @@ async fn run_loop(
                         // following `send_request` can dial it. We don't track the
                         // query — the address book is the only thing we need.
                         let _ = swarm.behaviour_mut().kademlia.get_closest_peers(peer);
+                    }
+                    Some(NodeCmd::PublishPeerRecord) => {
+                        publish_peer_record(&mut swarm, &sign_keypair, &peer_id);
+                    }
+                    Some(NodeCmd::ResolvePeer { peer }) => {
+                        // Look up the peer's signed address record (keyed by its
+                        // PeerId). The result is handled in the Kademlia
+                        // `GetRecord` arm, which verifies it and adds the
+                        // addresses so a following `send_request` can dial.
+                        let key = kad::RecordKey::new(&peer.to_bytes());
+                        swarm.behaviour_mut().kademlia.get_record(key);
                     }
                     // WatchDir / UnwatchDir are handled by the WatcherService,
                     // not by the node task — ignore them here.
@@ -713,18 +807,28 @@ async fn on_swarm_event(
                 match kad_event {
                     Event::OutboundQueryProgressed { id, result, .. } => {
                         use kad::QueryResult;
-                        if let QueryResult::GetProviders(Ok(kad::GetProvidersOk::FoundProviders {
-                            providers,
-                            ..
-                        })) = result
-                            && let Some(key) = state.provider_queries.get(&id)
-                        {
-                            let _ = event_tx
-                                .emit(NodeEvent::ProvidersFound {
-                                    key: key.clone(),
-                                    providers: providers.into_iter().collect(),
-                                })
-                                .await;
+                        match result {
+                            QueryResult::GetProviders(Ok(
+                                kad::GetProvidersOk::FoundProviders { providers, .. },
+                            )) => {
+                                if let Some(key) = state.provider_queries.get(&id) {
+                                    let _ = event_tx
+                                        .emit(NodeEvent::ProvidersFound {
+                                            key: key.clone(),
+                                            providers: providers.into_iter().collect(),
+                                        })
+                                        .await;
+                                }
+                            }
+                            // A peer-address record resolved by `ResolvePeer`:
+                            // verify the signed envelope and add the peer's
+                            // current addresses so we can dial it by PeerId.
+                            QueryResult::GetRecord(Ok(kad::GetRecordOk::FoundRecord(
+                                kad::PeerRecord { record, .. },
+                            ))) => {
+                                add_resolved_peer_addresses(swarm, &record.value);
+                            }
+                            _ => {}
                         }
                     }
                     Event::RoutingUpdated { peer, .. } => {

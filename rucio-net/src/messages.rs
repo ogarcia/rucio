@@ -70,6 +70,16 @@ pub enum NodeCmd {
     /// request can dial it. Used by the pin reconcile for subscription peers
     /// that aren't connected yet (LAN peers are already known via mDNS).
     DiscoverPeer { peer: PeerId },
+    /// Publish our own signed peer-address record into the DHT, keyed by our
+    /// PeerId, so peers that only know our PeerId (e.g. from a `rucio-peer:`
+    /// link) can resolve our current addresses. Refreshed periodically by the
+    /// daemon so it survives IP changes — the record is the *stable identity*
+    /// pointing at *volatile addresses*, never the other way round.
+    PublishPeerRecord,
+    /// Resolve a peer's current addresses by PeerId via a DHT record lookup,
+    /// adding any found (signature-verified) addresses to the address book so a
+    /// following request can dial it.
+    ResolvePeer { peer: PeerId },
     /// All bootstrap peer addresses have been submitted via `AddBootstrapPeer`.
     /// The node task will call `Kademlia::bootstrap()` as soon as the first
     /// connection to any of those peers is established.
