@@ -47,6 +47,22 @@ rucio config unset storage.download_dir     # revert to platform default
 
 ---
 
+### `storage.pin_dir`
+
+Directory where pinned content that had to be fetched is stored and shared. Kept
+separate from `download_dir` so it's clear which files the node hosts on purpose.
+See [Pinning](10-pinning.md).
+
+```sh
+rucio config set storage.pin_dir /mnt/data/rucio-pins
+rucio config unset storage.pin_dir
+```
+
+**Default:** a `pins` directory next to the daemon's data directory (e.g.
+`~/.local/share/rucio/pins` on Linux).
+
+---
+
 ### `storage.temp_dir`
 
 Directory where incomplete downloads are stored as `.part` files while
@@ -65,22 +81,6 @@ rucio config unset storage.temp_dir
 |---|---|
 | Linux | `~/.cache/rucio/tmp` |
 | macOS | `~/Library/Caches/rucio/tmp` |
-
----
-
-### `storage.pin_dir`
-
-Directory where pinned content that had to be fetched is stored and shared. Kept
-separate from `download_dir` so it's clear which files the node hosts on purpose.
-See [Pinning](10-pinning.md).
-
-```sh
-rucio config set storage.pin_dir /mnt/data/rucio-pins
-rucio config unset storage.pin_dir
-```
-
-**Default:** a `pins` directory next to the daemon's data directory (e.g.
-`~/.local/share/rucio/pins` on Linux).
 
 ---
 

@@ -435,16 +435,16 @@ pub fn ConfigModal(
                                             on:input=move |e| f_st_dl.set(event_target_value(&e))/>
                                     </div>
                                     <div class="config-field">
-                                        <label class="config-label">"Temp directory"</label>
-                                        <input class="config-input" type="text"
-                                            prop:value=move || f_st_tmp.get()
-                                            on:input=move |e| f_st_tmp.set(event_target_value(&e))/>
-                                    </div>
-                                    <div class="config-field">
                                         <label class="config-label">"Pin directory"</label>
                                         <input class="config-input" type="text"
                                             prop:value=move || f_st_pin.get()
                                             on:input=move |e| f_st_pin.set(event_target_value(&e))/>
+                                    </div>
+                                    <div class="config-field">
+                                        <label class="config-label">"Temp directory"</label>
+                                        <input class="config-input" type="text"
+                                            prop:value=move || f_st_tmp.get()
+                                            on:input=move |e| f_st_tmp.set(event_target_value(&e))/>
                                     </div>
                                     <div class="config-field">
                                         <label class="config-label">"Database path (read-only)"</label>
