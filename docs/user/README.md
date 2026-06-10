@@ -14,3 +14,4 @@ No knowledge of distributed systems or networking required.
 | [07 — Magnet links](07-magnet-links.md) | Creating and using magnet links to share files out-of-band |
 | [08 — Notifications](08-notifications.md) | The notification centre and forwarding events to Discord, Telegram, ntfy and more |
 | [09 — Categories](09-categories.md) | Organising downloads into colour-tagged categories with their own folders |
+| [10 — Pinning](10-pinning.md) | Keeping content available on your node on purpose (fetch-and-retain) |

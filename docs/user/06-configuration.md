@@ -68,6 +68,22 @@ rucio config unset storage.temp_dir
 
 ---
 
+### `storage.pin_dir`
+
+Directory where pinned content that had to be fetched is stored and shared. Kept
+separate from `download_dir` so it's clear which files the node hosts on purpose.
+See [Pinning](10-pinning.md).
+
+```sh
+rucio config set storage.pin_dir /mnt/data/rucio-pins
+rucio config unset storage.pin_dir
+```
+
+**Default:** a `pins` directory next to the daemon's data directory (e.g.
+`~/.local/share/rucio/pins` on Linux).
+
+---
+
 ### `network.upnp`
 
 Enable or disable automatic UPnP/IGD port mapping. When enabled, the daemon
@@ -459,6 +475,7 @@ the file value untouched.
 | `RUCIOD_P2P_LISTEN` | `node.listen_addrs` | `/ip4/0.0.0.0/tcp/4321,/ip6/::/tcp/4321` | comma-separated multiaddrs |
 | `RUCIOD_DOWNLOAD_DIR` | `storage.download_dir` | platform default | path |
 | `RUCIOD_TEMP_DIR` | `storage.temp_dir` | platform default | path |
+| `RUCIOD_PIN_DIR` | `storage.pin_dir` | platform default | path |
 | `RUCIOD_DB_PATH` | `storage.database_path` | platform default | path |
 | `RUCIOD_BOOTSTRAP_PEERS` | `network.bootstrap_peers` | *(empty)* | comma-separated multiaddrs |
 | `RUCIOD_UPLOAD_LIMIT_KBPS` | `network.upload_limit_kbps` | `0` (unlimited) | integer KB/s |
