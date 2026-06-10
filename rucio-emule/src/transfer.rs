@@ -230,9 +230,19 @@ async fn write_frame(
 /// Build a HELLO / HELLOANSWER payload advertising ourselves.
 ///
 /// `tcp_port` is our listening TCP port; pass 0 if not listening (Low-ID).
-fn build_hello(our_hash: &[u8; 16], tcp_port: u16, nick: &str) -> Vec<u8> {
+///
+/// `include_hash_size` is the one structural difference between the two packets:
+/// `OP_HELLO` is prefixed with the user-hash length byte (`16`), `OP_HELLOANSWER`
+/// is not — eMule's `SendHelloPacket` writes it while `SendHelloAnswer` skips it,
+/// and the receivers (`ProcessHelloPacket` vs `ProcessHelloAnswer`) consume it
+/// accordingly. Emitting the prefix on a HELLOANSWER shifts every field by one
+/// byte, so the peer misparses the answer and abandons the transfer (it never
+/// sends the file request) — pass `false` when answering an incoming HELLO.
+fn build_hello(our_hash: &[u8; 16], tcp_port: u16, nick: &str, include_hash_size: bool) -> Vec<u8> {
     let mut p = Vec::new();
-    p.push(16u8);
+    if include_hash_size {
+        p.push(16u8);
+    }
     p.extend_from_slice(our_hash);
     p.extend_from_slice(&0u32.to_le_bytes()); // client ID = 0 (low-ID until server assigns one)
     p.extend_from_slice(&tcp_port.to_le_bytes());
@@ -608,7 +618,7 @@ impl Session {
         F: FnMut(DownloadEvent),
     {
         // ── HELLO ────────────────────────────────────────────────────────────
-        let hello_payload = build_hello(our_hash, opts.our_tcp_port, &opts.our_nick);
+        let hello_payload = build_hello(our_hash, opts.our_tcp_port, &opts.our_nick, true);
         write_frame(stream, ciphers, OP_HELLO, &hello_payload)
             .await
             .context("send HELLO")?;
@@ -1256,7 +1266,8 @@ async fn handle_incoming(mut stream: TcpStream, peer: SocketAddr, ctx: Arc<Uploa
                     .await
                     .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "hello timeout"))??;
             if opcode == OP_HELLO {
-                let answer = build_hello(&our_hash, ctx.tcp_port, &ctx.nick);
+                // HELLOANSWER carries no hash-size prefix (see build_hello).
+                let answer = build_hello(&our_hash, ctx.tcp_port, &ctx.nick, false);
                 write_frame(&mut stream, &mut ciphers, OP_HELLOANSWER, &answer).await?;
                 debug!(%peer, "eMule HELLO done; awaiting file request");
                 break;
@@ -1561,7 +1572,7 @@ mod tests {
     #[test]
     fn test_build_hello_length() {
         // No nickname → no tags: 1+16+4+2 + 4(tagcount) + 4(ip) + 2(port) = 33.
-        let h = build_hello(&[0u8; 16], 0, "");
+        let h = build_hello(&[0u8; 16], 0, "", true);
         assert_eq!(h.len(), 33);
         assert_eq!(h[0], 16u8);
     }
@@ -1570,13 +1581,27 @@ mod tests {
     fn test_build_hello_name_tag() {
         // With a nickname, one CT_NAME string tag is appended:
         //   [0x82][0x01][len u16 LE][bytes]  ("rucio" = 5 bytes → +9 bytes).
-        let h = build_hello(&[0u8; 16], 0, "rucio");
+        let h = build_hello(&[0u8; 16], 0, "rucio", true);
         assert_eq!(h.len(), 33 + 1 + 1 + 2 + 5);
         assert_eq!(&h[23..27], &1u32.to_le_bytes()); // tag count = 1
         assert_eq!(h[27], 0x02 | 0x80); // TAGTYPE_STRING, special 1-byte name
         assert_eq!(h[28], 0x01); // CT_NAME
         assert_eq!(&h[29..31], &5u16.to_le_bytes()); // string length
         assert_eq!(&h[31..36], b"rucio");
+    }
+
+    #[test]
+    fn hello_answer_omits_hash_size_prefix() {
+        // OP_HELLOANSWER must NOT carry the leading hash-size byte that OP_HELLO
+        // does; including it shifts every field by one and the peer abandons the
+        // upload without ever sending a file request.
+        let hash = [0xabu8; 16];
+        let hello = build_hello(&hash, 4662, "", true);
+        let answer = build_hello(&hash, 4662, "", false);
+        assert_eq!(hello.len(), answer.len() + 1);
+        assert_eq!(hello[0], 16u8); // HELLO keeps the size prefix
+        assert_eq!(&answer[..16], &hash); // ANSWER starts at the user hash
+        assert_eq!(&hello[1..], &answer[..]); // identical bodies otherwise
     }
 
     #[test]
@@ -1675,7 +1700,7 @@ mod tests {
             send: Some(send),
             recv: Some(recv),
         };
-        let hello = build_hello(&[0x11u8; 16], 4662, "tester");
+        let hello = build_hello(&[0x11u8; 16], 4662, "tester", true);
         write_frame(&mut stream, &mut ciphers, OP_HELLO, &hello)
             .await
             .unwrap();
@@ -1708,7 +1733,7 @@ mod tests {
 
         let mut stream = TcpStream::connect(addr).await.unwrap();
         let mut ciphers = ObfCiphers::default();
-        let hello = build_hello(&[0u8; 16], 4662, "");
+        let hello = build_hello(&[0u8; 16], 4662, "", true);
         write_frame(&mut stream, &mut ciphers, OP_HELLO, &hello)
             .await
             .unwrap();
