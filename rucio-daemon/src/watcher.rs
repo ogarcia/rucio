@@ -91,22 +91,11 @@ pub fn spawn(
     indexing_count: Arc<AtomicUsize>,
     excluded: Arc<Vec<PathBuf>>,
     ed2k_tx: Option<mpsc::Sender<PathBuf>>,
-    indexing_seen: Arc<AtomicBool>,
 ) -> (WatcherHandle, tokio::task::JoinHandle<()>) {
     let (cmd_tx, cmd_rx) = mpsc::channel::<WatcherCmd>(64);
 
     let task = tokio::spawn(async move {
-        if let Err(e) = run(
-            db,
-            node_tx,
-            cmd_rx,
-            indexing_count,
-            excluded,
-            ed2k_tx,
-            indexing_seen,
-        )
-        .await
-        {
+        if let Err(e) = run(db, node_tx, cmd_rx, indexing_count, excluded, ed2k_tx).await {
             warn!("WatcherService exited with error: {e}");
         }
     });
@@ -118,7 +107,6 @@ pub fn spawn(
 // Internal service loop
 // ---------------------------------------------------------------------------
 
-#[allow(clippy::too_many_arguments)]
 async fn run(
     db: Db,
     node_tx: mpsc::Sender<NodeCmd>,
@@ -126,7 +114,6 @@ async fn run(
     indexing_count: Arc<AtomicUsize>,
     excluded: Arc<Vec<PathBuf>>,
     ed2k_tx: Option<mpsc::Sender<PathBuf>>,
-    indexing_seen: Arc<AtomicBool>,
 ) -> Result<()> {
     // Bridge: notify (sync) → tokio (async)
     let (ev_tx, mut ev_rx) = mpsc::channel::<notify::Result<Event>>(256);
@@ -197,7 +184,6 @@ async fn run(
                     &node_tx,
                     &indexing_count,
                     ed2k_tx.as_ref(),
-                    &indexing_seen,
                 ).await;
             }
         }
@@ -347,7 +333,6 @@ async fn flush_pending(
     node_tx: &mpsc::Sender<NodeCmd>,
     indexing_count: &AtomicUsize,
     ed2k_tx: Option<&mpsc::Sender<PathBuf>>,
-    indexing_seen: &AtomicBool,
 ) {
     let now = Instant::now();
     let ready: Vec<PathBuf> = pending
@@ -362,10 +347,15 @@ async fn flush_pending(
     // Only existing files get indexed; surface that count to the indexing
     // status endpoint (and WS), decrementing as each one completes — so the
     // CLI/web report watcher-driven indexing, not just manual `share add`.
+    //
+    // We deliberately do NOT latch `indexing_seen` here: incremental
+    // watcher-driven indexing (a completed download landing in download_dir, a
+    // file dropped into a shared folder) shouldn't fire the "indexing complete"
+    // notification. That notification is reserved for indexing the user
+    // actually asked for — `share add` and the startup/periodic rescan — so a
+    // finished download doesn't surprise them with a second notification right
+    // after "download complete". The live count above still reflects the work.
     let to_index: Vec<&PathBuf> = ready.iter().filter(|p| p.is_file()).collect();
-    if !to_index.is_empty() {
-        indexing_seen.store(true, Ordering::Relaxed);
-    }
     indexing_count.fetch_add(to_index.len(), Ordering::Relaxed);
     for path in to_index {
         on_file_upsert(path, db, node_tx, ed2k_tx).await;

@@ -357,7 +357,6 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         Arc::clone(&indexing_count),
         Arc::clone(&excluded_index_dirs),
         ed2k_index_tx.clone(),
-        Arc::clone(&indexing_seen),
     );
 
     // Register all known shared dirs with the watcher (including download_dir
