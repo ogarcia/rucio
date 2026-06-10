@@ -1393,7 +1393,8 @@ impl DownloadEngine {
                     //   1. an explicit category the user assigned (its dir, or the
                     //      global dir if the category pins none) — user intent wins,
                     //      even when the download is also pinned;
-                    //   2. otherwise, if pinned, the dedicated pin_dir;
+                    //   2. otherwise, if pinned manually or mirrored for a
+                    //      subscription, the dedicated pin_dir;
                     //   3. otherwise the global download_dir.
                     // Pinning keeps content shared/re-provided wherever it lives, so
                     // honouring the category doesn't weaken the pin. Resolved now,
@@ -1407,6 +1408,9 @@ impl DownloadEngine {
                     } else if db::pins::exists(&self.db, &root_hash)
                         .await
                         .unwrap_or(false)
+                        || db::mirror_pins::is_wanted(&self.db, &root_hash)
+                            .await
+                            .unwrap_or(false)
                     {
                         self.pin_dir.clone()
                     } else {

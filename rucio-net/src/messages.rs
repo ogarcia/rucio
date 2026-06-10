@@ -66,6 +66,10 @@ pub enum NodeCmd {
         channel_id: u64,
         response: PinsetResponse,
     },
+    /// Best-effort discovery of a peer's addresses via the DHT, so a later
+    /// request can dial it. Used by the pin reconcile for subscription peers
+    /// that aren't connected yet (LAN peers are already known via mDNS).
+    DiscoverPeer { peer: PeerId },
     /// All bootstrap peer addresses have been submitted via `AddBootstrapPeer`.
     /// The node task will call `Kademlia::bootstrap()` as soon as the first
     /// connection to any of those peers is established.

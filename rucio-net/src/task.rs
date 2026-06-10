@@ -438,6 +438,13 @@ async fn run_loop(
                             warn!(%channel_id, "RespondPinset: unknown channel id");
                         }
                     }
+                    Some(NodeCmd::DiscoverPeer { peer }) => {
+                        // Kick a closest-peers lookup; it populates the routing
+                        // table with the peer's addresses as a side effect, so a
+                        // following `send_request` can dial it. We don't track the
+                        // query — the address book is the only thing we need.
+                        let _ = swarm.behaviour_mut().kademlia.get_closest_peers(peer);
+                    }
                     // WatchDir / UnwatchDir are handled by the WatcherService,
                     // not by the node task — ignore them here.
                     Some(NodeCmd::WatchDir(_)) | Some(NodeCmd::UnwatchDir(_)) => {}

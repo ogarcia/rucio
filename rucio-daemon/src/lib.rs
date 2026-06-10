@@ -748,6 +748,13 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
     let mut metrics_tick = tokio::time::interval(tokio::time::Duration::from_secs(1));
     // Persist metric deltas to DB every 30 seconds.
     let mut metrics_flush_tick = tokio::time::interval(tokio::time::Duration::from_secs(30));
+    // Cooperative pinning: poll subscribed peers' pin-sets and mirror them
+    // within quota. First pass shortly after startup (let the network settle),
+    // then every few minutes.
+    let mut pinset_reconcile_tick = tokio::time::interval_at(
+        tokio::time::Instant::now() + tokio::time::Duration::from_secs(20),
+        tokio::time::Duration::from_secs(3 * 60),
+    );
     // Per-download download-speed sampler state: id → (rolling window, last bytes_done).
     let mut speed_samples: std::collections::HashMap<i64, (metrics::SpeedWindow, u64)> =
         std::collections::HashMap::new();
@@ -851,6 +858,9 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                 if let Err(e) = db::metrics::add(&db, &delta).await {
                     warn!("Could not flush metrics to DB: {e}");
                 }
+            }
+            _ = pinset_reconcile_tick.tick() => {
+                crate::pinset::request_all_pinsets(&db, &handle.cmd_tx).await;
             }
             _ = manifest_tick.tick() => {
                 engine.tick_manifest_timeouts().await;
@@ -1231,6 +1241,30 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                     }
                     Some(node::messages::NodeEvent::PinsetRequested { channel_id, .. }) => {
                         crate::pinset::serve_pinset(&db, &handle.cmd_tx, channel_id);
+                    }
+                    Some(node::messages::NodeEvent::PinsetReceived { peer, response, .. }) => {
+                        let fetches =
+                            crate::pinset::on_pinset_received(&db, peer, response, now_secs())
+                                .await;
+                        for item in fetches {
+                            // Land in pin_dir (the mirror_pins routing in
+                            // transfer.rs), with the subscription peer as a
+                            // starting provider; the DHT supplies the rest.
+                            let magnet = format!(
+                                "rucio:{}?name={}",
+                                hex::encode(item.root_hash),
+                                urlencoding::encode(&item.name)
+                            );
+                            match engine.start(&magnet, vec![peer], now_secs(), None).await {
+                                Ok(()) => info!(
+                                    hash = %hex::encode(item.root_hash),
+                                    "Mirror fetch started"
+                                ),
+                                // Already active/completed, etc. — not an error
+                                // worth surfacing; the next reconcile re-evaluates.
+                                Err(e) => debug!("Mirror fetch not started: {e}"),
+                            }
+                        }
                     }
                     Some(node::messages::NodeEvent::FatalError(e)) => {
                         tracing::error!("Node fatal error: {e}");
