@@ -63,12 +63,6 @@ fn resolve_pin_input(input: &str) -> String {
     }
 }
 
-fn confirm(message: &str) -> bool {
-    web_sys::window()
-        .and_then(|w| w.confirm_with_message(message).ok())
-        .unwrap_or(false)
-}
-
 // ── Component ─────────────────────────────────────────────────────────────────
 
 #[component]
@@ -149,17 +143,17 @@ pub fn PinsTab(
                                             class="icon-btn icon-btn-danger"
                                             title="Unpin (content stays on disk)"
                                             on:click=move |_| {
+                                                // Unpinning is reversible and non-destructive
+                                                // (the file stays on disk and shared), so no
+                                                // confirmation — consistent with the Shares
+                                                // list's Unpin toggle.
                                                 let h = hash_rm.clone();
-                                                if confirm(
-                                                    "Unpin this item?\n\nThe content stays on disk; this only stops keeping it on purpose.",
-                                                ) {
-                                                    spawn_local(async move {
-                                                        api_remove_pin(&h).await;
-                                                        if let Some(p) = api_list_pins().await {
-                                                            pins.set(p);
-                                                        }
-                                                    });
-                                                }
+                                                spawn_local(async move {
+                                                    api_remove_pin(&h).await;
+                                                    if let Some(p) = api_list_pins().await {
+                                                        pins.set(p);
+                                                    }
+                                                });
                                             }
                                         >
                                             <Icon paths=icons::TRASH/>
