@@ -1,5 +1,6 @@
-//! `rucio share list`, `rucio share add <path>`, `rucio share remove <hash|path>`,
-//! `rucio share magnet <target>`, `rucio share indexing`
+//! `rucio share list`, `rucio share dirs`, `rucio share add <path>`,
+//! `rucio share remove <#|path>`, `rucio share magnet <target>`,
+//! `rucio share indexing`
 
 use anyhow::{Result, bail};
 use futures_util::StreamExt as _;
@@ -198,7 +199,7 @@ pub async fn add(client: &ApiClient, path: &str) -> Result<()> {
     Ok(())
 }
 
-/// Remove by hash (single file) or by path (file or directory tree).
+/// Stop sharing a directory, given its `share dirs` number or its path.
 pub async fn remove(client: &ApiClient, target: &str) -> Result<()> {
     let target = target.trim();
 
