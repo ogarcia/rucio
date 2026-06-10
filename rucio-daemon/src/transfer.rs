@@ -13,7 +13,8 @@
 //!
 //! 3. `on_manifest_received()` — populates the chunk list, pre-allocates the
 //!    destination file, and starts dispatching chunk requests across all known
-//!    providers (round-robin, `SLOTS_PER_PEER` in-flight per peer).
+//!    providers (round-robin, up to an adaptive per-peer in-flight cap that
+//!    starts at `SLOTS_PER_PEER` and backs off on timeouts — see [`PeerState`]).
 //!
 //! 4. `on_chunk_received()` — verifies BLAKE3, writes to disk, marks done in
 //!    DB, dispatches more requests.  On hash mismatch the chunk is re-queued
@@ -50,15 +51,29 @@ use crate::upload_scheduler::UploadScheduler;
 // Tuning
 // ---------------------------------------------------------------------------
 
-/// Maximum simultaneous chunk requests **per provider peer**.
+/// Maximum simultaneous chunk requests **per provider peer** — the ceiling the
+/// adaptive per-peer concurrency starts at and can recover up to.
 const SLOTS_PER_PEER: usize = 4;
+
+/// Floor for the adaptive per-peer concurrency. At one in-flight chunk the peer
+/// gets the whole available rate, so a chunk completes in `chunk / rate` — the
+/// shortest possible time, which is what lets a slow link finish within the
+/// request timeout instead of having its concurrent chunks all miss the
+/// deadline together.
+const MIN_SLOTS_PER_PEER: usize = 1;
+
+/// Verified chunks in a row before a backed-off peer recovers one slot. Slow
+/// enough not to thrash a persistently-slow peer (which would keep over-probing
+/// and timing out), but it lets a transiently-slow one ramp back up.
+const SLOT_RECOVER_STREAK: u32 = 8;
 
 /// How long to wait for a manifest response before trying another peer.
 const MANIFEST_TIMEOUT_SECS: u64 = 10;
 
-/// Consecutive network-level failures after which a provider is evicted from a
-/// download. Transient blips just retry; a peer that keeps timing out is likely
-/// gone, so we stop letting it occupy a slot.
+/// Consecutive network-level failures **at the concurrency floor** after which a
+/// provider is evicted. A peer still failing when we only ask it for one chunk
+/// at a time is genuinely gone/unusable; before the floor we back off its
+/// concurrency instead of evicting (it's probably just slow, not dead).
 const MAX_PEER_FAILURES: u32 = 3;
 
 /// Number of fruitless DHT re-queries after which a download is reported as
@@ -153,13 +168,19 @@ struct PendingManifest {
 }
 
 /// Per-peer slot tracking for an active download.
-#[derive(Default)]
 struct PeerState {
     /// chunk_idx values currently in-flight to this peer.
     in_flight: HashSet<u32>,
     /// Network-level failures in a row (no successful chunk in between).
     /// Reset to 0 on any verified chunk; drives provider eviction.
     consecutive_failures: u32,
+    /// Adaptive concurrency cap for this peer: how many chunks we'll keep
+    /// in-flight at once. Starts at [`SLOTS_PER_PEER`], halved on a timeout
+    /// (down to [`MIN_SLOTS_PER_PEER`]) so a slow peer's chunks complete one at
+    /// a time within the request deadline, and slowly recovered on success.
+    max_slots: usize,
+    /// Verified chunks since the last concurrency change, for slow recovery.
+    ok_streak: u32,
     /// Cumulative bytes received from this peer for the current download.
     bytes_downloaded: u64,
     /// Per-peer rate sampler state, advanced by `publish_live_stats`.
@@ -173,9 +194,26 @@ struct PeerState {
     addr_resolved: bool,
 }
 
+impl Default for PeerState {
+    fn default() -> Self {
+        Self {
+            in_flight: HashSet::new(),
+            consecutive_failures: 0,
+            max_slots: SLOTS_PER_PEER,
+            ok_streak: 0,
+            bytes_downloaded: 0,
+            last_sample_bytes: 0,
+            last_sample_at: None,
+            rate_bps: 0,
+            address: None,
+            addr_resolved: false,
+        }
+    }
+}
+
 impl PeerState {
     fn slots_free(&self) -> usize {
-        SLOTS_PER_PEER.saturating_sub(self.in_flight.len())
+        self.max_slots.saturating_sub(self.in_flight.len())
     }
 }
 
@@ -1339,9 +1377,17 @@ impl DownloadEngine {
 
                 // A good chunk clears this peer's failure streak and adds to its
                 // per-peer byte tally (drives the per-peer rate in live stats).
+                // After a sustained good run, recover one of the concurrency
+                // slots we backed off on a timeout, so a peer that was only
+                // transiently slow ramps back up.
                 if let Some(ps) = dl.peer_state.get_mut(&peer) {
                     ps.consecutive_failures = 0;
                     ps.bytes_downloaded += chunk_bytes;
+                    ps.ok_streak += 1;
+                    if ps.max_slots < SLOTS_PER_PEER && ps.ok_streak >= SLOT_RECOVER_STREAK {
+                        ps.max_slots += 1;
+                        ps.ok_streak = 0;
+                    }
                 }
 
                 dl.done.insert(chunk_idx);
@@ -1542,10 +1588,24 @@ impl DownloadEngine {
         dl.in_flight.remove(&chunk_idx);
 
         let mut evict = false;
+        let mut backed_off_to = None;
         if let Some(ps) = dl.peer_state.get_mut(&peer) {
             ps.in_flight.remove(&chunk_idx);
-            ps.consecutive_failures += 1;
-            evict = ps.consecutive_failures >= MAX_PEER_FAILURES;
+            ps.ok_streak = 0;
+            if ps.max_slots > MIN_SLOTS_PER_PEER {
+                // Likely over-pipelined for this peer's speed (its concurrent
+                // chunks share the link and all miss the deadline together).
+                // Back off concurrency and give it a clean slate instead of
+                // evicting — it's probably just slow, not gone.
+                ps.max_slots = (ps.max_slots / 2).max(MIN_SLOTS_PER_PEER);
+                ps.consecutive_failures = 0;
+                backed_off_to = Some(ps.max_slots);
+            } else {
+                // Already down to one in-flight chunk and still failing → the
+                // peer is genuinely unusable.
+                ps.consecutive_failures += 1;
+                evict = ps.consecutive_failures >= MAX_PEER_FAILURES;
+            }
         }
 
         if evict {
@@ -1555,8 +1615,10 @@ impl DownloadEngine {
                 %peer,
                 chunk_idx,
                 remaining_providers = dl.providers.len(),
-                "Provider evicted after repeated chunk failures — re-queuing chunk"
+                "Provider evicted after repeated chunk failures at the concurrency floor — re-queuing chunk"
             );
+        } else if let Some(slots) = backed_off_to {
+            warn!(%peer, chunk_idx, slots, "Chunk request timed out — backing off this peer's concurrency and retrying");
         } else {
             warn!(%peer, chunk_idx, "Chunk request failed — re-queuing for another provider");
         }
@@ -2631,16 +2693,18 @@ mod tests {
             )
             .await;
 
-        // chunk 0 is now in-flight to the only provider. Fail it
-        // MAX_PEER_FAILURES times; each failure re-dispatches to the same peer
-        // (so its failure streak grows) until it is finally evicted.
-        for _ in 0..MAX_PEER_FAILURES {
+        // chunk 0 is now in-flight to the only provider. Keep failing it: each
+        // failure first backs the peer's concurrency down (4→2→1) and, once at
+        // the floor, grows its failure streak — re-dispatching to the same peer
+        // each time — until it is finally evicted. Loop until the chunk is no
+        // longer in-flight (evicted, with no provider left to re-dispatch to).
+        loop {
             let req_id = {
                 let dl = engine.active.get(&hash).unwrap();
-                *dl.inflight_map
-                    .keys()
-                    .next()
-                    .expect("chunk should be in-flight before each failure")
+                match dl.inflight_map.keys().next() {
+                    Some(&id) => id,
+                    None => break,
+                }
             };
             engine.on_chunk_request_failed(req_id, p).await;
         }
@@ -2659,6 +2723,72 @@ mod tests {
         );
         assert!(dl.in_flight.is_empty(), "slot must be freed");
         assert!(!dl.done.contains(&0), "chunk must not be marked done");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn timeouts_back_off_per_peer_concurrency_before_evicting() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut engine, rx, _db_dir) = make_engine(&tmp).await;
+        let hash = [0x3au8; 32];
+        let chunk_hash = *blake3::hash(b"slowpeerdata").as_bytes();
+        let magnet = fake_magnet(&hash, "slow.bin", 12);
+        let p = peer(1);
+        let (acker_handle, stop_tx) = spawn_acker(rx);
+
+        engine.start(&magnet, vec![p], 0, None).await.unwrap();
+        engine
+            .on_manifest_received(
+                fake_request_id(1),
+                p,
+                ManifestResponse::Ok {
+                    root_hash: hash,
+                    name: "slow.bin".to_string(),
+                    total_size: 12,
+                    chunk_size: 12,
+                    chunks: vec![ChunkInfo {
+                        idx: 0,
+                        hash: chunk_hash,
+                        size: 12,
+                    }],
+                },
+                0,
+            )
+            .await;
+
+        // Snapshot (max_slots, consecutive_failures) for the only provider.
+        let state = |e: &DownloadEngine| {
+            let dl = e.active.get(&hash).unwrap();
+            dl.peer_state
+                .get(&p)
+                .map(|ps| (ps.max_slots, ps.consecutive_failures))
+        };
+        // Fail whatever chunk is in-flight to `p` right now.
+        async fn fail_once(e: &mut DownloadEngine, hash: &[u8; 32], p: PeerId) {
+            let req_id = {
+                let dl = e.active.get(hash).unwrap();
+                *dl.inflight_map
+                    .keys()
+                    .next()
+                    .expect("a chunk should be in-flight before each failure")
+            };
+            e.on_chunk_request_failed(req_id, p).await;
+        }
+
+        assert_eq!(state(&engine), Some((SLOTS_PER_PEER, 0)));
+        // Each timeout halves concurrency (4→2→1) without counting toward
+        // eviction — the peer is slow, not gone.
+        fail_once(&mut engine, &hash, p).await;
+        assert_eq!(state(&engine), Some((2, 0)));
+        fail_once(&mut engine, &hash, p).await;
+        assert_eq!(state(&engine), Some((1, 0)));
+        // At the floor, further timeouts grow the failure streak instead.
+        fail_once(&mut engine, &hash, p).await;
+        assert_eq!(state(&engine), Some((1, 1)));
+        // Still a provider (not yet at MAX_PEER_FAILURES).
+        assert!(engine.active.get(&hash).unwrap().providers.contains(&p));
+
+        let _ = stop_tx.send(());
+        let _ = acker_handle.await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

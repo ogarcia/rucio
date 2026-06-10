@@ -227,22 +227,20 @@ impl RucioBehaviour {
         let transfer = cfg.transfer.then(|| {
             request_response::Behaviour::new(
                 vec![(TransferProtocol, request_response::ProtocolSupport::Full)],
-                // A chunk is up to 4 MiB and the timeout covers the whole
-                // round-trip, including transferring that 4 MiB response. The
-                // budget has to survive the worst realistic case: a
-                // bandwidth-limited uploader whose cap is also shared with eMule,
-                // serving `SLOTS_PER_PEER` chunks at once. Because the upload
-                // throttle round-robins its tokens across all in-flight chunks,
-                // those concurrent requests all finish together near the end of
-                // the batch (≈ total_bytes / effective_rate), not one by one —
-                // so the per-request time scales with concurrency. At 60 s this
-                // sat right on the boundary for a ~500 KB/s cap and timed out;
-                // once a request times out the requester retries while our
-                // serve task keeps draining the cap for a response nobody waits
-                // for, so it never converges. 180 s gives ample margin (covers
-                // ~16 MiB down to ~90 KB/s effective) and breaks that spiral.
+                // Per-request budget for a chunk transfer (up to 4 MiB). The
+                // downloader caps how many chunks it keeps in-flight to one peer
+                // adaptively (see `transfer.rs` PeerState): it backs off to a
+                // single in-flight chunk when a peer times out, so a slow peer's
+                // chunk gets the whole link and completes in chunk/rate — the
+                // shortest possible time. This timeout therefore only needs to
+                // cover ONE 4 MiB chunk on a slow link (not several at once),
+                // and it doubles as the signal that triggers the back-off, so it
+                // shouldn't be huge or convergence drags (each back-off step
+                // waits one timeout). 120 s covers a 4 MiB chunk down to
+                // ~34 KB/s. A dropped connection fails its requests immediately,
+                // independent of this timeout.
                 request_response::Config::default()
-                    .with_request_timeout(std::time::Duration::from_secs(180)),
+                    .with_request_timeout(std::time::Duration::from_secs(120)),
             )
         });
 
