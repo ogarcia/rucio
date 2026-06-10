@@ -77,10 +77,17 @@ rucio pin remove 7b4a…<64 hex>     # unpin (full root hash)
 
 The **Pins** tab mirrors the CLI:
 
-- **Pin a magnet** opens a dialog to paste a `rucio:` magnet.
+- **Pin content** opens a dialog that accepts a `rucio:` magnet **or** a
+  64-character root hash. Content you already have is just marked as kept;
+  content you don't is fetched from the network first.
 - Each pin shows its name, size and a coloured **state** pill
   (available / fetching / missing).
 - **Unpin** removes the pin from the row.
+
+To pin something you already have, the quickest path is the **Shares** tab:
+each shared file has a **Pin** button next to its **Magnet** button. One click
+keeps that file on purpose and publishes it in your pin-set (for subscribers),
+without moving or re-fetching it.
 
 ## Unpinning
 

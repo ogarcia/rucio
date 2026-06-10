@@ -81,6 +81,16 @@ async fn api_remove_dir(path: &str) {
     let _ = gloo_net::http::Request::delete(&url).send().await;
 }
 
+/// Pin a shared file by its magnet (records the pin intent). Since the file is
+/// already present, this never re-fetches — it just marks it as deliberately
+/// kept, which also publishes it in this node's pin-set for subscribers.
+async fn api_pin_magnet(magnet: String) {
+    let body = serde_json::json!({ "magnet": magnet });
+    if let Ok(req) = gloo_net::http::Request::post("/api/v1/pins").json(&body) {
+        let _ = req.send().await;
+    }
+}
+
 /// Minimal percent-encoding for the `path` query value (spaces and reserved
 /// chars). `js_sys`'s `encodeURIComponent` keeps it dependency-free.
 fn urlencoding_encode(s: &str) -> String {
@@ -140,6 +150,8 @@ pub fn SharesTab(
     let selected_dir: RwSignal<Option<String>> = RwSignal::new(None);
     // root_hash of the file whose magnet was just copied (for the "Copied!" hint).
     let copied: RwSignal<Option<String>> = RwSignal::new(None);
+    // root_hash of the file just pinned (for the transient "Pinned!" hint).
+    let pinned: RwSignal<Option<String>> = RwSignal::new(None);
     // Bumped on every load; a response is applied only if its generation is
     // still current, so a reset (new filter/dir) discards an in-flight page.
     let load_gen: RwSignal<u32> = RwSignal::new(0);
@@ -229,6 +241,7 @@ pub fn SharesTab(
     let alive_cleanup = alive.clone();
     on_cleanup(move || alive_cleanup.store(false, Ordering::Relaxed));
 
+    let alive_pin = alive.clone();
     let on_copy = Callback::new(move |(hash, magnet): (String, String)| {
         copy_to_clipboard(&magnet);
         copied.set(Some(hash));
@@ -237,6 +250,18 @@ pub fn SharesTab(
             sleep(Duration::from_millis(1400)).await;
             if alive.load(Ordering::Relaxed) {
                 copied.set(None);
+            }
+        });
+    });
+
+    let on_pin = Callback::new(move |(hash, magnet): (String, String)| {
+        pinned.set(Some(hash));
+        let alive = alive_pin.clone();
+        spawn_local(async move {
+            api_pin_magnet(magnet).await;
+            sleep(Duration::from_millis(1400)).await;
+            if alive.load(Ordering::Relaxed) {
+                pinned.set(None);
             }
         });
     });
@@ -392,11 +417,17 @@ pub fn SharesTab(
                             each=move || files.get()
                             key=|f| f.root_hash.clone()
                             children=move |f| {
-                                let hash = f.root_hash.clone();
-                                let magnet = f.magnet.clone();
+                                let hash_copy = f.root_hash.clone();
+                                let magnet_copy = f.magnet.clone();
+                                let hash_pin = f.root_hash.clone();
+                                let magnet_pin = f.magnet.clone();
                                 let is_copied = {
-                                    let hash = hash.clone();
+                                    let hash = f.root_hash.clone();
                                     move || copied.get().as_deref() == Some(hash.as_str())
+                                };
+                                let is_pinned = {
+                                    let hash = f.root_hash.clone();
+                                    move || pinned.get().as_deref() == Some(hash.as_str())
                                 };
                                 view! {
                                     <li class="share-file-row">
@@ -404,8 +435,16 @@ pub fn SharesTab(
                                         <span class="share-file-size">{format_size(f.size)}</span>
                                         <button
                                             class="btn-sm share-copy-btn"
+                                            title="Pin this file (keep it available on purpose; publishes it in your pin-set)"
+                                            on:click=move |_| on_pin.run((hash_pin.clone(), magnet_pin.clone()))
+                                        >
+                                            <Icon paths=icons::PIN/>
+                                            {move || if is_pinned() { "Pinned!" } else { "Pin" }}
+                                        </button>
+                                        <button
+                                            class="btn-sm share-copy-btn"
                                             title="Copy magnet link"
-                                            on:click=move |_| on_copy.run((hash.clone(), magnet.clone()))
+                                            on:click=move |_| on_copy.run((hash_copy.clone(), magnet_copy.clone()))
                                         >
                                             <Icon paths=icons::COPY/>
                                             {move || if is_copied() { "Copied!" } else { "Magnet" }}

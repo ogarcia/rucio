@@ -49,6 +49,20 @@ async fn api_remove_pin(hash: &str) {
     let _ = gloo_net::http::Request::delete(&url).send().await;
 }
 
+/// Normalise a pin input into a `rucio:` magnet: a magnet is used as-is; a bare
+/// 64-character hex root hash becomes `rucio:<hash>`. Anything else is returned
+/// untouched and left for the daemon to reject.
+fn resolve_pin_input(input: &str) -> String {
+    let t = input.trim();
+    if t.starts_with("rucio:") {
+        t.to_string()
+    } else if t.len() == 64 && t.bytes().all(|b| b.is_ascii_hexdigit()) {
+        format!("rucio:{}", t.to_lowercase())
+    } else {
+        t.to_string()
+    }
+}
+
 fn confirm(message: &str) -> bool {
     web_sys::window()
         .and_then(|w| w.confirm_with_message(message).ok())
@@ -82,11 +96,11 @@ pub fn PinsTab(
                 <div class="dl-toolbar">
                     <button
                         class="toolbar-btn"
-                        title="Pin a magnet (fetched if missing, then kept available)"
+                        title="Pin content by magnet or root hash (fetched if missing, then kept available)"
                         on:click=move |_| add_open.set(true)
                     >
                         <Icon paths=icons::PIN/>
-                        <span class="btn-label">"Pin a magnet"</span>
+                        <span class="btn-label">"Pin content"</span>
                     </button>
                 </div>
             </div>
@@ -193,10 +207,11 @@ fn AddPinModal(
     let error: RwSignal<Option<String>> = RwSignal::new(None);
 
     let submit = move || {
-        let m = magnet.get().trim().to_string();
-        if m.is_empty() {
+        let raw = magnet.get();
+        if raw.trim().is_empty() {
             return;
         }
+        let m = resolve_pin_input(&raw);
         busy.set(true);
         error.set(None);
         spawn_local(async move {
@@ -217,20 +232,21 @@ fn AddPinModal(
         <div class="modal-backdrop" on:click=move |_| on_close()>
             <div class="modal" on:click=move |e| e.stop_propagation()>
                 <div class="modal-header">
-                    <span class="modal-title">"Pin a magnet"</span>
+                    <span class="modal-title">"Pin content"</span>
                     <button class="overlay-close" on:click=move |_| on_close()>
                         <Icon paths=icons::X/>
                     </button>
                 </div>
                 <div class="modal-body">
                     <p class="modal-hint">
-                        "Paste a rucio: magnet. If you don't already have the content it is
-                         fetched and then kept available (re-provided) on this node."
+                        "Paste a rucio: magnet or a 64-character root hash. If you already have
+                         the content it's simply marked as kept; if not, it's fetched from the
+                         network and then kept available (re-provided) on this node."
                     </p>
                     <input
                         class="search-input"
                         type="text"
-                        placeholder="rucio:<hash>?name=…&size=…"
+                        placeholder="rucio:<hash>?name=… — or a 64-char hash"
                         prop:value=move || magnet.get()
                         on:input=move |e| magnet.set(event_target_value(&e))
                         on:keydown=move |e| { if e.key() == "Enter" { submit(); } }
