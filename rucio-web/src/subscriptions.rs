@@ -148,7 +148,8 @@ pub fn SubscriptionsTab(
                             key=|s| s.peer_id.clone()
                             children=move |s| {
                                 let peer_rm = s.peer_id.clone();
-                                let peer_short: String = s.peer_id.chars().take(20).collect();
+                                let peer_full = s.peer_id.clone();
+                                let peer_title = s.peer_id.clone();
                                 let pct = if s.quota_bytes > 0 {
                                     (s.used_bytes as f64 / s.quota_bytes as f64 * 100.0)
                                         .clamp(0.0, 100.0)
@@ -177,7 +178,7 @@ pub fn SubscriptionsTab(
                                     <li class="share-dir-row">
                                         <span class="share-dir-icon"><Icon paths=icons::NETWORK/></span>
                                         <div class="share-dir-main">
-                                            <span class="share-dir-path">{peer_short}"…"</span>
+                                            <span class="share-dir-path" title=peer_title>{peer_full}</span>
                                             <div class="dl-bar-track sub-meter">
                                                 <div
                                                     class="dl-bar-fill"
