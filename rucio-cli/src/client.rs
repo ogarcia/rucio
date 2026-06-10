@@ -24,7 +24,7 @@ use rucio_core::api::{
     searches::{
         SearchDetailResponse, SearchListResponse, SearchStartedResponse, StartSearchRequest,
     },
-    shares::{AddShareRequest, AddShareResponse, SharesResponse},
+    shares::{AddShareRequest, AddShareResponse, ShareResponse, SharesResponse},
     status::{PeersResponse, StatusResponse},
     uploads::UploadsResponse,
 };
@@ -155,9 +155,38 @@ impl ApiClient {
     // Shares
     // -----------------------------------------------------------------------
 
-    pub async fn list_shares(&self) -> Result<SharesResponse> {
-        // The shared *files*; GET /api/v1/shares now lists watched directories.
-        self.get("/api/v1/shares/files").await
+    /// One page of shared files. `GET /api/v1/shares/files` is paginated
+    /// (`GET /api/v1/shares` lists the watched directories instead).
+    pub async fn list_shares_page(
+        &self,
+        q: Option<&str>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<SharesResponse> {
+        let mut path = format!("/api/v1/shares/files?limit={limit}&offset={offset}");
+        if let Some(q) = q.filter(|s| !s.is_empty()) {
+            path.push_str(&format!("&q={}", urlencoding::encode(q)));
+        }
+        self.get(&path).await
+    }
+
+    /// Every shared file matching `q` (server-side, case-insensitive substring),
+    /// paging through `list_shares_page` so the result is complete regardless of
+    /// library size — the listing endpoint caps a single page at 1000 rows.
+    pub async fn list_all_shares(&self, q: Option<&str>) -> Result<Vec<ShareResponse>> {
+        const PAGE: i64 = 1000;
+        let mut out = Vec::new();
+        let mut offset = 0i64;
+        loop {
+            let resp = self.list_shares_page(q, PAGE, offset).await?;
+            let got = resp.shares.len();
+            out.extend(resp.shares);
+            if (got as i64) < PAGE || out.len() as u64 >= resp.total {
+                break;
+            }
+            offset += PAGE;
+        }
+        Ok(out)
     }
 
     pub async fn add_share(&self, path: &str) -> Result<AddShareResponse> {

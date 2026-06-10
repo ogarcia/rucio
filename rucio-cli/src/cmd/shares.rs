@@ -17,18 +17,10 @@ const HIDE_CURSOR: &str = "\x1b[?25l";
 const SHOW_CURSOR: &str = "\x1b[?25h";
 
 pub async fn list(client: &ApiClient, filter: Option<&str>) -> Result<()> {
-    let resp = client.list_shares().await?;
-
-    let shares: Vec<ShareResponse> = match filter {
-        Some(f) => {
-            let f = f.to_lowercase();
-            resp.shares
-                .into_iter()
-                .filter(|s| s.name.to_lowercase().contains(&f))
-                .collect()
-        }
-        None => resp.shares,
-    };
+    // Server-side filter + full pagination: the listing endpoint pages at 1000
+    // rows, so a plain call would silently show only the first page and filter
+    // just that page. Fetch every matching file instead.
+    let shares = client.list_all_shares(filter).await?;
 
     if shares.is_empty() {
         if filter.is_some() {
@@ -83,6 +75,11 @@ pub async fn list(client: &ApiClient, filter: Option<&str>) -> Result<()> {
     fit_column(&mut table, 2, max_name, tw);
     fit_column(&mut table, 5, max_path, tw);
     println!("{table}");
+    let n = shares.len();
+    match filter {
+        Some(f) => println!("{n} file(s) matching '{f}'"),
+        None => println!("{n} file(s) shared"),
+    }
     Ok(())
 }
 
@@ -167,7 +164,9 @@ pub async fn magnet(client: &ApiClient, target: Option<&str>, file: Option<&str>
         anyhow::anyhow!("Provide a target (row number, name, or hash) or use --file <path>")
     })?;
 
-    let shares = client.list_shares().await?.shares;
+    // Full list so row numbers and name/hash lookups match `share list`
+    // regardless of library size (the endpoint pages at 1000 rows).
+    let shares = client.list_all_shares(None).await?;
 
     // 1. Numeric row index.
     if let Ok(n) = target.trim().parse::<usize>() {
