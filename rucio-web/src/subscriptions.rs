@@ -169,11 +169,15 @@ pub fn SubscriptionsTab(
                                 } else {
                                     format!("{} mirrored", s.wanted_count)
                                 };
-                                let synced = if s.last_synced_at == 0 {
-                                    "not synced yet".to_string()
-                                } else {
-                                    "synced".to_string()
-                                };
+                                // Only show the positive "synced" marker once a sync has
+                                // actually happened. We never show "not synced yet": with
+                                // nothing mirrored that reads like a failure, when in fact
+                                // it's just pending (a fresh subscription syncs within
+                                // seconds) or the peer simply has nothing to mirror.
+                                let mut meta = format!("{meter_text} · {files}");
+                                if s.last_synced_at != 0 {
+                                    meta.push_str(" · synced");
+                                }
                                 view! {
                                     <li class="share-dir-row">
                                         <span class="share-dir-icon"><Icon paths=icons::NETWORK/></span>
@@ -185,9 +189,7 @@ pub fn SubscriptionsTab(
                                                     style=move || format!("width:{pct:.1}%")
                                                 ></div>
                                             </div>
-                                            <span class="share-dir-meta">
-                                                {meter_text}" · "{files}" · "{synced}
-                                            </span>
+                                            <span class="share-dir-meta">{meta}</span>
                                         </div>
                                         <button
                                             class="icon-btn icon-btn-danger"
