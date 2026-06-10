@@ -621,8 +621,12 @@
                setting overflow-x:auto would otherwise make y compute to auto
                too, and the tabs' -1px overlap triggers a stray vertical bar. */
             overflow-x: auto; overflow-y: hidden; flex-wrap: nowrap;
-            scrollbar-width: thin; -webkit-overflow-scrolling: touch;
+            /* Hide the scrollbar (the tabs scroll by swipe/drag); keeps the
+               strip clean instead of showing a bar under the tabs. */
+            scrollbar-width: none; -ms-overflow-style: none;
+            -webkit-overflow-scrolling: touch;
         }
+        .config-tabs::-webkit-scrollbar { display: none; }
         .config-tab {
             padding: 0.5rem 0.75rem; background: transparent; border: none;
             border-bottom: 2px solid transparent; margin-bottom: -1px;
