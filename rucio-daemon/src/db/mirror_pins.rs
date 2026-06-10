@@ -108,6 +108,23 @@ pub async fn wanted_bytes_for_peer(db: &Db, peer_id: &str) -> Result<i64> {
     Ok(total.unwrap_or(0))
 }
 
+/// Count and byte-total of a peer's *wanted* entries we actually hold (present
+/// as a share) — i.e. genuinely mirrored, as opposed to still being fetched.
+/// Returns `(count, bytes)`.
+pub async fn present_for_peer(db: &Db, peer_id: &str) -> Result<(i64, i64)> {
+    let row = sqlx::query(
+        "SELECT COUNT(*) AS n, COALESCE(SUM(m.size), 0) AS b
+         FROM mirror_pins m
+         WHERE m.peer_id = ?1 AND m.state = ?2
+           AND EXISTS (SELECT 1 FROM shared_files s WHERE s.root_hash = m.root_hash)",
+    )
+    .bind(peer_id)
+    .bind(STATE_WANTED)
+    .fetch_one(db)
+    .await?;
+    Ok((row.get("n"), row.get("b")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

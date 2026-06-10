@@ -125,6 +125,7 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         subscriptions::list_subscriptions,
         subscriptions::create_subscription,
         subscriptions::delete_subscription,
+        subscriptions::list_subscription_files,
         metrics::get_metrics,
         uploads::list_uploads,
         health::get_health,
@@ -202,6 +203,9 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         rucio_core::api::subscriptions::SubscriptionRequest,
         rucio_core::api::subscriptions::SubscriptionResponse,
         rucio_core::api::subscriptions::SubscriptionsResponse,
+        rucio_core::api::subscriptions::MirrorFile,
+        rucio_core::api::subscriptions::MirrorFileState,
+        rucio_core::api::subscriptions::SubscriptionFilesResponse,
     ))
 )]
 struct ApiDoc;
@@ -607,6 +611,10 @@ fn v1_router() -> Router<AppState> {
         .route(
             "/subscriptions/{peer_id}",
             routing::delete(subscriptions::delete_subscription),
+        )
+        .route(
+            "/subscriptions/{peer_id}/files",
+            routing::get(subscriptions::list_subscription_files),
         )
         // notification centre (runtime data: the bell + slideover)
         .route(

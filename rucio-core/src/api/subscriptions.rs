@@ -41,10 +41,16 @@ pub struct SubscriptionResponse {
     pub peer_id: String,
     /// Disk quota in bytes.
     pub quota_bytes: u64,
-    /// Bytes currently wanted (selected within quota) for this peer.
+    /// Bytes selected within quota for this peer (committed total: present +
+    /// still-fetching).
     pub used_bytes: u64,
-    /// Number of mirror entries currently selected (wanted).
+    /// Bytes actually on disk so far (the present subset of `used_bytes`).
+    pub present_bytes: u64,
+    /// Number of mirror entries selected within quota (wanted).
     pub wanted_count: usize,
+    /// Number of wanted entries already present on disk (genuinely mirrored).
+    /// `wanted_count - present_count` are still being fetched.
+    pub present_count: usize,
     /// Number of entries known but skipped because they don't fit the quota.
     pub skipped_count: usize,
     /// Version of the peer's pin-set we last applied (0 = never synced).
@@ -59,6 +65,42 @@ pub struct SubscriptionResponse {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct SubscriptionsResponse {
     pub subscriptions: Vec<SubscriptionResponse>,
+}
+
+/// Resolved state of a single mirrored file.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, utoipa::ToSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum MirrorFileState {
+    /// Present on disk and shared (genuinely mirrored).
+    Present,
+    /// Currently being fetched.
+    Fetching,
+    /// Wanted but neither present nor in flight yet (no provider found, queued).
+    Missing,
+    /// Known but skipped because it doesn't fit the quota.
+    Skipped,
+}
+
+/// One file in a subscription's mirror set, with its resolved state.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+pub struct MirrorFile {
+    /// Root hash (hex).
+    pub root_hash: String,
+    /// File name, if known.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// File size in bytes.
+    pub size: u64,
+    /// Resolved state.
+    pub state: MirrorFileState,
+}
+
+/// GET /api/v1/subscriptions/{peer_id}/files
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+pub struct SubscriptionFilesResponse {
+    pub files: Vec<MirrorFile>,
 }
 
 #[cfg(test)]

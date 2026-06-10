@@ -12,11 +12,29 @@ use axum::http::StatusCode;
 
 use libp2p::PeerId;
 use rucio_core::api::subscriptions::{
-    SubscriptionRequest, SubscriptionResponse, SubscriptionsResponse, parse_peer_input,
+    MirrorFile, MirrorFileState, SubscriptionFilesResponse, SubscriptionRequest,
+    SubscriptionResponse, SubscriptionsResponse, parse_peer_input,
 };
 
 use crate::api::AppState;
 use crate::db;
+
+/// Resolve a wanted mirror hash to its real state: present on disk, being
+/// fetched, or still missing (no provider / queued).
+async fn resolve_wanted_state(state: &AppState, hash: &[u8; 32]) -> MirrorFileState {
+    if matches!(db::shares::get_by_hash(&state.db, hash).await, Ok(Some(_))) {
+        return MirrorFileState::Present;
+    }
+    let active = matches!(
+        db::downloads::status_by_root_hash(&state.db, hash).await,
+        Ok(Some(ref s)) if matches!(s.as_str(), "finding_providers" | "queued" | "downloading" | "stalled")
+    );
+    if active {
+        MirrorFileState::Fetching
+    } else {
+        MirrorFileState::Missing
+    }
+}
 
 /// Enrich a stored subscription row with its current mirror progress.
 async fn to_response(
@@ -27,6 +45,9 @@ async fn to_response(
         .await
         .unwrap_or(0)
         .max(0) as u64;
+    let (present_count, present_bytes) = db::mirror_pins::present_for_peer(&state.db, &sub.peer_id)
+        .await
+        .unwrap_or((0, 0));
     let rows = db::mirror_pins::list_for_peer(&state.db, &sub.peer_id)
         .await
         .unwrap_or_default();
@@ -39,7 +60,9 @@ async fn to_response(
         peer_id: sub.peer_id,
         quota_bytes: sub.quota_bytes.max(0) as u64,
         used_bytes,
+        present_bytes: present_bytes.max(0) as u64,
         wanted_count,
+        present_count: present_count.max(0) as usize,
         skipped_count,
         last_version: sub.last_version,
         last_synced_at: sub.last_synced_at,
@@ -167,4 +190,64 @@ pub async fn delete_subscription(
             StatusCode::INTERNAL_SERVER_ERROR
         }
     }
+}
+
+/// List a subscription's mirrored files with their resolved state.
+///
+/// Each wanted file is resolved to `present` (on disk), `fetching` (in flight)
+/// or `missing` (no provider yet); over-quota entries are `skipped`. Sorted
+/// present → fetching → missing → skipped, then by size descending.
+#[utoipa::path(
+    get,
+    path = "/api/v1/subscriptions/{peer_id}/files",
+    tag = "subscriptions",
+    params(("peer_id" = String, Path, description = "The mirrored peer's PeerId")),
+    responses(
+        (status = 200, description = "The peer's mirror files", body = SubscriptionFilesResponse),
+    )
+)]
+pub async fn list_subscription_files(
+    State(state): State<AppState>,
+    Path(peer_id): Path<String>,
+) -> Result<Json<SubscriptionFilesResponse>, StatusCode> {
+    let parsed = parse_peer_input(&peer_id);
+    let key = parsed.parse::<PeerId>().map(|p| p.to_string());
+    let key = key.as_deref().unwrap_or(parsed);
+
+    let rows = db::mirror_pins::list_for_peer(&state.db, key)
+        .await
+        .map_err(|e| {
+            tracing::error!("list mirror files: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    let mut files = Vec::with_capacity(rows.len());
+    for r in rows {
+        let state_ = if r.state == db::mirror_pins::STATE_SKIPPED {
+            MirrorFileState::Skipped
+        } else if let Ok(hash) = <[u8; 32]>::try_from(r.root_hash.as_slice()) {
+            resolve_wanted_state(&state, &hash).await
+        } else {
+            MirrorFileState::Missing
+        };
+        files.push(MirrorFile {
+            root_hash: hex::encode(&r.root_hash),
+            name: r.name,
+            size: r.size.max(0) as u64,
+            state: state_,
+        });
+    }
+
+    // Order: present, fetching, missing, skipped; then largest first.
+    fn rank(s: MirrorFileState) -> u8 {
+        match s {
+            MirrorFileState::Present => 0,
+            MirrorFileState::Fetching => 1,
+            MirrorFileState::Missing => 2,
+            MirrorFileState::Skipped => 3,
+        }
+    }
+    files.sort_by(|a, b| rank(a.state).cmp(&rank(b.state)).then(b.size.cmp(&a.size)));
+
+    Ok(Json(SubscriptionFilesResponse { files }))
 }
