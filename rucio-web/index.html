@@ -1184,8 +1184,10 @@
         .mirror-state-missing  { background: var(--sn); color: var(--sn-fg); }
         .mirror-state-skipped  { background: var(--sn); color: var(--sn-fg); }
         /* Quota input + unit selector row in the subscribe modal. */
-        .sub-quota-row { display: flex; gap: 0.5rem; margin-top: 0.5rem; }
-        .sub-quota-row .search-input { flex: 1; }
+        .sub-quota-row { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.5rem; }
+        /* min-width:0 lets the number input shrink below its intrinsic width
+           (~248px) instead of overflowing the row on small screens. */
+        .sub-quota-row .search-input { flex: 1 1 6rem; min-width: 0; }
         .sub-unit { width: auto; flex: 0 0 auto; }
 
         .share-file-row {
