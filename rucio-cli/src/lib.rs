@@ -67,11 +67,20 @@ pub enum Commands {
 /// `rucio share …` — manage shared files.
 #[derive(Subcommand, Debug)]
 pub enum ShareAction {
-    /// List shared files
+    /// List shared files (first page by default; see --page/--all)
     List {
         /// Only show files whose name contains this string (case-insensitive)
         #[arg(long)]
         filter: Option<String>,
+        /// Fetch every file, no paging (can be a lot on a large library)
+        #[arg(long)]
+        all: bool,
+        /// Page number, 1-based (ignored with --all)
+        #[arg(long)]
+        page: Option<usize>,
+        /// Page size (default 50, max 1000; ignored with --all)
+        #[arg(long)]
+        limit: Option<i64>,
     },
     /// Share a directory
     Add {
@@ -342,7 +351,12 @@ pub async fn run() -> Result<()> {
     match cli.command {
         Commands::Share { action } => match action {
             ShareAction::Add { path } => cmd::shares::add(&client, &path).await,
-            ShareAction::List { filter } => cmd::shares::list(&client, filter.as_deref()).await,
+            ShareAction::List {
+                filter,
+                all,
+                page,
+                limit,
+            } => cmd::shares::list(&client, filter.as_deref(), all, page, limit).await,
             ShareAction::Remove { target } => cmd::shares::remove(&client, &target).await,
             ShareAction::Magnet { target, file } => {
                 cmd::shares::magnet(&client, target.as_deref(), file.as_deref()).await

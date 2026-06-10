@@ -16,17 +16,40 @@ const CLEAR_LINE: &str = "\x1b[2K\r";
 const HIDE_CURSOR: &str = "\x1b[?25l";
 const SHOW_CURSOR: &str = "\x1b[?25h";
 
-pub async fn list(client: &ApiClient, filter: Option<&str>) -> Result<()> {
-    // Server-side filter + full pagination: the listing endpoint pages at 1000
-    // rows, so a plain call would silently show only the first page and filter
-    // just that page. Fetch every matching file instead.
-    let shares = client.list_all_shares(filter).await?;
+/// Default page size for `share list` (a terminal-friendly slice; the API caps
+/// a single page at 1000).
+const DEFAULT_PAGE: i64 = 50;
+
+pub async fn list(
+    client: &ApiClient,
+    filter: Option<&str>,
+    all: bool,
+    page: Option<usize>,
+    limit: Option<i64>,
+) -> Result<()> {
+    // `--all` pulls the whole (filtered) list; otherwise one page. Row numbers
+    // are the GLOBAL position (start + i), so they stay consistent across pages
+    // and match what `share magnet <n>` resolves against the full list.
+    let (shares, start, total) = if all {
+        let s = client.list_all_shares(filter).await?;
+        let total = s.len() as u64;
+        (s, 0i64, total)
+    } else {
+        let limit = limit.unwrap_or(DEFAULT_PAGE).clamp(1, 1000);
+        let page = page.unwrap_or(1).max(1);
+        let offset = (page as i64 - 1) * limit;
+        let resp = client.list_shares_page(filter, limit, offset).await?;
+        (resp.shares, offset, resp.total)
+    };
 
     if shares.is_empty() {
-        if filter.is_some() {
-            println!("No shares matching that filter.");
+        if total == 0 {
+            match filter {
+                Some(_) => println!("No shares matching that filter."),
+                None => println!("No files shared."),
+            }
         } else {
-            println!("No files shared.");
+            println!("No files on this page ({total} total) — try a lower --page.");
         }
         return Ok(());
     }
@@ -34,7 +57,7 @@ pub async fn list(client: &ApiClient, filter: Option<&str>) -> Result<()> {
     #[derive(Tabled)]
     struct Row {
         #[tabled(rename = "#")]
-        idx: usize,
+        idx: u64,
         #[tabled(rename = "Hash")]
         hash: String,
         #[tabled(rename = "Name")]
@@ -51,7 +74,7 @@ pub async fn list(client: &ApiClient, filter: Option<&str>) -> Result<()> {
         .iter()
         .enumerate()
         .map(|(i, s)| Row {
-            idx: i + 1,
+            idx: start as u64 + i as u64 + 1,
             hash: color::value(&s.root_hash[..8]),
             name: s.name.clone(),
             size: human_size(s.size),
@@ -75,10 +98,25 @@ pub async fn list(client: &ApiClient, filter: Option<&str>) -> Result<()> {
     fit_column(&mut table, 2, max_name, tw);
     fit_column(&mut table, 5, max_path, tw);
     println!("{table}");
-    let n = shares.len();
-    match filter {
-        Some(f) => println!("{n} file(s) matching '{f}'"),
-        None => println!("{n} file(s) shared"),
+
+    // Footer: a plain count when the whole set is on screen, otherwise the page
+    // range plus a hint on how to see the rest.
+    let shown = shares.len() as u64;
+    let shown_to = start as u64 + shown;
+    if all || shown == total {
+        match filter {
+            Some(f) => println!("{total} file(s) matching '{f}'"),
+            None => println!("{total} file(s) shared"),
+        }
+    } else {
+        let mut footer = format!("Showing {}–{} of {}", start as u64 + 1, shown_to, total);
+        if shown_to < total {
+            footer.push_str(" · use --page N or --all");
+        }
+        if let Some(f) = filter {
+            footer.push_str(&format!(" · filter '{f}'"));
+        }
+        println!("{footer}");
     }
     Ok(())
 }
