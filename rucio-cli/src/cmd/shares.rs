@@ -133,6 +133,8 @@ pub async fn dirs(client: &ApiClient) -> Result<()> {
 
     #[derive(Tabled)]
     struct Row {
+        #[tabled(rename = "#")]
+        idx: usize,
         #[tabled(rename = "Directory")]
         path: String,
         #[tabled(rename = "Files")]
@@ -146,7 +148,9 @@ pub async fn dirs(client: &ApiClient) -> Result<()> {
     let rows: Vec<Row> = resp
         .dirs
         .iter()
-        .map(|d| Row {
+        .enumerate()
+        .map(|(i, d)| Row {
+            idx: i + 1,
             path: color::value(&d.path),
             files: d.file_count,
             size: human_size(d.total_size),
@@ -161,10 +165,11 @@ pub async fn dirs(client: &ApiClient) -> Result<()> {
         .max()
         .unwrap_or(0);
     let mut table = Table::new(rows);
-    fit_column(&mut table, 0, max_path, tw);
+    fit_column(&mut table, 1, max_path, tw);
     println!("{table}");
     println!(
-        "{} director{} · protected = cannot be removed (download/pin/category dir)",
+        "{} director{} · remove one with `rucio share remove <#>` · protected = \
+         cannot be removed (download/pin/category dir)",
         resp.dirs.len(),
         if resp.dirs.len() == 1 { "y" } else { "ies" }
     );
@@ -195,8 +200,34 @@ pub async fn add(client: &ApiClient, path: &str) -> Result<()> {
 
 /// Remove by hash (single file) or by path (file or directory tree).
 pub async fn remove(client: &ApiClient, target: &str) -> Result<()> {
-    // Heuristic: if it looks like a 64-char hex string it's a hash,
-    // otherwise treat it as a filesystem path.
+    let target = target.trim();
+
+    // A bare number is a directory index from `share dirs`: resolve it to the
+    // directory's path (and refuse a protected one before bothering the daemon).
+    if let Ok(n) = target.parse::<usize>() {
+        let dirs = client.list_shared_dirs().await?.dirs;
+        let dir = dirs.get(n.wrapping_sub(1)).ok_or_else(|| {
+            anyhow::anyhow!("no directory #{n}. Run `rucio share dirs` to see the list.")
+        })?;
+        if dir.protected {
+            bail!(
+                "directory #{n} ({}) is protected and cannot be removed (download/pin/category dir)",
+                dir.path
+            );
+        }
+        let removed = client.remove_shares_by_path(&dir.path).await?;
+        println!(
+            "{}",
+            color::success(&format!(
+                "Stopped sharing {} ({removed} file(s)).",
+                dir.path
+            ))
+        );
+        return Ok(());
+    }
+
+    // Otherwise: a 64-char hex string is a file root hash; anything else is a
+    // filesystem path (file or directory).
     if target.len() == 64 && target.chars().all(|c| c.is_ascii_hexdigit()) {
         client.remove_share(target).await?;
         println!("Removed share: {}", color::value(target));

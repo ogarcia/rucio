@@ -87,12 +87,13 @@ pub enum ShareAction {
     Dirs,
     /// Share a directory
     Add {
-        /// Path to the directory to share (individual files are not accepted)
+        /// Path to the directory to share
         path: String,
     },
-    /// Stop sharing a file or directory
+    /// Stop sharing a directory (or a single file)
     Remove {
-        /// Root hash (hex) of a single file, or filesystem path (file or directory)
+        /// A directory number from `rucio share dirs`, a file's root hash (hex),
+        /// or a filesystem path (file or directory)
         target: String,
     },
     /// Show how many files are currently being indexed
