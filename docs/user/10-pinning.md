@@ -87,7 +87,9 @@ The **Pins** tab mirrors the CLI:
 To pin something you already have, the quickest path is the **Shares** tab:
 each shared file has a **Pin** button next to its **Magnet** button. One click
 keeps that file on purpose and publishes it in your pin-set (for subscribers),
-without moving or re-fetching it.
+without moving or re-fetching it. The button then turns into **Unpin** (with a
+struck-through pin icon), so the Shares list doubles as a view of what you've
+pinned — click again to unpin.
 
 ## Unpinning
 

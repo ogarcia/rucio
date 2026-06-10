@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -9,7 +10,8 @@ use leptos::task::spawn_local;
 use crate::icons::{self, Icon};
 use crate::statusbar::StatusBar;
 use crate::types::{
-    AddShareResponse, ShareFile, SharedDir, SharedDirsResponse, SharesFilesResponse, format_size,
+    AddShareResponse, PinsResponse, ShareFile, SharedDir, SharedDirsResponse, SharesFilesResponse,
+    format_size,
 };
 
 // ── API ─────────────────────────────────────────────────────────────────────
@@ -91,6 +93,24 @@ async fn api_pin_magnet(magnet: String) {
     }
 }
 
+/// Unpin a root hash (drops the pin intent; the file stays shared).
+async fn api_unpin(hash: &str) {
+    let url = format!("/api/v1/pins/{hash}");
+    let _ = gloo_net::http::Request::delete(&url).send().await;
+}
+
+/// The set of currently-pinned root hashes (hex), so the shared-files list can
+/// show which files are pinned and offer to unpin them.
+async fn api_list_pinned() -> HashSet<String> {
+    let Ok(resp) = gloo_net::http::Request::get("/api/v1/pins").send().await else {
+        return HashSet::new();
+    };
+    match resp.json::<PinsResponse>().await {
+        Ok(r) => r.pins.into_iter().map(|p| p.root_hash).collect(),
+        Err(_) => HashSet::new(),
+    }
+}
+
 /// Minimal percent-encoding for the `path` query value (spaces and reserved
 /// chars). `js_sys`'s `encodeURIComponent` keeps it dependency-free.
 fn urlencoding_encode(s: &str) -> String {
@@ -152,6 +172,8 @@ pub fn SharesTab(
     let copied: RwSignal<Option<String>> = RwSignal::new(None);
     // root_hash of the file just pinned (for the transient "Pinned!" hint).
     let pinned: RwSignal<Option<String>> = RwSignal::new(None);
+    // Set of currently-pinned hashes, so each file row shows Pin vs Unpin.
+    let pinned_set: RwSignal<HashSet<String>> = RwSignal::new(HashSet::new());
     // Bumped on every load; a response is applied only if its generation is
     // still current, so a reset (new filter/dir) discards an in-flight page.
     let load_gen: RwSignal<u32> = RwSignal::new(0);
@@ -195,6 +217,12 @@ pub fn SharesTab(
         });
     };
 
+    let reload_pins = move || {
+        spawn_local(async move {
+            pinned_set.set(api_list_pinned().await);
+        });
+    };
+
     // Initial load, then reload whenever a round of indexing finishes (so files
     // indexed after adding a directory show up without a manual refresh).
     Effect::new(move |prev: Option<usize>| {
@@ -202,6 +230,7 @@ pub fn SharesTab(
         let finished = matches!(prev, Some(p) if p > 0) && cur == 0;
         if prev.is_none() || finished {
             reload_dirs();
+            reload_pins();
             load_files.run(true);
         }
         cur
@@ -255,6 +284,11 @@ pub fn SharesTab(
     });
 
     let on_pin = Callback::new(move |(hash, magnet): (String, String)| {
+        // Optimistic: mark pinned now so the button flips to "Unpin" after the
+        // transient "Pinned!" hint fades.
+        pinned_set.update(|s| {
+            s.insert(hash.clone());
+        });
         pinned.set(Some(hash));
         let alive = alive_pin.clone();
         spawn_local(async move {
@@ -263,6 +297,15 @@ pub fn SharesTab(
             if alive.load(Ordering::Relaxed) {
                 pinned.set(None);
             }
+        });
+    });
+
+    let on_unpin = Callback::new(move |hash: String| {
+        pinned_set.update(|s| {
+            s.remove(&hash);
+        });
+        spawn_local(async move {
+            api_unpin(&hash).await;
         });
     });
 
@@ -419,27 +462,54 @@ pub fn SharesTab(
                             children=move |f| {
                                 let hash_copy = f.root_hash.clone();
                                 let magnet_copy = f.magnet.clone();
-                                let hash_pin = f.root_hash.clone();
-                                let magnet_pin = f.magnet.clone();
+                                let hash_btn = f.root_hash.clone();
+                                let magnet_btn = f.magnet.clone();
                                 let is_copied = {
                                     let hash = f.root_hash.clone();
                                     move || copied.get().as_deref() == Some(hash.as_str())
                                 };
-                                let is_pinned = {
-                                    let hash = f.root_hash.clone();
-                                    move || pinned.get().as_deref() == Some(hash.as_str())
-                                };
+                                // Per-reactive-block hash clones (the signals are Copy).
+                                let h_title = f.root_hash.clone();
+                                let h_icon = f.root_hash.clone();
+                                let h_label = f.root_hash.clone();
                                 view! {
                                     <li class="share-file-row">
                                         <span class="share-file-name" title=f.path.clone()>{f.name.clone()}</span>
                                         <span class="share-file-size">{format_size(f.size)}</span>
                                         <button
                                             class="btn-sm share-copy-btn"
-                                            title="Pin this file (keep it available on purpose; publishes it in your pin-set)"
-                                            on:click=move |_| on_pin.run((hash_pin.clone(), magnet_pin.clone()))
+                                            title=move || if pinned_set.get().contains(&h_title) {
+                                                "Unpin this file (stops keeping it on purpose; the file stays shared)"
+                                            } else {
+                                                "Pin this file (keep it available on purpose; publishes it in your pin-set)"
+                                            }
+                                            on:click=move |_| {
+                                                if pinned_set.get_untracked().contains(&hash_btn) {
+                                                    on_unpin.run(hash_btn.clone());
+                                                } else {
+                                                    on_pin.run((hash_btn.clone(), magnet_btn.clone()));
+                                                }
+                                            }
                                         >
-                                            <Icon paths=icons::PIN/>
-                                            {move || if is_pinned() { "Pinned!" } else { "Pin" }}
+                                            {move || {
+                                                let just = pinned.get().as_deref() == Some(h_icon.as_str());
+                                                let pinned_now = pinned_set.get().contains(&h_icon);
+                                                if pinned_now && !just {
+                                                    view! { <Icon paths=icons::PINNED_OFF/> }.into_any()
+                                                } else {
+                                                    view! { <Icon paths=icons::PIN/> }.into_any()
+                                                }
+                                            }}
+                                            {move || {
+                                                let just = pinned.get().as_deref() == Some(h_label.as_str());
+                                                if just {
+                                                    "Pinned!"
+                                                } else if pinned_set.get().contains(&h_label) {
+                                                    "Unpin"
+                                                } else {
+                                                    "Pin"
+                                                }
+                                            }}
                                         </button>
                                         <button
                                             class="btn-sm share-copy-btn"
