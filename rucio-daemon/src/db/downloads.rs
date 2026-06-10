@@ -208,6 +208,20 @@ pub async fn get(db: &Db, id: i64) -> Result<Option<DownloadRow>> {
     Ok(row.as_ref().map(row_to_download))
 }
 
+/// Fetch a single download by its root hash, or `None` if there is no row.
+pub async fn get_by_root_hash(db: &Db, root_hash: &[u8; 32]) -> Result<Option<DownloadRow>> {
+    let row = sqlx::query(
+        "SELECT id, root_hash, name, total_size, dest_path, status,
+                bytes_done, error_msg, added_at, updated_at, category_id
+         FROM downloads WHERE root_hash = ?1",
+    )
+    .bind(root_hash.as_slice())
+    .fetch_optional(db)
+    .await?;
+
+    Ok(row.as_ref().map(row_to_download))
+}
+
 /// Mark a chunk as done and update `bytes_done` on the parent download.
 pub async fn chunk_done(db: &Db, download_id: i64, chunk_idx: u32, chunk_size: u32) -> Result<()> {
     let mut tx = db.begin().await?;

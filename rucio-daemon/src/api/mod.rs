@@ -10,6 +10,7 @@ pub mod emule;
 pub mod health;
 pub mod metrics;
 pub mod notifications;
+pub mod pins;
 pub mod search;
 pub mod searches;
 pub mod shares;
@@ -117,6 +118,9 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         categories::create_category,
         categories::update_category,
         categories::delete_category,
+        pins::list_pins,
+        pins::create_pin,
+        pins::delete_pin,
         metrics::get_metrics,
         uploads::list_uploads,
         health::get_health,
@@ -187,6 +191,10 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         rucio_core::api::categories::CategoryResponse,
         rucio_core::api::categories::CategoriesResponse,
         rucio_core::api::categories::SetCategoryRequest,
+        rucio_core::api::pins::PinRequest,
+        rucio_core::api::pins::PinResponse,
+        rucio_core::api::pins::PinState,
+        rucio_core::api::pins::PinsResponse,
     ))
 )]
 struct ApiDoc;
@@ -577,6 +585,12 @@ fn v1_router() -> Router<AppState> {
             "/categories/{id}",
             routing::put(categories::update_category).delete(categories::delete_category),
         )
+        // pins (keep content available on purpose: fetch-and-retain)
+        .route(
+            "/pins",
+            routing::get(pins::list_pins).post(pins::create_pin),
+        )
+        .route("/pins/{hash}", routing::delete(pins::delete_pin))
         // notification centre (runtime data: the bell + slideover)
         .route(
             "/notifications",

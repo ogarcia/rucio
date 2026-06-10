@@ -4,6 +4,7 @@ pub mod downloads;
 pub mod emule;
 pub mod metrics;
 pub mod notifications;
+pub mod pins;
 pub mod search;
 pub mod searches;
 pub mod shares;
