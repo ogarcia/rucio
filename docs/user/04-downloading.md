@@ -126,6 +126,9 @@ rucio config set storage.download_dir /mnt/data/downloads
 
 See [Configuration](06-configuration.md) for all available settings.
 
+To route certain downloads into their own folders, see
+[Categories](09-categories.md).
+
 ---
 
 ## Downloading from the eMule network (ed2k://)
