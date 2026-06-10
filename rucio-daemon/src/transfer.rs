@@ -221,6 +221,10 @@ pub struct DownloadEngine {
     cmd_tx: mpsc::Sender<NodeCmd>,
     /// Final destination for completed downloads (always shared).
     dest_dir: PathBuf,
+    /// Destination for completed downloads that are pinned: kept separate from
+    /// the user's download_dir. A download whose root hash is in the `pins`
+    /// table lands here instead of dest_dir / its category dir.
+    pin_dir: PathBuf,
     /// Temporary directory for in-progress downloads (.part files).
     temp_dir: PathBuf,
     pending_manifests: HashMap<[u8; 32], PendingManifest>,
@@ -253,6 +257,7 @@ impl DownloadEngine {
         db: Db,
         cmd_tx: mpsc::Sender<NodeCmd>,
         dest_dir: PathBuf,
+        pin_dir: PathBuf,
         temp_dir: PathBuf,
         metrics: Arc<Metrics>,
         upload_semaphore: Arc<Semaphore>,
@@ -267,6 +272,7 @@ impl DownloadEngine {
             db,
             cmd_tx,
             dest_dir,
+            pin_dir,
             temp_dir,
             pending_manifests: HashMap::new(),
             active: HashMap::new(),
@@ -1383,16 +1389,23 @@ impl DownloadEngine {
                         .unwrap_or_default();
                     let hash_hex = hex::encode(root_hash);
 
-                    // Resolve where this download lands: its category's pinned dir
-                    // if it has one, else the global download_dir (`self.dest_dir`).
-                    // Resolved now, not at start, so a category edited/deleted
-                    // mid-download is honoured.
-                    let cat_id = db::downloads::get_category_id(&self.db, dl_id)
+                    // Resolve where this download lands. A pinned hash goes to
+                    // pin_dir (kept separate from the user's downloads); otherwise
+                    // its category's pinned dir if it has one, else the global
+                    // download_dir. Resolved now, not at start, so a category (or
+                    // the pin) edited/removed mid-download is honoured.
+                    let dest_dir = if db::pins::exists(&self.db, &root_hash)
                         .await
-                        .ok()
-                        .flatten();
-                    let dest_dir =
-                        db::categories::resolve_dir(&self.db, &self.dest_dir, cat_id).await;
+                        .unwrap_or(false)
+                    {
+                        self.pin_dir.clone()
+                    } else {
+                        let cat_id = db::downloads::get_category_id(&self.db, dl_id)
+                            .await
+                            .ok()
+                            .flatten();
+                        db::categories::resolve_dir(&self.db, &self.dest_dir, cat_id).await
+                    };
 
                     // Persist the fully-verified `.part` into the download dir.
                     // `persist_completed` (re)creates that dir first — the user
@@ -1905,6 +1918,7 @@ mod tests {
             db,
             cmd_tx,
             tmp.path().to_path_buf(),
+            tmp.path().join("pins"),
             tmp.path().to_path_buf(),
             metrics,
             Arc::new(tokio::sync::Semaphore::new(64)),

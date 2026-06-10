@@ -257,6 +257,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
 
     // --- Download engine ----------------------------------------------------
     let dest_dir = config.storage.download_dir.clone();
+    let pin_dir = config.storage.pin_dir.clone();
     let temp_dir = config.storage.temp_dir.clone();
     let session_metrics = Arc::new(metrics::Metrics::new(metrics::instant_to_unix(
         &Instant::now(),
@@ -298,6 +299,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         db.clone(),
         handle.cmd_tx.clone(),
         dest_dir,
+        pin_dir,
         temp_dir,
         Arc::clone(&session_metrics),
         Arc::clone(&upload_semaphore),
