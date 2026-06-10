@@ -53,6 +53,18 @@ CREATE TABLE IF NOT EXISTS chunks (
 CREATE INDEX IF NOT EXISTS idx_chunks_hash ON chunks(hash);
 
 -- ---------------------------------------------------------------------------
+-- pins
+-- Manually pinned content: a root hash the user wants kept available on this
+-- node (fetched if missing, then shared and re-provided). This row is the user
+-- intent, distinct from an incidental share. Pinned content is sacred -- the
+-- future cooperative-mirror reconcile never evicts it.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS pins (
+    root_hash   BLOB    PRIMARY KEY,    -- 32 bytes, BLAKE3
+    added_at    INTEGER NOT NULL
+);
+
+-- ---------------------------------------------------------------------------
 -- categories
 -- Optional download categories. A category may pin its own download_dir so the
 -- user can route downloads to different folders; download_dir NULL means the

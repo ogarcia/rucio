@@ -111,8 +111,12 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
     info!("Starting Rucio daemon v{}", env!("CARGO_PKG_VERSION"));
 
     // --- Storage directories ------------------------------------------------
-    // Ensure download_dir and temp_dir exist.
-    for dir in [&config.storage.download_dir, &config.storage.temp_dir] {
+    // Ensure download_dir, temp_dir and pin_dir exist.
+    for dir in [
+        &config.storage.download_dir,
+        &config.storage.temp_dir,
+        &config.storage.pin_dir,
+    ] {
         std::fs::create_dir_all(dir)
             .with_context(|| format!("creating directory {}", dir.display()))?;
         info!(path = %dir.display(), "Storage directory ready");
@@ -245,7 +249,9 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
     // --- Shared dirs: reconcile the protected set (global + category dirs) ---
     // If download_dir changed in the config (or a category dir was removed), the
     // previous one is demoted to an ordinary (removable) share.
-    if let Err(e) = reconcile_protected_dirs(&db, &config.storage.download_dir).await {
+    if let Err(e) =
+        reconcile_protected_dirs(&db, &config.storage.download_dir, &config.storage.pin_dir).await
+    {
         warn!("Could not reconcile protected shared dirs: {e}");
     }
 
@@ -1334,30 +1340,34 @@ pub(crate) fn now_secs() -> u64 {
 }
 
 /// Reconcile the set of protected/shared destination directories: the global
-/// `download_dir` plus every category-pinned directory. Creates each category
-/// dir on disk (so the watcher can index it) and marks the whole set protected
-/// (undeletable), demoting any directory that is no longer a destination.
+/// `download_dir`, the `pin_dir` (where pinned content lives), plus every
+/// category-pinned directory. Creates each category dir on disk (so the watcher
+/// can index it) and marks the whole set protected (undeletable), demoting any
+/// directory that is no longer a destination.
 ///
 /// Called at startup and after any category create/update/delete, so the
 /// protected set always matches the live configuration.
 pub(crate) async fn reconcile_protected_dirs(
     db: &db::Db,
     global_download_dir: &std::path::Path,
+    pin_dir: &std::path::Path,
 ) -> Result<()> {
     let dl_path = global_download_dir.to_string_lossy().into_owned();
+    let pin_path = pin_dir.to_string_lossy().into_owned();
     let cat_dirs = db::categories::pinned_dirs(db).await.unwrap_or_else(|e| {
         warn!("Could not load category download dirs: {e}");
         Vec::new()
     });
     // Create each category dir on disk so the watcher can index it (the global
-    // download_dir and temp_dir are created elsewhere on startup).
+    // download_dir, temp_dir and pin_dir are created elsewhere on startup).
     for d in &cat_dirs {
         if let Err(e) = std::fs::create_dir_all(d) {
             warn!(dir = %d, "Could not create category download dir: {e}");
         }
     }
-    let mut protected: Vec<&str> = Vec::with_capacity(1 + cat_dirs.len());
+    let mut protected: Vec<&str> = Vec::with_capacity(2 + cat_dirs.len());
     protected.push(&dl_path);
+    protected.push(&pin_path);
     protected.extend(cat_dirs.iter().map(String::as_str));
     db::shared_dirs::set_protected_dirs(db, &protected, now_secs()).await
 }

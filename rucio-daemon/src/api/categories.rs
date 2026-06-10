@@ -231,8 +231,12 @@ pub async fn delete_category(State(state): State<AppState>, Path(id): Path<i64>)
 /// Best-effort: a failure is logged but does not fail the request (the row is
 /// already persisted; the set is re-reconciled on next startup anyway).
 async fn reconcile(state: &AppState) {
-    if let Err(e) =
-        crate::reconcile_protected_dirs(&state.db, &state.config.storage.download_dir).await
+    if let Err(e) = crate::reconcile_protected_dirs(
+        &state.db,
+        &state.config.storage.download_dir,
+        &state.config.storage.pin_dir,
+    )
+    .await
     {
         tracing::warn!("Could not reconcile protected dirs after category change: {e}");
     }

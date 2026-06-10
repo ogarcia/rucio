@@ -356,6 +356,12 @@ pub struct StorageConfig {
     /// Chunks that are already downloaded are shared from here.
     /// Files are moved to `download_dir` once fully downloaded.
     pub temp_dir: PathBuf,
+    /// Directory where pinned files (fetched to keep available) are stored and
+    /// always shared. Kept separate from `download_dir` so it is unambiguous
+    /// which content the node hosts on purpose. `serde(default)` so configs
+    /// written before pinning existed still load.
+    #[serde(default = "default_pin_dir")]
+    pub pin_dir: PathBuf,
     pub database_path: PathBuf,
     /// Path to an eMule `nodes.dat` file used to bootstrap the Kad2 network.
     /// Optional — eMule Kad search is disabled when this is `None`.
@@ -391,6 +397,7 @@ impl Default for StorageConfig {
         Self {
             download_dir: default_download_dir(),
             temp_dir: default_temp_dir(),
+            pin_dir: default_pin_dir(),
             database_path: default_data_dir().join("rucio.db"),
             nodes_dat_path: None,
         }
@@ -575,6 +582,7 @@ impl Config {
     /// | `RUCIOD_P2P_LISTEN`         | `node.listen_addrs`          | comma-separated multiaddrs |
     /// | `RUCIOD_DOWNLOAD_DIR`       | `storage.download_dir`       | path               |
     /// | `RUCIOD_TEMP_DIR`           | `storage.temp_dir`           | path               |
+    /// | `RUCIOD_PIN_DIR`            | `storage.pin_dir`            | path               |
     /// | `RUCIOD_DB_PATH`            | `storage.database_path`      | path               |
     /// | `RUCIOD_BOOTSTRAP_PEERS`    | `network.bootstrap_peers`    | comma-separated multiaddrs |
     /// | `RUCIOD_UPLOAD_LIMIT_KBPS`  | `network.upload_limit_kbps`  | integer KB/s, 0=unlimited |
@@ -605,6 +613,11 @@ impl Config {
             && !v.is_empty()
         {
             self.storage.download_dir = PathBuf::from(v);
+        }
+        if let Ok(v) = std::env::var("RUCIOD_PIN_DIR")
+            && !v.is_empty()
+        {
+            self.storage.pin_dir = PathBuf::from(v);
         }
         if let Ok(v) = std::env::var("RUCIOD_TEMP_DIR")
             && !v.is_empty()
@@ -806,6 +819,16 @@ fn default_temp_dir() -> PathBuf {
         .unwrap_or_else(|| home_dir().join(".cache"))
         .join("rucio")
         .join("tmp")
+}
+
+/// Default directory for pinned files. Kept under the data dir (next to the DB),
+/// separate from the user's `download_dir`, so pinned/mirrored content the node
+/// hosts on purpose is clearly system-managed and never nested in downloads.
+fn default_pin_dir() -> PathBuf {
+    if let Some(base) = base_dir_override() {
+        return base.join("pins");
+    }
+    default_data_dir().join("pins")
 }
 
 // --- Tests -------------------------------------------------------------------
