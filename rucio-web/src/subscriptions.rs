@@ -5,6 +5,8 @@
 //! node's own shareable link, and unsubscribe (which evicts content nobody else
 //! wants).
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use gloo_timers::future::sleep;
@@ -550,11 +552,29 @@ fn SubscriptionInfoModal(
 ) -> impl IntoView {
     let files: RwSignal<Vec<MirrorFile>> = RwSignal::new(vec![]);
     let loaded = RwSignal::new(false);
+    // Poll the mirror file list while the modal is open so the rows stay live —
+    // states advance (pending → fetching → present) and a scope change's
+    // asynchronously-synced files appear on the next tick. The `alive` flag
+    // (checked after every await) stops the loop and prevents writing into freed
+    // signals once the modal closes.
+    let alive = Arc::new(AtomicBool::new(true));
+    let alive_cleanup = alive.clone();
+    on_cleanup(move || alive_cleanup.store(false, Ordering::Relaxed));
     {
         let peer = sub.peer_id.clone();
         spawn_local(async move {
-            files.set(api_files(&peer).await);
-            loaded.set(true);
+            loop {
+                if !alive.load(Ordering::Relaxed) {
+                    break;
+                }
+                let f = api_files(&peer).await;
+                if !alive.load(Ordering::Relaxed) {
+                    break;
+                }
+                files.set(f);
+                loaded.set(true);
+                sleep(Duration::from_millis(1500)).await;
+            }
         });
     }
 
