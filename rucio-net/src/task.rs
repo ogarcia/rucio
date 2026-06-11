@@ -1205,7 +1205,10 @@ async fn on_transfer_event(
                 .await;
         }
         request_response::Event::InboundFailure { peer, error, .. } => {
-            warn!(%peer, %error, "Inbound chunk request failed");
+            // Expected peer churn on a serving node: the requester closed,
+            // cancelled, or timed out (e.g. got the chunk from a faster peer, or
+            // finished the file). Not actionable here, so debug, not warn.
+            debug!(%peer, %error, "Inbound chunk request did not complete");
         }
         request_response::Event::ResponseSent { peer, .. } => {
             // Confirms the full chunk response was written to the peer — useful
@@ -1272,7 +1275,7 @@ async fn on_manifest_event(
             warn!(%peer, %error, "Outbound manifest request failed");
         }
         request_response::Event::InboundFailure { peer, error, .. } => {
-            warn!(%peer, %error, "Inbound manifest request failed");
+            debug!(%peer, %error, "Inbound manifest request did not complete");
         }
         request_response::Event::ResponseSent { .. } => {}
     }
@@ -1333,7 +1336,7 @@ async fn on_pinset_event(
             warn!(%peer, %error, "Outbound pin-set request failed");
         }
         request_response::Event::InboundFailure { peer, error, .. } => {
-            warn!(%peer, %error, "Inbound pin-set request failed");
+            debug!(%peer, %error, "Inbound pin-set request did not complete");
         }
         request_response::Event::ResponseSent { .. } => {}
     }
