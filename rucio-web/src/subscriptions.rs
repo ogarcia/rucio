@@ -241,7 +241,26 @@ pub fn SubscriptionsTab(
                     <ul class="share-dir-list">
                         <For
                             each=move || subs.get()
-                            key=|s| s.peer_id.clone()
+                            // Key on the displayed fields, not just the peer id:
+                            // <For> never re-renders an existing key, so keying by
+                            // peer id alone froze a row's meter/counts (and the
+                            // snapshot the info button captures) until a full page
+                            // reload. subs only refreshes on actions, so rebuilding
+                            // a changed row costs nothing visible.
+                            key=|s| {
+                                format!(
+                                    "{}|{}|{}|{}|{}|{}|{}|{}|{}",
+                                    s.peer_id,
+                                    s.quota_bytes,
+                                    s.used_bytes,
+                                    s.present_bytes,
+                                    s.wanted_count,
+                                    s.present_count,
+                                    s.skipped_count,
+                                    s.last_synced_at,
+                                    s.follow_all,
+                                )
+                            }
                             children=move |s| {
                                 let peer_rm = s.peer_id.clone();
                                 let peer_full = s.peer_id.clone();
@@ -646,6 +665,27 @@ fn SubscriptionInfoModal(
     let before = StoredValue::new(before_scope);
     // When the new scope drops collections, ask keep vs free before applying.
     let narrow_confirm = RwSignal::new(false);
+
+    // The `sub` that opened us comes from the list row, which can be stale (the
+    // <For> is keyed by peer id, so a row's captured snapshot isn't refreshed in
+    // place). Fetch the authoritative current subscription on open and re-seed
+    // the scope editor from it, so the checkboxes always reflect reality — no
+    // page refresh needed. Done once, before the user can edit.
+    {
+        let peer = sub.peer_id.clone();
+        spawn_local(async move {
+            if let Some(s) = api_get(&peer).await {
+                follow_all.set(s.follow_all);
+                selected.set(s.followed_collections.iter().cloned().collect());
+                before.set_value(if s.follow_all {
+                    s.available_collections.iter().cloned().collect()
+                } else {
+                    s.followed_collections.iter().cloned().collect()
+                });
+                info.set(s);
+            }
+        });
+    }
 
     let do_save_scope = move |keep: bool| {
         let fa = follow_all.get();
