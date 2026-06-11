@@ -252,7 +252,7 @@ async fn main() -> Result<()> {
         listen_addrs,
         behaviour,
     };
-    let handle = rucio_net::spawn(&net_cfg, None)
+    let handle = rucio_net::spawn(&net_cfg, None, None)
         .await
         .context("starting the bootstrap node")?;
 
@@ -313,7 +313,7 @@ async fn main() -> Result<()> {
                 listen_addrs: vec!["/ip4/0.0.0.0/tcp/0".into(), "/ip6/::/tcp/0".into()],
                 behaviour: BehaviourConfig::indexer(enrich),
             };
-            let extra_handle = rucio_net::spawn(&extra_cfg, None)
+            let extra_handle = rucio_net::spawn(&extra_cfg, None, None)
                 .await
                 .with_context(|| format!("starting indexer identity {swarm_idx}"))?;
             let tx = fan_tx.clone();

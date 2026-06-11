@@ -118,6 +118,7 @@ pub struct NodeHandle {
 pub async fn spawn(
     cfg: &NetConfig,
     upload_limiter: Option<crate::codec_utils::ByteLimiter>,
+    download_progress: Option<crate::codec_utils::ReadProgress>,
 ) -> Result<NodeHandle> {
     let keypair = identity::load_or_create(&cfg.identity_path)?;
     let peer_id = keypair.public().to_peer_id();
@@ -171,6 +172,7 @@ pub async fn spawn(
                 relay_client,
                 behaviour_cfg,
                 upload_limiter,
+                download_progress,
             )
             .map_err(|e| -> Box<dyn std::error::Error + Send + Sync + 'static> { e.into() })
         })

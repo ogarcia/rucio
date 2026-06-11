@@ -193,7 +193,18 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
             })
         })
     };
-    let mut handle = node::task::spawn(&net_cfg, Some(rucio_upload_limiter)).await?;
+    // Account download bytes as a chunk is read off the wire (a flat speed
+    // reading) instead of one spike when the whole 4 MiB chunk completes.
+    let rucio_download_progress: rucio_net::ReadProgress = {
+        let met = Arc::clone(&session_metrics);
+        Arc::new(move |bytes| met.record_download_bytes(bytes))
+    };
+    let mut handle = node::task::spawn(
+        &net_cfg,
+        Some(rucio_upload_limiter),
+        Some(rucio_download_progress),
+    )
+    .await?;
 
     for addr_str in config.effective_bootstrap_peers() {
         match addr_str.parse() {

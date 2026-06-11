@@ -6,7 +6,9 @@ use libp2p::request_response;
 use rucio_core::protocol::transfer::{ChunkRequest, ChunkResponse};
 use std::io;
 
-use super::codec_utils::{ByteLimiter, read_framed, write_framed, write_framed_paced};
+use super::codec_utils::{
+    ByteLimiter, ReadProgress, read_framed, read_framed_progress, write_framed, write_framed_paced,
+};
 
 #[derive(Debug, Clone)]
 pub struct TransferProtocol;
@@ -17,18 +19,28 @@ impl AsRef<str> for TransferProtocol {
     }
 }
 
-/// Chunk transfer codec. Holds an optional [`ByteLimiter`] used to pace the
-/// *write* of chunk responses we serve, so the upload limit produces a smooth
-/// stream rather than per-chunk bursts. `None` = no pacing (e.g. a node that
-/// doesn't serve, or no limit configured).
+/// Chunk transfer codec. Holds optional hooks so the upload limit and the
+/// download speed accounting work at the byte level (smooth stream / flat
+/// reading) instead of per whole 4 MiB chunk:
+/// - `upload_limiter` paces the *write* of chunk responses we serve.
+/// - `download_progress` reports bytes as a chunk response is *read*.
+///
+/// `None` for either = no hook (e.g. a node that doesn't transfer, or no limit).
 #[derive(Clone, Default)]
 pub struct TransferCodec {
     upload_limiter: Option<ByteLimiter>,
+    download_progress: Option<ReadProgress>,
 }
 
 impl TransferCodec {
-    pub fn new(upload_limiter: Option<ByteLimiter>) -> Self {
-        Self { upload_limiter }
+    pub fn new(
+        upload_limiter: Option<ByteLimiter>,
+        download_progress: Option<ReadProgress>,
+    ) -> Self {
+        Self {
+            upload_limiter,
+            download_progress,
+        }
     }
 }
 
@@ -57,7 +69,8 @@ impl request_response::Codec for TransferCodec {
     where
         T: AsyncRead + Unpin + Send,
     {
-        read_framed(io).await
+        // Report read progress so download speed reads as a flat stream.
+        read_framed_progress(io, self.download_progress.as_ref()).await
     }
 
     async fn write_request<T>(

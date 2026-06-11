@@ -1396,7 +1396,10 @@ impl DownloadEngine {
                 }
 
                 let chunk_bytes = data.len() as u64;
-                self.metrics.record_download(chunk_bytes);
+                // Bytes were accounted incrementally as the chunk was read off
+                // the wire (the net codec's read-progress hook → a flat download
+                // speed); here we only count the completed chunk.
+                self.metrics.record_download_chunk();
 
                 // A good chunk clears this peer's failure streak and adds to its
                 // per-peer byte tally (drives the per-peer rate in live stats).

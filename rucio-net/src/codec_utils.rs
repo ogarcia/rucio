@@ -18,6 +18,12 @@ pub const MAX_FRAME: usize = 8 * 1024 * 1024; // 8 MiB
 /// 4 MiB chunk at link speed, then idles — bursty and slower than the cap).
 pub type ByteLimiter = Arc<dyn Fn(u64) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
+/// A synchronous progress hook: called with the number of bytes just read off
+/// the wire for a response, so the embedding application can account download
+/// speed incrementally (a flat reading) instead of in one spike when the whole
+/// chunk arrives. Cheap and non-blocking (just a metric update).
+pub type ReadProgress = Arc<dyn Fn(u64) + Send + Sync>;
+
 /// Largest slice written between rate-limiter checks. Small enough to keep the
 /// wire smooth at low limits, large enough to avoid excessive await overhead.
 const PACING_PIECE: usize = 64 * 1024;
@@ -40,6 +46,47 @@ where
 
     let mut buf = vec![0u8; len];
     io.read_exact(&mut buf).await?;
+
+    postcard::from_bytes::<D>(&buf)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))
+}
+
+/// Like [`read_framed`], but when `progress` is `Some` the payload is read in
+/// [`PACING_PIECE`] slices and `progress` is called with each slice's size as
+/// it arrives. Lets the caller account download speed incrementally so it reads
+/// as a flat stream rather than spiking when the whole chunk completes.
+pub async fn read_framed_progress<T, D>(
+    io: &mut T,
+    progress: Option<&ReadProgress>,
+) -> io::Result<D>
+where
+    T: AsyncRead + Unpin + Send,
+    D: serde::de::DeserializeOwned,
+{
+    let mut len_buf = [0u8; 4];
+    io.read_exact(&mut len_buf).await?;
+    let len = u32::from_le_bytes(len_buf) as usize;
+
+    if len > MAX_FRAME {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("frame too large: {len} bytes"),
+        ));
+    }
+
+    let mut buf = vec![0u8; len];
+    match progress {
+        None => io.read_exact(&mut buf).await?,
+        Some(report) => {
+            let mut off = 0;
+            while off < len {
+                let end = (off + PACING_PIECE).min(len);
+                io.read_exact(&mut buf[off..end]).await?;
+                report((end - off) as u64);
+                off = end;
+            }
+        }
+    }
 
     postcard::from_bytes::<D>(&buf)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))
