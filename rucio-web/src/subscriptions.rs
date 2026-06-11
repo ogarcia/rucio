@@ -768,7 +768,7 @@ fn SubscriptionInfoModal(
                                                 key=|c| c.clone()
                                                 children=move |c| {
                                                     let label = if c.is_empty() {
-                                                        "(uncollected)".to_string()
+                                                        "(no collection)".to_string()
                                                     } else {
                                                         c.clone()
                                                     };
