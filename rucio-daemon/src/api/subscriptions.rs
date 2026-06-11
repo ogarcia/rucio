@@ -195,6 +195,23 @@ pub async fn set_subscription_collections(
         }
     }
 
+    // With `keep`, retain content that the narrower scope drops: any hash this
+    // peer currently mirrors whose collection isn't in the new followed set
+    // (only meaningful when not following everything). Drop its mirror ownership
+    // *before* the re-sync's eviction runs, so it survives as a share we own.
+    if req.keep && !req.follow_all {
+        let new_set: std::collections::HashSet<&str> =
+            req.collections.iter().map(|s| s.as_str()).collect();
+        let dropped: Vec<[u8; 32]> = db::mirror_pins::list_for_peer(&state.db, key)
+            .await
+            .unwrap_or_default()
+            .iter()
+            .filter(|r| !new_set.contains(r.collection.as_deref().unwrap_or("")))
+            .filter_map(|r| <[u8; 32]>::try_from(r.root_hash.as_slice()).ok())
+            .collect();
+        crate::pinset::retain_mirror_content(&state.db, &dropped, Some(key)).await;
+    }
+
     if let Err(e) =
         db::pin_subscriptions::set_collections(&state.db, key, req.follow_all, &req.collections)
             .await
@@ -268,8 +285,9 @@ pub async fn delete_subscription(
         Ok(true) => {
             if params.keep {
                 // Turn the retained content into permanent shares (drop mirror
-                // ownership) so the eviction sweep won't reclaim it.
-                crate::pinset::retain_mirror_content(&state.db, &mirrored).await;
+                // ownership) so the eviction sweep won't reclaim it. The sub is
+                // already removed, so any remaining keeper is another's.
+                crate::pinset::retain_mirror_content(&state.db, &mirrored, None).await;
             } else {
                 // Cascade dropped this peer's mirror rows; sweep orphaned content.
                 crate::pinset::evict_unwanted(

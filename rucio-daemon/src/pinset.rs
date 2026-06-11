@@ -230,18 +230,28 @@ pub async fn on_pinset_received(
     fetch
 }
 
-/// Keep a peer's mirrored content after unsubscribing: drop the `mirror_owned`
-/// mark for each hash no *other* subscription still wants, turning it into a
-/// permanent share the eviction sweep won't reclaim. Call this *after* removing
-/// the subscription (so `is_wanted` reflects only the remaining ones) with the
-/// hashes the peer mirrored, captured before removal. Hashes still wanted by
-/// another subscription are left owned — that subscription keeps managing them.
-pub async fn retain_mirror_content(db: &db::Db, hashes: &[[u8; 32]]) {
+/// Keep mirrored content that's going out of scope (unsubscribe, or dropping a
+/// followed collection): drop the `mirror_owned` mark for each hash no *other*
+/// subscription still wants, turning it into a permanent share the eviction
+/// sweep won't reclaim. Hashes another subscription wants are left owned — that
+/// subscription keeps managing them.
+///
+/// `exclude_peer`: when the subscription losing the content still exists (a
+/// collection narrowing), pass its peer id so its own (about-to-be-dropped)
+/// `wanted` rows don't count as a keeper. Pass `None` once the subscription has
+/// already been removed (unsubscribe), where any remaining `wanted` row is by
+/// definition another subscription's.
+pub async fn retain_mirror_content(db: &db::Db, hashes: &[[u8; 32]], exclude_peer: Option<&str>) {
     for h in hashes {
         if !db::mirror_owned::is_owned(db, h).await.unwrap_or(false) {
             continue; // the user already had it — not mirror-managed, nothing to do
         }
-        if db::mirror_pins::is_wanted(db, h).await.unwrap_or(false) {
+        let wanted_elsewhere = match exclude_peer {
+            Some(p) => db::mirror_pins::wanted_by_other(db, h, p).await,
+            None => db::mirror_pins::is_wanted(db, h).await,
+        }
+        .unwrap_or(false);
+        if wanted_elsewhere {
             continue; // another subscription still wants it; leave it managed
         }
         if let Err(e) = db::mirror_owned::unmark(db, h).await {
@@ -684,7 +694,7 @@ mod tests {
         db::pin_subscriptions::remove(&db, &alice.to_string())
             .await
             .unwrap();
-        retain_mirror_content(&db, &hashes).await;
+        retain_mirror_content(&db, &hashes, None).await;
 
         // `solo` nobody else wants -> ownership dropped (now a permanent share).
         assert!(!db::mirror_owned::is_owned(&db, &solo).await.unwrap());

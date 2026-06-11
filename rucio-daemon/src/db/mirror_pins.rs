@@ -116,6 +116,20 @@ pub async fn is_wanted(db: &Db, root_hash: &[u8; 32]) -> Result<bool> {
     Ok(row.is_some())
 }
 
+/// Whether a subscription *other than* `peer_id` wants this hash. Used when a
+/// peer drops a hash (unsubscribe/narrow) to decide if it still has a keeper.
+pub async fn wanted_by_other(db: &Db, root_hash: &[u8; 32], peer_id: &str) -> Result<bool> {
+    let row = sqlx::query(
+        "SELECT 1 FROM mirror_pins WHERE root_hash = ?1 AND state = ?2 AND peer_id <> ?3",
+    )
+    .bind(root_hash.as_slice())
+    .bind(STATE_WANTED)
+    .bind(peer_id)
+    .fetch_optional(db)
+    .await?;
+    Ok(row.is_some())
+}
+
 /// Total bytes a peer's mirror currently wants (for the storage meter / quota
 /// accounting). Skipped (over-quota) entries are not counted.
 pub async fn wanted_bytes_for_peer(db: &Db, peer_id: &str) -> Result<i64> {

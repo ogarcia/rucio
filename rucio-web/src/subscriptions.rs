@@ -56,10 +56,18 @@ async fn api_remove(peer_id: &str, keep: bool) {
 }
 
 /// Set which collections of a peer to mirror. `follow_all` mirrors everything;
-/// otherwise only `collections` ("" = the peer's uncollected pins).
-async fn api_set_collections(peer_id: &str, follow_all: bool, collections: Vec<String>) {
+/// otherwise only `collections` ("" = the peer's uncollected pins). `keep`
+/// retains content that the new (narrower) scope drops instead of evicting it.
+async fn api_set_collections(
+    peer_id: &str,
+    follow_all: bool,
+    collections: Vec<String>,
+    keep: bool,
+) {
     let url = format!("/api/v1/subscriptions/{peer_id}/collections");
-    let body = serde_json::json!({ "follow_all": follow_all, "collections": collections });
+    let body = serde_json::json!({
+        "follow_all": follow_all, "collections": collections, "keep": keep,
+    });
     if let Ok(req) = gloo_net::http::Request::put(&url).json(&body) {
         let _ = req.send().await;
     }
@@ -489,8 +497,10 @@ fn AddSubscriptionModal(
 #[component]
 fn SubscriptionInfoModal(
     sub: Subscription,
-    on_saved: impl Fn() + Copy + 'static,
-    on_close: impl Fn() + Copy + 'static,
+    // Send + Sync: `do_save_scope` (which captures these) is referenced from a
+    // reactive `<Show>` fallback, whose ViewFn must be Send + Sync.
+    on_saved: impl Fn() + Copy + Send + Sync + 'static,
+    on_close: impl Fn() + Copy + Send + Sync + 'static,
 ) -> impl IntoView {
     let files: RwSignal<Vec<MirrorFile>> = RwSignal::new(vec![]);
     let loaded = RwSignal::new(false);
@@ -532,16 +542,43 @@ fn SubscriptionInfoModal(
         RwSignal::new(sub.followed_collections.iter().cloned().collect());
     let scope_saving = RwSignal::new(false);
     let peer_scope = StoredValue::new(sub.peer_id.clone());
-    let save_scope = move || {
+    // The collections in scope right now, to detect a narrowing on save.
+    let before_scope: std::collections::HashSet<String> = if sub.follow_all {
+        sub.available_collections.iter().cloned().collect()
+    } else {
+        sub.followed_collections.iter().cloned().collect()
+    };
+    let before = StoredValue::new(before_scope);
+    // When the new scope drops collections, ask keep vs free before applying.
+    let narrow_confirm = RwSignal::new(false);
+
+    let do_save_scope = move |keep: bool| {
         let fa = follow_all.get();
         let cols: Vec<String> = selected.get().into_iter().collect();
         let peer = peer_scope.get_value();
         scope_saving.set(true);
         spawn_local(async move {
-            api_set_collections(&peer, fa, cols).await;
+            api_set_collections(&peer, fa, cols, keep).await;
             on_saved();
             on_close();
         });
+    };
+    let save_scope = move || {
+        // Scope after this change: everything (follow_all) or the selected set.
+        let after: std::collections::HashSet<String> = if follow_all.get() {
+            available.get_value().into_iter().collect()
+        } else {
+            selected.get()
+        };
+        // Dropping any previously-followed collection means content may go out
+        // of scope → ask whether to keep or free it. Growing the scope applies
+        // straight away (nothing is evicted by adding).
+        let removes = before.get_value().iter().any(|c| !after.contains(c));
+        if removes {
+            narrow_confirm.set(true);
+        } else {
+            do_save_scope(false);
+        }
     };
 
     let save = move || {
@@ -666,13 +703,41 @@ fn SubscriptionInfoModal(
                                 }
                             }}
                         </Show>
-                        <button
-                            class="btn-sm btn-primary"
-                            disabled=move || scope_saving.get()
-                            on:click=move |_| save_scope()
+                        <Show
+                            when=move || !narrow_confirm.get()
+                            fallback=move || view! {
+                                <div class="sub-scope-confirm">
+                                    <p class="modal-hint">
+                                        "This drops collections you were following. What about the
+                                         content you already mirrored from them?"
+                                    </p>
+                                    <div class="sub-scope-confirm-btns">
+                                        <button
+                                            class="btn-sm"
+                                            on:click=move |_| narrow_confirm.set(false)
+                                        >"Back"</button>
+                                        <button
+                                            class="btn-sm btn-danger"
+                                            disabled=move || scope_saving.get()
+                                            on:click=move |_| do_save_scope(false)
+                                        >"Free the space"</button>
+                                        <button
+                                            class="btn-sm btn-primary"
+                                            disabled=move || scope_saving.get()
+                                            on:click=move |_| do_save_scope(true)
+                                        >"Keep it"</button>
+                                    </div>
+                                </div>
+                            }
                         >
-                            {move || if scope_saving.get() { "Saving…" } else { "Update collections" }}
-                        </button>
+                            <button
+                                class="btn-sm btn-primary"
+                                disabled=move || scope_saving.get()
+                                on:click=move |_| save_scope()
+                            >
+                                {move || if scope_saving.get() { "Saving…" } else { "Update collections" }}
+                            </button>
+                        </Show>
                     </div>
 
                     <div class="sub-file-list">

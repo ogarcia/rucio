@@ -81,6 +81,11 @@ pub struct SubscriptionCollectionsRequest {
     /// The collections to follow when `follow_all` is false. "" = uncollected.
     #[serde(default)]
     pub collections: Vec<String>,
+    /// When the new scope drops collections, `true` keeps the content already
+    /// mirrored from them (it becomes a permanent share you own) and `false`
+    /// (default) lets the re-sync evict it. No effect when the scope only grows.
+    #[serde(default)]
+    pub keep: bool,
 }
 
 /// GET /api/v1/subscriptions
