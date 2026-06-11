@@ -146,6 +146,45 @@ pub async fn list_collections(db: &Db, peer_id: &str) -> Result<Vec<String>> {
         .collect())
 }
 
+/// Replace the set of collections a peer is known to advertise (the available
+/// set the UI offers). Recorded from the full pin-set on every sync, so it's
+/// independent of what's actually being mirrored. `""` = uncollected.
+pub async fn set_seen_collections(db: &Db, peer_id: &str, collections: &[String]) -> Result<()> {
+    let mut tx = db.begin().await?;
+    sqlx::query("DELETE FROM subscription_seen_collections WHERE peer_id = ?1")
+        .bind(peer_id)
+        .execute(&mut *tx)
+        .await?;
+    for c in collections {
+        sqlx::query(
+            "INSERT OR IGNORE INTO subscription_seen_collections (peer_id, collection)
+             VALUES (?1, ?2)",
+        )
+        .bind(peer_id)
+        .bind(c.as_str())
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+/// The collections a peer is known to advertise, alphabetically. `""` =
+/// uncollected. Feeds the subscriber UI's collection selector.
+pub async fn list_seen_collections(db: &Db, peer_id: &str) -> Result<Vec<String>> {
+    let rows = sqlx::query(
+        "SELECT collection FROM subscription_seen_collections
+         WHERE peer_id = ?1 ORDER BY collection ASC",
+    )
+    .bind(peer_id)
+    .fetch_all(db)
+    .await?;
+    Ok(rows
+        .iter()
+        .map(|r| r.get::<String, _>("collection"))
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

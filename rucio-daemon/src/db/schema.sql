@@ -93,6 +93,20 @@ CREATE TABLE IF NOT EXISTS pin_subscription_collections (
 );
 
 -- ---------------------------------------------------------------------------
+-- subscription_seen_collections (cooperative pinning)
+-- The distinct collections a peer advertises in its pin-set, refreshed on every
+-- sync from the FULL set before any follow-scope filtering. This is what the UI
+-- offers as available collections, so a subscriber can discover and pick
+-- collections even when follow_all = 0 and nothing is being mirrored yet.
+-- '' = the peer's uncollected pins.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS subscription_seen_collections (
+    peer_id     TEXT    NOT NULL REFERENCES pin_subscriptions(peer_id) ON DELETE CASCADE,
+    collection  TEXT    NOT NULL,
+    PRIMARY KEY (peer_id, collection)
+);
+
+-- ---------------------------------------------------------------------------
 -- mirror_pins (cooperative pinning)
 -- Content we mirror on behalf of a subscription. A root hash may be wanted by
 -- several subscriptions (composite key). state is one of: 'wanted' (selected,

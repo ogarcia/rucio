@@ -692,15 +692,6 @@ fn SubscriptionInfoModal(
             <div class="modal modal-wide" on:click=move |e| e.stop_propagation()>
                 <div class="modal-header">
                     <span class="modal-title">"Subscription"</span>
-                    <button
-                        class="icon-btn sub-refresh"
-                        class:is-refreshing=move || refreshing.get()
-                        title="Pull this peer's pin-set now and reload"
-                        disabled=move || refreshing.get()
-                        on:click=move |_| do_refresh()
-                    >
-                        <Icon paths=icons::REFRESH/>
-                    </button>
                     <button class="overlay-close" on:click=move |_| on_close()>
                         <Icon paths=icons::X/>
                     </button>
@@ -740,14 +731,25 @@ fn SubscriptionInfoModal(
                     // Collection scope: follow the whole peer, or pick which of
                     // their collections to mirror.
                     <div class="sub-scope">
-                        <label class="sub-scope-all">
-                            <input
-                                type="checkbox"
-                                prop:checked=move || follow_all.get()
-                                on:change=move |e| follow_all.set(event_target_checked(&e))
-                            />
-                            <span>"Mirror everything this peer pins"</span>
-                        </label>
+                        <div class="sub-scope-head">
+                            <label class="sub-scope-all">
+                                <input
+                                    type="checkbox"
+                                    prop:checked=move || follow_all.get()
+                                    on:change=move |e| follow_all.set(event_target_checked(&e))
+                                />
+                                <span>"Mirror everything this peer pins"</span>
+                            </label>
+                            <button
+                                class="icon-btn sub-refresh"
+                                class:is-refreshing=move || refreshing.get()
+                                title="Pull this peer's pin-set now (discover collections, update stats)"
+                                disabled=move || refreshing.get()
+                                on:click=move |_| do_refresh()
+                            >
+                                <Icon paths=icons::REFRESH/>
+                            </button>
+                        </div>
                         <Show when=move || !follow_all.get()>
                             {move || {
                                 let avail = info.get().available_collections;

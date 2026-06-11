@@ -61,9 +61,10 @@ async fn to_response(
     let followed_collections = db::pin_subscriptions::list_collections(&state.db, &sub.peer_id)
         .await
         .unwrap_or_default();
-    let available_collections = db::mirror_pins::collections_for_peer(&state.db, &sub.peer_id)
-        .await
-        .unwrap_or_default();
+    let available_collections =
+        db::pin_subscriptions::list_seen_collections(&state.db, &sub.peer_id)
+            .await
+            .unwrap_or_default();
     SubscriptionResponse {
         peer_id: sub.peer_id,
         quota_bytes: sub.quota_bytes.max(0) as u64,

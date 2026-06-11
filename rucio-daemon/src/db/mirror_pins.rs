@@ -91,20 +91,6 @@ pub async fn list_for_peer(db: &Db, peer_id: &str) -> Result<Vec<MirrorPinRow>> 
     Ok(rows.iter().map(row_to_mirror).collect())
 }
 
-/// Distinct collection labels seen in a peer's synced pin-set, alphabetically.
-/// NULL/uncollected pins are reported as the empty string "". Feeds the
-/// subscriber UI's "which collections does this peer publish" selector.
-pub async fn collections_for_peer(db: &Db, peer_id: &str) -> Result<Vec<String>> {
-    let rows = sqlx::query(
-        "SELECT DISTINCT COALESCE(collection, '') AS c
-         FROM mirror_pins WHERE peer_id = ?1 ORDER BY c ASC",
-    )
-    .bind(peer_id)
-    .fetch_all(db)
-    .await?;
-    Ok(rows.iter().map(|r| r.get::<String, _>("c")).collect())
-}
-
 /// Whether any subscription wants this hash (state = 'wanted'). Used by the
 /// retention check together with the manual `pins` table.
 pub async fn is_wanted(db: &Db, root_hash: &[u8; 32]) -> Result<bool> {

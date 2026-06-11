@@ -148,6 +148,20 @@ pub async fn on_pinset_received(
         return Vec::new();
     }
 
+    // Record the collections the peer advertises from the FULL set, before any
+    // follow-scope filtering, so the UI can offer them even when nothing is
+    // being mirrored yet (follow_all = 0 with an empty/narrow followed set).
+    let seen: Vec<String> = {
+        let mut s: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for e in &entries {
+            s.insert(e.collection.clone().unwrap_or_default());
+        }
+        s.into_iter().collect()
+    };
+    if let Err(e) = db::pin_subscriptions::set_seen_collections(db, &peer_str, &seen).await {
+        warn!(peer = %peer_str, "reconcile: recording seen collections failed: {e}");
+    }
+
     // Scope the pin-set to the collections this subscription follows. When
     // `follow_all` is set the whole set is in scope; otherwise keep only entries
     // whose collection is in the followed set (the empty label "" matches the
@@ -533,6 +547,14 @@ mod tests {
                 .unwrap()
                 .len(),
             1
+        );
+        // ...but the UI still discovers every collection the peer advertises,
+        // including the unfollowed and uncollected ones.
+        assert_eq!(
+            db::pin_subscriptions::list_seen_collections(&db, &peer_str)
+                .await
+                .unwrap(),
+            vec!["".to_string(), "Manuals".to_string(), "Series".to_string()]
         );
     }
 
