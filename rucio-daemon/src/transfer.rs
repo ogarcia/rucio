@@ -177,7 +177,10 @@ struct PeerState {
     /// Reset to 0 on any verified chunk; drives provider eviction.
     consecutive_failures: u32,
     /// Cumulative bytes received from this peer for the current download.
-    bytes_downloaded: u64,
+    /// An `Arc<AtomicU64>` so the net codec can fill it incrementally as a chunk
+    /// is read off the wire (flat per-peer download rate), handed over as the
+    /// download sink in `RequestChunk`.
+    bytes_downloaded: Arc<std::sync::atomic::AtomicU64>,
     /// Per-peer rate sampler state, advanced by `publish_live_stats`.
     last_sample_bytes: u64,
     last_sample_at: Option<std::time::Instant>,
@@ -344,20 +347,25 @@ impl DownloadEngine {
                 if !ps.in_flight.is_empty() {
                     active_peers += 1;
                 }
-                // Per-peer rate over the interval since the last publish.
+                // Per-peer rate over the interval since the last publish. The
+                // byte counter is filled incrementally by the net codec, so the
+                // sampled rate is flat for a steady transfer.
+                let total = ps
+                    .bytes_downloaded
+                    .load(std::sync::atomic::Ordering::Relaxed);
                 match ps.last_sample_at {
                     Some(last) => {
                         let elapsed = now.duration_since(last).as_secs_f64();
                         if elapsed >= 0.5 {
-                            let delta = ps.bytes_downloaded.saturating_sub(ps.last_sample_bytes);
+                            let delta = total.saturating_sub(ps.last_sample_bytes);
                             ps.rate_bps = (delta as f64 / elapsed) as u64;
-                            ps.last_sample_bytes = ps.bytes_downloaded;
+                            ps.last_sample_bytes = total;
                             ps.last_sample_at = Some(now);
                         }
                     }
                     None => {
                         ps.last_sample_at = Some(now);
-                        ps.last_sample_bytes = ps.bytes_downloaded;
+                        ps.last_sample_bytes = total;
                     }
                 }
                 // Resolve the peer's address once, then cache it.
@@ -369,11 +377,11 @@ impl DownloadEngine {
                     ps.addr_resolved = true;
                 }
                 // Only surface peers actually contributing or being asked.
-                if ps.bytes_downloaded > 0 || !ps.in_flight.is_empty() {
+                if total > 0 || !ps.in_flight.is_empty() {
                     peers.push(DownloadPeerDetail {
                         peer_id: peer_id.to_base58(),
                         address: ps.address.clone(),
-                        bytes_downloaded: ps.bytes_downloaded,
+                        bytes_downloaded: total,
                         chunks_in_flight: ps.in_flight.len() as u32,
                         rate_bps: ps.rate_bps,
                     });
@@ -1273,12 +1281,19 @@ impl DownloadEngine {
 
         for (peer, chunk_idx) in assigned {
             let (id_tx, id_rx) = oneshot::channel();
+            // This peer's cumulative-bytes counter, for net to fill as it reads
+            // the chunk — a flat per-peer download rate in the detail view.
+            let download_sink = self
+                .active
+                .get_mut(&root_hash)
+                .map(|dl| Arc::clone(&dl.peer_state.entry(peer).or_default().bytes_downloaded));
             let cmd = NodeCmd::RequestChunk {
                 peer,
                 request: ChunkRequest {
                     root_hash,
                     chunk_idx,
                 },
+                download_sink,
                 id_tx,
             };
             if self.cmd_tx.send(cmd).await.is_err() {
@@ -1395,17 +1410,14 @@ impl DownloadEngine {
                     return;
                 }
 
-                let chunk_bytes = data.len() as u64;
-                // Bytes were accounted incrementally as the chunk was read off
-                // the wire (the net codec's read-progress hook → a flat download
-                // speed); here we only count the completed chunk.
+                // Bytes (global + this peer's tally) were accounted incrementally
+                // as the chunk was read off the wire (the net codec's read hooks →
+                // flat download speed); here we only count the completed chunk.
                 self.metrics.record_download_chunk();
 
-                // A good chunk clears this peer's failure streak and adds to its
-                // per-peer byte tally (drives the per-peer rate in live stats).
+                // A good chunk clears this peer's failure streak.
                 if let Some(ps) = dl.peer_state.get_mut(&peer) {
                     ps.consecutive_failures = 0;
-                    ps.bytes_downloaded += chunk_bytes;
                 }
                 // After a sustained good run, recover one global concurrency
                 // slot for this peer, so one that was only transiently slow
@@ -1744,26 +1756,30 @@ impl DownloadEngine {
                 produced_ms = started.elapsed().as_millis() as u64,
                 "serve_chunk: response produced"
             );
-            // The upload rate limit (and the byte-by-byte speed accounting) is
-            // applied where the bytes are written: the net transfer codec, paced
-            // by the shared throttle via the upload limiter. So the stream is
-            // smooth and the speed reads flat. Here we only count the chunk and
-            // track per-peer totals.
-            if let ChunkResponse::Ok { ref data, .. } = response {
-                let bytes = data.len() as u64;
+            // The upload rate limit and the byte-by-byte speed accounting (both
+            // global and per-peer) are applied where the bytes are written: the
+            // net transfer codec, paced by the shared throttle. So the stream is
+            // smooth and the rates read flat. Here we count the chunk and hand
+            // the per-`(peer, file)` byte counter to net as the upload sink.
+            let upload_sink = if let ChunkResponse::Ok { .. } = response {
                 metrics.record_upload_chunk();
-                // Track this peer in the active-upload registry. The name is
-                // resolved (one DB hit) only on the first chunk to this peer
-                // for this file; later chunks just accumulate.
-                if !upload_stats.add_bytes_rucio(peer, &root_hash, bytes) {
-                    let name = db::shares::get_by_hash(&db, &root_hash)
-                        .await
-                        .ok()
-                        .flatten()
-                        .map(|r| r.name);
-                    upload_stats.record_rucio(peer, &root_hash, name, bytes);
-                }
-            }
+                // Get the row's byte counter; resolve the name (one DB hit) only
+                // when creating the row on first contact.
+                let sink = match upload_stats.rucio_sink_existing(peer, &root_hash) {
+                    Some(s) => s,
+                    None => {
+                        let name = db::shares::get_by_hash(&db, &root_hash)
+                            .await
+                            .ok()
+                            .flatten()
+                            .map(|r| r.name);
+                        upload_stats.rucio_sink_create(peer, &root_hash, name)
+                    }
+                };
+                Some(sink)
+            } else {
+                None
+            };
             debug!(
                 chunk_idx = request.chunk_idx,
                 total_ms = started.elapsed().as_millis() as u64,
@@ -1773,6 +1789,7 @@ impl DownloadEngine {
                 .send(NodeCmd::RespondChunk {
                     channel_id,
                     response,
+                    upload_sink,
                 })
                 .await;
         });
@@ -2079,12 +2096,12 @@ mod tests {
                     cmd = rx.recv() => {
                         match cmd {
                             None => break,
-                            Some(NodeCmd::RequestChunk { peer, request, id_tx }) => {
+                            Some(NodeCmd::RequestChunk { peer, request, download_sink, id_tx }) => {
                                 let fake_id = fake_request_id(42 + cmds.len() as u64);
                                 let _ = id_tx.send(fake_id);
                                 // Record just peer/request info via a dummy sentinel
                                 let (tx2, _) = tokio::sync::oneshot::channel();
-                                cmds.push(NodeCmd::RequestChunk { peer, request, id_tx: tx2 });
+                                cmds.push(NodeCmd::RequestChunk { peer, request, download_sink, id_tx: tx2 });
                             }
                             Some(NodeCmd::RequestManifest { peer, request, id_tx }) => {
                                 let fake_id = fake_request_id(100 + cmds.len() as u64);

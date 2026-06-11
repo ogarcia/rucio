@@ -133,6 +133,54 @@ impl UploadRegistry {
         }
     }
 
+    /// Byte counter (`bytes_sent`) of an existing rucio row, or `None` if the
+    /// `(peer, file)` row doesn't exist yet. The net codec increments this
+    /// directly as it paces the chunk onto the wire, so the per-peer rate reads
+    /// as a flat stream. Bumps `last_activity` so an active transfer isn't reaped.
+    pub fn rucio_sink_existing(
+        &self,
+        peer: PeerId,
+        file_hash: &[u8; 32],
+    ) -> Option<Arc<AtomicU64>> {
+        let key = UploadKey {
+            network: UploadNetwork::Rucio,
+            peer: peer.to_base58(),
+            file_hash: hex::encode(file_hash),
+        };
+        let mut map = self.inner.lock().unwrap();
+        map.get_mut(&key).map(|e| {
+            e.last_activity = now_secs();
+            Arc::clone(&e.bytes_sent)
+        })
+    }
+
+    /// Create the rucio `(peer, file)` row (resolving its `name` once on first
+    /// contact) and return its `bytes_sent` counter for the net codec to fill.
+    pub fn rucio_sink_create(
+        &self,
+        peer: PeerId,
+        file_hash: &[u8; 32],
+        name: Option<String>,
+    ) -> Arc<AtomicU64> {
+        let key = UploadKey {
+            network: UploadNetwork::Rucio,
+            peer: peer.to_base58(),
+            file_hash: hex::encode(file_hash),
+        };
+        let mut map = self.inner.lock().unwrap();
+        let now = now_secs();
+        let entry = map.entry(key).or_insert_with(|| UploadEntry {
+            file_name: name,
+            bytes_sent: Arc::new(AtomicU64::new(0)),
+            started_at: now,
+            rate_bps: 0,
+            window: SpeedWindow::new(),
+            last_sampled_bytes: 0,
+            last_activity: now,
+        });
+        Arc::clone(&entry.bytes_sent)
+    }
+
     /// Advance the per-row speed windows and prune finished rucio rows. Call
     /// once per second from the main loop.
     pub fn sample(&self) {

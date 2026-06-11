@@ -35,6 +35,6 @@ pub struct NetConfig {
 }
 
 pub use behaviour::BehaviourConfig;
-pub use codec_utils::{ByteLimiter, ReadProgress};
+pub use codec_utils::{ByteLimiter, ByteSink, ReadProgress};
 pub use messages::{NodeCmd, NodeEvent};
 pub use task::{NodeHandle, spawn};

@@ -16,7 +16,6 @@ use rucio_core::protocol::{
     node::NodeClass,
     pinset::{PinsetRequest, PinsetResponse},
     search::{SearchQuery, SearchResult},
-    transfer::{ChunkRequest, ChunkResponse},
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -34,6 +33,7 @@ use super::{
     classify::{ClassificationState, is_stable_external_addr},
     identity,
     messages::{NodeCmd, NodeEvent},
+    transfer_codec::{ChunkReq, ChunkResp},
 };
 
 const CMD_BUFFER: usize = 64;
@@ -224,7 +224,7 @@ struct LoopState {
     provider_queries: HashMap<QueryId, Vec<u8>>,
     classifier: ClassificationState,
     /// Pending inbound chunk request channels keyed by a monotonic id.
-    pending_chunk_channels: HashMap<u64, ResponseChannel<ChunkResponse>>,
+    pending_chunk_channels: HashMap<u64, ResponseChannel<ChunkResp>>,
     /// Pending inbound manifest request channels keyed by a monotonic id.
     pending_manifest_channels: HashMap<u64, ResponseChannel<ManifestResponse>>,
     /// Pending inbound pin-set request channels keyed by a monotonic id.
@@ -283,7 +283,7 @@ impl LoopState {
         }
     }
 
-    fn store_chunk_channel(&mut self, ch: ResponseChannel<ChunkResponse>) -> u64 {
+    fn store_chunk_channel(&mut self, ch: ResponseChannel<ChunkResp>) -> u64 {
         let id = self.next_channel_id;
         self.next_channel_id += 1;
         self.pending_chunk_channels.insert(id, ch);
@@ -464,22 +464,24 @@ async fn run_loop(
                     Some(NodeCmd::PublishSearchResult(result)) => {
                         publish_json(&mut swarm, &topic_result, &result, "search result", &mut state.pending_publishes);
                     }
-                    Some(NodeCmd::RequestChunk { peer, request, id_tx }) => {
+                    Some(NodeCmd::RequestChunk { peer, request, download_sink, id_tx }) => {
                         if let Some(transfer) = swarm.behaviour_mut().transfer.as_mut() {
-                            let request_id = transfer.send_request(&peer, request);
+                            // The codec pairs the request with the per-peer sink;
+                            // only the request goes on the wire.
+                            let request_id = transfer.send_request(&peer, (request, download_sink));
                             let _ = id_tx.send(request_id);
                         } else {
                             warn!("RequestChunk ignored: transfer protocol disabled");
                         }
                     }
-                    Some(NodeCmd::RespondChunk { channel_id, response }) => {
+                    Some(NodeCmd::RespondChunk { channel_id, response, upload_sink }) => {
                         if let Some(ch) = state.pending_chunk_channels.remove(&channel_id) {
                             // `send_response` returns the response back in `Err`
                             // when the channel is gone (requester cancelled or
                             // disconnected) — expected, and we must NOT log the
                             // payload: a chunk is multiple MiB of raw bytes.
                             if let Some(transfer) = swarm.behaviour_mut().transfer.as_mut()
-                                && transfer.send_response(ch, response).is_err()
+                                && transfer.send_response(ch, (response, upload_sink)).is_err()
                             {
                                 debug!(%channel_id, "Chunk response dropped: requester no longer reachable");
                             }
@@ -1141,12 +1143,14 @@ async fn on_gossipsub_event(event: gossipsub::Event, event_tx: &EventTx) {
 // ---------------------------------------------------------------------------
 
 async fn on_transfer_event(
-    event: request_response::Event<ChunkRequest, ChunkResponse>,
+    event: request_response::Event<ChunkReq, ChunkResp>,
     event_tx: &EventTx,
     state: &mut LoopState,
 ) {
     match event {
-        // We received a response for a request we sent.
+        // We received a response for a request we sent. The codec already
+        // counted its bytes against the per-peer sink as it read them; the
+        // local sink half (`.1`) is None on the read side.
         request_response::Event::Message {
             peer,
             message:
@@ -1161,7 +1165,7 @@ async fn on_transfer_event(
                 .emit(NodeEvent::ChunkReceived {
                     request_id,
                     peer,
-                    response,
+                    response: response.0,
                 })
                 .await;
         }
@@ -1175,12 +1179,12 @@ async fn on_transfer_event(
                 },
             ..
         } => {
-            debug!(%peer, chunk_idx = request.chunk_idx, "Received chunk request");
+            debug!(%peer, chunk_idx = request.0.chunk_idx, "Received chunk request");
             let channel_id = state.store_chunk_channel(channel);
             let delivered = event_tx
                 .emit(NodeEvent::ChunkRequested {
                     peer,
-                    request,
+                    request: request.0,
                     channel_id,
                 })
                 .await;

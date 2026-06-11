@@ -8,8 +8,15 @@ use std::future::Future;
 use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const MAX_FRAME: usize = 8 * 1024 * 1024; // 8 MiB
+
+/// Optional per-transfer byte counter, incremented slice-by-slice as a chunk is
+/// paced/read. The daemon points it at a specific `(peer, file)` row so its
+/// transfer rate reads as a flat stream rather than spiking once per 4 MiB
+/// chunk. Distinct from the global limiter/progress hooks (which carry no peer).
+pub type ByteSink = Option<Arc<AtomicU64>>;
 
 /// An async byte-rate limiter: called with a byte count, its future resolves
 /// once that many bytes' worth of upload allowance is available. Lets the
@@ -58,6 +65,7 @@ where
 pub async fn read_framed_progress<T, D>(
     io: &mut T,
     progress: Option<&ReadProgress>,
+    peer_sink: &ByteSink,
 ) -> io::Result<D>
 where
     T: AsyncRead + Unpin + Send,
@@ -75,16 +83,21 @@ where
     }
 
     let mut buf = vec![0u8; len];
-    match progress {
-        None => io.read_exact(&mut buf).await?,
-        Some(report) => {
-            let mut off = 0;
-            while off < len {
-                let end = (off + PACING_PIECE).min(len);
-                io.read_exact(&mut buf[off..end]).await?;
-                report((end - off) as u64);
-                off = end;
+    if progress.is_none() && peer_sink.is_none() {
+        io.read_exact(&mut buf).await?;
+    } else {
+        let mut off = 0;
+        while off < len {
+            let end = (off + PACING_PIECE).min(len);
+            io.read_exact(&mut buf[off..end]).await?;
+            let n = (end - off) as u64;
+            if let Some(report) = progress {
+                report(n); // global download speed
             }
+            if let Some(sink) = peer_sink {
+                sink.fetch_add(n, Ordering::Relaxed); // this peer's rate
+            }
+            off = end;
         }
     }
 
@@ -120,6 +133,7 @@ pub async fn write_framed_paced<T, S>(
     io: &mut T,
     value: &S,
     limiter: Option<&ByteLimiter>,
+    peer_sink: &ByteSink,
 ) -> io::Result<()>
 where
     T: AsyncWrite + Unpin + Send,
@@ -136,17 +150,21 @@ where
     }
 
     io.write_all(&(encoded.len() as u32).to_le_bytes()).await?;
-    match limiter {
-        None => io.write_all(&encoded).await?,
-        Some(limit) => {
-            for piece in encoded.chunks(PACING_PIECE) {
-                // Wait for this slice's worth of upload allowance, then write it
-                // and flush so it actually leaves the host paced — otherwise the
-                // slices could buffer and burst out together at the final flush,
-                // defeating the smoothing.
-                limit(piece.len() as u64).await;
-                io.write_all(piece).await?;
-                io.flush().await?;
+    if limiter.is_none() && peer_sink.is_none() {
+        io.write_all(&encoded).await?;
+    } else {
+        for piece in encoded.chunks(PACING_PIECE) {
+            let n = piece.len() as u64;
+            // Wait for this slice's upload allowance (paces + global speed).
+            if let Some(limit) = limiter {
+                limit(n).await;
+            }
+            io.write_all(piece).await?;
+            // Flush so it leaves the host paced, not buffered into one burst.
+            io.flush().await?;
+            // Account this peer's bytes as they go out (flat per-peer rate).
+            if let Some(sink) = peer_sink {
+                sink.fetch_add(n, Ordering::Relaxed);
             }
         }
     }

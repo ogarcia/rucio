@@ -36,12 +36,18 @@ pub enum NodeCmd {
     RequestChunk {
         peer: PeerId,
         request: ChunkRequest,
+        /// Per-`(peer, file)` byte counter incremented as the response is read,
+        /// so this download's per-peer rate reads as a flat stream.
+        download_sink: crate::codec_utils::ByteSink,
         id_tx: oneshot::Sender<OutboundRequestId>,
     },
     /// Send a chunk response back to a peer that requested it.
     RespondChunk {
         channel_id: u64,
         response: ChunkResponse,
+        /// Per-`(peer, file)` byte counter incremented as the chunk is paced
+        /// onto the wire, so this peer's upload rate reads as a flat stream.
+        upload_sink: crate::codec_utils::ByteSink,
     },
     /// Request the manifest for a file from a remote peer.
     /// The node task sends the assigned `OutboundRequestId` back through `id_tx`.
