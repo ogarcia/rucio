@@ -234,14 +234,12 @@ pub async fn on_pinset_received(
                 continue; // unknown — skip this sweep rather than risk a dup fetch
             }
         }
-        // Already being fetched (the user's own in-flight download, or a mirror
-        // already in progress)? Skip too — its completion turns it into a share,
-        // and we must not mark the user's own download as mirror-owned.
+        // Already being fetched, or paused mid-download (the user's own in-flight
+        // download, or a mirror already in progress)? Skip — its completion turns
+        // it into a share, we must not mark the user's own download as
+        // mirror-owned, and re-fetching a paused one would restart it from zero.
         if let Ok(Some(s)) = db::downloads::status_by_root_hash(db, &e.root_hash).await
-            && matches!(
-                s.as_str(),
-                "finding_providers" | "queued" | "downloading" | "stalled"
-            )
+            && db::downloads::is_incomplete(&s)
         {
             continue;
         }
@@ -324,14 +322,11 @@ pub async fn evictable_count(
             }
             continue;
         }
-        // No share yet: an in-flight fetch would be cancelled (and its partial
-        // discarded). That still counts as something to free, so the user is
-        // asked rather than silently keeping a download that's still running.
+        // No share yet: an in-flight or paused download would be cancelled (and
+        // its partial discarded). That still counts as something to free, so the
+        // user is asked rather than silently dropping a download with progress.
         if let Ok(Some(row)) = db::downloads::get_by_root_hash(db, h).await
-            && matches!(
-                row.status.as_str(),
-                "finding_providers" | "queued" | "downloading" | "stalled"
-            )
+            && db::downloads::is_incomplete(&row.status)
         {
             count += 1;
             bytes += row.total_size.max(0) as u64;
@@ -371,10 +366,7 @@ pub async fn evict_unwanted(
         // permanent share after the user chose to free the space. `cancel`
         // deletes the .part and stops providing; we drop ownership below.
         if let Ok(Some(row)) = db::downloads::get_by_root_hash(db, &hash).await
-            && matches!(
-                row.status.as_str(),
-                "finding_providers" | "queued" | "downloading" | "stalled"
-            )
+            && db::downloads::is_incomplete(&row.status)
         {
             // Cancel and remove the row entirely (delete_row): a mirror we no
             // longer want leaves no user-facing history, so don't keep a stale
@@ -693,6 +685,45 @@ mod tests {
         // later unsubscribe+free can't evict the user's own download).
         assert!(!db::mirror_owned::is_owned(&db, &downloading).await.unwrap());
         assert!(db::mirror_owned::is_owned(&db, &missing).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn paused_mirror_is_freeable_and_not_restarted() {
+        let (db, dir) = test_db().await;
+        let pin_dir = dir.path().join("pins");
+        tokio::fs::create_dir_all(&pin_dir).await.unwrap();
+        let peer = PeerId::random();
+        let peer_str = peer.to_string();
+        db::pin_subscriptions::upsert(&db, &peer_str, 1_000_000, 1)
+            .await
+            .unwrap();
+
+        // A mirror download the user paused mid-transfer (owned, has a partial).
+        let h = [66u8; 32];
+        let id = db::downloads::create_pending(&db, &h, Some("p.bin"), 500, true, None)
+            .await
+            .unwrap()
+            .id();
+        db::downloads::set_status(&db, id, "paused", None)
+            .await
+            .unwrap();
+        db::mirror_owned::mark(&db, &h, 1).await.unwrap();
+
+        // Unsubscribe must see it as freeable (there's a partial to decide on),
+        // not report "nothing to free" and skip the keep/free prompt.
+        let (n, _) = evictable_count(&db, &[h], &peer_str, &pin_dir).await;
+        assert_eq!(n, 1, "a paused mirror counts as freeable");
+
+        // Re-subscribing must not re-fetch it (which would restart from zero).
+        let resp = PinsetResponse::Ok {
+            version: 3,
+            entries: vec![entry(h, 100, "p.bin")],
+        };
+        let fetch = on_pinset_received(&db, peer, resp, 100).await;
+        assert!(
+            fetch.iter().all(|f| f.root_hash != h),
+            "a paused download is left alone, not restarted"
+        );
     }
 
     /// Insert a share whose `path` is a real file in `dir`, return its path.

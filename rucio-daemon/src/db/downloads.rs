@@ -64,6 +64,18 @@ impl CreatePendingResult {
     }
 }
 
+/// Whether a download status is non-terminal — it still holds (or is pursuing)
+/// a partial: actively transferring, queued, stalled, or **paused**. The mirror
+/// reconcile and eviction use this so a paused mirror is treated as "we have
+/// something" — prompting keep/free and never restarted from zero — rather than
+/// ignored like a fresh hash.
+pub fn is_incomplete(status: &str) -> bool {
+    matches!(
+        status,
+        "finding_providers" | "queued" | "downloading" | "stalled" | "paused"
+    )
+}
+
 /// Insert a placeholder row for a download that has not yet received its
 /// manifest (no chunks known yet), handling duplicates gracefully.
 ///
