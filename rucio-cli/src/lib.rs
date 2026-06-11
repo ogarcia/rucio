@@ -262,10 +262,14 @@ pub enum SubscriptionAction {
         /// Disk quota to devote to this peer, e.g. 10G, 500M, 1.5T
         quota: String,
     },
-    /// Unsubscribe from a peer (drops the mirror and evicts orphaned content)
+    /// Unsubscribe from a peer. By default frees the space by evicting
+    /// mirror-only content; --keep retains it as permanent shares you own.
     Remove {
         /// The peer's PeerId, from `rucio subscription list`
         peer_id: String,
+        /// Keep the content mirrored from this peer instead of evicting it
+        #[arg(long)]
+        keep: bool,
     },
     /// Print this node's shareable link, so others can mirror you
     Link,
@@ -468,8 +472,8 @@ pub async fn run() -> Result<()> {
             SubscriptionAction::Add { peer, quota } => {
                 cmd::subscriptions::add(&client, &peer, &quota).await
             }
-            SubscriptionAction::Remove { peer_id } => {
-                cmd::subscriptions::remove(&client, &peer_id).await
+            SubscriptionAction::Remove { peer_id, keep } => {
+                cmd::subscriptions::remove(&client, &peer_id, keep).await
             }
             SubscriptionAction::Link => cmd::subscriptions::link(&client).await,
         },

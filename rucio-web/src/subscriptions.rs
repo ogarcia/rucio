@@ -48,8 +48,10 @@ async fn api_add(peer: String, quota_bytes: u64) -> Result<(), String> {
     }
 }
 
-async fn api_remove(peer_id: &str) {
-    let url = format!("/api/v1/subscriptions/{peer_id}");
+/// Unsubscribe. `keep = true` retains the mirrored content (it becomes a share
+/// you own); `false` frees the space by evicting mirror-only content.
+async fn api_remove(peer_id: &str, keep: bool) {
+    let url = format!("/api/v1/subscriptions/{peer_id}?keep={keep}");
     let _ = gloo_net::http::Request::delete(&url).send().await;
 }
 
@@ -94,12 +96,6 @@ fn copy_to_clipboard(text: &str) {
     }
 }
 
-fn confirm(message: &str) -> bool {
-    web_sys::window()
-        .and_then(|w| w.confirm_with_message(message).ok())
-        .unwrap_or(false)
-}
-
 /// Convert a quota input (value + unit) into bytes. Base 1024.
 fn quota_to_bytes(value: f64, unit: &str) -> u64 {
     let mult: u64 = match unit {
@@ -142,6 +138,8 @@ pub fn SubscriptionsTab(
     let copied: RwSignal<bool> = RwSignal::new(false);
     // The subscription whose info modal is open (None = closed).
     let info_for: RwSignal<Option<Subscription>> = RwSignal::new(None);
+    // The peer whose unsubscribe (keep/free) modal is open (None = closed).
+    let unsub_for: RwSignal<Option<String>> = RwSignal::new(None);
 
     let reload = move || {
         spawn_local(async move {
@@ -266,20 +264,8 @@ pub fn SubscriptionsTab(
                                         </button>
                                         <button
                                             class="icon-btn icon-btn-danger"
-                                            title="Unsubscribe (evicts mirrored content nobody else wants)"
-                                            on:click=move |_| {
-                                                let p = peer_rm.clone();
-                                                if confirm(
-                                                    "Unsubscribe from this peer?\n\nMirrored content that no other subscription wants — and that you haven't pinned — will be removed from disk.",
-                                                ) {
-                                                    spawn_local(async move {
-                                                        api_remove(&p).await;
-                                                        if let Some(s) = api_list().await {
-                                                            subs.set(s);
-                                                        }
-                                                    });
-                                                }
-                                            }
+                                            title="Unsubscribe"
+                                            on:click=move |_| unsub_for.set(Some(peer_rm.clone()))
                                         >
                                             <Icon paths=icons::TRASH/>
                                         </button>
@@ -319,6 +305,87 @@ pub fn SubscriptionsTab(
                 on_close=move || info_for.set(None)
             />
         </Show>
+
+        <Show when=move || unsub_for.get().is_some()>
+            <UnsubscribeModal
+                peer=unsub_for.get().unwrap()
+                on_done=move || reload()
+                on_close=move || unsub_for.set(None)
+            />
+        </Show>
+    }
+}
+
+// ── Unsubscribe modal ───────────────────────────────────────────────────────
+
+/// Asks whether to keep or free the content mirrored from a peer when
+/// unsubscribing. "Keep" turns it into permanent shares you own; "Free" evicts
+/// the mirror-only content nobody else wants.
+#[component]
+fn UnsubscribeModal(
+    peer: String,
+    on_done: impl Fn() + Copy + 'static,
+    on_close: impl Fn() + Copy + 'static,
+) -> impl IntoView {
+    let peer = StoredValue::new(peer);
+    let busy = RwSignal::new(false);
+
+    let go = move |keep: bool| {
+        busy.set(true);
+        spawn_local(async move {
+            api_remove(&peer.get_value(), keep).await;
+            on_done();
+            on_close();
+        });
+    };
+
+    view! {
+        <div class="modal-backdrop" on:click=move |_| on_close()>
+            <div class="modal" on:click=move |e| e.stop_propagation()>
+                <div class="modal-header">
+                    <span class="modal-title">"Unsubscribe"</span>
+                    <button class="overlay-close" on:click=move |_| on_close()>
+                        <Icon paths=icons::X/>
+                    </button>
+                </div>
+                <div class="modal-body">
+                    <p class="modal-hint">
+                        "Stop mirroring this peer. What should happen to the content you've
+                         already mirrored from them?"
+                    </p>
+                    <ul class="unsub-choices">
+                        <li>
+                            <strong>"Keep it"</strong>
+                            " — the files become permanent shares you own and stay on disk.
+                             Content another subscription still wants keeps being mirrored."
+                        </li>
+                        <li>
+                            <strong>"Free the space"</strong>
+                            " — delete the content that existed only to mirror this peer and
+                             that no other subscription wants (your own downloads and pins are
+                             never touched)."
+                        </li>
+                    </ul>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn-sm" on:click=move |_| on_close()>"Cancel"</button>
+                    <button
+                        class="btn-sm btn-danger"
+                        disabled=move || busy.get()
+                        on:click=move |_| go(false)
+                    >
+                        "Free the space"
+                    </button>
+                    <button
+                        class="btn-sm btn-primary"
+                        disabled=move || busy.get()
+                        on:click=move |_| go(true)
+                    >
+                        "Keep it"
+                    </button>
+                </div>
+            </div>
+        </div>
     }
 }
 

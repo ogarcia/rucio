@@ -7,8 +7,9 @@
 //! sweeps any content that is now wanted by nobody.
 
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use serde::Deserialize;
 
 use libp2p::PeerId;
 use rucio_core::api::subscriptions::{
@@ -209,15 +210,31 @@ pub async fn set_subscription_collections(
     StatusCode::NO_CONTENT
 }
 
+/// Query params for unsubscribe.
+#[derive(Debug, Deserialize)]
+pub struct UnsubscribeParams {
+    /// `true` keeps the content this peer mirrored (it becomes a permanent share
+    /// you own); `false` (default) frees the space by evicting mirror-only
+    /// content nobody else wants.
+    #[serde(default)]
+    pub keep: bool,
+}
+
 /// Unsubscribe from a peer.
 ///
-/// Drops the subscription and its mirror rows, then evicts any mirror content
-/// that is now wanted by no subscription and isn't a manual pin.
+/// Drops the subscription and its mirror rows. With `?keep=true` the content
+/// this peer mirrored is retained — its mirror ownership is dropped so it
+/// becomes a permanent share you own (and the eviction sweep leaves it alone);
+/// hashes another subscription still wants stay managed. By default the
+/// mirror-only content nobody else wants is evicted to free the space.
 #[utoipa::path(
     delete,
     path = "/api/v1/subscriptions/{peer_id}",
     tag = "subscriptions",
-    params(("peer_id" = String, Path, description = "The mirrored peer's PeerId")),
+    params(
+        ("peer_id" = String, Path, description = "The mirrored peer's PeerId"),
+        ("keep" = Option<bool>, Query, description = "Keep the mirrored content instead of evicting it"),
+    ),
     responses(
         (status = 204, description = "Unsubscribed"),
         (status = 404, description = "No such subscription"),
@@ -226,6 +243,7 @@ pub async fn set_subscription_collections(
 pub async fn delete_subscription(
     State(state): State<AppState>,
     Path(peer_id): Path<String>,
+    Query(params): Query<UnsubscribeParams>,
 ) -> StatusCode {
     // Accept a bare id or a link, normalised through the PeerId parser so the
     // stored base58 form is matched exactly.
@@ -233,15 +251,34 @@ pub async fn delete_subscription(
     let key = parsed.parse::<PeerId>().map(|p| p.to_string());
     let key = key.as_deref().unwrap_or(parsed);
 
+    // Capture the hashes this peer mirrored before the cascade drops them, so a
+    // "keep" can decide which to retain.
+    let mirrored: Vec<[u8; 32]> = if params.keep {
+        db::mirror_pins::list_for_peer(&state.db, key)
+            .await
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|r| <[u8; 32]>::try_from(r.root_hash.as_slice()).ok())
+            .collect()
+    } else {
+        Vec::new()
+    };
+
     match db::pin_subscriptions::remove(&state.db, key).await {
         Ok(true) => {
-            // Cascade dropped this peer's mirror rows; clean up orphaned content.
-            crate::pinset::evict_unwanted(
-                &state.db,
-                &state.node_cmd,
-                &state.config.storage.pin_dir,
-            )
-            .await;
+            if params.keep {
+                // Turn the retained content into permanent shares (drop mirror
+                // ownership) so the eviction sweep won't reclaim it.
+                crate::pinset::retain_mirror_content(&state.db, &mirrored).await;
+            } else {
+                // Cascade dropped this peer's mirror rows; sweep orphaned content.
+                crate::pinset::evict_unwanted(
+                    &state.db,
+                    &state.node_cmd,
+                    &state.config.storage.pin_dir,
+                )
+                .await;
+            }
             StatusCode::NO_CONTENT
         }
         Ok(false) => StatusCode::NOT_FOUND,

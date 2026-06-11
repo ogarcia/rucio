@@ -230,6 +230,26 @@ pub async fn on_pinset_received(
     fetch
 }
 
+/// Keep a peer's mirrored content after unsubscribing: drop the `mirror_owned`
+/// mark for each hash no *other* subscription still wants, turning it into a
+/// permanent share the eviction sweep won't reclaim. Call this *after* removing
+/// the subscription (so `is_wanted` reflects only the remaining ones) with the
+/// hashes the peer mirrored, captured before removal. Hashes still wanted by
+/// another subscription are left owned — that subscription keeps managing them.
+pub async fn retain_mirror_content(db: &db::Db, hashes: &[[u8; 32]]) {
+    for h in hashes {
+        if !db::mirror_owned::is_owned(db, h).await.unwrap_or(false) {
+            continue; // the user already had it — not mirror-managed, nothing to do
+        }
+        if db::mirror_pins::is_wanted(db, h).await.unwrap_or(false) {
+            continue; // another subscription still wants it; leave it managed
+        }
+        if let Err(e) = db::mirror_owned::unmark(db, h).await {
+            warn!("retain: dropping mirror ownership failed: {e}");
+        }
+    }
+}
+
 /// Evict mirror content nobody wants any more. A hash is evicted only when it is
 /// mirror-owned (we fetched it solely to mirror), is neither a manual pin nor
 /// wanted by any subscription, and its file lives under `pin_dir`. That triple
@@ -615,5 +635,60 @@ mod tests {
                 .is_some()
         );
         assert!(!db::mirror_owned::is_owned(&db, &elsewhere).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn retain_keeps_owned_unless_wanted_elsewhere() {
+        let (db, _dir) = test_db().await;
+        let alice = PeerId::random();
+        let bob = PeerId::random();
+        db::pin_subscriptions::upsert(&db, &alice.to_string(), 10_000, 1)
+            .await
+            .unwrap();
+        db::pin_subscriptions::upsert(&db, &bob.to_string(), 10_000, 1)
+            .await
+            .unwrap();
+
+        // `solo` is mirrored only from Alice; `shared` from both.
+        let solo = [1u8; 32];
+        let shared = [2u8; 32];
+        for h in [solo, shared] {
+            db::mirror_owned::mark(&db, &h, 1).await.unwrap();
+        }
+        let entry = |h: [u8; 32], name: &str| db::mirror_pins::MirrorEntry {
+            root_hash: h,
+            name: Some(name.into()),
+            size: 4,
+            state: db::mirror_pins::STATE_WANTED.into(),
+            collection: None,
+        };
+        db::mirror_pins::set_for_peer(
+            &db,
+            &alice.to_string(),
+            &[entry(solo, "solo"), entry(shared, "shared")],
+            1,
+        )
+        .await
+        .unwrap();
+        db::mirror_pins::set_for_peer(&db, &bob.to_string(), &[entry(shared, "shared")], 1)
+            .await
+            .unwrap();
+
+        // Unsubscribe from Alice with keep: capture her hashes, remove, retain.
+        let hashes: Vec<[u8; 32]> = db::mirror_pins::list_for_peer(&db, &alice.to_string())
+            .await
+            .unwrap()
+            .iter()
+            .filter_map(|r| <[u8; 32]>::try_from(r.root_hash.as_slice()).ok())
+            .collect();
+        db::pin_subscriptions::remove(&db, &alice.to_string())
+            .await
+            .unwrap();
+        retain_mirror_content(&db, &hashes).await;
+
+        // `solo` nobody else wants -> ownership dropped (now a permanent share).
+        assert!(!db::mirror_owned::is_owned(&db, &solo).await.unwrap());
+        // `shared` is still wanted by Bob -> stays owned (Bob keeps managing it).
+        assert!(db::mirror_owned::is_owned(&db, &shared).await.unwrap());
     }
 }

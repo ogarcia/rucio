@@ -117,12 +117,19 @@ pub async fn add(client: &ApiClient, peer: &str, quota: &str) -> Result<()> {
     Ok(())
 }
 
-pub async fn remove(client: &ApiClient, peer_id: &str) -> Result<()> {
-    match client.delete_subscription(peer_id).await {
-        Ok(()) => println!(
-            "{}",
-            color::success(&format!("Unsubscribed from {peer_id}."))
-        ),
+pub async fn remove(client: &ApiClient, peer_id: &str, keep: bool) -> Result<()> {
+    match client.delete_subscription(peer_id, keep).await {
+        Ok(()) => {
+            let tail = if keep {
+                " Mirrored content kept as your own shares."
+            } else {
+                " Mirror-only content freed."
+            };
+            println!(
+                "{}",
+                color::success(&format!("Unsubscribed from {peer_id}.{tail}"))
+            )
+        }
         Err(e) => {
             eprintln!("{}", color::error(&format!("Error: {e}")));
             std::process::exit(1);

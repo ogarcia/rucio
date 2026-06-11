@@ -306,8 +306,8 @@ impl ApiClient {
         .await
     }
 
-    pub async fn delete_subscription(&self, peer_id: &str) -> Result<()> {
-        self.delete(&format!("/api/v1/subscriptions/{peer_id}"))
+    pub async fn delete_subscription(&self, peer_id: &str, keep: bool) -> Result<()> {
+        self.delete(&format!("/api/v1/subscriptions/{peer_id}?keep={keep}"))
             .await
     }
 
