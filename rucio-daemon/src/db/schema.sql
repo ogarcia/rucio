@@ -110,8 +110,10 @@ CREATE TABLE IF NOT EXISTS subscription_seen_collections (
 -- mirror_pins (cooperative pinning)
 -- Content we mirror on behalf of a subscription. A root hash may be wanted by
 -- several subscriptions (composite key). state is one of: 'wanted' (selected,
--- to fetch/keep), 'skipped' (over quota, intentionally not mirrored). A hash is
--- retained on disk while it is a manual pin OR 'wanted' by >=1 subscription.
+-- to fetch/keep), 'skipped' (over quota, intentionally not mirrored), or
+-- 'cancelled' (the user opted out of this file -- materialised each sync from
+-- mirror_optouts; not fetched, not counted against quota). A hash is retained on
+-- disk while it is a manual pin OR 'wanted' by >=1 subscription.
 -- ON DELETE CASCADE: removing a subscription drops its mirror rows.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS mirror_pins (
@@ -139,6 +141,22 @@ CREATE INDEX IF NOT EXISTS idx_mirror_pins_peer ON mirror_pins(peer_id);
 CREATE TABLE IF NOT EXISTS mirror_owned (
     root_hash   BLOB    PRIMARY KEY,    -- 32 bytes, BLAKE3
     added_at    INTEGER NOT NULL
+);
+
+-- ---------------------------------------------------------------------------
+-- mirror_optouts (cooperative pinning)
+-- Files the user explicitly cancelled from a subscription's mirror. This is the
+-- durable record of "don't mirror this hash from this peer": the reconcile skips
+-- it, the file shows as 'cancelled', and it survives clearing download history,
+-- pin-set version changes, and the publisher un-pinning then re-pinning. It is
+-- removed only when the user re-requests the file, or via ON DELETE CASCADE when
+-- the subscription is removed.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS mirror_optouts (
+    peer_id     TEXT    NOT NULL REFERENCES pin_subscriptions(peer_id) ON DELETE CASCADE,
+    root_hash   BLOB    NOT NULL,         -- 32 bytes, BLAKE3
+    added_at    INTEGER NOT NULL,
+    PRIMARY KEY (peer_id, root_hash)
 );
 
 -- ---------------------------------------------------------------------------

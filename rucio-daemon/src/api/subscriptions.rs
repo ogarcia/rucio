@@ -21,15 +21,25 @@ use rucio_core::api::subscriptions::{
 use crate::api::AppState;
 use crate::db;
 
-/// Resolve a wanted mirror hash to its real state: present on disk, being
-/// fetched, cancelled by the user (left alone by the reconcile), or still
-/// missing (no provider / queued).
-async fn resolve_wanted_state(state: &AppState, hash: &[u8; 32]) -> MirrorFileState {
+/// Resolve a mirror entry's display state from what's on disk, the download
+/// table, and its stored `mirror_state`. Present-on-disk wins (the file is
+/// genuinely there); then the opted-out (`cancelled`) and over-quota (`skipped`)
+/// states; then in-flight; else missing.
+async fn resolve_mirror_state(
+    state: &AppState,
+    hash: &[u8; 32],
+    mirror_state: &str,
+) -> MirrorFileState {
     if matches!(db::shares::get_by_hash(&state.db, hash).await, Ok(Some(_))) {
         return MirrorFileState::Present;
     }
+    if mirror_state == db::mirror_pins::STATE_CANCELLED {
+        return MirrorFileState::Cancelled;
+    }
+    if mirror_state == db::mirror_pins::STATE_SKIPPED {
+        return MirrorFileState::Skipped;
+    }
     match db::downloads::status_by_root_hash(&state.db, hash).await {
-        Ok(Some(ref s)) if s == "cancelled" => MirrorFileState::Cancelled,
         Ok(Some(ref s)) if db::downloads::is_incomplete(s) => MirrorFileState::Fetching,
         _ => MirrorFileState::Missing,
     }
@@ -54,7 +64,12 @@ async fn to_response(
         .iter()
         .filter(|r| r.state == db::mirror_pins::STATE_WANTED)
         .count();
-    let skipped_count = rows.len() - wanted_count;
+    // Only genuine over-quota rows; `cancelled` (opted-out) entries are neither
+    // wanted nor "over quota".
+    let skipped_count = rows
+        .iter()
+        .filter(|r| r.state == db::mirror_pins::STATE_SKIPPED)
+        .count();
     let followed_collections = db::pin_subscriptions::list_collections(&state.db, &sub.peer_id)
         .await
         .unwrap_or_default();
@@ -435,10 +450,8 @@ pub async fn list_subscription_files(
 
     let mut files = Vec::with_capacity(rows.len());
     for r in rows {
-        let state_ = if r.state == db::mirror_pins::STATE_SKIPPED {
-            MirrorFileState::Skipped
-        } else if let Ok(hash) = <[u8; 32]>::try_from(r.root_hash.as_slice()) {
-            resolve_wanted_state(&state, &hash).await
+        let state_ = if let Ok(hash) = <[u8; 32]>::try_from(r.root_hash.as_slice()) {
+            resolve_mirror_state(&state, &hash, &r.state).await
         } else {
             MirrorFileState::Missing
         };
@@ -500,20 +513,21 @@ pub async fn refetch_subscription_file(
         return StatusCode::BAD_REQUEST;
     };
 
-    // Must still be a wanted entry of this subscription — grab its name.
+    // Must still be part of this subscription's mirror set — grab its name.
     let rows = db::mirror_pins::list_for_peer(&state.db, key)
         .await
         .unwrap_or_default();
-    let Some(row) = rows
-        .into_iter()
-        .find(|r| r.root_hash == root_hash && r.state == db::mirror_pins::STATE_WANTED)
-    else {
+    let Some(row) = rows.into_iter().find(|r| r.root_hash == root_hash) else {
         return StatusCode::NOT_FOUND;
     };
     let name = row.name.unwrap_or_default();
 
-    // It exists only because we mirror it: claim ownership, then start the fetch
-    // (reactivating the cancelled row). It lands in pin_dir as a wanted mirror.
+    // Lift the opt-out and restore the wanted state so the reconcile manages it
+    // again, then claim ownership and start the fetch. It lands in pin_dir as a
+    // wanted mirror.
+    let _ = db::mirror_optouts::remove(&state.db, key, &root_hash).await;
+    let _ =
+        db::mirror_pins::set_state(&state.db, key, &root_hash, db::mirror_pins::STATE_WANTED).await;
     let _ = db::mirror_owned::mark(&state.db, &root_hash, crate::now_secs()).await;
     let magnet = format!(
         "rucio:{}?name={}",

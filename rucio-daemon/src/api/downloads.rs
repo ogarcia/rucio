@@ -643,6 +643,31 @@ pub async fn cancel_download(State(state): State<AppState>, Path(id): Path<i64>)
 
         match crate::db::downloads::set_status(&state.db, id, "cancelled", None).await {
             Ok(()) => {
+                // If this hash is mirrored by any subscription, record a durable
+                // opt-out so the reconcile stops re-fetching it (and shows it as
+                // `cancelled`), surviving a later history clear. Materialise the
+                // `cancelled` state now too, for immediate UI feedback.
+                if let Ok(arr) = <[u8; 32]>::try_from(root_hash.as_slice()) {
+                    for peer in crate::db::mirror_pins::peers_for(&state.db, &arr)
+                        .await
+                        .unwrap_or_default()
+                    {
+                        let _ = crate::db::mirror_optouts::add(
+                            &state.db,
+                            &peer,
+                            &arr,
+                            crate::now_secs(),
+                        )
+                        .await;
+                        let _ = crate::db::mirror_pins::set_state(
+                            &state.db,
+                            &peer,
+                            &arr,
+                            crate::db::mirror_pins::STATE_CANCELLED,
+                        )
+                        .await;
+                    }
+                }
                 let _ = state
                     .download_tx
                     .send(DownloadRequest::Cancel {

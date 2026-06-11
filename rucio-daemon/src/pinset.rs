@@ -184,14 +184,27 @@ pub async fn on_pinset_received(
         });
     }
 
+    // Files the user opted out of (durable, in mirror_optouts): they show as
+    // `cancelled` and never count against the quota.
+    let optouts: std::collections::HashSet<[u8; 32]> =
+        match db::mirror_optouts::list_for_peer(db, &peer_str).await {
+            Ok(o) => o.into_iter().collect(),
+            Err(e) => {
+                warn!(peer = %peer_str, "reconcile: listing opt-outs failed: {e}");
+                return Vec::new();
+            }
+        };
+
     // Greedy smallest-first selection under the quota.
     entries.sort_by_key(|e| e.size);
     let quota = sub.quota_bytes.max(0) as u64;
     let mut used: u64 = 0;
     let mut mirror = Vec::with_capacity(entries.len());
     for e in &entries {
-        let fits = quota > 0 && used.saturating_add(e.size) <= quota;
-        let state = if fits {
+        let state = if optouts.contains(&e.root_hash) {
+            // Opted out: materialise `cancelled`, don't consume quota.
+            db::mirror_pins::STATE_CANCELLED
+        } else if quota > 0 && used.saturating_add(e.size) <= quota {
             used += e.size;
             db::mirror_pins::STATE_WANTED
         } else {
@@ -234,14 +247,13 @@ pub async fn on_pinset_received(
                 continue; // unknown — skip this sweep rather than risk a dup fetch
             }
         }
-        // Already being fetched / paused (the user's own in-flight download, or a
-        // mirror in progress), or cancelled by the user? Skip. In-progress: its
-        // completion makes it a share and we mustn't claim the user's own
-        // download; paused: re-fetching restarts from zero; cancelled: the user
-        // opted out, so respect it (they can re-request from the UI). A failed
-        // 'error' row falls through and is retried.
+        // Already being fetched or paused (the user's own in-flight download, or
+        // a mirror in progress)? Skip — its completion makes it a share, we must
+        // not claim the user's own download, and re-fetching a paused one would
+        // restart it from zero. (Opted-out files never reach here: they're
+        // `cancelled`, not `wanted`. A failed 'error' row falls through, retried.)
         if let Ok(Some(s)) = db::downloads::status_by_root_hash(db, &e.root_hash).await
-            && (db::downloads::is_incomplete(&s) || s == "cancelled")
+            && db::downloads::is_incomplete(&s)
         {
             continue;
         }
@@ -729,7 +741,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reconcile_respects_a_cancelled_download() {
+    async fn reconcile_respects_an_optout() {
         let (db, _dir) = test_db().await;
         let peer = PeerId::random();
         let peer_str = peer.to_string();
@@ -737,12 +749,10 @@ mod tests {
             .await
             .unwrap();
 
+        // The durable opt-out is the source of truth — independent of any
+        // download row (which the user may have cleared from history).
         let h = [77u8; 32];
-        let id = db::downloads::create_pending(&db, &h, Some("c.bin"), 1, true, None)
-            .await
-            .unwrap()
-            .id();
-        db::downloads::set_status(&db, id, "cancelled", None)
+        db::mirror_optouts::add(&db, &peer_str, &h, 1)
             .await
             .unwrap();
 
@@ -751,9 +761,96 @@ mod tests {
             entries: vec![entry(h, 100, "c.bin")],
         };
         let fetch = on_pinset_received(&db, peer, resp, 100).await;
+
+        // Not re-fetched, and materialised as `cancelled` (not wanted/skipped) so
+        // it shows in the list and doesn't consume quota.
         assert!(
             fetch.iter().all(|f| f.root_hash != h),
-            "a user-cancelled download is respected, not resurrected"
+            "an opted-out file is respected, not resurrected"
+        );
+        let rows = db::mirror_pins::list_for_peer(&db, &peer_str)
+            .await
+            .unwrap();
+        let row = rows
+            .iter()
+            .find(|r| r.root_hash == h)
+            .expect("entry present");
+        assert_eq!(row.state, db::mirror_pins::STATE_CANCELLED);
+        // Quota not consumed by the opted-out file.
+        assert_eq!(
+            db::mirror_pins::wanted_bytes_for_peer(&db, &peer_str)
+                .await
+                .unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn optout_survives_publisher_unpin_and_repin() {
+        let (db, _dir) = test_db().await;
+        let peer = PeerId::random();
+        let peer_str = peer.to_string();
+        db::pin_subscriptions::upsert(&db, &peer_str, 1_000_000, 1)
+            .await
+            .unwrap();
+
+        let h = [33u8; 32];
+        db::mirror_optouts::add(&db, &peer_str, &h, 1)
+            .await
+            .unwrap();
+
+        // Pinned → materialised cancelled, not fetched.
+        let f1 = on_pinset_received(
+            &db,
+            peer,
+            PinsetResponse::Ok {
+                version: 1,
+                entries: vec![entry(h, 100, "c.bin")],
+            },
+            10,
+        )
+        .await;
+        assert!(f1.iter().all(|f| f.root_hash != h));
+
+        // Publisher un-pins it (different version, empty set) → it leaves the
+        // mirror set, but the durable opt-out stays.
+        on_pinset_received(
+            &db,
+            peer,
+            PinsetResponse::Ok {
+                version: 2,
+                entries: vec![],
+            },
+            11,
+        )
+        .await;
+        assert!(
+            db::mirror_optouts::is_optout(&db, &peer_str, &h)
+                .await
+                .unwrap()
+        );
+
+        // Publisher re-pins it → still respected (not re-fetched), still cancelled.
+        let f3 = on_pinset_received(
+            &db,
+            peer,
+            PinsetResponse::Ok {
+                version: 3,
+                entries: vec![entry(h, 100, "c.bin")],
+            },
+            12,
+        )
+        .await;
+        assert!(
+            f3.iter().all(|f| f.root_hash != h),
+            "the opt-out survived the un-pin/re-pin and is still respected"
+        );
+        let rows = db::mirror_pins::list_for_peer(&db, &peer_str)
+            .await
+            .unwrap();
+        assert_eq!(
+            rows.iter().find(|r| r.root_hash == h).unwrap().state,
+            db::mirror_pins::STATE_CANCELLED
         );
     }
 

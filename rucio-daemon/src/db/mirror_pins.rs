@@ -14,6 +14,7 @@ use super::Db;
 /// `state` of a mirror entry.
 pub const STATE_WANTED: &str = "wanted";
 pub const STATE_SKIPPED: &str = "skipped"; // over quota — intentionally not mirrored
+pub const STATE_CANCELLED: &str = "cancelled"; // user opted out (see mirror_optouts)
 
 #[derive(Debug, Clone)]
 pub struct MirrorPinRow {
@@ -100,6 +101,28 @@ pub async fn is_wanted(db: &Db, root_hash: &[u8; 32]) -> Result<bool> {
         .fetch_optional(db)
         .await?;
     Ok(row.is_some())
+}
+
+/// Peers whose mirror set currently includes this hash (any state). Used when
+/// the user cancels a download to opt every subscription that wanted it out.
+pub async fn peers_for(db: &Db, root_hash: &[u8; 32]) -> Result<Vec<String>> {
+    let rows = sqlx::query("SELECT peer_id FROM mirror_pins WHERE root_hash = ?1")
+        .bind(root_hash.as_slice())
+        .fetch_all(db)
+        .await?;
+    Ok(rows.iter().map(|r| r.get::<String, _>("peer_id")).collect())
+}
+
+/// Set the `state` of one mirror row. Used to materialise `cancelled` (or undo
+/// it on re-request) immediately, before the next reconcile re-derives it.
+pub async fn set_state(db: &Db, peer_id: &str, root_hash: &[u8; 32], state: &str) -> Result<()> {
+    sqlx::query("UPDATE mirror_pins SET state = ?3 WHERE peer_id = ?1 AND root_hash = ?2")
+        .bind(peer_id)
+        .bind(root_hash.as_slice())
+        .bind(state)
+        .execute(db)
+        .await?;
+    Ok(())
 }
 
 /// Whether a subscription *other than* `peer_id` wants this hash. Used when a
