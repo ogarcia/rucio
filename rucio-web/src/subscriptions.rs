@@ -606,6 +606,9 @@ fn SubscriptionInfoModal(
     let unit = RwSignal::new(init_unit.to_string());
     let saving = RwSignal::new(false);
     let error: RwSignal<Option<String>> = RwSignal::new(None);
+    // Transient "applied" confirmations; the modal stays open after a save.
+    let quota_msg: RwSignal<Option<String>> = RwSignal::new(None);
+    let scope_msg: RwSignal<Option<String>> = RwSignal::new(None);
     let (is_mb, is_gb, is_tb) = (init_unit == "MB", init_unit == "GB", init_unit == "TB");
 
     // Collection scope editor.
@@ -628,11 +631,28 @@ fn SubscriptionInfoModal(
         let fa = follow_all.get();
         let cols: Vec<String> = selected.get().into_iter().collect();
         let peer = peer_scope.get_value();
+        // The scope we apply becomes the new baseline for narrowing detection,
+        // so a second edit in the same session compares against it.
+        let new_before: std::collections::HashSet<String> = if fa {
+            info.get().available_collections.into_iter().collect()
+        } else {
+            cols.iter().cloned().collect()
+        };
         scope_saving.set(true);
+        scope_msg.set(None);
         spawn_local(async move {
             api_set_collections(&peer, fa, cols, keep).await;
             on_saved();
-            on_close();
+            before.set_value(new_before);
+            // Refresh the modal in place (keep it open) so stats/files reflect
+            // the change; closing is the X / Close / click-outside.
+            if let Some(s) = api_get(&peer).await {
+                info.set(s);
+            }
+            files.set(api_files(&peer).await);
+            scope_saving.set(false);
+            narrow_confirm.set(false);
+            scope_msg.set(Some("Collections updated".into()));
         });
     };
     let save_scope = move || {
@@ -673,11 +693,17 @@ fn SubscriptionInfoModal(
         let peer = peer_sv.get_value();
         saving.set(true);
         error.set(None);
+        quota_msg.set(None);
         spawn_local(async move {
-            match api_add(peer, quota_bytes).await {
+            match api_add(peer.clone(), quota_bytes).await {
                 Ok(()) => {
                     on_saved();
-                    on_close();
+                    // Keep the modal open; reflect the new quota in the meter.
+                    if let Some(s) = api_get(&peer).await {
+                        info.set(s);
+                    }
+                    saving.set(false);
+                    quota_msg.set(Some("Quota updated".into()));
                 }
                 Err(msg) => {
                     error.set(Some(msg));
@@ -707,12 +733,12 @@ fn SubscriptionInfoModal(
                             min="0"
                             step="any"
                             prop:value=move || quota.get()
-                            on:input=move |e| quota.set(event_target_value(&e))
+                            on:input=move |e| { quota.set(event_target_value(&e)); quota_msg.set(None); }
                             on:keydown=move |e| { if e.key() == "Enter" { save(); } }
                         />
                         <select
                             class="config-input sub-unit"
-                            on:change=move |e| unit.set(event_target_value(&e))
+                            on:change=move |e| { unit.set(event_target_value(&e)); quota_msg.set(None); }
                         >
                             <option value="MB" selected=is_mb>"MB"</option>
                             <option value="GB" selected=is_gb>"GB"</option>
@@ -725,6 +751,7 @@ fn SubscriptionInfoModal(
                         >
                             {move || if saving.get() { "Saving…" } else { "Update quota" }}
                         </button>
+                        {move || quota_msg.get().map(|m| view! { <span class="sub-applied">{m}</span> })}
                     </div>
                     {move || error.get().map(|e| view! { <p class="error-msg">{e}</p> })}
 
@@ -736,7 +763,7 @@ fn SubscriptionInfoModal(
                                 <input
                                     type="checkbox"
                                     prop:checked=move || follow_all.get()
-                                    on:change=move |e| follow_all.set(event_target_checked(&e))
+                                    on:change=move |e| { follow_all.set(event_target_checked(&e)); scope_msg.set(None); }
                                 />
                                 <span>"Mirror everything this peer pins"</span>
                             </label>
@@ -784,6 +811,7 @@ fn SubscriptionInfoModal(
                                                                         if on { s.insert(c.clone()); }
                                                                         else { s.remove(&c); }
                                                                     });
+                                                                    scope_msg.set(None);
                                                                 }
                                                             />
                                                             <span>{label}</span>
@@ -823,13 +851,16 @@ fn SubscriptionInfoModal(
                                 </div>
                             }
                         >
-                            <button
-                                class="btn-sm btn-primary"
-                                disabled=move || scope_saving.get()
-                                on:click=move |_| save_scope()
-                            >
-                                {move || if scope_saving.get() { "Saving…" } else { "Update collections" }}
-                            </button>
+                            <div class="sub-scope-save">
+                                <button
+                                    class="btn-sm btn-primary"
+                                    disabled=move || scope_saving.get()
+                                    on:click=move |_| save_scope()
+                                >
+                                    {move || if scope_saving.get() { "Saving…" } else { "Update collections" }}
+                                </button>
+                                {move || scope_msg.get().map(|m| view! { <span class="sub-applied">{m}</span> })}
+                            </div>
                         </Show>
                     </div>
 
