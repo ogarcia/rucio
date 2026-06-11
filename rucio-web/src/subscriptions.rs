@@ -106,6 +106,12 @@ async fn api_evictable(peer_id: &str) -> Option<u64> {
     v.get("bytes").and_then(|b| b.as_u64())
 }
 
+/// Re-request a mirror file the user previously cancelled.
+async fn api_refetch(peer_id: &str, hash: &str) {
+    let url = format!("/api/v1/subscriptions/{peer_id}/files/{hash}/refetch");
+    let _ = gloo_net::http::Request::post(&url).send().await;
+}
+
 /// The mirror files of a subscription, with their resolved state.
 async fn api_files(peer_id: &str) -> Vec<MirrorFile> {
     let url = format!("/api/v1/subscriptions/{peer_id}/files");
@@ -958,6 +964,7 @@ fn SubscriptionInfoModal(
                                                 "fetching" => "fetching",
                                                 "missing" => "pending",
                                                 "skipped" => "over quota",
+                                                "cancelled" => "cancelled",
                                                 other => other,
                                             }
                                             .to_string();
@@ -966,11 +973,35 @@ fn SubscriptionInfoModal(
                                                 .name
                                                 .clone()
                                                 .unwrap_or_else(|| f.root_hash.chars().take(16).collect());
+                                            // A cancelled file can be re-requested; the poll then
+                                            // shows it move to fetching.
+                                            let is_cancelled = st == "cancelled";
+                                            let hash = f.root_hash.clone();
                                             view! {
                                                 <li class="share-file-row">
                                                     <span class="share-file-name">{name}</span>
                                                     <span class="share-file-size">{format_size(f.size)}</span>
                                                     <span class=pill_class>{label}</span>
+                                                    <Show when=move || is_cancelled fallback=|| ()>
+                                                        {
+                                                            let hash = hash.clone();
+                                                            view! {
+                                                                <button
+                                                                    class="icon-btn"
+                                                                    title="Re-request this file"
+                                                                    on:click=move |_| {
+                                                                        let h = hash.clone();
+                                                                        let peer = peer_refresh.get_value();
+                                                                        spawn_local(async move {
+                                                                            api_refetch(&peer, &h).await;
+                                                                        });
+                                                                    }
+                                                                >
+                                                                    <Icon paths=icons::REFRESH/>
+                                                                </button>
+                                                            }
+                                                        }
+                                                    </Show>
                                                 </li>
                                             }
                                         }

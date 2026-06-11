@@ -108,6 +108,9 @@ pub enum MirrorFileState {
     Missing,
     /// Known but skipped because it doesn't fit the quota.
     Skipped,
+    /// The user cancelled this download; the reconcile leaves it alone (it won't
+    /// be re-fetched) until the user asks for it again.
+    Cancelled,
 }
 
 /// One file in a subscription's mirror set, with its resolved state.

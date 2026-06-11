@@ -234,12 +234,14 @@ pub async fn on_pinset_received(
                 continue; // unknown — skip this sweep rather than risk a dup fetch
             }
         }
-        // Already being fetched, or paused mid-download (the user's own in-flight
-        // download, or a mirror already in progress)? Skip — its completion turns
-        // it into a share, we must not mark the user's own download as
-        // mirror-owned, and re-fetching a paused one would restart it from zero.
+        // Already being fetched / paused (the user's own in-flight download, or a
+        // mirror in progress), or cancelled by the user? Skip. In-progress: its
+        // completion makes it a share and we mustn't claim the user's own
+        // download; paused: re-fetching restarts from zero; cancelled: the user
+        // opted out, so respect it (they can re-request from the UI). A failed
+        // 'error' row falls through and is retried.
         if let Ok(Some(s)) = db::downloads::status_by_root_hash(db, &e.root_hash).await
-            && db::downloads::is_incomplete(&s)
+            && (db::downloads::is_incomplete(&s) || s == "cancelled")
         {
             continue;
         }
@@ -723,6 +725,35 @@ mod tests {
         assert!(
             fetch.iter().all(|f| f.root_hash != h),
             "a paused download is left alone, not restarted"
+        );
+    }
+
+    #[tokio::test]
+    async fn reconcile_respects_a_cancelled_download() {
+        let (db, _dir) = test_db().await;
+        let peer = PeerId::random();
+        let peer_str = peer.to_string();
+        db::pin_subscriptions::upsert(&db, &peer_str, 1_000_000, 1)
+            .await
+            .unwrap();
+
+        let h = [77u8; 32];
+        let id = db::downloads::create_pending(&db, &h, Some("c.bin"), 1, true, None)
+            .await
+            .unwrap()
+            .id();
+        db::downloads::set_status(&db, id, "cancelled", None)
+            .await
+            .unwrap();
+
+        let resp = PinsetResponse::Ok {
+            version: 4,
+            entries: vec![entry(h, 100, "c.bin")],
+        };
+        let fetch = on_pinset_received(&db, peer, resp, 100).await;
+        assert!(
+            fetch.iter().all(|f| f.root_hash != h),
+            "a user-cancelled download is respected, not resurrected"
         );
     }
 

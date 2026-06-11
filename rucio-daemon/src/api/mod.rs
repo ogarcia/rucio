@@ -129,6 +129,7 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         subscriptions::get_subscription,
         subscriptions::sync_subscription,
         subscriptions::list_subscription_files,
+        subscriptions::refetch_subscription_file,
         subscriptions::set_subscription_collections,
         subscriptions::subscription_evictable,
         metrics::get_metrics,
@@ -637,6 +638,10 @@ fn v1_router() -> Router<AppState> {
         .route(
             "/subscriptions/{peer_id}/files",
             routing::get(subscriptions::list_subscription_files),
+        )
+        .route(
+            "/subscriptions/{peer_id}/files/{hash}/refetch",
+            routing::post(subscriptions::refetch_subscription_file),
         )
         .route(
             "/subscriptions/{peer_id}/collections",

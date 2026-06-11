@@ -22,19 +22,16 @@ use crate::api::AppState;
 use crate::db;
 
 /// Resolve a wanted mirror hash to its real state: present on disk, being
-/// fetched, or still missing (no provider / queued).
+/// fetched, cancelled by the user (left alone by the reconcile), or still
+/// missing (no provider / queued).
 async fn resolve_wanted_state(state: &AppState, hash: &[u8; 32]) -> MirrorFileState {
     if matches!(db::shares::get_by_hash(&state.db, hash).await, Ok(Some(_))) {
         return MirrorFileState::Present;
     }
-    let active = matches!(
-        db::downloads::status_by_root_hash(&state.db, hash).await,
-        Ok(Some(ref s)) if matches!(s.as_str(), "finding_providers" | "queued" | "downloading" | "stalled")
-    );
-    if active {
-        MirrorFileState::Fetching
-    } else {
-        MirrorFileState::Missing
+    match db::downloads::status_by_root_hash(&state.db, hash).await {
+        Ok(Some(ref s)) if s == "cancelled" => MirrorFileState::Cancelled,
+        Ok(Some(ref s)) if db::downloads::is_incomplete(s) => MirrorFileState::Fetching,
+        _ => MirrorFileState::Missing,
     }
 }
 
@@ -453,16 +450,91 @@ pub async fn list_subscription_files(
         });
     }
 
-    // Order: present, fetching, missing, skipped; then largest first.
+    // Order: present, fetching, missing, skipped, cancelled; then largest first.
     fn rank(s: MirrorFileState) -> u8 {
         match s {
             MirrorFileState::Present => 0,
             MirrorFileState::Fetching => 1,
             MirrorFileState::Missing => 2,
             MirrorFileState::Skipped => 3,
+            MirrorFileState::Cancelled => 4,
         }
     }
     files.sort_by(|a, b| rank(a.state).cmp(&rank(b.state)).then(b.size.cmp(&a.size)));
 
     Ok(Json(SubscriptionFilesResponse { files }))
+}
+
+/// Re-request a mirror file the user previously cancelled.
+///
+/// The reconcile leaves cancelled downloads alone, so this is the way back: it
+/// re-marks the hash mirror-owned and starts the fetch again (reactivating the
+/// `cancelled` row), with the peer as a provider hint. The file must still be
+/// part of this subscription's wanted set.
+#[utoipa::path(
+    post,
+    path = "/api/v1/subscriptions/{peer_id}/files/{hash}/refetch",
+    tag = "subscriptions",
+    params(
+        ("peer_id" = String, Path, description = "The mirrored peer's PeerId"),
+        ("hash" = String, Path, description = "Root hash (hex) of the file to re-request"),
+    ),
+    responses(
+        (status = 202, description = "Re-fetch started"),
+        (status = 400, description = "Malformed hash"),
+        (status = 404, description = "Not a wanted file of this subscription"),
+    )
+)]
+pub async fn refetch_subscription_file(
+    State(state): State<AppState>,
+    Path((peer_id, hash)): Path<(String, String)>,
+) -> StatusCode {
+    let parsed = parse_peer_input(&peer_id);
+    let key = parsed.parse::<PeerId>().map(|p| p.to_string());
+    let key = key.as_deref().unwrap_or(parsed);
+
+    let Some(root_hash) = hex::decode(&hash)
+        .ok()
+        .and_then(|b| <[u8; 32]>::try_from(b).ok())
+    else {
+        return StatusCode::BAD_REQUEST;
+    };
+
+    // Must still be a wanted entry of this subscription — grab its name.
+    let rows = db::mirror_pins::list_for_peer(&state.db, key)
+        .await
+        .unwrap_or_default();
+    let Some(row) = rows
+        .into_iter()
+        .find(|r| r.root_hash == root_hash && r.state == db::mirror_pins::STATE_WANTED)
+    else {
+        return StatusCode::NOT_FOUND;
+    };
+    let name = row.name.unwrap_or_default();
+
+    // It exists only because we mirror it: claim ownership, then start the fetch
+    // (reactivating the cancelled row). It lands in pin_dir as a wanted mirror.
+    let _ = db::mirror_owned::mark(&state.db, &root_hash, crate::now_secs()).await;
+    let magnet = format!(
+        "rucio:{}?name={}",
+        hex::encode(root_hash),
+        urlencoding::encode(&name)
+    );
+    let providers = parsed
+        .parse::<PeerId>()
+        .map(|p| vec![p.to_string()])
+        .unwrap_or_default();
+    if state
+        .download_tx
+        .send(crate::api::DownloadRequest::Start {
+            magnet,
+            providers,
+            category_id: None,
+        })
+        .await
+        .is_err()
+    {
+        return StatusCode::INTERNAL_SERVER_ERROR;
+    }
+    StatusCode::ACCEPTED
 }
