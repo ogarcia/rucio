@@ -98,7 +98,7 @@ base64      = "0.22"
 js-sys      = "0.3"
 uuid        = { version = "1", features = ["v4"] }
 dirs        = "6"
-tabled         = { version = "0.20", features = ["ansi"] }
+tabled         = { version = "0.21", features = ["ansi"] }
 terminal_size  = "0.4"
 urlencoding    = "2.1"
 
