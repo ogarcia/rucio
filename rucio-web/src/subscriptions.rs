@@ -751,9 +751,9 @@ fn SubscriptionInfoModal(
                         >
                             {move || if saving.get() { "Saving…" } else { "Update quota" }}
                         </button>
-                        {move || quota_msg.get().map(|m| view! { <span class="sub-applied">{m}</span> })}
                     </div>
                     {move || error.get().map(|e| view! { <p class="error-msg">{e}</p> })}
+                    {move || quota_msg.get().map(|m| view! { <p class="sub-applied">{m}</p> })}
 
                     // Collection scope: follow the whole peer, or pick which of
                     // their collections to mirror.
@@ -824,6 +824,18 @@ fn SubscriptionInfoModal(
                                 }
                             }}
                         </Show>
+                        // Following nothing is a valid, deliberate state: stay
+                        // subscribed (don't lose the peer) but mirror nothing.
+                        <Show when=move || {
+                            !follow_all.get()
+                                && selected.get().is_empty()
+                                && !info.get().available_collections.is_empty()
+                        }>
+                            <p class="empty-hint">
+                                "No collections selected — you stay subscribed to this peer, but \
+                                 nothing is mirrored."
+                            </p>
+                        </Show>
                         <Show
                             when=move || !narrow_confirm.get()
                             fallback=move || view! {
@@ -852,6 +864,7 @@ fn SubscriptionInfoModal(
                             }
                         >
                             <div class="sub-scope-save">
+                                {move || scope_msg.get().map(|m| view! { <span class="sub-applied">{m}</span> })}
                                 <button
                                     class="btn-sm btn-primary"
                                     disabled=move || scope_saving.get()
@@ -859,7 +872,6 @@ fn SubscriptionInfoModal(
                                 >
                                     {move || if scope_saving.get() { "Saving…" } else { "Update collections" }}
                                 </button>
-                                {move || scope_msg.get().map(|m| view! { <span class="sub-applied">{m}</span> })}
                             </div>
                         </Show>
                     </div>
