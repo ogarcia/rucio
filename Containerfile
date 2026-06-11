@@ -59,7 +59,7 @@ ARG BUILDER=builder
 # source of truth); CI overrides them with --build-arg from that file. Declared
 # before the first FROM so they apply to every FROM below. Override locally with
 # e.g. --build-arg TRUNK_VERSION=x.y.z.
-ARG ALPINE_VERSION=3.23
+ARG ALPINE_VERSION=3.24
 ARG RUST_VERSION=1
 ARG TRUNK_VERSION=0.21.14
 
