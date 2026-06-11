@@ -22,6 +22,8 @@ pub struct MirrorPinRow {
     pub name: Option<String>,
     pub size: i64,
     pub state: String,
+    /// Publisher's collection for this pin, NULL = uncollected.
+    pub collection: Option<String>,
 }
 
 /// One entry the reconcile wants to record for a peer.
@@ -31,6 +33,7 @@ pub struct MirrorEntry {
     pub name: Option<String>,
     pub size: i64,
     pub state: String,
+    pub collection: Option<String>,
 }
 
 fn row_to_mirror(r: &sqlx::sqlite::SqliteRow) -> MirrorPinRow {
@@ -40,6 +43,7 @@ fn row_to_mirror(r: &sqlx::sqlite::SqliteRow) -> MirrorPinRow {
         name: r.get("name"),
         size: r.get("size"),
         state: r.get("state"),
+        collection: r.get("collection"),
     }
 }
 
@@ -58,14 +62,15 @@ pub async fn set_for_peer(
         .await?;
     for e in entries {
         sqlx::query(
-            "INSERT INTO mirror_pins (root_hash, peer_id, name, size, state, added_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO mirror_pins (root_hash, peer_id, name, size, state, collection, added_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         )
         .bind(e.root_hash.as_slice())
         .bind(peer_id)
         .bind(e.name.as_deref())
         .bind(e.size)
         .bind(e.state.as_str())
+        .bind(e.collection.as_deref())
         .bind(added_at as i64)
         .execute(&mut *tx)
         .await?;
@@ -77,12 +82,27 @@ pub async fn set_for_peer(
 /// All mirror rows for a peer.
 pub async fn list_for_peer(db: &Db, peer_id: &str) -> Result<Vec<MirrorPinRow>> {
     let rows = sqlx::query(
-        "SELECT root_hash, peer_id, name, size, state FROM mirror_pins WHERE peer_id = ?1",
+        "SELECT root_hash, peer_id, name, size, state, collection
+         FROM mirror_pins WHERE peer_id = ?1",
     )
     .bind(peer_id)
     .fetch_all(db)
     .await?;
     Ok(rows.iter().map(row_to_mirror).collect())
+}
+
+/// Distinct collection labels seen in a peer's synced pin-set, alphabetically.
+/// NULL/uncollected pins are reported as the empty string "". Feeds the
+/// subscriber UI's "which collections does this peer publish" selector.
+pub async fn collections_for_peer(db: &Db, peer_id: &str) -> Result<Vec<String>> {
+    let rows = sqlx::query(
+        "SELECT DISTINCT COALESCE(collection, '') AS c
+         FROM mirror_pins WHERE peer_id = ?1 ORDER BY c ASC",
+    )
+    .bind(peer_id)
+    .fetch_all(db)
+    .await?;
+    Ok(rows.iter().map(|r| r.get::<String, _>("c")).collect())
 }
 
 /// Whether any subscription wants this hash (state = 'wanted'). Used by the
@@ -155,12 +175,14 @@ mod tests {
                 name: Some("a".into()),
                 size: 100,
                 state: STATE_WANTED.into(),
+                collection: None,
             },
             MirrorEntry {
                 root_hash: [2u8; 32],
                 name: Some("b".into()),
                 size: 5000,
                 state: STATE_SKIPPED.into(),
+                collection: Some("big".into()),
             },
         ];
         set_for_peer(&db, "peerA", &entries, 10).await.unwrap();
@@ -187,6 +209,7 @@ mod tests {
                 name: None,
                 size: 1,
                 state: STATE_WANTED.into(),
+                collection: None,
             }],
             1,
         )

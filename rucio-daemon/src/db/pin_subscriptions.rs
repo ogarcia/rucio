@@ -10,6 +10,9 @@ use super::Db;
 pub struct SubscriptionRow {
     pub peer_id: String,
     pub quota_bytes: i64,
+    /// true = mirror the whole peer; false = only the collections in
+    /// [`list_collections`].
+    pub follow_all: bool,
     pub last_version: i64,
     pub last_synced_at: i64,
     pub added_at: i64,
@@ -19,6 +22,7 @@ fn row_to_sub(r: &sqlx::sqlite::SqliteRow) -> SubscriptionRow {
     SubscriptionRow {
         peer_id: r.get("peer_id"),
         quota_bytes: r.get("quota_bytes"),
+        follow_all: r.get::<i64, _>("follow_all") != 0,
         last_version: r.get("last_version"),
         last_synced_at: r.get("last_synced_at"),
         added_at: r.get("added_at"),
@@ -70,7 +74,7 @@ pub async fn remove(db: &Db, peer_id: &str) -> Result<bool> {
 
 pub async fn get(db: &Db, peer_id: &str) -> Result<Option<SubscriptionRow>> {
     let row = sqlx::query(
-        "SELECT peer_id, quota_bytes, last_version, last_synced_at, added_at
+        "SELECT peer_id, quota_bytes, follow_all, last_version, last_synced_at, added_at
          FROM pin_subscriptions WHERE peer_id = ?1",
     )
     .bind(peer_id)
@@ -81,12 +85,65 @@ pub async fn get(db: &Db, peer_id: &str) -> Result<Option<SubscriptionRow>> {
 
 pub async fn list(db: &Db) -> Result<Vec<SubscriptionRow>> {
     let rows = sqlx::query(
-        "SELECT peer_id, quota_bytes, last_version, last_synced_at, added_at
+        "SELECT peer_id, quota_bytes, follow_all, last_version, last_synced_at, added_at
          FROM pin_subscriptions ORDER BY added_at ASC",
     )
     .fetch_all(db)
     .await?;
     Ok(rows.iter().map(row_to_sub).collect())
+}
+
+/// Set which of a peer's collections to follow. `follow_all = true` mirrors the
+/// whole peer (the collection list is then ignored but still replaced, so the
+/// stored selection is restored if the user flips back). Resets `last_version`
+/// to 0 so the next reconcile re-applies the pin-set under the new scope. The
+/// `""` label means the peer's uncollected pins.
+pub async fn set_collections(
+    db: &Db,
+    peer_id: &str,
+    follow_all: bool,
+    collections: &[String],
+) -> Result<()> {
+    let mut tx = db.begin().await?;
+    sqlx::query(
+        "UPDATE pin_subscriptions SET follow_all = ?2, last_version = 0 WHERE peer_id = ?1",
+    )
+    .bind(peer_id)
+    .bind(follow_all as i64)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("DELETE FROM pin_subscription_collections WHERE peer_id = ?1")
+        .bind(peer_id)
+        .execute(&mut *tx)
+        .await?;
+    for c in collections {
+        sqlx::query(
+            "INSERT OR IGNORE INTO pin_subscription_collections (peer_id, collection)
+             VALUES (?1, ?2)",
+        )
+        .bind(peer_id)
+        .bind(c.as_str())
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+/// The collections a peer-subscription follows (meaningful only when
+/// `follow_all = false`). `""` denotes the peer's uncollected pins.
+pub async fn list_collections(db: &Db, peer_id: &str) -> Result<Vec<String>> {
+    let rows = sqlx::query(
+        "SELECT collection FROM pin_subscription_collections
+         WHERE peer_id = ?1 ORDER BY collection ASC",
+    )
+    .bind(peer_id)
+    .fetch_all(db)
+    .await?;
+    Ok(rows
+        .iter()
+        .map(|r| r.get::<String, _>("collection"))
+        .collect())
 }
 
 #[cfg(test)]

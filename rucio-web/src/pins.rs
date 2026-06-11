@@ -13,7 +13,7 @@ use crate::types::{Pin, PinsResponse, format_size};
 
 // ── API ─────────────────────────────────────────────────────────────────────
 
-async fn api_list_pins() -> Option<Vec<Pin>> {
+async fn api_list_pins() -> Option<PinsResponse> {
     gloo_net::http::Request::get("/api/v1/pins")
         .send()
         .await
@@ -21,12 +21,11 @@ async fn api_list_pins() -> Option<Vec<Pin>> {
         .json::<PinsResponse>()
         .await
         .ok()
-        .map(|r| r.pins)
 }
 
-/// Pin a magnet. Returns `Err(message)` on a request/validation failure.
-async fn api_add_pin(magnet: String) -> Result<(), String> {
-    let body = serde_json::json!({ "magnet": magnet });
+/// Pin a magnet into an optional collection. `Err(message)` on failure.
+async fn api_add_pin(magnet: String, collection: Option<String>) -> Result<(), String> {
+    let body = serde_json::json!({ "magnet": magnet, "collection": collection });
     let req = gloo_net::http::Request::post("/api/v1/pins")
         .json(&body)
         .map_err(|e| e.to_string())?;
@@ -41,6 +40,15 @@ async fn api_add_pin(magnet: String) -> Result<(), String> {
             .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(String::from))
             .unwrap_or_else(|| format!("HTTP {}", resp.status()));
         Err(msg)
+    }
+}
+
+/// Re-file a pin under a different collection (None/empty = uncollected).
+async fn api_set_pin_collection(hash: &str, collection: Option<String>) {
+    let url = format!("/api/v1/pins/{hash}/collection");
+    let body = serde_json::json!({ "collection": collection });
+    if let Ok(req) = gloo_net::http::Request::put(&url).json(&body) {
+        let _ = req.send().await;
     }
 }
 
@@ -72,12 +80,16 @@ pub fn PinsTab(
     temp_limit: RwSignal<bool>,
 ) -> impl IntoView {
     let pins: RwSignal<Vec<Pin>> = RwSignal::new(vec![]);
+    let collections: RwSignal<Vec<String>> = RwSignal::new(vec![]);
     let add_open: RwSignal<bool> = RwSignal::new(false);
+    // When set to (hash, current_collection), the change-collection modal is open.
+    let edit_modal: RwSignal<Option<(String, Option<String>)>> = RwSignal::new(None);
 
     let reload = move || {
         spawn_local(async move {
-            if let Some(p) = api_list_pins().await {
-                pins.set(p);
+            if let Some(r) = api_list_pins().await {
+                pins.set(r.pins);
+                collections.set(r.collections);
             }
         });
     };
@@ -114,9 +126,13 @@ pub fn PinsTab(
                     <ul class="share-dir-list">
                         <For
                             each=move || pins.get()
-                            key=|p| p.root_hash.clone()
+                            // Key on the collection too, so re-filing a pin
+                            // changes its key and the row (and its pill) rebuilds.
+                            key=|p| (p.root_hash.clone(), p.collection.clone())
                             children=move |p| {
                                 let hash_rm = p.root_hash.clone();
+                                let hash_col = p.root_hash.clone();
+                                let col_now = p.collection.clone();
                                 let title = p
                                     .name
                                     .clone()
@@ -126,19 +142,40 @@ pub fn PinsTab(
                                         .size
                                         .map(format_size)
                                         .unwrap_or_else(|| "unknown size".to_string());
-                                    let short: String = p.root_hash.chars().take(12).collect();
-                                    format!("{size} · {short}…")
+                                    // Full hash; the meta line truncates with an
+                                    // ellipsis via CSS only when it doesn't fit.
+                                    format!("{size} · {}", p.root_hash)
                                 };
                                 let state = p.state.clone();
                                 let state_class = format!("pin-state pin-state-{state}");
+                                let (pill_label, pill_class) = match &col_now {
+                                    Some(c) if !c.is_empty() => {
+                                        (c.clone(), "pin-collection-pill")
+                                    }
+                                    _ => (
+                                        "+ collection".to_string(),
+                                        "pin-collection-pill pin-collection-pill-empty",
+                                    ),
+                                };
                                 view! {
-                                    <li class="share-dir-row">
+                                    <li class="share-dir-row static-row">
                                         <span class="share-dir-icon"><Icon paths=icons::PIN/></span>
                                         <div class="share-dir-main">
                                             <span class="share-dir-path">{title}</span>
                                             <span class="share-dir-meta">{meta}</span>
                                         </div>
-                                        <span class=state_class>{state}</span>
+                                        <div class="pin-side">
+                                            <button
+                                                class=pill_class
+                                                title="Change publishing collection — subscribers can follow specific collections of yours"
+                                                on:click=move |_| {
+                                                    edit_modal.set(Some((hash_col.clone(), col_now.clone())));
+                                                }
+                                            >
+                                                {pill_label}
+                                            </button>
+                                            <span class=state_class>{state}</span>
+                                        </div>
                                         <button
                                             class="icon-btn icon-btn-danger"
                                             title="Unpin (content stays on disk)"
@@ -150,8 +187,9 @@ pub fn PinsTab(
                                                 let h = hash_rm.clone();
                                                 spawn_local(async move {
                                                     api_remove_pin(&h).await;
-                                                    if let Some(p) = api_list_pins().await {
-                                                        pins.set(p);
+                                                    if let Some(r) = api_list_pins().await {
+                                                        pins.set(r.pins);
+                                                        collections.set(r.collections);
                                                     }
                                                 });
                                             }
@@ -163,6 +201,13 @@ pub fn PinsTab(
                             }
                         />
                     </ul>
+                    <datalist id="pin-collections">
+                        <For
+                            each=move || collections.get()
+                            key=|c| c.clone()
+                            children=move |c| view! { <option value=c></option> }
+                        />
+                    </datalist>
                 </Show>
             </div>
 
@@ -182,10 +227,93 @@ pub fn PinsTab(
 
         <Show when=move || add_open.get()>
             <AddPinModal
+                collections=collections
                 on_added=move || reload()
                 on_close=move || add_open.set(false)
             />
         </Show>
+
+        <Show when=move || edit_modal.get().is_some()>
+            {move || {
+                let (hash, current) = edit_modal.get().unwrap();
+                view! {
+                    <SetCollectionModal
+                        hash=hash
+                        current=current
+                        on_saved=move || reload()
+                        on_close=move || edit_modal.set(None)
+                    />
+                }
+            }}
+        </Show>
+    }
+}
+
+// ── Change-collection modal ─────────────────────────────────────────────────
+
+/// Re-file an existing pin under a different collection (or clear it). Opened by
+/// clicking a pin's collection pill; mirrors the collection control in the
+/// add-pin and share-pin modals so the interaction is consistent.
+#[component]
+fn SetCollectionModal(
+    hash: String,
+    current: Option<String>,
+    on_saved: impl Fn() + Copy + 'static,
+    on_close: impl Fn() + Copy + 'static,
+) -> impl IntoView {
+    let collection = RwSignal::new(current.unwrap_or_default());
+    let hash = StoredValue::new(hash);
+    let busy = RwSignal::new(false);
+
+    let submit = move || {
+        let col = {
+            let c = collection.get();
+            (!c.trim().is_empty()).then(|| c.trim().to_string())
+        };
+        busy.set(true);
+        spawn_local(async move {
+            api_set_pin_collection(&hash.get_value(), col).await;
+            on_saved();
+            on_close();
+        });
+    };
+
+    view! {
+        <div class="modal-backdrop" on:click=move |_| on_close()>
+            <div class="modal" on:click=move |e| e.stop_propagation()>
+                <div class="modal-header">
+                    <span class="modal-title">"Change collection"</span>
+                    <button class="overlay-close" on:click=move |_| on_close()>
+                        <Icon paths=icons::X/>
+                    </button>
+                </div>
+                <div class="modal-body">
+                    <p class="modal-hint">
+                        "Subscribers can follow specific collections of yours. Leave it blank to
+                         make this pin uncollected."
+                    </p>
+                    <input
+                        class="search-input"
+                        type="text"
+                        list="pin-collections"
+                        placeholder="Collection — e.g. Manuals, Series"
+                        prop:value=move || collection.get()
+                        on:input=move |e| collection.set(event_target_value(&e))
+                        on:keydown=move |e| { if e.key() == "Enter" { submit(); } }
+                    />
+                </div>
+                <div class="modal-footer">
+                    <button class="btn-sm" on:click=move |_| on_close()>"Cancel"</button>
+                    <button
+                        class="btn-sm btn-primary"
+                        disabled=move || busy.get()
+                        on:click=move |_| submit()
+                    >
+                        {move || if busy.get() { "Saving…" } else { "Save" }}
+                    </button>
+                </div>
+            </div>
+        </div>
     }
 }
 
@@ -193,10 +321,12 @@ pub fn PinsTab(
 
 #[component]
 fn AddPinModal(
+    collections: RwSignal<Vec<String>>,
     on_added: impl Fn() + Copy + 'static,
     on_close: impl Fn() + Copy + 'static,
 ) -> impl IntoView {
     let magnet = RwSignal::new(String::new());
+    let collection = RwSignal::new(String::new());
     let busy = RwSignal::new(false);
     let error: RwSignal<Option<String>> = RwSignal::new(None);
 
@@ -206,10 +336,14 @@ fn AddPinModal(
             return;
         }
         let m = resolve_pin_input(&raw);
+        let col = {
+            let c = collection.get();
+            (!c.trim().is_empty()).then(|| c.trim().to_string())
+        };
         busy.set(true);
         error.set(None);
         spawn_local(async move {
-            match api_add_pin(m).await {
+            match api_add_pin(m, col).await {
                 Ok(()) => {
                     on_added();
                     on_close();
@@ -245,6 +379,22 @@ fn AddPinModal(
                         on:input=move |e| magnet.set(event_target_value(&e))
                         on:keydown=move |e| { if e.key() == "Enter" { submit(); } }
                     />
+                    <input
+                        class="search-input"
+                        type="text"
+                        list="pin-collections-modal"
+                        placeholder="Collection (optional) — e.g. Manuals, Series"
+                        prop:value=move || collection.get()
+                        on:input=move |e| collection.set(event_target_value(&e))
+                        on:keydown=move |e| { if e.key() == "Enter" { submit(); } }
+                    />
+                    <datalist id="pin-collections-modal">
+                        <For
+                            each=move || collections.get()
+                            key=|c| c.clone()
+                            children=move |c| view! { <option value=c></option> }
+                        />
+                    </datalist>
                     {move || error.get().map(|e| view! { <p class="error-msg">{e}</p> })}
                 </div>
                 <div class="modal-footer">

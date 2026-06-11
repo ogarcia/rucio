@@ -32,6 +32,8 @@ pub async fn build_pinset(db: &db::Db) -> PinsetResponse {
                 root_hash: hash,
                 size: share.size as u64,
                 name: share.name,
+                // Empty label normalises to "uncollected" on the wire.
+                collection: pin.collection.filter(|c| !c.is_empty()),
             });
         }
     }
@@ -146,6 +148,27 @@ pub async fn on_pinset_received(
         return Vec::new();
     }
 
+    // Scope the pin-set to the collections this subscription follows. When
+    // `follow_all` is set the whole set is in scope; otherwise keep only entries
+    // whose collection is in the followed set (the empty label "" matches the
+    // peer's uncollected pins). Out-of-scope entries are dropped entirely — they
+    // are not this subscription's concern, so they aren't even recorded as
+    // `skipped` (which is reserved for in-scope entries that don't fit quota).
+    if !sub.follow_all {
+        let followed: std::collections::HashSet<String> =
+            match db::pin_subscriptions::list_collections(db, &peer_str).await {
+                Ok(c) => c.into_iter().collect(),
+                Err(e) => {
+                    warn!(peer = %peer_str, "reconcile: listing followed collections failed: {e}");
+                    return Vec::new();
+                }
+            };
+        entries.retain(|e| {
+            let label = e.collection.as_deref().unwrap_or("");
+            followed.contains(label)
+        });
+    }
+
     // Greedy smallest-first selection under the quota.
     entries.sort_by_key(|e| e.size);
     let quota = sub.quota_bytes.max(0) as u64;
@@ -164,6 +187,7 @@ pub async fn on_pinset_received(
             name: Some(e.name.clone()),
             size: e.size as i64,
             state: state.to_string(),
+            collection: e.collection.clone(),
         });
     }
 
@@ -313,8 +337,8 @@ mod tests {
         .unwrap();
 
         // Pin both the present share and an absent hash.
-        db::pins::add(&db, &have, 10).await.unwrap();
-        db::pins::add(&db, &absent, 11).await.unwrap();
+        db::pins::add(&db, &have, None, 10).await.unwrap();
+        db::pins::add(&db, &absent, None, 11).await.unwrap();
 
         let resp = build_pinset(&db).await;
         let PinsetResponse::Ok { version, entries } = resp else {
@@ -334,6 +358,14 @@ mod tests {
             root_hash: hash,
             size,
             name: name.into(),
+            collection: None,
+        }
+    }
+
+    fn entry_in(hash: [u8; 32], size: u64, name: &str, collection: &str) -> PinsetEntry {
+        PinsetEntry {
+            collection: Some(collection.into()),
+            ..entry(hash, size, name)
         }
     }
 
@@ -392,6 +424,48 @@ mod tests {
             on_pinset_received(&db, peer, resp_same, 200)
                 .await
                 .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn reconcile_mirrors_only_followed_collections() {
+        let (db, _dir) = test_db().await;
+        let peer = PeerId::random();
+        let peer_str = peer.to_string();
+        db::pin_subscriptions::upsert(&db, &peer_str, 1_000_000, 1)
+            .await
+            .unwrap();
+        // Follow only "Manuals" (not "Series", not uncollected).
+        db::pin_subscriptions::set_collections(&db, &peer_str, false, &["Manuals".to_string()])
+            .await
+            .unwrap();
+
+        let manual = [10u8; 32];
+        let serie = [20u8; 32];
+        let loose = [30u8; 32];
+        let resp = PinsetResponse::Ok {
+            version: 7,
+            entries: vec![
+                entry_in(manual, 100, "guide.pdf", "Manuals"),
+                entry_in(serie, 200, "ep1.mkv", "Series"),
+                entry(loose, 300, "loose.bin"), // uncollected
+            ],
+        };
+
+        let fetch = on_pinset_received(&db, peer, resp, 100).await;
+
+        // Only the followed collection is mirrored; the rest aren't even recorded.
+        assert!(db::mirror_pins::is_wanted(&db, &manual).await.unwrap());
+        assert!(!db::mirror_pins::is_wanted(&db, &serie).await.unwrap());
+        assert!(!db::mirror_pins::is_wanted(&db, &loose).await.unwrap());
+        let got: Vec<[u8; 32]> = fetch.iter().map(|f| f.root_hash).collect();
+        assert_eq!(got, vec![manual]);
+        assert_eq!(
+            db::mirror_pins::list_for_peer(&db, &peer_str)
+                .await
+                .unwrap()
+                .len(),
+            1
         );
     }
 
@@ -479,7 +553,7 @@ mod tests {
         let pinned = [2u8; 32];
         let pinned_path = share_file(&db, &pin_dir, &pinned, "pinned.bin").await;
         db::mirror_owned::mark(&db, &pinned, 1).await.unwrap();
-        db::pins::add(&db, &pinned, 1).await.unwrap();
+        db::pins::add(&db, &pinned, None, 1).await.unwrap();
 
         // 3. Owned but still wanted by a subscription -> kept.
         let peer = PeerId::random();
@@ -497,6 +571,7 @@ mod tests {
                 name: Some("wanted.bin".into()),
                 size: 4,
                 state: db::mirror_pins::STATE_WANTED.into(),
+                collection: None,
             }],
             1,
         )

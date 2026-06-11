@@ -83,11 +83,12 @@ async fn api_remove_dir(path: &str) {
     let _ = gloo_net::http::Request::delete(&url).send().await;
 }
 
-/// Pin a shared file by its magnet (records the pin intent). Since the file is
-/// already present, this never re-fetches — it just marks it as deliberately
-/// kept, which also publishes it in this node's pin-set for subscribers.
-async fn api_pin_magnet(magnet: String) {
-    let body = serde_json::json!({ "magnet": magnet });
+/// Pin a shared file by its magnet, into an optional collection. Since the file
+/// is already present, this never re-fetches — it just marks it as deliberately
+/// kept, which also publishes it (under `collection`) in this node's pin-set for
+/// subscribers.
+async fn api_pin_magnet(magnet: String, collection: Option<String>) {
+    let body = serde_json::json!({ "magnet": magnet, "collection": collection });
     if let Ok(req) = gloo_net::http::Request::post("/api/v1/pins").json(&body) {
         let _ = req.send().await;
     }
@@ -99,15 +100,19 @@ async fn api_unpin(hash: &str) {
     let _ = gloo_net::http::Request::delete(&url).send().await;
 }
 
-/// The set of currently-pinned root hashes (hex), so the shared-files list can
-/// show which files are pinned and offer to unpin them.
-async fn api_list_pinned() -> HashSet<String> {
+/// The set of currently-pinned root hashes (hex) plus the distinct collection
+/// labels in use, so the shared-files list can show what's pinned, offer to
+/// unpin, and suggest existing collections when pinning.
+async fn api_list_pinned() -> (HashSet<String>, Vec<String>) {
     let Ok(resp) = gloo_net::http::Request::get("/api/v1/pins").send().await else {
-        return HashSet::new();
+        return (HashSet::new(), Vec::new());
     };
     match resp.json::<PinsResponse>().await {
-        Ok(r) => r.pins.into_iter().map(|p| p.root_hash).collect(),
-        Err(_) => HashSet::new(),
+        Ok(r) => (
+            r.pins.into_iter().map(|p| p.root_hash).collect(),
+            r.collections,
+        ),
+        Err(_) => (HashSet::new(), Vec::new()),
     }
 }
 
@@ -174,6 +179,10 @@ pub fn SharesTab(
     let pinned: RwSignal<Option<String>> = RwSignal::new(None);
     // Set of currently-pinned hashes, so each file row shows Pin vs Unpin.
     let pinned_set: RwSignal<HashSet<String>> = RwSignal::new(HashSet::new());
+    // Distinct collection labels in use, suggested when pinning.
+    let pin_collections: RwSignal<Vec<String>> = RwSignal::new(Vec::new());
+    // When set to (hash, magnet), the "choose a collection" pin modal is open.
+    let pin_modal: RwSignal<Option<(String, String)>> = RwSignal::new(None);
     // Bumped on every load; a response is applied only if its generation is
     // still current, so a reset (new filter/dir) discards an in-flight page.
     let load_gen: RwSignal<u32> = RwSignal::new(0);
@@ -219,7 +228,9 @@ pub fn SharesTab(
 
     let reload_pins = move || {
         spawn_local(async move {
-            pinned_set.set(api_list_pinned().await);
+            let (set, cols) = api_list_pinned().await;
+            pinned_set.set(set);
+            pin_collections.set(cols);
         });
     };
 
@@ -283,22 +294,34 @@ pub fn SharesTab(
         });
     });
 
+    // Clicking Pin opens a small modal to choose a collection (optional); the
+    // actual pin happens on confirm (see `do_pin`).
     let on_pin = Callback::new(move |(hash, magnet): (String, String)| {
-        // Optimistic: mark pinned now so the button flips to "Unpin" after the
-        // transient "Pinned!" hint fades.
-        pinned_set.update(|s| {
-            s.insert(hash.clone());
-        });
-        pinned.set(Some(hash));
-        let alive = alive_pin.clone();
-        spawn_local(async move {
-            api_pin_magnet(magnet).await;
-            sleep(Duration::from_millis(1400)).await;
-            if alive.load(Ordering::Relaxed) {
-                pinned.set(None);
-            }
-        });
+        pin_modal.set(Some((hash, magnet)));
     });
+
+    // Pin `magnet` (hash) into `collection`, with the optimistic "Pinned!" hint.
+    let do_pin = Callback::new(
+        move |(hash, magnet, collection): (String, String, Option<String>)| {
+            pinned_set.update(|s| {
+                s.insert(hash.clone());
+            });
+            pinned.set(Some(hash));
+            pin_modal.set(None);
+            let alive = alive_pin.clone();
+            spawn_local(async move {
+                api_pin_magnet(magnet, collection).await;
+                // Refresh suggestions so a freshly-created collection shows up.
+                let (set, cols) = api_list_pinned().await;
+                pin_collections.set(cols);
+                pinned_set.set(set);
+                sleep(Duration::from_millis(1400)).await;
+                if alive.load(Ordering::Relaxed) {
+                    pinned.set(None);
+                }
+            });
+        },
+    );
 
     let on_unpin = Callback::new(move |hash: String| {
         pinned_set.update(|s| {
@@ -567,6 +590,86 @@ pub fn SharesTab(
                 on_close=move || add_open.set(false)
             />
         </Show>
+
+        <Show when=move || pin_modal.get().is_some()>
+            {move || {
+                let (hash, magnet) = pin_modal.get().unwrap();
+                view! {
+                    <PinCollectionModal
+                        hash=hash
+                        magnet=magnet
+                        collections=pin_collections
+                        on_pin=do_pin
+                        on_close=move || pin_modal.set(None)
+                    />
+                }
+            }}
+        </Show>
+    }
+}
+
+// ── Pin-to-collection modal ─────────────────────────────────────────────────
+
+/// Asks for an optional collection before pinning a shared file. Empty = pin
+/// uncollected. Suggests existing collections via a datalist.
+#[component]
+fn PinCollectionModal(
+    hash: String,
+    magnet: String,
+    collections: RwSignal<Vec<String>>,
+    on_pin: Callback<(String, String, Option<String>)>,
+    on_close: impl Fn() + Copy + 'static,
+) -> impl IntoView {
+    let collection = RwSignal::new(String::new());
+    let hash = StoredValue::new(hash);
+    let magnet = StoredValue::new(magnet);
+
+    let confirm = move || {
+        let col = {
+            let c = collection.get();
+            (!c.trim().is_empty()).then(|| c.trim().to_string())
+        };
+        on_pin.run((hash.get_value(), magnet.get_value(), col));
+    };
+
+    view! {
+        <div class="modal-backdrop" on:click=move |_| on_close()>
+            <div class="modal" on:click=move |e| e.stop_propagation()>
+                <div class="modal-header">
+                    <span class="modal-title">"Pin to a collection"</span>
+                    <button class="overlay-close" on:click=move |_| on_close()>
+                        <Icon paths=icons::X/>
+                    </button>
+                </div>
+                <div class="modal-body">
+                    <p class="modal-hint">
+                        "File a pin under a collection so subscribers can follow just the
+                         collections of yours they care about. Leave it blank to pin it
+                         uncollected."
+                    </p>
+                    <input
+                        class="search-input"
+                        type="text"
+                        list="share-pin-collections"
+                        placeholder="Collection (optional) — e.g. Manuals, Series"
+                        prop:value=move || collection.get()
+                        on:input=move |e| collection.set(event_target_value(&e))
+                        on:keydown=move |e| { if e.key() == "Enter" { confirm(); } }
+                    />
+                    <datalist id="share-pin-collections">
+                        <For
+                            each=move || collections.get()
+                            key=|c| c.clone()
+                            children=move |c| view! { <option value=c></option> }
+                        />
+                    </datalist>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn-sm" on:click=move |_| on_close()>"Cancel"</button>
+                    <button class="btn-sm btn-primary" on:click=move |_| confirm()>"Pin"</button>
+                </div>
+            </div>
+        </div>
     }
 }
 

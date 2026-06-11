@@ -115,12 +115,18 @@ pub struct Pin {
     #[serde(default)]
     pub size: Option<u64>,
     pub state: String,
+    /// Publishing collection this pin is filed under, if any.
+    #[serde(default)]
+    pub collection: Option<String>,
     pub added_at: i64,
 }
 
 #[derive(Deserialize, Clone, Debug)]
 pub struct PinsResponse {
     pub pins: Vec<Pin>,
+    /// Distinct collection labels in use, for the picker.
+    #[serde(default)]
+    pub collections: Vec<String>,
 }
 
 /// A subscription: another node's pin-set we mirror within a quota.
@@ -142,6 +148,19 @@ pub struct Subscription {
     pub last_version: i64,
     pub last_synced_at: i64,
     pub added_at: i64,
+    /// true = mirror the whole peer; false = only `followed_collections`.
+    #[serde(default = "default_true")]
+    pub follow_all: bool,
+    /// Collections of this peer we follow ("" = uncollected pins).
+    #[serde(default)]
+    pub followed_collections: Vec<String>,
+    /// Collections seen in this peer's synced pin-set ("" = uncollected).
+    #[serde(default)]
+    pub available_collections: Vec<String>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Deserialize, Clone, Debug)]

@@ -12,8 +12,8 @@ use axum::http::StatusCode;
 
 use libp2p::PeerId;
 use rucio_core::api::subscriptions::{
-    MirrorFile, MirrorFileState, SubscriptionFilesResponse, SubscriptionRequest,
-    SubscriptionResponse, SubscriptionsResponse, parse_peer_input,
+    MirrorFile, MirrorFileState, SubscriptionCollectionsRequest, SubscriptionFilesResponse,
+    SubscriptionRequest, SubscriptionResponse, SubscriptionsResponse, parse_peer_input,
 };
 
 use crate::api::AppState;
@@ -56,6 +56,12 @@ async fn to_response(
         .filter(|r| r.state == db::mirror_pins::STATE_WANTED)
         .count();
     let skipped_count = rows.len() - wanted_count;
+    let followed_collections = db::pin_subscriptions::list_collections(&state.db, &sub.peer_id)
+        .await
+        .unwrap_or_default();
+    let available_collections = db::mirror_pins::collections_for_peer(&state.db, &sub.peer_id)
+        .await
+        .unwrap_or_default();
     SubscriptionResponse {
         peer_id: sub.peer_id,
         quota_bytes: sub.quota_bytes.max(0) as u64,
@@ -67,6 +73,9 @@ async fn to_response(
         last_version: sub.last_version,
         last_synced_at: sub.last_synced_at,
         added_at: sub.added_at,
+        follow_all: sub.follow_all,
+        followed_collections,
+        available_collections,
     }
 }
 
@@ -147,6 +156,57 @@ pub async fn create_subscription(
         Some(row) => Ok((StatusCode::CREATED, Json(to_response(&state, row).await))),
         None => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
+}
+
+/// Choose which of a peer's collections to mirror.
+///
+/// `follow_all = true` mirrors the whole peer (today's default). Otherwise only
+/// the listed collections are mirrored ("" = the peer's uncollected pins).
+/// Resets the synced version and kicks an immediate re-sync; content that falls
+/// out of scope is evicted by the next reconcile sweep.
+#[utoipa::path(
+    put,
+    path = "/api/v1/subscriptions/{peer_id}/collections",
+    tag = "subscriptions",
+    params(("peer_id" = String, Path, description = "The mirrored peer's PeerId")),
+    request_body = SubscriptionCollectionsRequest,
+    responses(
+        (status = 204, description = "Scope updated"),
+        (status = 404, description = "No such subscription"),
+    )
+)]
+pub async fn set_subscription_collections(
+    State(state): State<AppState>,
+    Path(peer_id): Path<String>,
+    Json(req): Json<SubscriptionCollectionsRequest>,
+) -> StatusCode {
+    let parsed = parse_peer_input(&peer_id);
+    let key = parsed.parse::<PeerId>().map(|p| p.to_string());
+    let key = key.as_deref().unwrap_or(parsed);
+
+    // No such subscription → 404.
+    match db::pin_subscriptions::get(&state.db, key).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return StatusCode::NOT_FOUND,
+        Err(e) => {
+            tracing::error!("get subscription: {e}");
+            return StatusCode::INTERNAL_SERVER_ERROR;
+        }
+    }
+
+    if let Err(e) =
+        db::pin_subscriptions::set_collections(&state.db, key, req.follow_all, &req.collections)
+            .await
+    {
+        tracing::error!("set subscription collections: {e}");
+        return StatusCode::INTERNAL_SERVER_ERROR;
+    }
+
+    // Re-sync now so the new scope takes effect without waiting for the tick.
+    if let Ok(peer) = key.parse::<PeerId>() {
+        crate::pinset::request_one_pinset(&state.node_cmd, peer).await;
+    }
+    StatusCode::NO_CONTENT
 }
 
 /// Unsubscribe from a peer.

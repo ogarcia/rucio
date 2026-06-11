@@ -53,6 +53,16 @@ async fn api_remove(peer_id: &str) {
     let _ = gloo_net::http::Request::delete(&url).send().await;
 }
 
+/// Set which collections of a peer to mirror. `follow_all` mirrors everything;
+/// otherwise only `collections` ("" = the peer's uncollected pins).
+async fn api_set_collections(peer_id: &str, follow_all: bool, collections: Vec<String>) {
+    let url = format!("/api/v1/subscriptions/{peer_id}/collections");
+    let body = serde_json::json!({ "follow_all": follow_all, "collections": collections });
+    if let Ok(req) = gloo_net::http::Request::put(&url).json(&body) {
+        let _ = req.send().await;
+    }
+}
+
 /// The mirror files of a subscription, with their resolved state.
 async fn api_files(peer_id: &str) -> Vec<MirrorFile> {
     let url = format!("/api/v1/subscriptions/{peer_id}/files");
@@ -231,7 +241,7 @@ pub fn SubscriptionsTab(
                                 }
                                 let meta = format!("{meter_text} · {}", parts.join(" · "));
                                 view! {
-                                    <li class="share-dir-row">
+                                    <li class="share-dir-row static-row">
                                         <span class="share-dir-icon"><Icon paths=icons::NETWORK/></span>
                                         <div class="share-dir-main">
                                             <span class="share-dir-path" title=peer_title>{peer_full}</span>
@@ -448,6 +458,25 @@ fn SubscriptionInfoModal(
     let error: RwSignal<Option<String>> = RwSignal::new(None);
     let (is_mb, is_gb, is_tb) = (init_unit == "MB", init_unit == "GB", init_unit == "TB");
 
+    // Collection scope editor.
+    let follow_all = RwSignal::new(sub.follow_all);
+    let available = StoredValue::new(sub.available_collections.clone());
+    let selected: RwSignal<std::collections::HashSet<String>> =
+        RwSignal::new(sub.followed_collections.iter().cloned().collect());
+    let scope_saving = RwSignal::new(false);
+    let peer_scope = StoredValue::new(sub.peer_id.clone());
+    let save_scope = move || {
+        let fa = follow_all.get();
+        let cols: Vec<String> = selected.get().into_iter().collect();
+        let peer = peer_scope.get_value();
+        scope_saving.set(true);
+        spawn_local(async move {
+            api_set_collections(&peer, fa, cols).await;
+            on_saved();
+            on_close();
+        });
+    };
+
     let save = move || {
         let q: f64 = quota.get().trim().parse().unwrap_or(0.0);
         if q <= 0.0 {
@@ -512,6 +541,73 @@ fn SubscriptionInfoModal(
                         </button>
                     </div>
                     {move || error.get().map(|e| view! { <p class="error-msg">{e}</p> })}
+
+                    // Collection scope: follow the whole peer, or pick which of
+                    // their collections to mirror.
+                    <div class="sub-scope">
+                        <label class="sub-scope-all">
+                            <input
+                                type="checkbox"
+                                prop:checked=move || follow_all.get()
+                                on:change=move |e| follow_all.set(event_target_checked(&e))
+                            />
+                            <span>"Mirror everything this peer pins"</span>
+                        </label>
+                        <Show when=move || !follow_all.get()>
+                            {move || {
+                                let avail = available.get_value();
+                                if avail.is_empty() {
+                                    view! {
+                                        <p class="empty-hint">
+                                            "No collections seen yet — they appear after the first \
+                                             sync. Mirror everything for now, then narrow."
+                                        </p>
+                                    }.into_any()
+                                } else {
+                                    view! {
+                                        <div class="sub-scope-list">
+                                            <For
+                                                each=move || available.get_value()
+                                                key=|c| c.clone()
+                                                children=move |c| {
+                                                    let label = if c.is_empty() {
+                                                        "(uncollected)".to_string()
+                                                    } else {
+                                                        c.clone()
+                                                    };
+                                                    let key = c.clone();
+                                                    view! {
+                                                        <label class="sub-scope-item">
+                                                            <input
+                                                                type="checkbox"
+                                                                prop:checked=move || selected.get().contains(&key)
+                                                                on:change=move |e| {
+                                                                    let on = event_target_checked(&e);
+                                                                    selected.update(|s| {
+                                                                        if on { s.insert(c.clone()); }
+                                                                        else { s.remove(&c); }
+                                                                    });
+                                                                }
+                                                            />
+                                                            <span>{label}</span>
+                                                        </label>
+                                                    }
+                                                }
+                                            />
+                                        </div>
+                                    }.into_any()
+                                }
+                            }}
+                        </Show>
+                        <button
+                            class="btn-sm btn-primary"
+                            disabled=move || scope_saving.get()
+                            on:click=move |_| save_scope()
+                        >
+                            {move || if scope_saving.get() { "Saving…" } else { "Update collections" }}
+                        </button>
+                    </div>
+
                     <div class="sub-file-list">
                         <Show
                             when=move || loaded.get()

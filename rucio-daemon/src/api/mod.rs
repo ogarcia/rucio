@@ -122,10 +122,12 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         pins::list_pins,
         pins::create_pin,
         pins::delete_pin,
+        pins::set_pin_collection,
         subscriptions::list_subscriptions,
         subscriptions::create_subscription,
         subscriptions::delete_subscription,
         subscriptions::list_subscription_files,
+        subscriptions::set_subscription_collections,
         metrics::get_metrics,
         uploads::list_uploads,
         health::get_health,
@@ -197,10 +199,12 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         rucio_core::api::categories::CategoriesResponse,
         rucio_core::api::categories::SetCategoryRequest,
         rucio_core::api::pins::PinRequest,
+        rucio_core::api::pins::PinCollectionRequest,
         rucio_core::api::pins::PinResponse,
         rucio_core::api::pins::PinState,
         rucio_core::api::pins::PinsResponse,
         rucio_core::api::subscriptions::SubscriptionRequest,
+        rucio_core::api::subscriptions::SubscriptionCollectionsRequest,
         rucio_core::api::subscriptions::SubscriptionResponse,
         rucio_core::api::subscriptions::SubscriptionsResponse,
         rucio_core::api::subscriptions::MirrorFile,
@@ -602,6 +606,10 @@ fn v1_router() -> Router<AppState> {
             routing::get(pins::list_pins).post(pins::create_pin),
         )
         .route("/pins/{hash}", routing::delete(pins::delete_pin))
+        .route(
+            "/pins/{hash}/collection",
+            routing::put(pins::set_pin_collection),
+        )
         // subscriptions (cooperative pinning: mirror a peer's pin-set)
         .route(
             "/subscriptions",
@@ -615,6 +623,10 @@ fn v1_router() -> Router<AppState> {
         .route(
             "/subscriptions/{peer_id}/files",
             routing::get(subscriptions::list_subscription_files),
+        )
+        .route(
+            "/subscriptions/{peer_id}/collections",
+            routing::put(subscriptions::set_subscription_collections),
         )
         // notification centre (runtime data: the bell + slideover)
         .route(

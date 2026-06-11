@@ -34,6 +34,8 @@ pub async fn list(client: &ApiClient) -> Result<()> {
         size: String,
         #[tabled(rename = "State")]
         state: String,
+        #[tabled(rename = "Collection")]
+        collection: String,
     }
 
     let rows: Vec<Row> = resp
@@ -45,6 +47,7 @@ pub async fn list(client: &ApiClient) -> Result<()> {
             name: p.name.clone().unwrap_or_else(|| "-".to_string()),
             size: p.size.map(human_size).unwrap_or_else(|| "-".to_string()),
             state: state_label(p.state).to_string(),
+            collection: p.collection.clone().unwrap_or_else(|| "-".to_string()),
         })
         .collect();
 
@@ -78,7 +81,12 @@ async fn resolve_to_magnet(client: &ApiClient, target: &str) -> Result<String> {
     bail!("'{target}' is not a rucio: magnet, a download id, or a 64-char root hash");
 }
 
-pub async fn add(client: &ApiClient, target: &str, providers: Vec<String>) -> Result<()> {
+pub async fn add(
+    client: &ApiClient,
+    target: &str,
+    providers: Vec<String>,
+    collection: Option<String>,
+) -> Result<()> {
     let magnet = match resolve_to_magnet(client, target).await {
         Ok(m) => m,
         Err(e) => {
@@ -86,7 +94,10 @@ pub async fn add(client: &ApiClient, target: &str, providers: Vec<String>) -> Re
             std::process::exit(1);
         }
     };
-    match client.create_pin(&magnet, providers).await {
+    let collection = collection
+        .map(|c| c.trim().to_string())
+        .filter(|c| !c.is_empty());
+    match client.create_pin(&magnet, providers, collection).await {
         Ok(p) => {
             let name = p.name.as_deref().unwrap_or("(unknown)");
             println!(

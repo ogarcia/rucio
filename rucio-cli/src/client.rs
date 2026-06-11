@@ -264,12 +264,18 @@ impl ApiClient {
         self.get("/api/v1/pins").await
     }
 
-    pub async fn create_pin(&self, magnet: &str, providers: Vec<String>) -> Result<PinResponse> {
+    pub async fn create_pin(
+        &self,
+        magnet: &str,
+        providers: Vec<String>,
+        collection: Option<String>,
+    ) -> Result<PinResponse> {
         self.post(
             "/api/v1/pins",
             &PinRequest {
                 magnet: magnet.to_string(),
                 providers,
+                collection,
             },
         )
         .await

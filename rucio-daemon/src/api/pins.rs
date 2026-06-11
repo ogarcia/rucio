@@ -11,7 +11,9 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 
-use rucio_core::api::pins::{PinRequest, PinResponse, PinState, PinsResponse};
+use rucio_core::api::pins::{
+    PinCollectionRequest, PinRequest, PinResponse, PinState, PinsResponse,
+};
 
 use crate::api::{AppState, DownloadRequest};
 use crate::db;
@@ -85,10 +87,12 @@ pub async fn list_pins(State(state): State<AppState>) -> Result<Json<PinsRespons
             name,
             size,
             state: state_,
+            collection: row.collection.filter(|c| !c.is_empty()),
             added_at: row.added_at,
         });
     }
-    Ok(Json(PinsResponse { pins }))
+    let collections = db::pins::collections(&state.db).await.unwrap_or_default();
+    Ok(Json(PinsResponse { pins, collections }))
 }
 
 /// Pin a magnet.
@@ -116,9 +120,16 @@ pub async fn create_pin(
         return Err(StatusCode::BAD_REQUEST);
     };
 
+    // Normalise the collection: trim, and treat empty as uncollected.
+    let collection = req
+        .collection
+        .as_deref()
+        .map(str::trim)
+        .filter(|c| !c.is_empty());
+
     // Record the intent first (idempotent), so completion routes to pin_dir even
     // if the fetch is already running.
-    db::pins::add(&state.db, &info.root_hash, crate::now_secs())
+    db::pins::add(&state.db, &info.root_hash, collection, crate::now_secs())
         .await
         .map_err(|e| {
             tracing::error!("add pin: {e}");
@@ -160,9 +171,47 @@ pub async fn create_pin(
         name: name.or(info.name),
         size: size.or(info.size),
         state: st,
+        collection: collection.map(str::to_string),
         added_at: crate::now_secs() as i64,
     };
     Ok((status, Json(resp)))
+}
+
+/// Move a pin to a different collection (or clear it). The change is reflected
+/// in our published pin-set on the next request from any subscriber.
+#[utoipa::path(
+    put,
+    path = "/api/v1/pins/{hash}/collection",
+    tag = "pins",
+    params(("hash" = String, Path, description = "Root hash (hex)")),
+    request_body = PinCollectionRequest,
+    responses(
+        (status = 204, description = "Collection updated"),
+        (status = 400, description = "Malformed hash"),
+        (status = 404, description = "Not pinned"),
+    )
+)]
+pub async fn set_pin_collection(
+    State(state): State<AppState>,
+    Path(hash): Path<String>,
+    Json(req): Json<PinCollectionRequest>,
+) -> StatusCode {
+    let Some(root_hash) = parse_root_hash(&hash) else {
+        return StatusCode::BAD_REQUEST;
+    };
+    let collection = req
+        .collection
+        .as_deref()
+        .map(str::trim)
+        .filter(|c| !c.is_empty());
+    match db::pins::set_collection(&state.db, &root_hash, collection).await {
+        Ok(true) => StatusCode::NO_CONTENT,
+        Ok(false) => StatusCode::NOT_FOUND,
+        Err(e) => {
+            tracing::error!("set pin collection: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    }
 }
 
 /// Unpin a root hash.

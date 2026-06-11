@@ -1151,7 +1151,10 @@
             font-size: 0.8125rem; color: var(--text);
             white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
         }
-        .share-dir-meta { font-size: 0.6875rem; color: var(--text-3); }
+        .share-dir-meta {
+            font-size: 0.6875rem; color: var(--text-3);
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
         .share-badge {
             font-size: 0.625rem; font-weight: 700; letter-spacing: 0.03em;
             background: var(--sa); color: var(--sa-fg);
@@ -1169,6 +1172,27 @@
         .pin-state-available { background: var(--sd); color: var(--sd-fg); }
         .pin-state-fetching  { background: var(--sa); color: var(--sa-fg); }
         .pin-state-missing   { background: var(--sn); color: var(--sn-fg); }
+        /* Pin and subscription rows aren't clickable as a whole (only their
+           pills/buttons are), so keep the text cursor, allow selecting the
+           name/hash to copy, and drop the row hover tint — consistent with the
+           static file rows (.share-file-row). */
+        .static-row { cursor: default; user-select: text; -webkit-user-select: text; }
+        .static-row:hover { background: transparent; }
+        /* Right-hand block of a pin row: collection pill over state badge,
+           mirroring the two-line title/meta block on the left. */
+        .pin-side {
+            display: flex; flex-direction: column; align-items: flex-end;
+            gap: 0.25rem; flex: none;
+        }
+        /* Clickable collection label; opens the change-collection modal. */
+        .pin-collection-pill {
+            font-size: 0.6875rem; font-weight: 600; max-width: 11rem;
+            padding: 0.15rem 0.55rem; border-radius: 9999px; cursor: pointer;
+            border: 1px solid var(--border); background: var(--bg-2); color: var(--text-1);
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .pin-collection-pill:hover { border-color: var(--accent); color: var(--accent); }
+        .pin-collection-pill-empty { color: var(--text-4); font-weight: 500; }
 
         /* Subscription storage meter: the used/quota bar under the peer id. */
         /* Two-tone subscription meter: lighter = committed (selected within
@@ -1188,6 +1212,21 @@
             font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         }
         .sub-info-line { font-size: 0.8125rem; color: var(--text-2); }
+        /* Collection scope editor (which of a peer's collections to mirror). */
+        .sub-scope {
+            display: flex; flex-direction: column; gap: 0.5rem;
+            margin: 0.75rem 0; padding: 0.75rem;
+            border: 1px solid var(--border); border-radius: 0.375rem;
+        }
+        .sub-scope-all { display: flex; align-items: center; gap: 0.5rem; font-size: 0.8125rem; }
+        .sub-scope-list {
+            display: flex; flex-wrap: wrap; gap: 0.375rem 1rem;
+            padding-left: 1.5rem;
+        }
+        .sub-scope-item {
+            display: flex; align-items: center; gap: 0.4rem;
+            font-size: 0.8125rem; color: var(--text-2);
+        }
         .sub-file-list { max-height: 50vh; overflow-y: auto; }
         .mirror-state {
             font-size: 0.625rem; font-weight: 700; letter-spacing: 0.03em;

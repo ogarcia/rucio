@@ -59,6 +59,28 @@ pub struct SubscriptionResponse {
     pub last_synced_at: i64,
     /// Unix timestamp when the subscription was added.
     pub added_at: i64,
+    /// true = mirror the whole peer; false = only `followed_collections`.
+    pub follow_all: bool,
+    /// Collections of this peer we follow (meaningful only when `follow_all` is
+    /// false). The empty string "" denotes the peer's uncollected pins.
+    #[serde(default)]
+    pub followed_collections: Vec<String>,
+    /// Distinct collections seen in this peer's synced pin-set, for the UI's
+    /// selector. "" denotes uncollected pins. Populated after the first sync.
+    #[serde(default)]
+    pub available_collections: Vec<String>,
+}
+
+/// Request body for `PUT /api/v1/subscriptions/{peer_id}/collections`: choose
+/// which of a peer's collections to mirror.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+pub struct SubscriptionCollectionsRequest {
+    /// true = mirror the whole peer (the `collections` list is then ignored but
+    /// remembered, so flipping back restores the selection).
+    pub follow_all: bool,
+    /// The collections to follow when `follow_all` is false. "" = uncollected.
+    #[serde(default)]
+    pub collections: Vec<String>,
 }
 
 /// GET /api/v1/subscriptions

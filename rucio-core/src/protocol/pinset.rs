@@ -17,6 +17,12 @@ pub struct PinsetEntry {
     pub root_hash: [u8; 32],
     pub size: u64,
     pub name: String,
+    /// Publishing collection this pin belongs to, as chosen by the publisher.
+    /// `None` = uncollected. A subscriber can follow only selected collections
+    /// of a peer (see `pin_subscription_collections`). Free-text per publisher;
+    /// there is no global taxonomy.
+    #[serde(default)]
+    pub collection: Option<String>,
 }
 
 /// A peer's pin-set.
@@ -37,9 +43,10 @@ impl PinsetResponse {
     /// Compute the fingerprint of a set of entries: order-independent so it's
     /// stable regardless of how the rows come out of the database.
     pub fn fingerprint(entries: &[PinsetEntry]) -> u64 {
-        // XOR of per-entry hashes → independent of order; folds hash+size so a
-        // resized file also bumps it. Cheap and collision-safe enough to gate a
-        // re-sync (a miss just re-fetches an unchanged set).
+        // XOR of per-entry hashes → independent of order; folds hash+size+
+        // collection so a resized file or a re-tagged pin also bumps it. Cheap
+        // and collision-safe enough to gate a re-sync (a miss just re-fetches an
+        // unchanged set).
         let mut acc: u64 = 0xcbf2_9ce4_8422_2325; // FNV offset basis as a seed
         for e in entries {
             let mut h: u64 = 0;
@@ -49,6 +56,14 @@ impl PinsetResponse {
                 h ^= u64::from_le_bytes(b);
             }
             h ^= e.size.rotate_left(17);
+            // Fold the collection label (FNV-1a over its bytes); None and ""
+            // are treated alike since both mean "uncollected".
+            let mut c: u64 = 0xcbf2_9ce4_8422_2325;
+            for byte in e.collection.as_deref().unwrap_or("").bytes() {
+                c ^= byte as u64;
+                c = c.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+            h ^= c.rotate_left(33);
             acc ^= h;
         }
         acc

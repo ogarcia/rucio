@@ -61,6 +61,7 @@ CREATE INDEX IF NOT EXISTS idx_chunks_hash ON chunks(hash);
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS pins (
     root_hash   BLOB    PRIMARY KEY,    -- 32 bytes, BLAKE3
+    collection  TEXT,                   -- publishing collection label, NULL = uncollected. Distinct from download categories (which vanish when the download row is removed)
     added_at    INTEGER NOT NULL
 );
 
@@ -73,9 +74,22 @@ CREATE TABLE IF NOT EXISTS pins (
 CREATE TABLE IF NOT EXISTS pin_subscriptions (
     peer_id        TEXT    PRIMARY KEY,   -- libp2p PeerId (base58)
     quota_bytes    INTEGER NOT NULL,      -- max bytes we mirror for this peer
+    follow_all     INTEGER NOT NULL DEFAULT 1,  -- 1 = mirror the whole peer; 0 = only the collections listed in pin_subscription_collections
     last_version   INTEGER NOT NULL DEFAULT 0,
     last_synced_at INTEGER NOT NULL DEFAULT 0,
     added_at       INTEGER NOT NULL
+);
+
+-- ---------------------------------------------------------------------------
+-- pin_subscription_collections (cooperative pinning)
+-- The set of a peer's collections we follow when follow_all = 0. Free-text
+-- labels chosen by the publisher; the special label '' (empty string) means
+-- "the publisher's uncollected pins". Ignored entirely while follow_all = 1.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS pin_subscription_collections (
+    peer_id     TEXT    NOT NULL REFERENCES pin_subscriptions(peer_id) ON DELETE CASCADE,
+    collection  TEXT    NOT NULL,         -- '' = the peer's uncollected pins
+    PRIMARY KEY (peer_id, collection)
 );
 
 -- ---------------------------------------------------------------------------
@@ -92,6 +106,7 @@ CREATE TABLE IF NOT EXISTS mirror_pins (
     name        TEXT,
     size        INTEGER NOT NULL DEFAULT 0,
     state       TEXT    NOT NULL DEFAULT 'wanted',
+    collection  TEXT,                     -- the publisher's collection for this pin, NULL = uncollected. One pin has exactly one collection, so this stays an attribute (not part of the key)
     added_at    INTEGER NOT NULL,
     PRIMARY KEY (root_hash, peer_id)
 );

@@ -237,6 +237,10 @@ pub enum PinAction {
         /// Provider PeerId hint to seed the fetch (repeatable)
         #[arg(long, value_name = "PEER_ID")]
         provider: Vec<String>,
+        /// Publishing collection to file this pin under (subscribers can follow
+        /// specific collections of yours)
+        #[arg(long, value_name = "NAME")]
+        collection: Option<String>,
     },
     /// Unpin a root hash (removes the intent; content stays on disk)
     Remove {
@@ -452,7 +456,11 @@ pub async fn run() -> Result<()> {
         },
         Commands::Pin { action } => match action {
             PinAction::List => cmd::pins::list(&client).await,
-            PinAction::Add { target, provider } => cmd::pins::add(&client, &target, provider).await,
+            PinAction::Add {
+                target,
+                provider,
+                collection,
+            } => cmd::pins::add(&client, &target, provider, collection).await,
             PinAction::Remove { hash } => cmd::pins::remove(&client, &hash).await,
         },
         Commands::Subscription { action } => match action {
