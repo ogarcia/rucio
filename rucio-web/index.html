@@ -809,17 +809,20 @@
             .dl-cat-badge { max-width: 6rem; }
         }
 
-        /* Narrowest tier: three rows. The selects no longer share a row with the
-           text filter — they sit side by side filling half each (cap lifted),
-           the filter drops to its own full-width row, count + speeds to a third. */
+        /* Narrowest tier: three rows — but ONLY when the category select is also
+           present (two selects). They sit side by side filling half each (cap
+           lifted), the filter drops to its own full-width row, count + speeds to a
+           third. With no category select there is a single control, so this tier is
+           scoped out and the layout falls back to the ≤640px two-row grid (state
+           select + filter share row 1). */
         @media (max-width: 400px) {
-            .dl-statusbar:has(.dl-filter-select) {
+            .dl-statusbar:has(.dl-filter-select:nth-of-type(2)) {
                 grid-template-columns: 1fr 1fr;
             }
-            .dl-statusbar:has(.dl-filter-select) .dl-filter-select { max-width: none; }
-            .dl-statusbar:has(.dl-filter-select) .dl-filter-input  { grid-row: 2; grid-column: 1 / -1; }
-            .dl-statusbar:has(.dl-filter-select) .dl-active-count  { grid-row: 3; grid-column: 1; }
-            .dl-statusbar:has(.dl-filter-select) .dl-status-right  { grid-row: 3; grid-column: 2; }
+            .dl-statusbar:has(.dl-filter-select:nth-of-type(2)) .dl-filter-select { max-width: none; }
+            .dl-statusbar:has(.dl-filter-select:nth-of-type(2)) .dl-filter-input  { grid-row: 2; grid-column: 1 / -1; }
+            .dl-statusbar:has(.dl-filter-select:nth-of-type(2)) .dl-active-count  { grid-row: 3; grid-column: 1; }
+            .dl-statusbar:has(.dl-filter-select:nth-of-type(2)) .dl-status-right  { grid-row: 3; grid-column: 2; }
         }
 
         /* ── Downloads ───────────────────────────────────────────────────── */
