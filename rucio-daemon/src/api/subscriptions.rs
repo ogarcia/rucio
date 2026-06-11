@@ -238,6 +238,71 @@ pub struct UnsubscribeParams {
     pub keep: bool,
 }
 
+/// Fetch a single subscription with its current mirror progress and collection
+/// info. Used by the detail modal's Refresh button to pick up the latest state.
+#[utoipa::path(
+    get,
+    path = "/api/v1/subscriptions/{peer_id}",
+    tag = "subscriptions",
+    params(("peer_id" = String, Path, description = "The mirrored peer's PeerId")),
+    responses(
+        (status = 200, description = "The subscription", body = SubscriptionResponse),
+        (status = 404, description = "No such subscription"),
+    )
+)]
+pub async fn get_subscription(
+    State(state): State<AppState>,
+    Path(peer_id): Path<String>,
+) -> Result<Json<SubscriptionResponse>, StatusCode> {
+    let parsed = parse_peer_input(&peer_id);
+    let key = parsed.parse::<PeerId>().map(|p| p.to_string());
+    let key = key.as_deref().unwrap_or(parsed);
+
+    match db::pin_subscriptions::get(&state.db, key).await {
+        Ok(Some(row)) => Ok(Json(to_response(&state, row).await)),
+        Ok(None) => Err(StatusCode::NOT_FOUND),
+        Err(e) => {
+            tracing::error!("get subscription: {e}");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+/// Force a pin-set sync with this peer now, instead of waiting for the periodic
+/// reconcile. Best-effort: the pull is asynchronous, so the refreshed state
+/// lands a moment later (and only if the peer is reachable).
+#[utoipa::path(
+    post,
+    path = "/api/v1/subscriptions/{peer_id}/sync",
+    tag = "subscriptions",
+    params(("peer_id" = String, Path, description = "The mirrored peer's PeerId")),
+    responses(
+        (status = 202, description = "Sync requested"),
+        (status = 404, description = "No such subscription"),
+    )
+)]
+pub async fn sync_subscription(
+    State(state): State<AppState>,
+    Path(peer_id): Path<String>,
+) -> StatusCode {
+    let parsed = parse_peer_input(&peer_id);
+    let key = parsed.parse::<PeerId>().map(|p| p.to_string());
+    let key = key.as_deref().unwrap_or(parsed);
+
+    match db::pin_subscriptions::get(&state.db, key).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return StatusCode::NOT_FOUND,
+        Err(e) => {
+            tracing::error!("sync subscription: {e}");
+            return StatusCode::INTERNAL_SERVER_ERROR;
+        }
+    }
+    if let Ok(peer) = key.parse::<PeerId>() {
+        crate::pinset::request_one_pinset(&state.node_cmd, peer).await;
+    }
+    StatusCode::ACCEPTED
+}
+
 /// How much would actually be freed if this peer were unsubscribed — so the UI
 /// can skip the keep/free prompt when the answer is "nothing".
 #[utoipa::path(

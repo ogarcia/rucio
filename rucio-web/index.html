@@ -602,6 +602,9 @@
             padding: 0.875rem 1.25rem; border-bottom: 1px solid var(--border);
         }
         .modal-title { font-size: 0.8125rem; font-weight: 600; color: var(--text); }
+        /* Refresh button in the subscription modal header: sits next to close. */
+        .sub-refresh { margin-left: auto; margin-right: 0.25rem; }
+        .sub-refresh.is-refreshing .icon { animation: spin 0.8s linear infinite; }
         .modal-body { padding: 1rem 1.25rem; display: flex; flex-direction: column; gap: 0.75rem; }
         .modal-footer {
             display: flex; justify-content: flex-end; gap: 0.5rem;

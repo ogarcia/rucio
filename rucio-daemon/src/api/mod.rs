@@ -126,6 +126,8 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         subscriptions::list_subscriptions,
         subscriptions::create_subscription,
         subscriptions::delete_subscription,
+        subscriptions::get_subscription,
+        subscriptions::sync_subscription,
         subscriptions::list_subscription_files,
         subscriptions::set_subscription_collections,
         subscriptions::subscription_evictable,
@@ -620,7 +622,12 @@ fn v1_router() -> Router<AppState> {
         )
         .route(
             "/subscriptions/{peer_id}",
-            routing::delete(subscriptions::delete_subscription),
+            routing::get(subscriptions::get_subscription)
+                .delete(subscriptions::delete_subscription),
+        )
+        .route(
+            "/subscriptions/{peer_id}/sync",
+            routing::post(subscriptions::sync_subscription),
         )
         .route(
             "/subscriptions/{peer_id}/files",

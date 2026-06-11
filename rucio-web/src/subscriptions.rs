@@ -5,6 +5,9 @@
 //! node's own shareable link, and unsubscribe (which evicts content nobody else
 //! wants).
 
+use std::time::Duration;
+
+use gloo_timers::future::sleep;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
@@ -71,6 +74,24 @@ async fn api_set_collections(
     if let Ok(req) = gloo_net::http::Request::put(&url).json(&body) {
         let _ = req.send().await;
     }
+}
+
+/// Re-fetch a single subscription (latest stats + available collections).
+async fn api_get(peer_id: &str) -> Option<Subscription> {
+    let url = format!("/api/v1/subscriptions/{peer_id}");
+    gloo_net::http::Request::get(&url)
+        .send()
+        .await
+        .ok()?
+        .json::<Subscription>()
+        .await
+        .ok()
+}
+
+/// Ask the daemon to pull this peer's pin-set now (best-effort, asynchronous).
+async fn api_sync(peer_id: &str) {
+    let url = format!("/api/v1/subscriptions/{peer_id}/sync");
+    let _ = gloo_net::http::Request::post(&url).send().await;
 }
 
 /// Bytes that unsubscribing would actually free. `Some(0)` means nothing is at
@@ -538,17 +559,44 @@ fn SubscriptionInfoModal(
     }
 
     let peer_id = sub.peer_id.clone();
-    let fetching = sub.wanted_count.saturating_sub(sub.present_count);
-    let usage = format!(
-        "{} on disk · {} committed of {} quota",
-        format_size(sub.present_bytes),
-        format_size(sub.used_bytes),
-        format_size(sub.quota_bytes)
-    );
-    let summary = format!(
-        "{} mirrored · {} fetching · {} over quota",
-        sub.present_count, fetching, sub.skipped_count
-    );
+    // Live subscription data (stats + available collections), refreshable.
+    let info: RwSignal<Subscription> = RwSignal::new(sub.clone());
+    let refreshing = RwSignal::new(false);
+    let usage = move || {
+        let s = info.get();
+        format!(
+            "{} on disk · {} committed of {} quota",
+            format_size(s.present_bytes),
+            format_size(s.used_bytes),
+            format_size(s.quota_bytes)
+        )
+    };
+    let summary = move || {
+        let s = info.get();
+        let fetching = s.wanted_count.saturating_sub(s.present_count);
+        format!(
+            "{} mirrored · {} fetching · {} over quota",
+            s.present_count, fetching, s.skipped_count
+        )
+    };
+    let peer_refresh = StoredValue::new(sub.peer_id.clone());
+    let do_refresh = move || {
+        if refreshing.get() {
+            return;
+        }
+        refreshing.set(true);
+        let peer = peer_refresh.get_value();
+        spawn_local(async move {
+            // Kick a pull, give the async round-trip a moment, then re-read.
+            api_sync(&peer).await;
+            sleep(Duration::from_millis(1200)).await;
+            if let Some(s) = api_get(&peer).await {
+                info.set(s);
+            }
+            files.set(api_files(&peer).await);
+            refreshing.set(false);
+        });
+    };
 
     // Quota editor, prefilled from the current quota. Copy-able peer id via a
     // StoredValue so the save closure can be reused in two handlers.
@@ -562,7 +610,6 @@ fn SubscriptionInfoModal(
 
     // Collection scope editor.
     let follow_all = RwSignal::new(sub.follow_all);
-    let available = StoredValue::new(sub.available_collections.clone());
     let selected: RwSignal<std::collections::HashSet<String>> =
         RwSignal::new(sub.followed_collections.iter().cloned().collect());
     let scope_saving = RwSignal::new(false);
@@ -591,7 +638,7 @@ fn SubscriptionInfoModal(
     let save_scope = move || {
         // Scope after this change: everything (follow_all) or the selected set.
         let after: std::collections::HashSet<String> = if follow_all.get() {
-            available.get_value().into_iter().collect()
+            info.get().available_collections.into_iter().collect()
         } else {
             selected.get()
         };
@@ -645,6 +692,15 @@ fn SubscriptionInfoModal(
             <div class="modal modal-wide" on:click=move |e| e.stop_propagation()>
                 <div class="modal-header">
                     <span class="modal-title">"Subscription"</span>
+                    <button
+                        class="icon-btn sub-refresh"
+                        class:is-refreshing=move || refreshing.get()
+                        title="Pull this peer's pin-set now and reload"
+                        disabled=move || refreshing.get()
+                        on:click=move |_| do_refresh()
+                    >
+                        <Icon paths=icons::REFRESH/>
+                    </button>
                     <button class="overlay-close" on:click=move |_| on_close()>
                         <Icon paths=icons::X/>
                     </button>
@@ -694,7 +750,7 @@ fn SubscriptionInfoModal(
                         </label>
                         <Show when=move || !follow_all.get()>
                             {move || {
-                                let avail = available.get_value();
+                                let avail = info.get().available_collections;
                                 if avail.is_empty() {
                                     view! {
                                         <p class="empty-hint">
@@ -706,7 +762,7 @@ fn SubscriptionInfoModal(
                                     view! {
                                         <div class="sub-scope-list">
                                             <For
-                                                each=move || available.get_value()
+                                                each=move || info.get().available_collections
                                                 key=|c| c.clone()
                                                 children=move |c| {
                                                     let label = if c.is_empty() {
