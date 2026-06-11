@@ -12,6 +12,7 @@ pub mod notifier;
 pub mod pinset;
 pub mod throttle;
 pub mod transfer;
+pub mod upload_scheduler;
 pub mod upload_stats;
 pub mod upnp;
 pub mod watcher;
@@ -324,6 +325,8 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
     let upload_semaphore = Arc::new(tokio::sync::Semaphore::new(
         config.network.max_upload_tasks.max(1),
     ));
+    // VIP upload scheduler: HighID requesters served before LowID.
+    let upload_scheduler = Arc::new(upload_scheduler::UploadScheduler::new());
     // Per-download live statistics, shared between the engines, the speed
     // sampler in this loop, and the API handlers.
     let live_stats: live_stats::LiveStatsMap =
@@ -347,6 +350,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         temp_dir,
         Arc::clone(&session_metrics),
         Arc::clone(&upload_semaphore),
+        Arc::clone(&upload_scheduler),
         Arc::clone(&download_throttle),
         Arc::clone(&live_stats),
         Arc::clone(&upload_stats),
@@ -798,6 +802,10 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
     let mut last_emule_up_bytes = 0u64;
     #[cfg(feature = "emule-compat")]
     let mut last_emule_up_chunks = 0u64;
+    // Peer reachability class (true = HighID), from PeerDiscovered. Used to give
+    // HighID requesters upload precedence in serve_chunk.
+    let mut peer_classes: std::collections::HashMap<libp2p::PeerId, bool> =
+        std::collections::HashMap::new();
     // Last broadcast lifecycle state per search, to emit SearchStateChanged
     // only on actual state transitions (results carry their own WS events).
     let mut last_search_states: std::collections::HashMap<
@@ -1206,6 +1214,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                     }
                     Some(node::messages::NodeEvent::PeerDiscovered { peer_id, addrs }) => {
                         let is_high_id = peer_has_public_addr(&addrs);
+                        peer_classes.insert(peer_id, is_high_id);
                         let addrs_json = serde_json::to_string(
                             &addrs.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
                         )
@@ -1268,7 +1277,13 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                         engine.on_chunk_request_failed(request_id, peer).await;
                     }
                     Some(node::messages::NodeEvent::ChunkRequested { peer, request, channel_id }) => {
-                        engine.serve_chunk(peer, request, channel_id).await;
+                        // Unknown peers default to HighID so we never accidentally
+                        // deprioritise a peer we haven't classified yet.
+                        let is_high_id = peer_classes.get(&peer).copied().unwrap_or(true);
+                        engine.serve_chunk(peer, request, channel_id, is_high_id).await;
+                    }
+                    Some(node::messages::NodeEvent::ChunkSent { peer }) => {
+                        engine.note_chunk_sent(peer);
                     }
                     Some(node::messages::NodeEvent::ManifestReceived { request_id, peer, response }) => {
                         engine.on_manifest_received(request_id, peer, response, now_secs()).await;

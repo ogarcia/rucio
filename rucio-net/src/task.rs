@@ -224,7 +224,7 @@ struct LoopState {
     provider_queries: HashMap<QueryId, Vec<u8>>,
     classifier: ClassificationState,
     /// Pending inbound chunk request channels keyed by a monotonic id.
-    pending_chunk_channels: HashMap<u64, ResponseChannel<ChunkResp>>,
+    pending_chunk_channels: HashMap<u64, (ResponseChannel<ChunkResp>, PeerId)>,
     /// Pending inbound manifest request channels keyed by a monotonic id.
     pending_manifest_channels: HashMap<u64, ResponseChannel<ManifestResponse>>,
     /// Pending inbound pin-set request channels keyed by a monotonic id.
@@ -283,10 +283,10 @@ impl LoopState {
         }
     }
 
-    fn store_chunk_channel(&mut self, ch: ResponseChannel<ChunkResp>) -> u64 {
+    fn store_chunk_channel(&mut self, ch: ResponseChannel<ChunkResp>, peer: PeerId) -> u64 {
         let id = self.next_channel_id;
         self.next_channel_id += 1;
-        self.pending_chunk_channels.insert(id, ch);
+        self.pending_chunk_channels.insert(id, (ch, peer));
         id
     }
 
@@ -475,7 +475,7 @@ async fn run_loop(
                         }
                     }
                     Some(NodeCmd::RespondChunk { channel_id, response, upload_sink }) => {
-                        if let Some(ch) = state.pending_chunk_channels.remove(&channel_id) {
+                        if let Some((ch, peer)) = state.pending_chunk_channels.remove(&channel_id) {
                             // `send_response` returns the response back in `Err`
                             // when the channel is gone (requester cancelled or
                             // disconnected) — expected, and we must NOT log the
@@ -484,6 +484,9 @@ async fn run_loop(
                                 && transfer.send_response(ch, (response, upload_sink)).is_err()
                             {
                                 debug!(%channel_id, "Chunk response dropped: requester no longer reachable");
+                                // No ResponseSent/InboundFailure will follow, so
+                                // release the scheduler slot here.
+                                let _ = event_tx.emit(NodeEvent::ChunkSent { peer }).await;
                             }
                         } else {
                             warn!(%channel_id, "RespondChunk: unknown channel id");
@@ -1180,7 +1183,7 @@ async fn on_transfer_event(
             ..
         } => {
             debug!(%peer, chunk_idx = request.0.chunk_idx, "Received chunk request");
-            let channel_id = state.store_chunk_channel(channel);
+            let channel_id = state.store_chunk_channel(channel, peer);
             let delivered = event_tx
                 .emit(NodeEvent::ChunkRequested {
                     peer,
@@ -1213,11 +1216,15 @@ async fn on_transfer_event(
             // cancelled, or timed out (e.g. got the chunk from a faster peer, or
             // finished the file). Not actionable here, so debug, not warn.
             debug!(%peer, %error, "Inbound chunk request did not complete");
+            // Release the upload-scheduler slot (the serve started but the write
+            // didn't complete). No-op for LowID/untracked peers.
+            let _ = event_tx.emit(NodeEvent::ChunkSent { peer }).await;
         }
         request_response::Event::ResponseSent { peer, .. } => {
             // Confirms the full chunk response was written to the peer — useful
             // for telling "responder never sent it" from "transfer stalled".
             debug!(%peer, "Chunk response fully sent");
+            let _ = event_tx.emit(NodeEvent::ChunkSent { peer }).await;
         }
     }
 }

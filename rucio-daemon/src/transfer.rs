@@ -273,6 +273,8 @@ pub struct DownloadEngine {
     metrics: Arc<Metrics>,
     /// Cap on concurrent chunk-upload tasks (semaphore with configurable permits).
     upload_semaphore: Arc<Semaphore>,
+    /// VIP upload scheduler: HighID requesters are served before LowID.
+    upload_scheduler: Arc<crate::upload_scheduler::UploadScheduler>,
     /// Global download bandwidth throttle (chunks received from remote peers).
     /// Upload rate limiting now lives in the net transfer codec, which paces the
     /// chunk *write* (smooth stream) instead of gating the whole-chunk handoff.
@@ -295,6 +297,7 @@ impl DownloadEngine {
         temp_dir: PathBuf,
         metrics: Arc<Metrics>,
         upload_semaphore: Arc<Semaphore>,
+        upload_scheduler: Arc<crate::upload_scheduler::UploadScheduler>,
         download_throttle: Arc<TokenBucket>,
         live_stats: crate::live_stats::LiveStatsMap,
         upload_stats: Arc<crate::upload_stats::UploadRegistry>,
@@ -312,6 +315,7 @@ impl DownloadEngine {
             peer_caps: HashMap::new(),
             metrics,
             upload_semaphore,
+            upload_scheduler,
             download_throttle,
             live_stats,
             upload_stats,
@@ -1711,7 +1715,13 @@ impl DownloadEngine {
     // Serve an inbound chunk request
     // -----------------------------------------------------------------------
 
-    pub async fn serve_chunk(&self, peer: PeerId, request: ChunkRequest, channel_id: u64) {
+    pub async fn serve_chunk(
+        &self,
+        peer: PeerId,
+        request: ChunkRequest,
+        channel_id: u64,
+        is_high_id: bool,
+    ) {
         const MAX_PEX_PEERS: usize = 8;
 
         // Collect PEX peers before spawning — known_providers is not Send.
@@ -1731,6 +1741,7 @@ impl DownloadEngine {
         let cmd_tx = self.cmd_tx.clone();
         let metrics = Arc::clone(&self.metrics);
         let semaphore = Arc::clone(&self.upload_semaphore);
+        let scheduler = Arc::clone(&self.upload_scheduler);
         let upload_stats = Arc::clone(&self.upload_stats);
         let root_hash = request.root_hash;
 
@@ -1780,6 +1791,20 @@ impl DownloadEngine {
             } else {
                 None
             };
+
+            // VIP scheduling for the actual data transfer: a HighID requester
+            // is served right away (and counted as in-flight until the node task
+            // reports the write done via ChunkSent → `note_chunk_sent`); a LowID
+            // one defers while any HighID write is in flight, up to the floor.
+            // Empty responses (NotFound/Error) don't contend, so skip them.
+            if upload_sink.is_some() {
+                if is_high_id {
+                    scheduler.highid_started(peer);
+                } else {
+                    scheduler.wait_for_lowid_turn().await;
+                }
+            }
+
             debug!(
                 chunk_idx = request.chunk_idx,
                 total_ms = started.elapsed().as_millis() as u64,
@@ -1793,6 +1818,13 @@ impl DownloadEngine {
                 })
                 .await;
         });
+    }
+
+    /// A chunk response we were serving reached a terminal state (the node task
+    /// finished or abandoned the write). Releases the HighID upload-scheduler
+    /// slot taken in `serve_chunk` (no-op for LowID/untracked peers).
+    pub fn note_chunk_sent(&self, peer: PeerId) {
+        self.upload_scheduler.chunk_finished(peer);
     }
 }
 
@@ -2045,6 +2077,7 @@ mod tests {
             tmp.path().to_path_buf(),
             metrics,
             Arc::new(tokio::sync::Semaphore::new(64)),
+            Arc::new(crate::upload_scheduler::UploadScheduler::new()),
             Arc::new(crate::throttle::TokenBucket::new(0)),
             Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             Arc::new(crate::upload_stats::UploadRegistry::new()),

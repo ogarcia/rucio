@@ -169,6 +169,11 @@ pub enum NodeEvent {
         request: ChunkRequest,
         channel_id: u64,
     },
+    /// A chunk response we were serving reached a terminal state — fully sent,
+    /// failed mid-write, or its channel was already gone. Lets the daemon
+    /// release the HighID upload-scheduler slot it took when it started serving
+    /// (the write happens in the node task, so the daemon can't time it itself).
+    ChunkSent { peer: PeerId },
     /// A manifest response arrived for a request we sent.
     ManifestReceived {
         request_id: OutboundRequestId,
