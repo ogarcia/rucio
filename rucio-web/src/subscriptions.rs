@@ -73,6 +73,16 @@ async fn api_set_collections(
     }
 }
 
+/// Bytes that unsubscribing would actually free. `Some(0)` means nothing is at
+/// stake (so the keep/free prompt can be skipped); `None` on error (prompt to
+/// be safe).
+async fn api_evictable(peer_id: &str) -> Option<u64> {
+    let url = format!("/api/v1/subscriptions/{peer_id}/evictable");
+    let resp = gloo_net::http::Request::get(&url).send().await.ok()?;
+    let v = resp.json::<serde_json::Value>().await.ok()?;
+    v.get("bytes").and_then(|b| b.as_u64())
+}
+
 /// The mirror files of a subscription, with their resolved state.
 async fn api_files(peer_id: &str) -> Vec<MirrorFile> {
     let url = format!("/api/v1/subscriptions/{peer_id}/files");
@@ -273,7 +283,22 @@ pub fn SubscriptionsTab(
                                         <button
                                             class="icon-btn icon-btn-danger"
                                             title="Unsubscribe"
-                                            on:click=move |_| unsub_for.set(Some(peer_rm.clone()))
+                                            on:click=move |_| {
+                                                let p = peer_rm.clone();
+                                                spawn_local(async move {
+                                                    // Skip the keep/free prompt when nothing would
+                                                    // actually be freed (content outside pin_dir,
+                                                    // pinned, or wanted elsewhere): just leave.
+                                                    if api_evictable(&p).await == Some(0) {
+                                                        api_remove(&p, true).await;
+                                                        if let Some(s) = api_list().await {
+                                                            subs.set(s);
+                                                        }
+                                                    } else {
+                                                        unsub_for.set(Some(p));
+                                                    }
+                                                });
+                                            }
                                         >
                                             <Icon paths=icons::TRASH/>
                                         </button>
@@ -570,15 +595,25 @@ fn SubscriptionInfoModal(
         } else {
             selected.get()
         };
-        // Dropping any previously-followed collection means content may go out
-        // of scope → ask whether to keep or free it. Growing the scope applies
-        // straight away (nothing is evicted by adding).
+        // Growing the scope applies straight away (adding never evicts).
         let removes = before.get_value().iter().any(|c| !after.contains(c));
-        if removes {
-            narrow_confirm.set(true);
-        } else {
+        if !removes {
             do_save_scope(false);
+            return;
         }
+        // It drops collections — but only ask if something would actually be
+        // freed; otherwise apply keeping (a no-op for content outside pin_dir).
+        let peer = peer_scope.get_value();
+        scope_saving.set(true);
+        spawn_local(async move {
+            let nothing_to_free = api_evictable(&peer).await == Some(0);
+            scope_saving.set(false);
+            if nothing_to_free {
+                do_save_scope(true);
+            } else {
+                narrow_confirm.set(true);
+            }
+        });
     };
 
     let save = move || {

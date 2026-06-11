@@ -130,6 +130,19 @@ pub struct SubscriptionFilesResponse {
     pub files: Vec<MirrorFile>,
 }
 
+/// GET /api/v1/subscriptions/{peer_id}/evictable — how much would actually be
+/// deleted if this peer's mirrored content went out of scope (unsubscribe).
+/// Zero means a keep/free prompt is pointless: nothing would be freed (the
+/// content is the user's own, pinned, wanted elsewhere, or sits outside
+/// `pin_dir`, e.g. auto-tagged into a category dir).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+pub struct SubscriptionEvictableResponse {
+    /// Number of files that would be deleted.
+    pub count: usize,
+    /// Total bytes that would be freed.
+    pub bytes: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

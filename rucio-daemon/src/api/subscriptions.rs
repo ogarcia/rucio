@@ -13,8 +13,9 @@ use serde::Deserialize;
 
 use libp2p::PeerId;
 use rucio_core::api::subscriptions::{
-    MirrorFile, MirrorFileState, SubscriptionCollectionsRequest, SubscriptionFilesResponse,
-    SubscriptionRequest, SubscriptionResponse, SubscriptionsResponse, parse_peer_input,
+    MirrorFile, MirrorFileState, SubscriptionCollectionsRequest, SubscriptionEvictableResponse,
+    SubscriptionFilesResponse, SubscriptionRequest, SubscriptionResponse, SubscriptionsResponse,
+    parse_peer_input,
 };
 
 use crate::api::AppState;
@@ -235,6 +236,37 @@ pub struct UnsubscribeParams {
     /// content nobody else wants.
     #[serde(default)]
     pub keep: bool,
+}
+
+/// How much would actually be freed if this peer were unsubscribed — so the UI
+/// can skip the keep/free prompt when the answer is "nothing".
+#[utoipa::path(
+    get,
+    path = "/api/v1/subscriptions/{peer_id}/evictable",
+    tag = "subscriptions",
+    params(("peer_id" = String, Path, description = "The mirrored peer's PeerId")),
+    responses(
+        (status = 200, description = "Evictable count and bytes", body = SubscriptionEvictableResponse),
+    )
+)]
+pub async fn subscription_evictable(
+    State(state): State<AppState>,
+    Path(peer_id): Path<String>,
+) -> Json<SubscriptionEvictableResponse> {
+    let parsed = parse_peer_input(&peer_id);
+    let key = parsed.parse::<PeerId>().map(|p| p.to_string());
+    let key = key.as_deref().unwrap_or(parsed);
+
+    let hashes: Vec<[u8; 32]> = db::mirror_pins::list_for_peer(&state.db, key)
+        .await
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|r| <[u8; 32]>::try_from(r.root_hash.as_slice()).ok())
+        .collect();
+    let (count, bytes) =
+        crate::pinset::evictable_count(&state.db, &hashes, key, &state.config.storage.pin_dir)
+            .await;
+    Json(SubscriptionEvictableResponse { count, bytes })
 }
 
 /// Unsubscribe from a peer.

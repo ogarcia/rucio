@@ -260,6 +260,43 @@ pub async fn retain_mirror_content(db: &db::Db, hashes: &[[u8; 32]], exclude_pee
     }
 }
 
+/// How much of `hashes` going out of scope for `peer_id` the eviction sweep
+/// would actually delete: mirror-owned, not a manual pin, not wanted by another
+/// subscription, and the local copy lives under `pin_dir`. Returns
+/// `(count, bytes)`. Lets the UI skip the keep/free prompt when nothing is at
+/// stake — e.g. content auto-tagged into a category dir outside `pin_dir`, which
+/// eviction never deletes, so "free" would be a no-op.
+pub async fn evictable_count(
+    db: &db::Db,
+    hashes: &[[u8; 32]],
+    peer_id: &str,
+    pin_dir: &std::path::Path,
+) -> (usize, u64) {
+    let mut count = 0usize;
+    let mut bytes = 0u64;
+    for h in hashes {
+        if !db::mirror_owned::is_owned(db, h).await.unwrap_or(false) {
+            continue;
+        }
+        if db::pins::exists(db, h).await.unwrap_or(false) {
+            continue;
+        }
+        if db::mirror_pins::wanted_by_other(db, h, peer_id)
+            .await
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        if let Ok(Some(share)) = db::shares::get_by_hash(db, h).await
+            && std::path::Path::new(&share.path).starts_with(pin_dir)
+        {
+            count += 1;
+            bytes += share.size.max(0) as u64;
+        }
+    }
+    (count, bytes)
+}
+
 /// Evict mirror content nobody wants any more. A hash is evicted only when it is
 /// mirror-owned (we fetched it solely to mirror), is neither a manual pin nor
 /// wanted by any subscription, and its file lives under `pin_dir`. That triple
@@ -700,5 +737,39 @@ mod tests {
         assert!(!db::mirror_owned::is_owned(&db, &solo).await.unwrap());
         // `shared` is still wanted by Bob -> stays owned (Bob keeps managing it).
         assert!(db::mirror_owned::is_owned(&db, &shared).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn evictable_only_counts_deletable_content() {
+        let (db, dir) = test_db().await;
+        let pin_dir = dir.path().join("pins");
+        let cat_dir = dir.path().join("category");
+        tokio::fs::create_dir_all(&pin_dir).await.unwrap();
+        tokio::fs::create_dir_all(&cat_dir).await.unwrap();
+        let peer = PeerId::random();
+
+        // a: owned, under pin_dir, unpinned, not wanted elsewhere -> evictable.
+        let a = [1u8; 32];
+        share_file(&db, &pin_dir, &a, "a.bin").await;
+        db::mirror_owned::mark(&db, &a, 1).await.unwrap();
+        // b: owned but auto-tagged OUTSIDE pin_dir -> not evictable (the case
+        //    the user raised: "free" would do nothing).
+        let b = [2u8; 32];
+        share_file(&db, &cat_dir, &b, "b.bin").await;
+        db::mirror_owned::mark(&db, &b, 1).await.unwrap();
+        // c: under pin_dir but the user pinned it -> not evictable.
+        let c = [3u8; 32];
+        share_file(&db, &pin_dir, &c, "c.bin").await;
+        db::mirror_owned::mark(&db, &c, 1).await.unwrap();
+        db::pins::add(&db, &c, None, 1).await.unwrap();
+
+        let hashes = [a, b, c];
+        let (count, bytes) = evictable_count(&db, &hashes, &peer.to_string(), &pin_dir).await;
+        assert_eq!(count, 1, "only `a` is actually deletable");
+        assert_eq!(bytes, 4); // share_file writes 4 bytes
+
+        // All outside pin_dir / pinned -> nothing to free, prompt can be skipped.
+        let (n2, _) = evictable_count(&db, &[b, c], &peer.to_string(), &pin_dir).await;
+        assert_eq!(n2, 0);
     }
 }
