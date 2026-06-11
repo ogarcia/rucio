@@ -603,7 +603,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         started_at: Instant::now(),
         node_status: Arc::clone(&node_status),
         search_registry: Arc::clone(&search_registry),
-        download_tx,
+        download_tx: download_tx.clone(),
         indexing_count: Arc::clone(&indexing_count),
         ws_tx: ws_tx.clone(),
         metrics: Arc::clone(&session_metrics),
@@ -905,7 +905,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                 crate::pinset::request_all_pinsets(&db, &handle.cmd_tx).await;
                 // Safety sweep: catches content orphaned by a removed
                 // subscription (no PinsetReceived ever fires for that peer).
-                crate::pinset::evict_unwanted(&db, &handle.cmd_tx, &config.storage.pin_dir).await;
+                crate::pinset::evict_unwanted(&db, &handle.cmd_tx, &download_tx, &config.storage.pin_dir).await;
             }
             _ = manifest_tick.tick() => {
                 engine.tick_manifest_timeouts().await;
@@ -1348,6 +1348,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                         crate::pinset::evict_unwanted(
                             &db,
                             &handle.cmd_tx,
+                            &download_tx,
                             &config.storage.pin_dir,
                         )
                         .await;

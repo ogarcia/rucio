@@ -11,6 +11,7 @@ use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot;
 use tracing::{info, warn};
 
+use crate::api::DownloadRequest;
 use crate::db;
 use crate::node::messages::NodeCmd;
 
@@ -319,6 +320,7 @@ pub async fn evictable_count(
 pub async fn evict_unwanted(
     db: &db::Db,
     cmd_tx: &Sender<NodeCmd>,
+    download_tx: &Sender<DownloadRequest>,
     pin_dir: &std::path::Path,
 ) -> usize {
     let owned = match db::mirror_owned::list(db).await {
@@ -337,7 +339,27 @@ pub async fn evict_unwanted(
             continue;
         }
 
-        // No longer wanted. Find where its copy lives.
+        // Still fetching (no share yet): cancel it so it doesn't complete into a
+        // permanent share after the user chose to free the space. `cancel`
+        // deletes the .part and stops providing; we drop ownership below.
+        if let Ok(Some(row)) = db::downloads::get_by_root_hash(db, &hash).await
+            && matches!(
+                row.status.as_str(),
+                "finding_providers" | "queued" | "downloading" | "stalled"
+            )
+        {
+            let _ = db::downloads::set_status(db, row.id, "cancelled", None).await;
+            let _ = download_tx
+                .send(DownloadRequest::Cancel {
+                    download_id: row.id,
+                    root_hash: hash.to_vec(),
+                })
+                .await;
+            info!(hash = %hex::encode(hash), "Cancelled in-flight mirror download (no longer wanted)");
+            evicted += 1;
+        }
+
+        // No longer wanted. Find where its (completed) copy lives.
         match db::shares::get_by_hash(db, &hash).await {
             Ok(Some(share)) => {
                 let path = std::path::Path::new(&share.path);
@@ -632,6 +654,7 @@ mod tests {
         tokio::fs::create_dir_all(&pin_dir).await.unwrap();
         tokio::fs::create_dir_all(&other_dir).await.unwrap();
         let (tx, _rx) = tokio::sync::mpsc::channel::<NodeCmd>(16);
+        let (dtx, _drx) = tokio::sync::mpsc::channel::<DownloadRequest>(16);
 
         // 1. Owned mirror under pin_dir, nobody wants it -> evicted.
         let gone = [1u8; 32];
@@ -677,7 +700,7 @@ mod tests {
         let elsewhere_path = share_file(&db, &other_dir, &elsewhere, "elsewhere.bin").await;
         db::mirror_owned::mark(&db, &elsewhere, 1).await.unwrap();
 
-        let n = evict_unwanted(&db, &tx, &pin_dir).await;
+        let n = evict_unwanted(&db, &tx, &dtx, &pin_dir).await;
         assert_eq!(n, 1, "only the one unwanted owned file under pin_dir");
 
         // 1. Evicted: file, share and ownership all gone.
@@ -793,5 +816,43 @@ mod tests {
         // All outside pin_dir / pinned -> nothing to free, prompt can be skipped.
         let (n2, _) = evictable_count(&db, &[b, c], &peer.to_string(), &pin_dir).await;
         assert_eq!(n2, 0);
+    }
+
+    #[tokio::test]
+    async fn evict_cancels_in_flight_mirror_download() {
+        let (db, dir) = test_db().await;
+        let pin_dir = dir.path().join("pins");
+        tokio::fs::create_dir_all(&pin_dir).await.unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::channel::<NodeCmd>(16);
+        let (dtx, mut drx) = tokio::sync::mpsc::channel::<DownloadRequest>(16);
+
+        // A mirror-owned hash that's an in-flight download (no share yet) and
+        // wanted by nobody -> eviction must cancel it, not let it finish.
+        let h = [1u8; 32];
+        let res = db::downloads::create_pending(&db, &h, Some("x.bin"), 1, true, None)
+            .await
+            .unwrap();
+        let id = res.id();
+        db::mirror_owned::mark(&db, &h, 1).await.unwrap();
+
+        let n = evict_unwanted(&db, &tx, &dtx, &pin_dir).await;
+        assert_eq!(n, 1);
+        // A Cancel was emitted for this download.
+        match drx.try_recv() {
+            Ok(DownloadRequest::Cancel {
+                download_id,
+                root_hash,
+            }) => {
+                assert_eq!(download_id, id);
+                assert_eq!(root_hash, h.to_vec());
+            }
+            _ => panic!("expected a Cancel for the in-flight mirror download"),
+        }
+        // Marked cancelled and ownership dropped.
+        assert_eq!(
+            db::downloads::get_status(&db, id).await.unwrap().as_deref(),
+            Some("cancelled")
+        );
+        assert!(!db::mirror_owned::is_owned(&db, &h).await.unwrap());
     }
 }

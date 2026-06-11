@@ -387,10 +387,12 @@ pub async fn delete_subscription(
                 // already removed, so any remaining keeper is another's.
                 crate::pinset::retain_mirror_content(&state.db, &mirrored, None).await;
             } else {
-                // Cascade dropped this peer's mirror rows; sweep orphaned content.
+                // Cascade dropped this peer's mirror rows; sweep orphaned content
+                // (deletes completed copies and cancels in-flight fetches).
                 crate::pinset::evict_unwanted(
                     &state.db,
                     &state.node_cmd,
+                    &state.download_tx,
                     &state.config.storage.pin_dir,
                 )
                 .await;
