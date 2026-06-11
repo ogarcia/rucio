@@ -45,7 +45,6 @@ use crate::db::{self, Db};
 use crate::metrics::Metrics;
 use crate::node::messages::NodeCmd;
 use crate::throttle::{Priority, TokenBucket};
-use crate::upload_scheduler::UploadScheduler;
 
 // ---------------------------------------------------------------------------
 // Tuning
@@ -271,11 +270,9 @@ pub struct DownloadEngine {
     metrics: Arc<Metrics>,
     /// Cap on concurrent chunk-upload tasks (semaphore with configurable permits).
     upload_semaphore: Arc<Semaphore>,
-    /// Work-conserving upload priority: HighID requests take precedence.
-    upload_scheduler: Arc<UploadScheduler>,
-    /// Global upload bandwidth throttle (chunks served to remote peers).
-    upload_throttle: Arc<TokenBucket>,
     /// Global download bandwidth throttle (chunks received from remote peers).
+    /// Upload rate limiting now lives in the net transfer codec, which paces the
+    /// chunk *write* (smooth stream) instead of gating the whole-chunk handoff.
     download_throttle: Arc<TokenBucket>,
     /// Per-download live statistics, shared with the API handlers.
     live_stats: crate::live_stats::LiveStatsMap,
@@ -295,8 +292,6 @@ impl DownloadEngine {
         temp_dir: PathBuf,
         metrics: Arc<Metrics>,
         upload_semaphore: Arc<Semaphore>,
-        upload_scheduler: Arc<UploadScheduler>,
-        upload_throttle: Arc<TokenBucket>,
         download_throttle: Arc<TokenBucket>,
         live_stats: crate::live_stats::LiveStatsMap,
         upload_stats: Arc<crate::upload_stats::UploadRegistry>,
@@ -314,8 +309,6 @@ impl DownloadEngine {
             peer_caps: HashMap::new(),
             metrics,
             upload_semaphore,
-            upload_scheduler,
-            upload_throttle,
             download_throttle,
             live_stats,
             upload_stats,
@@ -1703,13 +1696,7 @@ impl DownloadEngine {
     // Serve an inbound chunk request
     // -----------------------------------------------------------------------
 
-    pub async fn serve_chunk(
-        &self,
-        peer: PeerId,
-        request: ChunkRequest,
-        channel_id: u64,
-        is_high_id: bool,
-    ) {
+    pub async fn serve_chunk(&self, peer: PeerId, request: ChunkRequest, channel_id: u64) {
         const MAX_PEX_PEERS: usize = 8;
 
         // Collect PEX peers before spawning — known_providers is not Send.
@@ -1729,8 +1716,6 @@ impl DownloadEngine {
         let cmd_tx = self.cmd_tx.clone();
         let metrics = Arc::clone(&self.metrics);
         let semaphore = Arc::clone(&self.upload_semaphore);
-        let scheduler = Arc::clone(&self.upload_scheduler);
-        let upload_throttle = Arc::clone(&self.upload_throttle);
         let upload_stats = Arc::clone(&self.upload_stats);
         let root_hash = request.root_hash;
 
@@ -1756,16 +1741,12 @@ impl DownloadEngine {
                 produced_ms = started.elapsed().as_millis() as u64,
                 "serve_chunk: response produced"
             );
-            // Apply priority scheduling and throttle before sending.
+            // Account for the bytes. The upload rate limit is applied where the
+            // bytes are written (the net transfer codec, paced by the shared
+            // throttle), so the upload streams smoothly instead of dumping a
+            // whole chunk at link speed.
             if let ChunkResponse::Ok { ref data, .. } = response {
                 let bytes = data.len() as u64;
-                if is_high_id {
-                    let _guard = scheduler.highid_guard();
-                    upload_throttle.acquire(bytes, Priority::High).await;
-                } else {
-                    scheduler.wait_for_lowid_turn().await;
-                    upload_throttle.acquire(bytes, Priority::High).await;
-                }
                 metrics.record_upload(bytes);
                 // Track this peer in the active-upload registry. The name is
                 // resolved (one DB hit) only on the first chunk to this peer
@@ -1781,9 +1762,8 @@ impl DownloadEngine {
             }
             debug!(
                 chunk_idx = request.chunk_idx,
-                is_high_id,
                 total_ms = started.elapsed().as_millis() as u64,
-                "serve_chunk: handing response to node task (past scheduler/throttle)"
+                "serve_chunk: handing response to node task"
             );
             let _ = cmd_tx
                 .send(NodeCmd::RespondChunk {
@@ -2044,8 +2024,6 @@ mod tests {
             tmp.path().to_path_buf(),
             metrics,
             Arc::new(tokio::sync::Semaphore::new(64)),
-            Arc::new(crate::upload_scheduler::UploadScheduler::new()),
-            Arc::new(crate::throttle::TokenBucket::new(0)),
             Arc::new(crate::throttle::TokenBucket::new(0)),
             Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             Arc::new(crate::upload_stats::UploadRegistry::new()),

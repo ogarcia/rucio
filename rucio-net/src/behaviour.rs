@@ -170,6 +170,7 @@ impl RucioBehaviour {
         peer_id: libp2p::PeerId,
         relay_client: relay::client::Behaviour,
         cfg: BehaviourConfig,
+        upload_limiter: Option<crate::codec_utils::ByteLimiter>,
     ) -> anyhow::Result<Self> {
         // Cap connection-count abuse without throttling a bootstrap node's
         // legitimate fan-in: limit how many connections a single peer may hold
@@ -225,7 +226,8 @@ impl RucioBehaviour {
             .transpose()?;
 
         let transfer = cfg.transfer.then(|| {
-            request_response::Behaviour::new(
+            request_response::Behaviour::with_codec(
+                TransferCodec::new(upload_limiter),
                 vec![(TransferProtocol, request_response::ProtocolSupport::Full)],
                 // Per-request budget for a chunk transfer (up to 4 MiB). The
                 // downloader caps how many chunks it keeps in-flight to one peer

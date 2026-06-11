@@ -12,7 +12,6 @@ pub mod notifier;
 pub mod pinset;
 pub mod throttle;
 pub mod transfer;
-pub mod upload_scheduler;
 pub mod upload_stats;
 pub mod upnp;
 pub mod watcher;
@@ -169,7 +168,21 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         listen_addrs: config.node.listen_addrs.clone(),
         behaviour: rucio_net::BehaviourConfig::full(),
     };
-    let mut handle = node::task::spawn(&net_cfg).await?;
+    // Shared upload throttle: eMule uploads (Priority::Low) and Rucio chunk
+    // serving (Priority::High) draw from this one bucket, so the configured cap
+    // is shared between them with Rucio taking precedence. Built here (before
+    // the node task) so we can hand the network layer a limiter that paces the
+    // chunk *write* at the byte level — a smooth stream instead of dumping a
+    // whole 4 MiB chunk at link speed then idling.
+    let upload_throttle = Arc::new(throttle::TokenBucket::new(config.network.upload_limit_kbps));
+    let rucio_upload_limiter: rucio_net::ByteLimiter = {
+        let up = Arc::clone(&upload_throttle);
+        Arc::new(move |bytes| {
+            let up = Arc::clone(&up);
+            Box::pin(async move { up.acquire(bytes, crate::throttle::Priority::High).await })
+        })
+    };
+    let mut handle = node::task::spawn(&net_cfg, Some(rucio_upload_limiter)).await?;
 
     for addr_str in config.effective_bootstrap_peers() {
         match addr_str.parse() {
@@ -276,7 +289,6 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
     let session_metrics = Arc::new(metrics::Metrics::new(metrics::instant_to_unix(
         &Instant::now(),
     )));
-    let upload_throttle = Arc::new(throttle::TokenBucket::new(config.network.upload_limit_kbps));
     let download_throttle = Arc::new(throttle::TokenBucket::new(
         config.network.download_limit_kbps,
     ));
@@ -293,7 +305,6 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
     let upload_semaphore = Arc::new(tokio::sync::Semaphore::new(
         config.network.max_upload_tasks.max(1),
     ));
-    let upload_scheduler = Arc::new(upload_scheduler::UploadScheduler::new());
     // Per-download live statistics, shared between the engines, the speed
     // sampler in this loop, and the API handlers.
     let live_stats: live_stats::LiveStatsMap =
@@ -317,8 +328,6 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         temp_dir,
         Arc::clone(&session_metrics),
         Arc::clone(&upload_semaphore),
-        Arc::clone(&upload_scheduler),
-        Arc::clone(&upload_throttle),
         Arc::clone(&download_throttle),
         Arc::clone(&live_stats),
         Arc::clone(&upload_stats),
@@ -770,10 +779,6 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
     let mut last_emule_up_bytes = 0u64;
     #[cfg(feature = "emule-compat")]
     let mut last_emule_up_chunks = 0u64;
-    // Peer classification: true = HighID (globally reachable), false = LowID.
-    // Populated from PeerDiscovered events; used to prioritise chunk uploads.
-    let mut peer_classes: std::collections::HashMap<libp2p::PeerId, bool> =
-        std::collections::HashMap::new();
     // Last broadcast lifecycle state per search, to emit SearchStateChanged
     // only on actual state transitions (results carry their own WS events).
     let mut last_search_states: std::collections::HashMap<
@@ -1182,7 +1187,6 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                     }
                     Some(node::messages::NodeEvent::PeerDiscovered { peer_id, addrs }) => {
                         let is_high_id = peer_has_public_addr(&addrs);
-                        peer_classes.insert(peer_id, is_high_id);
                         let addrs_json = serde_json::to_string(
                             &addrs.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
                         )
@@ -1245,9 +1249,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                         engine.on_chunk_request_failed(request_id, peer).await;
                     }
                     Some(node::messages::NodeEvent::ChunkRequested { peer, request, channel_id }) => {
-                        // Unknown peers default to HighID to avoid accidentally starving them.
-                        let is_high_id = peer_classes.get(&peer).copied().unwrap_or(true);
-                        engine.serve_chunk(peer, request, channel_id, is_high_id).await;
+                        engine.serve_chunk(peer, request, channel_id).await;
                     }
                     Some(node::messages::NodeEvent::ManifestReceived { request_id, peer, response }) => {
                         engine.on_manifest_received(request_id, peer, response, now_secs()).await;

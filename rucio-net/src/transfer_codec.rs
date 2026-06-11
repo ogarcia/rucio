@@ -6,7 +6,7 @@ use libp2p::request_response;
 use rucio_core::protocol::transfer::{ChunkRequest, ChunkResponse};
 use std::io;
 
-use super::codec_utils::{read_framed, write_framed};
+use super::codec_utils::{ByteLimiter, read_framed, write_framed, write_framed_paced};
 
 #[derive(Debug, Clone)]
 pub struct TransferProtocol;
@@ -17,8 +17,20 @@ impl AsRef<str> for TransferProtocol {
     }
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct TransferCodec;
+/// Chunk transfer codec. Holds an optional [`ByteLimiter`] used to pace the
+/// *write* of chunk responses we serve, so the upload limit produces a smooth
+/// stream rather than per-chunk bursts. `None` = no pacing (e.g. a node that
+/// doesn't serve, or no limit configured).
+#[derive(Clone, Default)]
+pub struct TransferCodec {
+    upload_limiter: Option<ByteLimiter>,
+}
+
+impl TransferCodec {
+    pub fn new(upload_limiter: Option<ByteLimiter>) -> Self {
+        Self { upload_limiter }
+    }
+}
 
 #[async_trait]
 impl request_response::Codec for TransferCodec {
@@ -69,6 +81,7 @@ impl request_response::Codec for TransferCodec {
     where
         T: AsyncWrite + Unpin + Send,
     {
-        write_framed(io, &resp).await
+        // Pace the chunk write at the upload limit so it streams out smoothly.
+        write_framed_paced(io, &resp, self.upload_limiter.as_ref()).await
     }
 }
