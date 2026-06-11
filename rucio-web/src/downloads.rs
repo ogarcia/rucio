@@ -341,6 +341,12 @@ pub fn DownloadsTab(
     ul_speed: RwSignal<u64>,
     temp_limit: RwSignal<bool>,
 ) -> impl IntoView {
+    // Re-sync the full list when the tab is opened. The WS only streams *active*
+    // downloads, so terminal rows deleted out-of-band — e.g. a completed mirror
+    // evicted when its subscription was removed — would otherwise linger in the
+    // cached list until a manual refresh.
+    spawn_local(async move { refresh_downloads(downloads).await });
+
     // Multi-selection: the set of selected ids, plus the anchor row used as the
     // pivot for shift+click range selection.
     let selected_ids: RwSignal<HashSet<i64>> = RwSignal::new(HashSet::new());
