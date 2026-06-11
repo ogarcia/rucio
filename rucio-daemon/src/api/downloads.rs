@@ -481,42 +481,57 @@ fn eta_secs(size: u64, bytes_done: u64, speed_bps: u64) -> Option<u64> {
 pub async fn start_download(
     State(state): State<AppState>,
     Json(req): Json<StartDownloadRequest>,
-) -> StatusCode {
+) -> (StatusCode, Json<serde_json::Value>) {
+    let ok = || (StatusCode::ACCEPTED, Json(serde_json::json!({})));
+    let err = |code: StatusCode, msg: String| (code, Json(serde_json::json!({ "error": msg })));
+
     // Validate magnet early so we return 400 synchronously.
     let Ok(info) = parse_magnet(&req.magnet) else {
-        return StatusCode::BAD_REQUEST;
+        return err(StatusCode::BAD_REQUEST, "Malformed magnet link".into());
     };
 
-    // Already have this content as a share (e.g. a previous download that was
-    // removed from history but is still on disk and being provided)? Then it's
-    // already local — reject instead of re-fetching it over the network.
-    if matches!(
-        crate::db::shares::get_by_hash(&state.db, &info.root_hash).await,
-        Ok(Some(_))
-    ) {
-        tracing::info!("Content already shared (on disk); rejecting re-download");
-        return StatusCode::CONFLICT;
+    // Already have this content as a share (e.g. a previous download removed from
+    // history but still on disk and provided)? It's already local — tell the user
+    // where, and don't re-fetch it.
+    if let Ok(Some(share)) = crate::db::shares::get_by_hash(&state.db, &info.root_hash).await {
+        return err(
+            StatusCode::CONFLICT,
+            format!(
+                "You already have this — \"{}\" is in your shared files.",
+                share.name
+            ),
+        );
     }
 
     // Synchronous dedup feedback. The engine dedups authoritatively (and never
     // creates a duplicate), but its result is async; surface the common cases
     // here so the client gets a real answer, like the eMule path does.
-    match crate::db::downloads::status_by_root_hash(&state.db, &info.root_hash).await {
-        Ok(Some(s)) if s == "completed" => {
-            tracing::info!("Download already completed; rejecting re-download");
-            return StatusCode::CONFLICT;
+    if let Ok(Some(row)) = crate::db::downloads::get_by_root_hash(&state.db, &info.root_hash).await
+    {
+        match row.status.as_str() {
+            "completed" => {
+                return err(
+                    StatusCode::CONFLICT,
+                    format!(
+                        "You already downloaded this — \"{}\" is in your completed downloads.",
+                        row.name
+                    ),
+                );
+            }
+            "finding_providers" | "queued" | "downloading" | "stalled" => {
+                return err(
+                    StatusCode::CONFLICT,
+                    format!("This is already downloading — \"{}\".", row.name),
+                );
+            }
+            // cancelled / error → reactivable, fall through and re-queue.
+            _ => {}
         }
-        // Already in progress — accept (idempotent) without queuing a duplicate.
-        Ok(Some(s)) if matches!(s.as_str(), "finding_providers" | "queued" | "downloading") => {
-            return StatusCode::ACCEPTED;
-        }
-        // None, or a terminal/reactivable row (cancelled/error/stalled) → proceed.
-        _ => {}
     }
 
     // A given category must exist before we file the download under it.
     if !category_exists(&state.db, req.category_id).await {
-        return StatusCode::BAD_REQUEST;
+        return err(StatusCode::BAD_REQUEST, "Unknown category".into());
     }
     // No explicit category → try to auto-file by the file name's keywords.
     let category_id = match req.category_id {
@@ -552,11 +567,14 @@ pub async fn start_download(
     match state.download_tx.send(dl_req).await {
         Ok(()) => {
             tracing::info!(magnet = %req.magnet, "Download queued");
-            StatusCode::ACCEPTED
+            ok()
         }
         Err(_) => {
             tracing::error!("Download channel closed");
-            StatusCode::INTERNAL_SERVER_ERROR
+            err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Download service unavailable".into(),
+            )
         }
     }
 }
@@ -1071,12 +1089,12 @@ pub async fn start_ed2k_download(
         StatusCode,
         Json<rucio_core::api::downloads::StartEd2kDownloadResponse>,
     ),
-    StatusCode,
+    (StatusCode, Json<serde_json::Value>),
 > {
     #[cfg(not(feature = "emule-compat"))]
     {
         let _ = (state, req);
-        Err(StatusCode::NOT_IMPLEMENTED)
+        Err((StatusCode::NOT_IMPLEMENTED, Json(serde_json::json!({}))))
     }
 
     #[cfg(feature = "emule-compat")]
@@ -1084,18 +1102,35 @@ pub async fn start_ed2k_download(
         use crate::db::emule_downloads::CreateResult;
         use rucio_emule::Ed2kLink;
 
+        let err = |code: StatusCode, msg: String| (code, Json(serde_json::json!({ "error": msg })));
+
         let link = Ed2kLink::parse(&req.link).map_err(|e| {
             tracing::warn!(link = %req.link, error = %e, "Failed to parse ed2k link");
-            StatusCode::BAD_REQUEST
+            err(StatusCode::BAD_REQUEST, "Malformed ed2k link".into())
         })?;
 
         if state.config.storage.nodes_dat_path.is_none() {
             tracing::debug!("nodes_dat_path not configured, will use platform default");
         }
 
+        // Already have this content as a shared eMule file (e.g. a completed
+        // download removed from the list but still on disk and seeded)? Tell the
+        // user where, and don't re-fetch — parity with the Rucio path.
+        if let Ok(Some(shared)) =
+            crate::db::emule_shared_files::get_by_hash(&state.db, link.hash.as_bytes()).await
+        {
+            return Err(err(
+                StatusCode::CONFLICT,
+                format!(
+                    "You already have this — \"{}\" is in your shared files.",
+                    shared.name
+                ),
+            ));
+        }
+
         // A given category must exist before we file the download under it.
         if !category_exists(&state.db, req.category_id).await {
-            return Err(StatusCode::BAD_REQUEST);
+            return Err(err(StatusCode::BAD_REQUEST, "Unknown category".into()));
         }
         // No explicit category → try to auto-file by the file name's keywords.
         let category_id = match req.category_id {
@@ -1119,26 +1154,28 @@ pub async fn start_ed2k_download(
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "Failed to create eMule download record");
-            StatusCode::INTERNAL_SERVER_ERROR
+            err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Could not record the download".into(),
+            )
         })?;
 
         match result {
             CreateResult::AlreadyCompleted(id) => {
                 tracing::info!(id, name = %link.name, "eMule download already completed");
-                Err(StatusCode::CONFLICT)
+                Err(err(
+                    StatusCode::CONFLICT,
+                    format!(
+                        "You already downloaded this — \"{}\" is in your completed downloads.",
+                        link.name
+                    ),
+                ))
             }
             CreateResult::AlreadyActive(id) => {
-                // Already running — return 202 with the existing ID so the
-                // client can track it, but do not spawn a second task.
                 tracing::info!(id, name = %link.name, "eMule download already active");
-                Ok((
-                    StatusCode::ACCEPTED,
-                    Json(rucio_core::api::downloads::StartEd2kDownloadResponse {
-                        id: -(id),
-                        name: link.name,
-                        size: link.size,
-                        ed2k_hash: link.hash.to_hex(),
-                    }),
+                Err(err(
+                    StatusCode::CONFLICT,
+                    format!("This is already downloading — \"{}\".", link.name),
                 ))
             }
             CreateResult::Inserted(id) | CreateResult::Reactivated(id) => {
@@ -1149,7 +1186,10 @@ pub async fn start_ed2k_download(
                 };
                 if state.download_tx.send(dl_req).await.is_err() {
                     tracing::error!("Download channel closed");
-                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                    return Err(err(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Download service unavailable".into(),
+                    ));
                 }
                 tracing::info!(id, name = %link.name, size = link.size, hash = %link.hash, "eMule download queued");
                 Ok((

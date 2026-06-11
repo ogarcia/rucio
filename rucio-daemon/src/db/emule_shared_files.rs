@@ -139,6 +139,25 @@ pub async fn delete_by_hash(db: &Db, ed2k_hash: &[u8]) -> Result<bool> {
     Ok(res.rows_affected() > 0)
 }
 
+/// Look up a shared file by its ed2k hash — used to warn the user that content
+/// they're about to download is already present (and where).
+pub async fn get_by_hash(db: &Db, ed2k_hash: &[u8]) -> Result<Option<EmuleSharedFile>> {
+    let row = sqlx::query(
+        "SELECT ed2k_hash, name, size, path, mtime, hashset FROM emule_shared_files WHERE ed2k_hash = ?1",
+    )
+    .bind(ed2k_hash)
+    .fetch_optional(db)
+    .await?;
+    Ok(row.map(|r| EmuleSharedFile {
+        ed2k_hash: r.get("ed2k_hash"),
+        name: r.get("name"),
+        size: r.get("size"),
+        path: r.get("path"),
+        mtime: r.get("mtime"),
+        hashset: r.get("hashset"),
+    }))
+}
+
 /// Look up a shared file by its on-disk path, if present.
 pub async fn get_by_path(db: &Db, path: &str) -> Result<Option<EmuleSharedFile>> {
     let row = sqlx::query(

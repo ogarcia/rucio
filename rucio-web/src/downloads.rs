@@ -251,50 +251,83 @@ async fn api_fetch_pieces(id: i64) -> Option<DownloadPiecesResponse> {
 /// returned vec holds the lines we could *not* accept — an unrecognised scheme,
 /// or a link the daemon rejected (e.g. a malformed magnet) — so the caller can
 /// report exactly which ones failed without blocking the good ones.
+/// Outcome of adding one link.
+enum LinkOutcome {
+    /// Queued (202).
+    Accepted,
+    /// Already present (409) — the message says where (shares / downloading / …).
+    Duplicate(String),
+    /// Not a valid link, or the daemon refused it.
+    Rejected,
+}
+
+/// Result of adding a batch: lines we couldn't accept (to keep in the box and
+/// fix) and human messages for links already present (informational).
+pub struct AddOutcome {
+    pub rejected: Vec<String>,
+    pub duplicates: Vec<String>,
+}
+
 pub async fn api_add_links(
     text: String,
     downloads: RwSignal<Vec<DownloadResponse>>,
     category_id: Option<i64>,
-) -> Vec<String> {
+) -> AddOutcome {
     let mut rejected = Vec::new();
+    let mut duplicates = Vec::new();
     for line in text.lines() {
         let link = line.trim();
         if link.is_empty() {
             continue;
         }
-        let accepted = if link.starts_with("ed2k://") {
+        let outcome = if link.starts_with("ed2k://") {
             let mut body = serde_json::json!({ "link": link });
             if let Some(c) = category_id {
                 body["category_id"] = c.into();
             }
-            post_accepts("/api/v1/downloads/ed2k", &body).await
+            post_link("/api/v1/downloads/ed2k", &body).await
         } else if link.starts_with("rucio:") {
             let mut body = serde_json::json!({ "magnet": link, "providers": [] });
             if let Some(c) = category_id {
                 body["category_id"] = c.into();
             }
-            post_accepts("/api/v1/downloads", &body).await
+            post_link("/api/v1/downloads", &body).await
         } else {
             // Not a rucio: or ed2k:// link — don't even send it.
-            false
+            LinkOutcome::Rejected
         };
-        if !accepted {
-            rejected.push(link.to_string());
+        match outcome {
+            LinkOutcome::Accepted => {}
+            LinkOutcome::Duplicate(msg) => duplicates.push(msg),
+            LinkOutcome::Rejected => rejected.push(link.to_string()),
         }
     }
     refresh_downloads(downloads).await;
-    rejected
+    AddOutcome {
+        rejected,
+        duplicates,
+    }
 }
 
-/// POST `body` and report whether the daemon accepted it: `202` (queued) and
-/// `409` (already have it) both count as success; anything else is a rejection.
-async fn post_accepts(url: &str, body: &serde_json::Value) -> bool {
-    match gloo_net::http::Request::post(url).json(body) {
-        Ok(req) => match req.send().await {
-            Ok(resp) => matches!(resp.status(), 202 | 409),
-            Err(_) => false,
-        },
-        Err(_) => false,
+/// POST `body` and classify the daemon's answer: `202` queued, `409` already
+/// present (with the daemon's "you already have it in X" message), anything
+/// else a rejection.
+async fn post_link(url: &str, body: &serde_json::Value) -> LinkOutcome {
+    let Ok(req) = gloo_net::http::Request::post(url).json(body) else {
+        return LinkOutcome::Rejected;
+    };
+    match req.send().await {
+        Ok(resp) if resp.status() == 202 => LinkOutcome::Accepted,
+        Ok(resp) if resp.status() == 409 => {
+            let msg = resp
+                .json::<serde_json::Value>()
+                .await
+                .ok()
+                .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(String::from))
+                .unwrap_or_else(|| "You already have this.".to_string());
+            LinkOutcome::Duplicate(msg)
+        }
+        _ => LinkOutcome::Rejected,
     }
 }
 
@@ -787,6 +820,8 @@ fn AddModal(
     let busy = RwSignal::new(false);
     // Lines the daemon couldn't accept; shown so the user can fix them.
     let rejected: RwSignal<Vec<String>> = RwSignal::new(vec![]);
+    // Messages for links the user already has ("…is in your shared files", etc.).
+    let duplicates: RwSignal<Vec<String>> = RwSignal::new(vec![]);
     // Selected category id; None = "Auto / none" (let keyword auto-match decide).
     let selected_cat: RwSignal<Option<i64>> = RwSignal::new(None);
 
@@ -798,15 +833,17 @@ fn AddModal(
         busy.set(true);
         let cat = selected_cat.get_untracked();
         spawn_local(async move {
-            let rej = api_add_links(t, downloads, cat).await;
+            let out = api_add_links(t, downloads, cat).await;
             busy.set(false);
-            if rej.is_empty() {
+            duplicates.set(out.duplicates.clone());
+            if out.rejected.is_empty() && out.duplicates.is_empty() {
                 on_close();
             } else {
-                // The valid links went through; keep only the failed ones in the
-                // box (and report them) so the user can correct and retry.
-                text.set(rej.join("\n"));
-                rejected.set(rej);
+                // The valid links went through; keep only the invalid ones in the
+                // box so the user can correct and retry. Duplicates are shown as
+                // an informational notice (nothing to fix).
+                text.set(out.rejected.join("\n"));
+                rejected.set(out.rejected);
             }
         });
     };
@@ -831,9 +868,12 @@ fn AddModal(
                         prop:value=move || text.get()
                         on:input=move |e| {
                             text.set(event_target_value(&e));
-                            // Editing clears the previous rejection notice.
+                            // Editing clears the previous notices.
                             if !rejected.get_untracked().is_empty() {
                                 rejected.set(vec![]);
+                            }
+                            if !duplicates.get_untracked().is_empty() {
+                                duplicates.set(vec![]);
                             }
                         }
                         on:keydown=move |e| {
@@ -853,6 +893,18 @@ fn AddModal(
                                     r.len(),
                                 )}
                             </p>
+                        })
+                    }}
+                    {move || {
+                        let d = duplicates.get();
+                        (!d.is_empty()).then(|| view! {
+                            <ul class="dup-notice">
+                                <For
+                                    each=move || duplicates.get()
+                                    key=|m| m.clone()
+                                    children=move |m| view! { <li>{m}</li> }
+                                />
+                            </ul>
                         })
                     }}
                     <Show when=move || !categories.get().is_empty()>
