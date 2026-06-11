@@ -386,6 +386,13 @@ pub async fn evict_unwanted(
                     }
                     let _ = db::shares::delete_by_hash(db, &hash).await;
                     let _ = cmd_tx.send(NodeCmd::StopProviding(hash.to_vec())).await;
+                    // Drop the now-stale `completed` download record too: it was
+                    // this mirror's (the hash is mirror-owned), and leaving it
+                    // would make a later re-subscribe dedupe against it
+                    // (`already completed`) and never re-fetch the deleted file.
+                    if let Ok(Some(dl)) = db::downloads::get_by_root_hash(db, &hash).await {
+                        let _ = db::downloads::delete(db, dl.id).await;
+                    }
                     info!(hash = %hex::encode(hash), "Evicted mirror content (no longer wanted)");
                     evicted += 1;
                 } else {
@@ -878,5 +885,34 @@ mod tests {
             Some("cancelled")
         );
         assert!(!db::mirror_owned::is_owned(&db, &h).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn eviction_clears_completed_record_so_resubscribe_refetches() {
+        let (db, dir) = test_db().await;
+        let pin_dir = dir.path().join("pins");
+        tokio::fs::create_dir_all(&pin_dir).await.unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::channel::<NodeCmd>(16);
+        let (dtx, _drx) = tokio::sync::mpsc::channel::<DownloadRequest>(16);
+
+        // A completed mirror download: its share lives under pin_dir, it's owned
+        // and wanted by nobody.
+        let h = [7u8; 32];
+        let res = db::downloads::create_pending(&db, &h, Some("ep.nfo"), 1, true, None)
+            .await
+            .unwrap();
+        let id = res.id();
+        db::downloads::set_status(&db, id, "completed", None)
+            .await
+            .unwrap();
+        share_file(&db, &pin_dir, &h, "ep.nfo").await;
+        db::mirror_owned::mark(&db, &h, 1).await.unwrap();
+
+        evict_unwanted(&db, &tx, &dtx, &pin_dir).await;
+
+        // The share is gone AND the completed record is cleared, so a later
+        // re-subscribe starts a fresh download instead of "already completed".
+        assert!(db::shares::get_by_hash(&db, &h).await.unwrap().is_none());
+        assert!(db::downloads::get(&db, id).await.unwrap().is_none());
     }
 }
