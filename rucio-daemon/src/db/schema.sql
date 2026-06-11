@@ -168,7 +168,7 @@ CREATE TABLE IF NOT EXISTS downloads (
     total_size      INTEGER NOT NULL,
     dest_path       TEXT    NOT NULL,      -- final destination on disk
     status          TEXT    NOT NULL DEFAULT 'queued',
-    -- 'queued' | 'downloading' | 'paused' | 'completed' | 'error'
+    -- 'finding_providers' | 'queued' | 'downloading' | 'stalled' | 'paused' | 'completed' | 'error' | 'cancelled'
     bytes_done      INTEGER NOT NULL DEFAULT 0,
     error_msg       TEXT,
     category_id     INTEGER REFERENCES categories(id) ON DELETE SET NULL,  -- NULL = global download_dir
