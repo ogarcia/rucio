@@ -106,7 +106,7 @@ jobs:
         shell: bash
         run: grep -E '^[A-Za-z_]+=' versions.env >> "$GITHUB_ENV"
 
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: binaries
           path: dist/
@@ -171,7 +171,7 @@ jobs:
         shell: bash
         run: grep -E '^[A-Za-z_]+=' versions.env >> "$GITHUB_ENV"
 
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: binaries
           path: dist/
@@ -236,7 +236,7 @@ jobs:
         shell: bash
         run: grep -E '^[A-Za-z_]+=' versions.env >> "$GITHUB_ENV"
 
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: binaries
           path: dist/
@@ -301,7 +301,7 @@ jobs:
         shell: bash
         run: grep -E '^[A-Za-z_]+=' versions.env >> "$GITHUB_ENV"
 
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: binaries
           path: dist/
