@@ -1164,8 +1164,13 @@ impl DownloadEngine {
                     _ => name.clone(),
                 };
 
-                // In-progress downloads go to temp_dir as <name>.part
-                let dest_path = self.temp_dir.join(format!("{chosen_name}.part"));
+                // In-progress downloads go to temp_dir, named with the hash frag
+                // so two same-named downloads don't share (and corrupt) one
+                // `.part`. The final, user-facing name is resolved at completion.
+                let dest_path = self.temp_dir.join(format!(
+                    "{}.part",
+                    name_with_frag(&chosen_name, &name_frag(&root_hash))
+                ));
 
                 let chunk_tuples: Vec<(u32, [u8; 32], u32)> =
                     chunks.iter().map(|c| (c.idx, c.hash, c.size)).collect();
@@ -1526,13 +1531,22 @@ impl DownloadEngine {
 
                 if self.active[&root_hash].is_complete() {
                     let part_path = self.active[&root_hash].dest_path.clone();
-                    // Name the user sees, with the `.part` suffix stripped — used
-                    // for the notification on both the success and failure paths.
-                    let name = part_path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .map(|n| n.strip_suffix(".part").unwrap_or(n).to_string())
-                        .unwrap_or_default();
+                    // The clean, user-facing name (the DB `name` column — the
+                    // `.part` is now named with a hash frag, so its stem isn't it).
+                    // Used for the final file, the notification, and disambiguation.
+                    let name = db::downloads::get(&self.db, dl_id)
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|r| r.name)
+                        .filter(|n| !n.trim().is_empty())
+                        .unwrap_or_else(|| {
+                            part_path
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .map(|n| n.strip_suffix(".part").unwrap_or(n).to_string())
+                                .unwrap_or_default()
+                        });
                     let hash_hex = hex::encode(root_hash);
 
                     // Resolve where this download lands, in precedence order:
@@ -1570,7 +1584,9 @@ impl DownloadEngine {
                     // the `.part` is left untouched, so we mark the download failed
                     // — never a phantom "completed" — and notify so the user can
                     // fix the folder and retry.
-                    match persist_completed(&dest_dir, &part_path).await {
+                    match persist_completed(&dest_dir, &part_path, &name, &name_frag(&root_hash))
+                        .await
+                    {
                         Ok(final_path) => {
                             info!(
                                 from = %part_path.display(),
@@ -2162,27 +2178,41 @@ async fn read_file_range(path: &str, offset: u64, len: usize) -> Result<Vec<u8>>
 // Filesystem helpers
 // ---------------------------------------------------------------------------
 
-/// Move a finished `<name>.part` into `dest_dir/<name>`, (re)creating `dest_dir`
-/// first — the user may have deleted it (or revoked write access) while the
-/// download was in flight. Returns the final path on success. On any failure the
-/// `.part` is left untouched, so a completed-but-unsaved download loses nothing
-/// and can be retried once the folder is fixed.
+/// Short hash fragment used to keep same-named files apart on disk. 8 hex chars
+/// (32 bits) — a collision between two *identically named* files is negligible.
+fn name_frag(root_hash: &[u8; 32]) -> String {
+    hex::encode(&root_hash[..4])
+}
+
+/// Insert `frag` before the file extension so the name stays readable and
+/// unique: `tvshow.nfo` → `tvshow.<frag>.nfo`; `readme` → `readme.<frag>`.
+fn name_with_frag(name: &str, frag: &str) -> String {
+    match name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() => format!("{stem}.{frag}.{ext}"),
+        _ => format!("{name}.{frag}"),
+    }
+}
+
+/// Move a finished `.part` into `dest_dir/<name>`, (re)creating `dest_dir` first
+/// — the user may have deleted it (or revoked write access) while the download
+/// was in flight. If `dest_dir/<name>` is already taken (a different file with
+/// the same name — common when mirroring, e.g. many `tvshow.nfo`), the hash
+/// `frag` is inserted before the extension so neither clobbers the other.
+/// Returns the final path. On any failure the `.part` is left untouched, so a
+/// completed-but-unsaved download loses nothing and can be retried.
 async fn persist_completed(
     dest_dir: &std::path::Path,
     part_path: &std::path::Path,
+    name: &str,
+    frag: &str,
 ) -> std::io::Result<std::path::PathBuf> {
-    let final_path = match part_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .and_then(|n| n.strip_suffix(".part"))
-    {
-        Some(stem) => dest_dir.join(stem),
-        // Fallback: no `.part` suffix — keep the file name as-is.
-        None => dest_dir.join(part_path.file_name().unwrap_or_default()),
-    };
     tokio::fs::create_dir_all(dest_dir).await?;
-    crate::fsutil::move_file(part_path, &final_path).await?;
-    Ok(final_path)
+    let mut target = dest_dir.join(name);
+    if tokio::fs::try_exists(&target).await.unwrap_or(false) {
+        target = dest_dir.join(name_with_frag(name, frag));
+    }
+    crate::fsutil::move_file(part_path, &target).await?;
+    Ok(target)
 }
 
 // ---------------------------------------------------------------------------
@@ -3365,13 +3395,38 @@ mod tests {
         // The user deletes the download dir while the download was running.
         std::fs::remove_dir_all(&dest).unwrap();
 
-        let final_path = persist_completed(&dest, &part)
+        let final_path = persist_completed(&dest, &part, "movie.mkv", "a1b2c3d4")
             .await
             .expect("should recreate the dir and move the file");
 
         assert_eq!(final_path, dest.join("movie.mkv"));
         assert!(final_path.exists(), "file landed in the recreated dir");
         assert!(!part.exists(), ".part was moved, not copied");
+    }
+
+    #[tokio::test]
+    async fn persist_completed_disambiguates_a_name_collision() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("pins");
+        std::fs::create_dir_all(&dest).unwrap();
+        // A file with the target name already exists (a different one).
+        tokio::fs::write(dest.join("tvshow.nfo"), b"other")
+            .await
+            .unwrap();
+
+        let part = tmp.path().join("incoming.part");
+        tokio::fs::write(&part, b"mine").await.unwrap();
+        let final_path = persist_completed(&dest, &part, "tvshow.nfo", "a1b2c3d4")
+            .await
+            .unwrap();
+
+        // The frag is inserted before the extension; the existing file survives.
+        assert_eq!(final_path, dest.join("tvshow.a1b2c3d4.nfo"));
+        assert_eq!(
+            tokio::fs::read(dest.join("tvshow.nfo")).await.unwrap(),
+            b"other"
+        );
+        assert_eq!(tokio::fs::read(&final_path).await.unwrap(), b"mine");
     }
 
     #[tokio::test]
@@ -3385,7 +3440,7 @@ mod tests {
         let part = tmp.path().join("movie.mkv.part");
         tokio::fs::write(&part, b"payload").await.unwrap();
 
-        let res = persist_completed(&dest, &part).await;
+        let res = persist_completed(&dest, &part, "movie.mkv", "a1b2c3d4").await;
 
         assert!(res.is_err(), "unusable dest must surface an error");
         assert!(part.exists(), ".part is preserved — nothing is lost");
