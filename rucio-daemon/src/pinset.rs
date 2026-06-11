@@ -275,12 +275,12 @@ pub async fn retain_mirror_content(db: &db::Db, hashes: &[[u8; 32]], exclude_pee
     }
 }
 
-/// How much of `hashes` going out of scope for `peer_id` the eviction sweep
-/// would actually delete: mirror-owned, not a manual pin, not wanted by another
-/// subscription, and the local copy lives under `pin_dir`. Returns
-/// `(count, bytes)`. Lets the UI skip the keep/free prompt when nothing is at
-/// stake — e.g. content auto-tagged into a category dir outside `pin_dir`, which
-/// eviction never deletes, so "free" would be a no-op.
+/// How much of `hashes` going out of scope for `peer_id` freeing would actually
+/// reclaim: mirror-owned, not a manual pin, not wanted by another subscription,
+/// and either a completed copy under `pin_dir` (deleted) or an in-flight fetch
+/// (cancelled). Returns `(count, bytes)`. Lets the UI skip the keep/free prompt
+/// only when nothing is truly at stake — e.g. content auto-tagged into a
+/// category dir outside `pin_dir`, where "free" would be a no-op.
 pub async fn evictable_count(
     db: &db::Db,
     hashes: &[[u8; 32]],
@@ -302,11 +302,25 @@ pub async fn evictable_count(
         {
             continue;
         }
-        if let Ok(Some(share)) = db::shares::get_by_hash(db, h).await
-            && std::path::Path::new(&share.path).starts_with(pin_dir)
+        // A completed copy under pin_dir would be deleted.
+        if let Ok(Some(share)) = db::shares::get_by_hash(db, h).await {
+            if std::path::Path::new(&share.path).starts_with(pin_dir) {
+                count += 1;
+                bytes += share.size.max(0) as u64;
+            }
+            continue;
+        }
+        // No share yet: an in-flight fetch would be cancelled (and its partial
+        // discarded). That still counts as something to free, so the user is
+        // asked rather than silently keeping a download that's still running.
+        if let Ok(Some(row)) = db::downloads::get_by_root_hash(db, h).await
+            && matches!(
+                row.status.as_str(),
+                "finding_providers" | "queued" | "downloading" | "stalled"
+            )
         {
             count += 1;
-            bytes += share.size.max(0) as u64;
+            bytes += row.total_size.max(0) as u64;
         }
     }
     (count, bytes)
@@ -816,6 +830,16 @@ mod tests {
         // All outside pin_dir / pinned -> nothing to free, prompt can be skipped.
         let (n2, _) = evictable_count(&db, &[b, c], &peer.to_string(), &pin_dir).await;
         assert_eq!(n2, 0);
+
+        // An in-flight fetch (no share yet) still counts — freeing cancels it,
+        // so the user must be asked rather than silently keeping it.
+        let d = [4u8; 32];
+        db::downloads::create_pending(&db, &d, Some("d.bin"), 1, true, None)
+            .await
+            .unwrap();
+        db::mirror_owned::mark(&db, &d, 1).await.unwrap();
+        let (n3, _) = evictable_count(&db, &[d], &peer.to_string(), &pin_dir).await;
+        assert_eq!(n3, 1, "in-flight mirror download counts as freeable");
     }
 
     #[tokio::test]
