@@ -1741,13 +1741,14 @@ impl DownloadEngine {
                 produced_ms = started.elapsed().as_millis() as u64,
                 "serve_chunk: response produced"
             );
-            // Account for the bytes. The upload rate limit is applied where the
-            // bytes are written (the net transfer codec, paced by the shared
-            // throttle), so the upload streams smoothly instead of dumping a
-            // whole chunk at link speed.
+            // The upload rate limit (and the byte-by-byte speed accounting) is
+            // applied where the bytes are written: the net transfer codec, paced
+            // by the shared throttle via the upload limiter. So the stream is
+            // smooth and the speed reads flat. Here we only count the chunk and
+            // track per-peer totals.
             if let ChunkResponse::Ok { ref data, .. } = response {
                 let bytes = data.len() as u64;
-                metrics.record_upload(bytes);
+                metrics.record_upload_chunk();
                 // Track this peer in the active-upload registry. The name is
                 // resolved (one DB hit) only on the first chunk to this peer
                 // for this file; later chunks just accumulate.

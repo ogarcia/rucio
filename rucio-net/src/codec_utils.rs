@@ -93,9 +93,13 @@ where
         None => io.write_all(&encoded).await?,
         Some(limit) => {
             for piece in encoded.chunks(PACING_PIECE) {
-                // Wait for this slice's worth of upload allowance, then write it.
+                // Wait for this slice's worth of upload allowance, then write it
+                // and flush so it actually leaves the host paced — otherwise the
+                // slices could buffer and burst out together at the final flush,
+                // defeating the smoothing.
                 limit(piece.len() as u64).await;
                 io.write_all(piece).await?;
+                io.flush().await?;
             }
         }
     }

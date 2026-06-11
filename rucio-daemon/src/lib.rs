@@ -175,11 +175,22 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
     // chunk *write* at the byte level — a smooth stream instead of dumping a
     // whole 4 MiB chunk at link speed then idling.
     let upload_throttle = Arc::new(throttle::TokenBucket::new(config.network.upload_limit_kbps));
+    // Session metrics, created here so the upload limiter can account bytes as
+    // they're paced onto the wire (a flat speed reading) rather than the engine
+    // recording a whole chunk at handoff (a spike per 4 MiB).
+    let session_metrics = Arc::new(metrics::Metrics::new(metrics::instant_to_unix(
+        &Instant::now(),
+    )));
     let rucio_upload_limiter: rucio_net::ByteLimiter = {
         let up = Arc::clone(&upload_throttle);
+        let met = Arc::clone(&session_metrics);
         Arc::new(move |bytes| {
             let up = Arc::clone(&up);
-            Box::pin(async move { up.acquire(bytes, crate::throttle::Priority::High).await })
+            let met = Arc::clone(&met);
+            Box::pin(async move {
+                up.acquire(bytes, crate::throttle::Priority::High).await;
+                met.record_upload_bytes(bytes);
+            })
         })
     };
     let mut handle = node::task::spawn(&net_cfg, Some(rucio_upload_limiter)).await?;
@@ -286,9 +297,6 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
     let dest_dir = config.storage.download_dir.clone();
     let pin_dir = config.storage.pin_dir.clone();
     let temp_dir = config.storage.temp_dir.clone();
-    let session_metrics = Arc::new(metrics::Metrics::new(metrics::instant_to_unix(
-        &Instant::now(),
-    )));
     let download_throttle = Arc::new(throttle::TokenBucket::new(
         config.network.download_limit_kbps,
     ));

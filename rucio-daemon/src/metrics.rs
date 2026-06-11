@@ -127,6 +127,27 @@ impl Metrics {
         }
     }
 
+    /// Add uploaded bytes to the session total and speed window without counting
+    /// a chunk. Used when a chunk is written to the wire in many paced
+    /// increments (the libp2p transfer codec), so the speed stays live and flat
+    /// instead of spiking only when the whole chunk is handed off; the chunk
+    /// itself is counted once via [`Self::record_upload_chunk`].
+    pub fn record_upload_bytes(&self, bytes: u64) {
+        if bytes == 0 {
+            return;
+        }
+        self.uploaded_bytes.fetch_add(bytes, Ordering::Relaxed);
+        if let Ok(mut w) = self.up_window.lock() {
+            w.add(bytes);
+        }
+    }
+
+    /// Count one chunk served whose bytes were accounted incrementally via
+    /// [`Self::record_upload_bytes`].
+    pub fn record_upload_chunk(&self) {
+        self.chunks_served.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Record a chunk received and hash-verified OK.
     pub fn record_download(&self, bytes: u64) {
         self.downloaded_bytes.fetch_add(bytes, Ordering::Relaxed);
