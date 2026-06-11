@@ -218,29 +218,43 @@ pub async fn on_pinset_received(
         "reconcile: applied pin-set"
     );
 
-    // Fetch the wanted entries we don't already hold (present as a share, e.g.
-    // from a prior mirror or our own download).
+    // Fetch the wanted entries we don't already hold and aren't already getting.
     let mut fetch = Vec::new();
     for (e, m) in entries.iter().zip(mirror.iter()) {
         if m.state != db::mirror_pins::STATE_WANTED {
             continue;
         }
+        // Already on disk (a share — our own download or a prior mirror)? Leave it
+        // alone: don't re-fetch and don't claim ownership of the user's content.
         match db::shares::get_by_hash(db, &e.root_hash).await {
-            Ok(Some(_)) => {}
-            Ok(None) => {
-                // We don't hold it, so this copy will exist only because we
-                // mirror it: mark it owned so eviction may later delete it
-                // (the user's own content is never marked, never evicted).
-                if let Err(err) = db::mirror_owned::mark(db, &e.root_hash, now).await {
-                    warn!("reconcile: marking mirror-owned failed: {err}");
-                }
-                fetch.push(FetchItem {
-                    root_hash: e.root_hash,
-                    name: e.name.clone(),
-                });
+            Ok(Some(_)) => continue,
+            Ok(None) => {}
+            Err(err) => {
+                warn!("reconcile: share lookup failed: {err}");
+                continue; // unknown — skip this sweep rather than risk a dup fetch
             }
-            Err(err) => warn!("reconcile: share lookup failed: {err}"),
         }
+        // Already being fetched (the user's own in-flight download, or a mirror
+        // already in progress)? Skip too — its completion turns it into a share,
+        // and we must not mark the user's own download as mirror-owned.
+        if let Ok(Some(s)) = db::downloads::status_by_root_hash(db, &e.root_hash).await
+            && matches!(
+                s.as_str(),
+                "finding_providers" | "queued" | "downloading" | "stalled"
+            )
+        {
+            continue;
+        }
+        // Genuinely missing: this copy will exist only because we mirror it, so
+        // mark it owned (eviction may later reclaim it; the user's own content,
+        // skipped above, never is).
+        if let Err(err) = db::mirror_owned::mark(db, &e.root_hash, now).await {
+            warn!("reconcile: marking mirror-owned failed: {err}");
+        }
+        fetch.push(FetchItem {
+            root_hash: e.root_hash,
+            name: e.name.clone(),
+        });
     }
     fetch
 }
@@ -641,6 +655,40 @@ mod tests {
         assert!(db::mirror_pins::is_wanted(&db, &need).await.unwrap());
         assert_eq!(fetch.len(), 1);
         assert_eq!(fetch[0].root_hash, need);
+    }
+
+    #[tokio::test]
+    async fn reconcile_skips_entries_already_downloading() {
+        let (db, _dir) = test_db().await;
+        let peer = PeerId::random();
+        let peer_str = peer.to_string();
+        db::pin_subscriptions::upsert(&db, &peer_str, 1_000_000, 1)
+            .await
+            .unwrap();
+
+        let downloading = [44u8; 32];
+        let missing = [55u8; 32];
+        // `downloading` is the user's own in-flight download (not a share yet).
+        db::downloads::create_pending(&db, &downloading, Some("d.bin"), 1, true, None)
+            .await
+            .unwrap();
+
+        let resp = PinsetResponse::Ok {
+            version: 9,
+            entries: vec![
+                entry(downloading, 100, "d.bin"),
+                entry(missing, 200, "m.bin"),
+            ],
+        };
+        let fetch = on_pinset_received(&db, peer, resp, 100).await;
+
+        // Only the genuinely-missing entry is fetched...
+        let got: Vec<[u8; 32]> = fetch.iter().map(|f| f.root_hash).collect();
+        assert_eq!(got, vec![missing]);
+        // ...and the in-progress download is never claimed as mirror-owned (so a
+        // later unsubscribe+free can't evict the user's own download).
+        assert!(!db::mirror_owned::is_owned(&db, &downloading).await.unwrap());
+        assert!(db::mirror_owned::is_owned(&db, &missing).await.unwrap());
     }
 
     /// Insert a share whose `path` is a real file in `dir`, return its path.
