@@ -77,10 +77,11 @@ pub async fn list_downloads(State(state): State<AppState>) -> Json<DownloadsResp
     // libp2p downloads (positive IDs)
     if let Ok(rows) = crate::db::downloads::list(&state.db).await {
         for r in rows {
-            let bytes_done = live
-                .get(&r.id)
-                .and_then(|l| l.bytes_done)
-                .unwrap_or(r.bytes_done as u64);
+            let bytes_done = effective_bytes_done(
+                live.get(&r.id).and_then(|l| l.bytes_done),
+                r.bytes_done as u64,
+                r.total_size as u64,
+            );
             with_ts.push((
                 r.added_at,
                 DownloadResponse {
@@ -101,10 +102,11 @@ pub async fn list_downloads(State(state): State<AppState>) -> Json<DownloadsResp
     #[cfg(feature = "emule-compat")]
     if let Ok(rows) = crate::db::emule_downloads::list(&state.db).await {
         for r in rows {
-            let bytes_done = live
-                .get(&-r.id)
-                .and_then(|l| l.bytes_done)
-                .unwrap_or(r.bytes_done as u64);
+            let bytes_done = effective_bytes_done(
+                live.get(&-r.id).and_then(|l| l.bytes_done),
+                r.bytes_done as u64,
+                r.total_size as u64,
+            );
             with_ts.push((
                 r.added_at,
                 DownloadResponse {
@@ -182,10 +184,11 @@ pub async fn get_download(
 
         // Prefer the live byte count (with in-flight partials) so the detail
         // matches the WS/list; falls back to the persisted figure.
-        let bytes_done = live
-            .as_ref()
-            .and_then(|l| l.bytes_done)
-            .unwrap_or(row.bytes_done as u64);
+        let bytes_done = effective_bytes_done(
+            live.as_ref().and_then(|l| l.bytes_done),
+            row.bytes_done as u64,
+            row.total_size as u64,
+        );
 
         Ok(Json(DownloadDetailResponse {
             id,
@@ -243,10 +246,11 @@ pub async fn get_download(
 
             // Prefer the live byte count (with in-flight partials) so the detail
             // matches the WS/list; falls back to the persisted figure.
-            let bytes_done = live
-                .as_ref()
-                .and_then(|l| l.bytes_done)
-                .unwrap_or(row.bytes_done as u64);
+            let bytes_done = effective_bytes_done(
+                live.as_ref().and_then(|l| l.bytes_done),
+                row.bytes_done as u64,
+                row.total_size as u64,
+            );
 
             Ok(Json(DownloadDetailResponse {
                 id,
@@ -305,6 +309,12 @@ fn encode_done_bitmap(done_idx: impl Iterator<Item = usize>, total: usize) -> St
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
+/// Base64-encode a raw LSB-first bitmap (already one bit per piece).
+fn encode_bitmap(bytes: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
 /// Per-piece state
 ///
 /// Returns a compact map of which pieces are done and which are being fetched
@@ -333,14 +343,16 @@ pub async fn get_download_pieces(
 ) -> Result<Json<rucio_core::api::downloads::DownloadPiecesResponse>, StatusCode> {
     use rucio_core::api::downloads::DownloadPiecesResponse;
 
-    // Live in-flight indices are keyed by the same signed id as the public API.
-    let in_flight = state
-        .live_stats
-        .read()
-        .await
-        .get(&id)
-        .map(|l| l.in_flight_pieces.clone())
-        .unwrap_or_default();
+    // Live in-flight indices and availability are keyed by the same signed id
+    // as the public API.
+    let (in_flight, available_bitmap) = {
+        let guard = state.live_stats.read().await;
+        let l = guard.get(&id);
+        (
+            l.map(|l| l.in_flight_pieces.clone()).unwrap_or_default(),
+            l.map(|l| encode_bitmap(&l.available)).unwrap_or_default(),
+        )
+    };
 
     if id >= 0 {
         // libp2p download — pieces are the rows in download_chunks.
@@ -372,6 +384,7 @@ pub async fn get_download_pieces(
             pieces_total: total as u64,
             done_bitmap,
             in_flight,
+            available_bitmap,
         }))
     } else {
         // eMule download — pieces are 9.28 MB slices tracked in the .part.met file.
@@ -405,6 +418,9 @@ pub async fn get_download_pieces(
                 pieces_total: num_slices as u64,
                 done_bitmap,
                 in_flight,
+                // eMule has no `/have` availability probe; the meter just shows
+                // done vs in-flight for these.
+                available_bitmap: String::new(),
             }))
         }
         #[cfg(not(feature = "emule-compat"))]
@@ -412,6 +428,19 @@ pub async fn get_download_pieces(
             let _ = &state;
             Err(StatusCode::NOT_FOUND)
         }
+    }
+}
+
+/// Pick the bytes-done figure to report. The live value (sum of bytes received
+/// across peers, including partial in-flight chunks) advances smoothly, but it
+/// can dip below the verified count when a peer is evicted and can overshoot the
+/// total on a hash-rejected re-download, so it is clamped to
+/// `[verified, total]`. Falls back to the verified DB count when no live sample
+/// exists (eMule downloads, or a download with no active transfer).
+pub(crate) fn effective_bytes_done(live: Option<u64>, verified: u64, total: u64) -> u64 {
+    match live {
+        Some(b) => b.max(verified).min(total),
+        None => verified,
     }
 }
 

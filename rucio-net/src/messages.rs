@@ -3,6 +3,7 @@
 
 use libp2p::{Multiaddr, PeerId, request_response::OutboundRequestId};
 use rucio_core::protocol::{
+    have::{HaveRequest, HaveResponse},
     manifest::{ManifestRequest, ManifestResponse},
     node::NodeClass,
     pinset::{PinsetRequest, PinsetResponse},
@@ -71,6 +72,15 @@ pub enum NodeCmd {
     RespondPinset {
         channel_id: u64,
         response: PinsetResponse,
+    },
+    /// Ask a peer which chunks of a file it currently holds (availability).
+    /// Fire-and-forget: the reply self-correlates via the echoed root hash in
+    /// [`NodeEvent::HaveReceived`], so no outbound id is returned.
+    RequestHave { peer: PeerId, request: HaveRequest },
+    /// Answer an inbound availability request with our per-chunk have bitmap.
+    RespondHave {
+        channel_id: u64,
+        response: HaveResponse,
     },
     /// Best-effort discovery of a peer's addresses via the DHT, so a later
     /// request can dial it. Used by the pin reconcile for subscription peers
@@ -196,6 +206,18 @@ pub enum NodeEvent {
     PinsetRequested {
         peer: PeerId,
         request: PinsetRequest,
+        channel_id: u64,
+    },
+    /// A peer answered our availability request. The response echoes the file's
+    /// root hash so the engine can fold the bitmap into the right download.
+    HaveReceived {
+        peer: PeerId,
+        response: HaveResponse,
+    },
+    /// A peer asked which chunks of a file we hold; answer with `RespondHave`.
+    HaveRequested {
+        peer: PeerId,
+        request: HaveRequest,
         channel_id: u64,
     },
     /// A fatal error in the node task.

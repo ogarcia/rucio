@@ -916,6 +916,9 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
             }
             _ = provider_refresh_tick.tick() => {
                 engine.tick_provider_refresh().await;
+                // Re-probe providers' availability: picks up sources discovered
+                // since the manifest arrived and partial mirrors filling in.
+                engine.refresh_availability().await;
             }
             _ = libp2p_bootstrap_tick.tick() => {
                 let peers = node_status.read().await.connected_peers;
@@ -988,12 +991,22 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                                 | rucio_core::api::downloads::DownloadState::Downloading
                                 | rucio_core::api::downloads::DownloadState::Stalled
                         ) {
+                            // Prefer the live byte count (sum of bytes received,
+                            // with in-flight partials) so the panel advances
+                            // smoothly instead of jumping a whole 4 MiB chunk at
+                            // a time; clamped to the verified/total range.
+                            let live_bytes =
+                                live_stats.read().await.get(&r.id).and_then(|s| s.bytes_done);
                             active.push(rucio_core::api::downloads::DownloadResponse {
                                 id: r.id,
                                 root_hash: hex::encode(&r.root_hash),
                                 name: Some(r.name),
                                 size: Some(r.total_size as u64),
-                                bytes_done: r.bytes_done as u64,
+                                bytes_done: api::downloads::effective_bytes_done(
+                                    live_bytes,
+                                    r.bytes_done as u64,
+                                    r.total_size as u64,
+                                ),
                                 state,
                                 error: r.error_msg,
                                 category_id: r.category_id,
@@ -1026,7 +1039,11 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                                 root_hash: hex::encode(&r.ed2k_hash),
                                 name: Some(r.name),
                                 size: Some(r.total_size as u64),
-                                bytes_done: live_bytes.unwrap_or(r.bytes_done as u64),
+                                bytes_done: api::downloads::effective_bytes_done(
+                                    live_bytes,
+                                    r.bytes_done as u64,
+                                    r.total_size as u64,
+                                ),
                                 state,
                                 error: r.error_msg,
                                 category_id: r.category_id,
@@ -1287,9 +1304,18 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                     }
                     Some(node::messages::NodeEvent::ManifestReceived { request_id, peer, response }) => {
                         engine.on_manifest_received(request_id, peer, response, now_secs()).await;
+                        // The download is now active with its chunk list known —
+                        // probe providers for their availability right away.
+                        engine.refresh_availability().await;
                     }
                     Some(node::messages::NodeEvent::ManifestRequested { peer, request, channel_id }) => {
                         engine.serve_manifest(peer, request, channel_id).await;
+                    }
+                    Some(node::messages::NodeEvent::HaveRequested { peer, request, channel_id }) => {
+                        engine.serve_have(peer, request, channel_id).await;
+                    }
+                    Some(node::messages::NodeEvent::HaveReceived { peer, response }) => {
+                        engine.on_have_received(peer, response);
                     }
                     Some(node::messages::NodeEvent::PinsetRequested { channel_id, .. }) => {
                         crate::pinset::serve_pinset(&db, &handle.cmd_tx, channel_id);

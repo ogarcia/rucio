@@ -11,6 +11,7 @@
 pub mod behaviour;
 pub mod classify;
 pub mod codec_utils;
+pub mod have_codec;
 pub mod identity;
 pub mod manifest_codec;
 pub mod messages;

@@ -1105,14 +1105,17 @@ fn DownloadInfoOverlay(
 // ── Piece map ───────────────────────────────────────────────────────────────
 
 /// Pick the colour class for a contiguous group of pieces. Priority: any
-/// in-flight → in-flight; all done → done; some done → partial; else pending.
+/// in-flight → in-flight; all done → done; some done → partial; all missing →
+/// missing (no provider has them); else pending.
 fn segment_class(slice: &[PieceState]) -> &'static str {
     let mut done = 0usize;
     let mut in_flight = 0usize;
+    let mut missing = 0usize;
     for s in slice {
         match s {
             PieceState::Done => done += 1,
             PieceState::InFlight => in_flight += 1,
+            PieceState::Missing => missing += 1,
             PieceState::Pending => {}
         }
     }
@@ -1122,6 +1125,8 @@ fn segment_class(slice: &[PieceState]) -> &'static str {
         "piece-seg piece-done"
     } else if done > 0 {
         "piece-seg piece-partial"
+    } else if missing == slice.len() {
+        "piece-seg piece-missing"
     } else {
         "piece-seg piece-pending"
     }
@@ -1135,6 +1140,8 @@ fn PieceMap(id: i64) -> impl IntoView {
     const MAX_SEGMENTS: usize = 240;
 
     let states: RwSignal<Vec<PieceState>> = RwSignal::new(Vec::new());
+    // Fraction of the file reachable across the swarm; None until probed.
+    let availability: RwSignal<Option<f64>> = RwSignal::new(None);
 
     // Use Rc<Cell> instead of RwSignal for the liveness flag.  When the
     // overlay closes, Leptos first runs on_cleanup callbacks and then frees
@@ -1163,6 +1170,7 @@ fn PieceMap(id: i64) -> impl IntoView {
                 // Re-check after the await: component may have unmounted
                 // while the HTTP request was in flight.
                 if alive.load(Ordering::Relaxed) {
+                    availability.set(p.availability());
                     states.set(p.piece_states());
                 }
             }
@@ -1193,6 +1201,15 @@ fn PieceMap(id: i64) -> impl IntoView {
                         .collect_view()
                 }}
             </div>
+            {move || availability.get().map(|frac| {
+                let pct = (frac * 100.0).floor() as u32;
+                let (cls, text) = if frac >= 0.999 {
+                    ("piece-avail piece-avail-full", "Fully available across the swarm".to_string())
+                } else {
+                    ("piece-avail piece-avail-partial", format!("{pct}% available — {}% shared by no peer right now", 100 - pct))
+                };
+                view! { <div class=cls>{text}</div> }
+            })}
         </Show>
     }
 }

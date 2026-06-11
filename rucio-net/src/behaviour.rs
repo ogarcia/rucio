@@ -16,6 +16,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
 
+use super::have_codec::{HaveCodec, HaveProtocol};
 use super::manifest_codec::{ManifestCodec, ManifestProtocol};
 use super::pinset_codec::{PinsetCodec, PinsetProtocol};
 use super::transfer_codec::{TransferCodec, TransferProtocol};
@@ -31,6 +32,7 @@ pub const RELAY_HOP_PROTOCOL: &str = "/libp2p/circuit/relay/0.2.0/hop";
 pub type TransferBehaviour = request_response::Behaviour<TransferCodec>;
 pub type ManifestBehaviour = request_response::Behaviour<ManifestCodec>;
 pub type PinsetBehaviour = request_response::Behaviour<PinsetCodec>;
+pub type HaveBehaviour = request_response::Behaviour<HaveCodec>;
 
 /// Selects which optional sub-behaviours to mount. `identify` and `kademlia`
 /// are always present.
@@ -47,6 +49,9 @@ pub struct BehaviourConfig {
     /// Pin-set request-response protocol (cooperative pinning: serve our pin-set
     /// and fetch peers' pin-sets).
     pub pinset: bool,
+    /// Availability request-response protocol (`/have`): serve our per-chunk
+    /// "have" bitmap and query providers' to learn aggregate swarm coverage.
+    pub have: bool,
     /// Capture inbound `ADD_PROVIDER` announcements. When enabled, Kademlia
     /// runs with `StoreInserts::FilterBoth` so each received provider record is
     /// surfaced as a [`NodeEvent::ProviderRecord`](crate::NodeEvent) (and must
@@ -87,6 +92,7 @@ impl BehaviourConfig {
             transfer: true,
             manifest: true,
             pinset: true,
+            have: true,
             capture_provider_records: false,
             relay_server: true,
             dcutr: true,
@@ -107,6 +113,7 @@ impl BehaviourConfig {
             transfer: false,
             manifest: false,
             pinset: false,
+            have: false,
             capture_provider_records: false,
             relay_server: false,
             dcutr: false,
@@ -143,6 +150,7 @@ pub struct RucioBehaviour {
     pub transfer: Toggle<TransferBehaviour>,
     pub manifest: Toggle<ManifestBehaviour>,
     pub pinset: Toggle<PinsetBehaviour>,
+    pub have: Toggle<HaveBehaviour>,
     /// Circuit relay server: lets other (LowID) peers make reservations so
     /// they become reachable via `/p2p-circuit` addresses.
     pub relay: Toggle<relay::Behaviour>,
@@ -261,6 +269,13 @@ impl RucioBehaviour {
             )
         });
 
+        let have = cfg.have.then(|| {
+            request_response::Behaviour::new(
+                vec![(HaveProtocol, request_response::ProtocolSupport::Full)],
+                request_response::Config::default(),
+            )
+        });
+
         let relay = cfg
             .relay_server
             .then(|| relay::Behaviour::new(peer_id, relay::Config::default()));
@@ -282,6 +297,7 @@ impl RucioBehaviour {
             transfer: Toggle::from(transfer),
             manifest: Toggle::from(manifest),
             pinset: Toggle::from(pinset),
+            have: Toggle::from(have),
             relay: Toggle::from(relay),
             relay_client,
             dcutr: Toggle::from(dcutr),
@@ -315,3 +331,4 @@ pub type TransferRequest = ChunkRequest;
 pub type TransferResponse = ChunkResponse;
 pub type ManifestReq = ManifestRequest;
 pub type ManifestResp = ManifestResponse;
+pub use rucio_core::protocol::have::{HaveRequest, HaveResponse};

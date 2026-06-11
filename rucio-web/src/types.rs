@@ -278,33 +278,53 @@ pub struct DownloadPiecesResponse {
     pub done_bitmap: String,
     /// Indices being fetched right now.
     pub in_flight: Vec<u32>,
+    /// base64 LSB-first bitmap of pieces available across all known providers
+    /// (the OR of their "have" sets). Empty when not probed yet.
+    #[serde(default)]
+    pub available_bitmap: String,
 }
 
 /// State of a single piece for rendering.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PieceState {
+    /// Not held by us yet, but a provider currently offers it (or availability
+    /// hasn't been probed, so we can't say it's missing).
     Pending,
+    /// Not held by us and no current provider offers it — a gap in the swarm.
+    Missing,
     InFlight,
     Done,
 }
 
+/// LSB-first bit test against a decoded bitmap; out-of-range bits read false.
+fn bit_set(bytes: &[u8], i: usize) -> bool {
+    bytes
+        .get(i / 8)
+        .map(|b| (b >> (i % 8)) & 1 == 1)
+        .unwrap_or(false)
+}
+
 impl DownloadPiecesResponse {
-    /// Decode the bitmap + in-flight list into a per-piece state vector.
-    /// Returns an empty vector if the bitmap is malformed.
+    /// Decode the bitmaps + in-flight list into a per-piece state vector.
+    /// Returns an empty vector if the done bitmap is malformed.
     pub fn piece_states(&self) -> Vec<PieceState> {
         use base64::Engine;
         let total = self.pieces_total as usize;
-        let bytes = base64::engine::general_purpose::STANDARD
+        let done = base64::engine::general_purpose::STANDARD
             .decode(&self.done_bitmap)
             .unwrap_or_default();
+        let available = base64::engine::general_purpose::STANDARD
+            .decode(&self.available_bitmap)
+            .unwrap_or_default();
+        // Only flag gaps once we actually have availability data; before the
+        // first probe everything pending is just "pending", not "missing".
+        let know_availability = !available.is_empty();
         let mut states = Vec::with_capacity(total);
         for i in 0..total {
-            let done = bytes
-                .get(i / 8)
-                .map(|b| (b >> (i % 8)) & 1 == 1)
-                .unwrap_or(false);
-            states.push(if done {
+            states.push(if bit_set(&done, i) {
                 PieceState::Done
+            } else if know_availability && !bit_set(&available, i) {
+                PieceState::Missing
             } else {
                 PieceState::Pending
             });
@@ -317,6 +337,31 @@ impl DownloadPiecesResponse {
             }
         }
         states
+    }
+
+    /// Fraction of the file obtainable right now: pieces we already hold plus
+    /// pieces a provider offers, over the total. `None` until availability has
+    /// been probed (so callers can hide the figure rather than show a wrong
+    /// "0%"). `1.0` means the whole file is reachable across the swarm.
+    pub fn availability(&self) -> Option<f64> {
+        use base64::Engine;
+        let total = self.pieces_total as usize;
+        if total == 0 {
+            return None;
+        }
+        let available = base64::engine::general_purpose::STANDARD
+            .decode(&self.available_bitmap)
+            .unwrap_or_default();
+        if available.is_empty() {
+            return None;
+        }
+        let done = base64::engine::general_purpose::STANDARD
+            .decode(&self.done_bitmap)
+            .unwrap_or_default();
+        let reachable = (0..total)
+            .filter(|&i| bit_set(&done, i) || bit_set(&available, i))
+            .count();
+        Some(reachable as f64 / total as f64)
     }
 }
 

@@ -46,6 +46,11 @@ pub struct DownloadLiveStats {
     /// eMule only: best (lowest) queue rank across those sources — how close we
     /// are to being granted an upload slot somewhere. `None` if not queued.
     pub best_queue_rank: Option<u32>,
+    /// Aggregate availability bitmap (libp2p only): the OR of every known
+    /// provider's `/have` set, LSB-first, one bit per chunk. Empty until the
+    /// first provider answers. Consumed by `GET .../pieces` so the UI can show
+    /// whether the file is fully shared or only partially mirrored.
+    pub available: Vec<u8>,
 }
 
 /// Shared map of live stats keyed by signed download id.

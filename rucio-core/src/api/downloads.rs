@@ -152,6 +152,14 @@ pub struct DownloadPiecesResponse {
     /// Indices of pieces being fetched right now. Live data — empty when the
     /// download is not active. These are not reflected in `done_bitmap`.
     pub in_flight: Vec<u32>,
+    /// Base64 of an LSB-first bitmap (same layout as `done_bitmap`) marking the
+    /// pieces available across all currently-known providers — the OR of every
+    /// provider's "have" set. A piece set here but not in `done_bitmap` is
+    /// fetchable; a piece set in neither is, for now, shared by nobody. Empty
+    /// when availability hasn't been probed yet (no active transfer). Use the
+    /// popcount versus `pieces_total` to tell a fully-shared file from a
+    /// partially-mirrored one.
+    pub available_bitmap: String,
 }
 
 /// POST /api/v1/downloads/ed2k

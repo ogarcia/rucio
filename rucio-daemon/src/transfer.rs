@@ -37,6 +37,7 @@ use tracing::{debug, info, warn};
 
 use rucio_core::protocol::{
     chunk::CHUNK_SIZE,
+    have::{HaveRequest, HaveResponse},
     manifest::{ManifestRequest, ManifestResponse},
     transfer::{ChunkRequest, ChunkResponse},
 };
@@ -236,11 +237,46 @@ struct ActiveDownload {
     /// Whether we've announced ourselves as a provider yet (partial sharing).
     /// Flipped on the first completed chunk so we only StartProviding once.
     announced: bool,
+    /// Aggregate availability: the OR of every known provider's `/have` bitmap,
+    /// LSB-first, one bit per chunk. Tells whether the swarm can supply each
+    /// chunk; a bit that stays clear means no current provider holds it.
+    /// Refreshed periodically as providers come and go (and fill their own
+    /// partial copies).
+    available: Vec<u8>,
 }
 
 impl ActiveDownload {
     fn is_complete(&self) -> bool {
         self.done.len() == self.total_chunks
+    }
+
+    /// OR another provider's have bitmap into our aggregate availability.
+    /// Ignores any bits past our own chunk count (defensive against a peer
+    /// reporting a longer bitmap).
+    fn fold_available(&mut self, other: &[u8]) {
+        for (i, byte) in other.iter().enumerate() {
+            if let Some(slot) = self.available.get_mut(i) {
+                *slot |= *byte;
+            }
+        }
+        // Never let a peer's trailing bits imply chunks we don't have.
+        mask_trailing_bits(&mut self.available, self.total_chunks);
+    }
+}
+
+/// Number of bytes a `bits`-long LSB-first bitmap needs.
+fn bitmap_bytes(bits: usize) -> usize {
+    bits.div_ceil(8)
+}
+
+/// Clear any bits at or beyond `bits` in the final byte so a popcount can't
+/// exceed the real chunk count.
+fn mask_trailing_bits(map: &mut [u8], bits: usize) {
+    let used = bits % 8;
+    if used != 0
+        && let Some(last) = map.get_mut(bits / 8)
+    {
+        *last &= (1u8 << used) - 1;
     }
 }
 
@@ -338,6 +374,13 @@ impl DownloadEngine {
             pieces_in_flight: u32,
             in_flight_pieces: Vec<u32>,
             peers: Vec<DownloadPeerDetail>,
+            /// Bytes received so far across all peers, including partial
+            /// in-flight chunks. Updated incrementally by the net read hook, so
+            /// it advances smoothly between whole-chunk completions instead of
+            /// jumping 4 MiB at a time. Clamped to verified/total at the API.
+            bytes_received: u64,
+            /// Aggregate availability bitmap (OR of providers' `/have`).
+            available: Vec<u8>,
         }
 
         let db = self.db.clone();
@@ -346,6 +389,7 @@ impl DownloadEngine {
 
         for dl in self.active.values_mut() {
             let mut active_peers = 0u32;
+            let mut bytes_received = 0u64;
             let mut peers: Vec<DownloadPeerDetail> = Vec::new();
             for (peer_id, ps) in dl.peer_state.iter_mut() {
                 if !ps.in_flight.is_empty() {
@@ -357,6 +401,7 @@ impl DownloadEngine {
                 let total = ps
                     .bytes_downloaded
                     .load(std::sync::atomic::Ordering::Relaxed);
+                bytes_received += total;
                 match ps.last_sample_at {
                     Some(last) => {
                         let elapsed = now.duration_since(last).as_secs_f64();
@@ -403,6 +448,8 @@ impl DownloadEngine {
                 pieces_in_flight: dl.in_flight.len() as u32,
                 in_flight_pieces: dl.in_flight.iter().copied().collect(),
                 peers,
+                bytes_received,
+                available: dl.available.clone(),
             });
         }
         // Pending manifests (no transfer yet) so `show` reports how many
@@ -423,6 +470,8 @@ impl DownloadEngine {
             e.pieces_in_flight = s.pieces_in_flight;
             e.in_flight_pieces = s.in_flight_pieces;
             e.peers = s.peers;
+            e.bytes_done = Some(s.bytes_received);
+            e.available = s.available;
         }
         for (id, total) in pending {
             let e = map.entry(id).or_default();
@@ -570,6 +619,7 @@ impl DownloadEngine {
             peer_state: HashMap::new(),
             inflight_map: HashMap::new(),
             announced: false,
+            available: vec![0u8; bitmap_bytes(total_chunks)],
         };
 
         self.active.insert(root_hash, dl);
@@ -1182,6 +1232,7 @@ impl DownloadEngine {
                     peer_state,
                     inflight_map: HashMap::new(),
                     announced: false,
+                    available: vec![0u8; bitmap_bytes(total_chunks)],
                 };
 
                 self.active.insert(root_hash, dl);
@@ -1712,6 +1763,65 @@ impl DownloadEngine {
     }
 
     // -----------------------------------------------------------------------
+    // Availability (`/have`)
+    // -----------------------------------------------------------------------
+
+    /// Answer an inbound `/have` request: report which chunks of the file we
+    /// can serve (all of them for a complete share, the verified ones for an
+    /// in-progress download).
+    pub async fn serve_have(&self, _peer: PeerId, request: HaveRequest, channel_id: u64) {
+        let db = self.db.clone();
+        let cmd_tx = self.cmd_tx.clone();
+        tokio::spawn(async move {
+            let response = build_have_response(&db, &request.root_hash).await;
+            let _ = cmd_tx
+                .send(NodeCmd::RespondHave {
+                    channel_id,
+                    response,
+                })
+                .await;
+        });
+    }
+
+    /// Fold a provider's `/have` answer into the matching download's aggregate
+    /// availability bitmap, so the UI can show swarm-wide coverage.
+    pub fn on_have_received(&mut self, _peer: PeerId, response: HaveResponse) {
+        if let HaveResponse::Ok {
+            root_hash, bitmap, ..
+        } = response
+            && let Some(dl) = self.active.get_mut(&root_hash)
+        {
+            dl.fold_available(&bitmap);
+        }
+    }
+
+    /// Ask every known provider of every active download for its `/have`
+    /// bitmap. Cheap (a few KB per provider) and best-effort: replies arrive
+    /// asynchronously and are OR-ed in by [`on_have_received`]. Called right
+    /// after a manifest arrives and then periodically, so coverage tracks
+    /// providers (and their partial copies) coming and going.
+    pub async fn refresh_availability(&self) {
+        for (root_hash, dl) in self.active.iter() {
+            // Skip downloads that are already fully covered locally — once we
+            // hold every chunk there's nothing left to learn about sources.
+            if dl.is_complete() {
+                continue;
+            }
+            for &peer in &dl.providers {
+                let _ = self
+                    .cmd_tx
+                    .send(NodeCmd::RequestHave {
+                        peer,
+                        request: HaveRequest {
+                            root_hash: *root_hash,
+                        },
+                    })
+                    .await;
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Serve an inbound chunk request
     // -----------------------------------------------------------------------
 
@@ -1983,6 +2093,59 @@ async fn build_manifest_response(db: &Db, root_hash: &[u8; 32]) -> ManifestRespo
     }
 }
 
+/// Build our `/have` answer for a file: which of its chunks we can serve right
+/// now. A complete share answers all-ones; an in-progress download answers its
+/// verified chunks (partial sharing); an unknown file answers `NotFound`.
+async fn build_have_response(db: &Db, root_hash: &[u8; 32]) -> HaveResponse {
+    use sqlx::Row;
+
+    // Complete share: every chunk is on disk.
+    let shared = sqlx::query("SELECT id FROM shared_files WHERE root_hash = ?1")
+        .bind(root_hash.as_slice())
+        .fetch_optional(db)
+        .await;
+    if let Ok(Some(row)) = shared {
+        let file_id: i64 = row.get("id");
+        let count = sqlx::query("SELECT COUNT(*) AS n FROM chunks WHERE shared_file_id = ?1")
+            .bind(file_id)
+            .fetch_one(db)
+            .await
+            .map(|r| r.get::<i64, _>("n") as usize)
+            .unwrap_or(0);
+        let mut bitmap = vec![0xFFu8; bitmap_bytes(count)];
+        mask_trailing_bits(&mut bitmap, count);
+        return HaveResponse::Ok {
+            root_hash: *root_hash,
+            pieces_total: count as u64,
+            bitmap,
+        };
+    }
+
+    // In-progress download: report the chunks we've verified so far.
+    if let Ok(Some(dl)) = db::downloads::get_by_root_hash(db, root_hash).await
+        && let Ok(chunks) = db::downloads::chunks_for(db, dl.id).await
+        && !chunks.is_empty()
+    {
+        let total = chunks.len();
+        let mut bitmap = vec![0u8; bitmap_bytes(total)];
+        for c in &chunks {
+            if c.status == "done" {
+                let i = c.idx as usize;
+                if let Some(b) = bitmap.get_mut(i / 8) {
+                    *b |= 1 << (i % 8);
+                }
+            }
+        }
+        return HaveResponse::Ok {
+            root_hash: *root_hash,
+            pieces_total: total as u64,
+            bitmap,
+        };
+    }
+
+    HaveResponse::NotFound
+}
+
 async fn read_file_range(path: &str, offset: u64, len: usize) -> Result<Vec<u8>> {
     use tokio::io::AsyncReadExt;
 
@@ -2033,9 +2196,54 @@ mod tests {
     use std::time::Duration;
     use tokio::sync::mpsc;
 
+    #[test]
+    fn mask_trailing_bits_clears_padding_in_last_byte() {
+        // 10 bits → 2 bytes; bits 10..16 are padding and must read clear.
+        let mut map = vec![0xFFu8, 0xFF];
+        mask_trailing_bits(&mut map, 10);
+        assert_eq!(map, vec![0xFF, 0b0000_0011]);
+        // Exact byte boundary leaves the last byte untouched.
+        let mut exact = vec![0xFFu8, 0xFF];
+        mask_trailing_bits(&mut exact, 16);
+        assert_eq!(exact, vec![0xFF, 0xFF]);
+    }
+
+    #[test]
+    fn fold_available_ors_and_masks() {
+        let mut dl = test_download(10); // 10 chunks → 2-byte bitmap
+        // Provider A holds chunks 0,1; provider B holds chunk 9 (+ stray pad bit).
+        dl.fold_available(&[0b0000_0011, 0x00]);
+        dl.fold_available(&[0x00, 0b1111_1110]); // bit 9 set, plus padding bits
+        // Union: bits 0,1,9 — padding (bits 10..16) masked away.
+        assert_eq!(dl.available, vec![0b0000_0011, 0b0000_0010]);
+        // A longer-than-expected peer bitmap can't set chunks we don't have.
+        dl.fold_available(&[0xFF, 0xFF, 0xFF]);
+        assert_eq!(dl.available, vec![0xFF, 0b0000_0011]);
+    }
+
     // -----------------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------------
+
+    /// A minimal ActiveDownload with `total` chunks and a zeroed availability
+    /// bitmap, for exercising the bitmap helpers without a full engine.
+    fn test_download(total: usize) -> ActiveDownload {
+        ActiveDownload {
+            download_id: 1,
+            dest_path: PathBuf::from("/tmp/x.part"),
+            chunk_size: CHUNK_SIZE,
+            queued: VecDeque::new(),
+            in_flight: HashSet::new(),
+            done: HashSet::new(),
+            total_chunks: total,
+            chunk_meta: HashMap::new(),
+            providers: vec![],
+            peer_state: HashMap::new(),
+            inflight_map: HashMap::new(),
+            announced: false,
+            available: vec![0u8; bitmap_bytes(total)],
+        }
+    }
 
     /// Open a temporary SQLite DB and run migrations.
     async fn make_db() -> (Db, tempfile::TempDir) {

@@ -12,6 +12,7 @@ use libp2p::{
     swarm::{DialError, SwarmEvent},
 };
 use rucio_core::protocol::{
+    have::{HaveRequest, HaveResponse},
     manifest::{ManifestRequest, ManifestResponse},
     node::NodeClass,
     pinset::{PinsetRequest, PinsetResponse},
@@ -229,6 +230,8 @@ struct LoopState {
     pending_manifest_channels: HashMap<u64, ResponseChannel<ManifestResponse>>,
     /// Pending inbound pin-set request channels keyed by a monotonic id.
     pending_pinset_channels: HashMap<u64, ResponseChannel<PinsetResponse>>,
+    /// Pending inbound availability request channels keyed by a monotonic id.
+    pending_have_channels: HashMap<u64, ResponseChannel<HaveResponse>>,
     next_channel_id: u64,
     /// Gossipsub messages that failed with InsufficientPeers, queued for
     /// retry when a peer subscribes to the relevant topic.
@@ -270,6 +273,7 @@ impl LoopState {
             pending_chunk_channels: HashMap::new(),
             pending_manifest_channels: HashMap::new(),
             pending_pinset_channels: HashMap::new(),
+            pending_have_channels: HashMap::new(),
             next_channel_id: 0,
             pending_publishes: Vec::new(),
             retry_dials: HashMap::new(),
@@ -294,6 +298,13 @@ impl LoopState {
         let id = self.next_channel_id;
         self.next_channel_id += 1;
         self.pending_manifest_channels.insert(id, ch);
+        id
+    }
+
+    fn store_have_channel(&mut self, ch: ResponseChannel<HaveResponse>) -> u64 {
+        let id = self.next_channel_id;
+        self.next_channel_id += 1;
+        self.pending_have_channels.insert(id, ch);
         id
     }
 
@@ -530,6 +541,24 @@ async fn run_loop(
                             }
                         } else {
                             warn!(%channel_id, "RespondPinset: unknown channel id");
+                        }
+                    }
+                    Some(NodeCmd::RequestHave { peer, request }) => {
+                        if let Some(have) = swarm.behaviour_mut().have.as_mut() {
+                            have.send_request(&peer, request);
+                        } else {
+                            warn!("RequestHave ignored: have protocol disabled");
+                        }
+                    }
+                    Some(NodeCmd::RespondHave { channel_id, response }) => {
+                        if let Some(ch) = state.pending_have_channels.remove(&channel_id) {
+                            if let Some(have) = swarm.behaviour_mut().have.as_mut()
+                                && have.send_response(ch, response).is_err()
+                            {
+                                debug!(%channel_id, "Have response dropped: requester no longer reachable");
+                            }
+                        } else {
+                            warn!(%channel_id, "RespondHave: unknown channel id");
                         }
                     }
                     Some(NodeCmd::DiscoverPeer { peer }) => {
@@ -1040,6 +1069,10 @@ async fn on_swarm_event(
                 on_pinset_event(ps_event, event_tx, state).await;
             }
 
+            RucioBehaviourEvent::Have(hv_event) => {
+                on_have_event(hv_event, event_tx, state).await;
+            }
+
             RucioBehaviourEvent::Relay(relay_event) => {
                 use relay::Event;
                 match relay_event {
@@ -1348,6 +1381,57 @@ async fn on_pinset_event(
         }
         request_response::Event::InboundFailure { peer, error, .. } => {
             debug!(%peer, %error, "Inbound pin-set request did not complete");
+        }
+        request_response::Event::ResponseSent { .. } => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Availability (request-response) handler — `/have` bitmaps
+// ---------------------------------------------------------------------------
+
+async fn on_have_event(
+    event: request_response::Event<HaveRequest, HaveResponse>,
+    event_tx: &EventTx,
+    state: &mut LoopState,
+) {
+    match event {
+        request_response::Event::Message {
+            peer,
+            message: request_response::Message::Response { response, .. },
+            ..
+        } => {
+            let _ = event_tx
+                .emit(NodeEvent::HaveReceived { peer, response })
+                .await;
+        }
+
+        request_response::Event::Message {
+            peer,
+            message:
+                request_response::Message::Request {
+                    request, channel, ..
+                },
+            ..
+        } => {
+            let channel_id = state.store_have_channel(channel);
+            let delivered = event_tx
+                .emit(NodeEvent::HaveRequested {
+                    peer,
+                    request,
+                    channel_id,
+                })
+                .await;
+            if !delivered {
+                state.pending_have_channels.remove(&channel_id);
+            }
+        }
+
+        request_response::Event::OutboundFailure { peer, error, .. } => {
+            debug!(%peer, %error, "Outbound availability request failed");
+        }
+        request_response::Event::InboundFailure { peer, error, .. } => {
+            debug!(%peer, %error, "Inbound availability request did not complete");
         }
         request_response::Event::ResponseSent { .. } => {}
     }
