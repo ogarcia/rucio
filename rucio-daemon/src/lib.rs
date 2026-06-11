@@ -1109,8 +1109,8 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                                 Err(e) => warn!("Failed to start download: {e}"),
                             }
                         }
-                        api::DownloadRequest::Cancel { download_id, root_hash } => {
-                            engine.cancel(download_id, root_hash).await;
+                        api::DownloadRequest::Cancel { download_id, root_hash, delete_row } => {
+                            engine.cancel(download_id, root_hash, delete_row).await;
                         }
                         api::DownloadRequest::Pause { download_id, root_hash } => {
                             engine.pause(download_id, root_hash).await;

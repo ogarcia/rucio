@@ -385,6 +385,11 @@ pub enum DownloadRequest {
         /// BLAKE3 root hash — used to purge pending manifest state in the
         /// engine even before the manifest has been received.
         root_hash: Vec<u8>,
+        /// Remove the DB row after cleanup (instead of leaving a `cancelled`
+        /// entry). Set when a mirror download is evicted — there's no user-
+        /// facing history to keep, and a stale `cancelled` row would only
+        /// clutter the list. A user-initiated cancel leaves the row.
+        delete_row: bool,
     },
     /// Suspend an in-flight download, keeping its partial file and progress.
     Pause {

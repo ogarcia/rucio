@@ -929,7 +929,7 @@ impl DownloadEngine {
     /// Covers both active downloads and pending manifest requests.
     /// In-flight chunk/manifest responses that arrive afterwards are silently
     /// discarded by the existing "unknown request" guards.
-    pub async fn cancel(&mut self, download_id: i64, root_hash: Vec<u8>) {
+    pub async fn cancel(&mut self, download_id: i64, root_hash: Vec<u8>, delete_row: bool) {
         self.live_stats.write().await.remove(&download_id);
 
         // Drop in-memory state and remember the .part path if we had it live.
@@ -997,6 +997,13 @@ impl DownloadEngine {
         // if we never announced it.
         if let Some(h) = stop_hash {
             let _ = self.cmd_tx.send(NodeCmd::StopProviding(h)).await;
+        }
+
+        // Mirror evictions remove the row outright (after the .part cleanup
+        // above, so its dest_path was still available); a user cancel keeps the
+        // `cancelled` entry in the list.
+        if delete_row {
+            let _ = db::downloads::delete(&self.db, download_id).await;
         }
     }
 
@@ -2618,7 +2625,7 @@ mod tests {
         engine.start(&magnet, vec![peer(1)], 0, None).await.unwrap();
         assert!(engine.pending_manifests.contains_key(&hash));
 
-        engine.cancel(99, hash.to_vec()).await;
+        engine.cancel(99, hash.to_vec(), false).await;
         assert!(!engine.pending_manifests.contains_key(&hash));
     }
 
@@ -2627,7 +2634,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (mut engine, _rx, _db_dir) = make_engine(&tmp).await;
         // Should not panic
-        engine.cancel(999, vec![0u8; 32]).await;
+        engine.cancel(999, vec![0u8; 32], false).await;
     }
 
     #[tokio::test]
@@ -2649,7 +2656,7 @@ mod tests {
             .unwrap();
         assert!(!engine.active.contains_key(&hash), "not tracked in memory");
 
-        engine.cancel(id, hash.to_vec()).await;
+        engine.cancel(id, hash.to_vec(), false).await;
 
         assert!(
             !part.exists(),
@@ -2675,11 +2682,37 @@ mod tests {
             .await
             .unwrap();
 
-        engine.cancel(id, hash.to_vec()).await;
+        engine.cancel(id, hash.to_vec(), false).await;
 
         assert!(
             final_file.exists(),
             "a completed file must never be deleted"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_with_delete_row_removes_the_record() {
+        // Mirror evictions cancel with delete_row = true: the .part goes and the
+        // row is removed, so no stale `cancelled` entry lingers in the list.
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut engine, _rx, _db_dir) = make_engine(&tmp).await;
+        let hash = [0x0au8; 32];
+        let id = db::downloads::create_pending(&engine.db, &hash, Some("m.bin"), 500, false, None)
+            .await
+            .unwrap()
+            .id();
+        let part = tmp.path().join("m.bin.part");
+        tokio::fs::write(&part, b"partial").await.unwrap();
+        db::downloads::set_dest_path(&engine.db, id, part.to_str().unwrap())
+            .await
+            .unwrap();
+
+        engine.cancel(id, hash.to_vec(), true).await;
+
+        assert!(!part.exists(), ".part removed");
+        assert!(
+            db::downloads::get(&engine.db, id).await.unwrap().is_none(),
+            "the row is deleted with delete_row = true"
         );
     }
 

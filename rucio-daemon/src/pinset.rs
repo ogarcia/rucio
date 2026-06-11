@@ -376,11 +376,15 @@ pub async fn evict_unwanted(
                 "finding_providers" | "queued" | "downloading" | "stalled"
             )
         {
-            let _ = db::downloads::set_status(db, row.id, "cancelled", None).await;
+            // Cancel and remove the row entirely (delete_row): a mirror we no
+            // longer want leaves no user-facing history, so don't keep a stale
+            // `cancelled` entry cluttering the downloads list. The engine deletes
+            // the row after cleaning up the .part.
             let _ = download_tx
                 .send(DownloadRequest::Cancel {
                     download_id: row.id,
                     root_hash: hash.to_vec(),
+                    delete_row: true,
                 })
                 .await;
             info!(hash = %hex::encode(hash), "Cancelled in-flight mirror download (no longer wanted)");
@@ -916,22 +920,22 @@ mod tests {
 
         let n = evict_unwanted(&db, &tx, &dtx, &pin_dir).await;
         assert_eq!(n, 1);
-        // A Cancel was emitted for this download.
+        // A Cancel was emitted for this download, asking to delete the row (no
+        // stale `cancelled` entry left behind). The row deletion itself happens
+        // in engine.cancel, which this test doesn't run.
         match drx.try_recv() {
             Ok(DownloadRequest::Cancel {
                 download_id,
                 root_hash,
+                delete_row,
             }) => {
                 assert_eq!(download_id, id);
                 assert_eq!(root_hash, h.to_vec());
+                assert!(delete_row, "evicted mirror downloads are removed, not kept");
             }
             _ => panic!("expected a Cancel for the in-flight mirror download"),
         }
-        // Marked cancelled and ownership dropped.
-        assert_eq!(
-            db::downloads::get_status(&db, id).await.unwrap().as_deref(),
-            Some("cancelled")
-        );
+        // Ownership dropped.
         assert!(!db::mirror_owned::is_owned(&db, &h).await.unwrap());
     }
 

@@ -648,6 +648,8 @@ pub async fn cancel_download(State(state): State<AppState>, Path(id): Path<i64>)
                     .send(DownloadRequest::Cancel {
                         download_id: id,
                         root_hash,
+                        // User cancel: keep the `cancelled` row in their list.
+                        delete_row: false,
                     })
                     .await;
                 StatusCode::NO_CONTENT
