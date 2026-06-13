@@ -77,8 +77,9 @@ pub async fn list_downloads(State(state): State<AppState>) -> Json<DownloadsResp
     // libp2p downloads (positive IDs)
     if let Ok(rows) = crate::db::downloads::list(&state.db).await {
         for r in rows {
+            let ls = live.get(&r.id);
             let bytes_done = effective_bytes_done(
-                live.get(&r.id).and_then(|l| l.bytes_done),
+                ls.and_then(|l| l.bytes_done),
                 r.bytes_done as u64,
                 r.total_size as u64,
             );
@@ -92,6 +93,14 @@ pub async fn list_downloads(State(state): State<AppState>) -> Json<DownloadsResp
                     bytes_done,
                     state: db_status_to_state(&r.status),
                     error: r.error_msg,
+                    speed_bps: ls.map(|l| l.speed_bps),
+                    eta_secs: eta_secs(
+                        r.total_size as u64,
+                        bytes_done,
+                        ls.map(|l| l.speed_bps).unwrap_or(0),
+                    ),
+                    sources_total: ls.map(|l| l.sources_total),
+                    best_queue_rank: ls.and_then(|l| l.best_queue_rank),
                     category_id: r.category_id,
                 },
             ));
@@ -102,8 +111,9 @@ pub async fn list_downloads(State(state): State<AppState>) -> Json<DownloadsResp
     #[cfg(feature = "emule-compat")]
     if let Ok(rows) = crate::db::emule_downloads::list(&state.db).await {
         for r in rows {
+            let ls = live.get(&-r.id);
             let bytes_done = effective_bytes_done(
-                live.get(&-r.id).and_then(|l| l.bytes_done),
+                ls.and_then(|l| l.bytes_done),
                 r.bytes_done as u64,
                 r.total_size as u64,
             );
@@ -117,6 +127,14 @@ pub async fn list_downloads(State(state): State<AppState>) -> Json<DownloadsResp
                     bytes_done,
                     state: db_status_to_state(&r.status),
                     error: r.error_msg,
+                    speed_bps: ls.map(|l| l.speed_bps),
+                    eta_secs: eta_secs(
+                        r.total_size as u64,
+                        bytes_done,
+                        ls.map(|l| l.speed_bps).unwrap_or(0),
+                    ),
+                    sources_total: ls.map(|l| l.sources_total),
+                    best_queue_rank: ls.and_then(|l| l.best_queue_rank),
                     category_id: r.category_id,
                 },
             ));
@@ -446,7 +464,7 @@ pub(crate) fn effective_bytes_done(live: Option<u64>, verified: u64, total: u64)
 
 /// Estimate seconds to completion from current speed and remaining bytes.
 /// `None` when the speed is zero or the download is already complete.
-fn eta_secs(size: u64, bytes_done: u64, speed_bps: u64) -> Option<u64> {
+pub(crate) fn eta_secs(size: u64, bytes_done: u64, speed_bps: u64) -> Option<u64> {
     if speed_bps == 0 || size <= bytes_done {
         return None;
     }

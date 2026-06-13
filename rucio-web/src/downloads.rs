@@ -763,6 +763,35 @@ fn DownloadRow(
     let error_text =
         move || downloads.with(|v| v.iter().find(|d| d.id == id).and_then(|d| d.error.clone()));
 
+    // Live transfer info shown under the bar, right-aligned opposite the state
+    // pill. State-sensitive: the rate (+ ETA) headlines while transferring;
+    // otherwise we fill the slot with whatever live signal fits the state — the
+    // eMule upload-queue rank while waiting for a slot, or the source count
+    // while still locating peers. Empty string = nothing to show (hidden).
+    let live_info = move || -> String {
+        with_row(&|d| {
+            if let Some(bps) = d.speed_bps.filter(|&b| b > 0) {
+                let mut s = format_speed(bps);
+                if let Some(eta) = d.eta_secs.filter(|&e| e > 0) {
+                    s.push_str(" · ");
+                    s.push_str(&format_eta(eta));
+                }
+                return s;
+            }
+            if let Some(rank) = d.best_queue_rank {
+                return format!("Queue #{rank}");
+            }
+            if matches!(
+                d.state,
+                DownloadState::FindingProviders | DownloadState::Queued | DownloadState::Stalled
+            ) && let Some(n) = d.sources_total.filter(|&n| n > 0)
+            {
+                return format!("{n} source{}", if n == 1 { "" } else { "s" });
+            }
+            String::new()
+        })
+    };
+
     // The download's category as (name, optional colour), resolved live so it
     // reflects edits and reassignments. None when unassigned or since deleted.
     let category = move || -> Option<(String, Option<String>)> {
@@ -808,6 +837,9 @@ fn DownloadRow(
                 <span class=state_class>{state_text}</span>
                 <Show when=has_error fallback=|| ()>
                     <span class="dl-error">{error_text}</span>
+                </Show>
+                <Show when=move || !live_info().is_empty() fallback=|| ()>
+                    <span class="dl-live">{live_info}</span>
                 </Show>
             </div>
         </li>

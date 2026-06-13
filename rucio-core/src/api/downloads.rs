@@ -45,6 +45,23 @@ pub struct DownloadResponse {
     pub bytes_done: u64,
     pub state: DownloadState,
     pub error: Option<String>,
+    /// Live: smoothed download speed in bytes per second. Present (and non-zero)
+    /// only while actively transferring; lets the list row show the rate without
+    /// a per-row detail request.
+    #[serde(default)]
+    pub speed_bps: Option<u64>,
+    /// Live: estimated seconds to completion, derived from speed and remaining
+    /// bytes. Absent when speed is zero or the size is unknown.
+    #[serde(default)]
+    pub eta_secs: Option<u64>,
+    /// Live: total sources/providers currently known. Lets the row show source
+    /// counts while finding peers / queued, when there is no speed to show yet.
+    #[serde(default)]
+    pub sources_total: Option<u32>,
+    /// Live (eMule): best (lowest) upload-queue rank across sources, when queued
+    /// for a slot. Fills the row's live slot while waiting (no speed yet).
+    #[serde(default)]
+    pub best_queue_rank: Option<u32>,
     /// Category this download is filed under, if any (null = global dir).
     #[serde(default)]
     pub category_id: Option<i64>,

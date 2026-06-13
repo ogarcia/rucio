@@ -887,6 +887,13 @@
         .dl-state-neutral { background: var(--sn); color: var(--sn-fg); }
 
         .dl-error { font-size: 0.75rem; color: var(--sf-fg); }
+        /* Live transfer figure (speed · ETA, queue rank, or source count),
+           pushed to the right edge opposite the state pill. Tabular numerals
+           keep the digits from jittering as the rate updates. */
+        .dl-live {
+            margin-left: auto; font-size: 0.75rem; color: var(--text-3);
+            white-space: nowrap; font-variant-numeric: tabular-nums;
+        }
         .dl-actions { margin-left: auto; display: flex; gap: 0.5rem; }
 
         /* ── Uploads ─────────────────────────────────────────────────────── */

@@ -995,20 +995,39 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                             // with in-flight partials) so the panel advances
                             // smoothly instead of jumping a whole 4 MiB chunk at
                             // a time; clamped to the verified/total range.
-                            let live_bytes =
-                                live_stats.read().await.get(&r.id).and_then(|s| s.bytes_done);
+                            let (live_bytes, speed_bps, sources_total, best_queue_rank) = {
+                                let guard = live_stats.read().await;
+                                match guard.get(&r.id) {
+                                    Some(s) => (
+                                        s.bytes_done,
+                                        Some(s.speed_bps),
+                                        Some(s.sources_total),
+                                        s.best_queue_rank,
+                                    ),
+                                    None => (None, None, None, None),
+                                }
+                            };
+                            let bytes_done = api::downloads::effective_bytes_done(
+                                live_bytes,
+                                r.bytes_done as u64,
+                                r.total_size as u64,
+                            );
                             active.push(rucio_core::api::downloads::DownloadResponse {
                                 id: r.id,
                                 root_hash: hex::encode(&r.root_hash),
                                 name: Some(r.name),
                                 size: Some(r.total_size as u64),
-                                bytes_done: api::downloads::effective_bytes_done(
-                                    live_bytes,
-                                    r.bytes_done as u64,
-                                    r.total_size as u64,
-                                ),
+                                bytes_done,
                                 state,
                                 error: r.error_msg,
+                                speed_bps,
+                                eta_secs: api::downloads::eta_secs(
+                                    r.total_size as u64,
+                                    bytes_done,
+                                    speed_bps.unwrap_or(0),
+                                ),
+                                sources_total,
+                                best_queue_rank,
                                 category_id: r.category_id,
                             });
                         }
@@ -1029,23 +1048,39 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                             // over the persisted complete-slices-only figure, so
                             // the reported progress doesn't oscillate between the
                             // two sources.
-                            let live_bytes = live_stats
-                                .read()
-                                .await
-                                .get(&(-r.id))
-                                .and_then(|s| s.bytes_done);
+                            let (live_bytes, speed_bps, sources_total, best_queue_rank) = {
+                                let guard = live_stats.read().await;
+                                match guard.get(&(-r.id)) {
+                                    Some(s) => (
+                                        s.bytes_done,
+                                        Some(s.speed_bps),
+                                        Some(s.sources_total),
+                                        s.best_queue_rank,
+                                    ),
+                                    None => (None, None, None, None),
+                                }
+                            };
+                            let bytes_done = api::downloads::effective_bytes_done(
+                                live_bytes,
+                                r.bytes_done as u64,
+                                r.total_size as u64,
+                            );
                             active.push(rucio_core::api::downloads::DownloadResponse {
                                 id: -(r.id), // negative IDs mark eMule rows in WS events
                                 root_hash: hex::encode(&r.ed2k_hash),
                                 name: Some(r.name),
                                 size: Some(r.total_size as u64),
-                                bytes_done: api::downloads::effective_bytes_done(
-                                    live_bytes,
-                                    r.bytes_done as u64,
-                                    r.total_size as u64,
-                                ),
+                                bytes_done,
                                 state,
                                 error: r.error_msg,
+                                speed_bps,
+                                eta_secs: api::downloads::eta_secs(
+                                    r.total_size as u64,
+                                    bytes_done,
+                                    speed_bps.unwrap_or(0),
+                                ),
+                                sources_total,
+                                best_queue_rank,
                                 category_id: r.category_id,
                             });
                         }
