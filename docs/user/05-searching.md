@@ -42,6 +42,26 @@ rucio download add 3
 The row numbers are only valid for the most recent search. If you run another
 search, previous row numbers refer to the new results.
 
+## Searching a single network
+
+By default a search queries both the Rucio P2P network and the eMule/Kad2
+network in parallel. To restrict it to one protocol, pass `--network` to
+`rucio search add`:
+
+```sh
+rucio search add --network rucio "great expectations"   # Rucio peers only
+rucio search add --network emule "great expectations"   # eMule/Kad2 only
+rucio search add --network both  "great expectations"   # both (the default)
+```
+
+This is mostly useful for scripting or when you only care about one network.
+Omitting `--network` (or passing `both`) keeps the default unified search.
+
+Asking for `--network emule` on a daemon built without eMule support is an
+error (the daemon has no Kad2 leg to run). At the API level this is the
+optional `network` field of `POST /api/v1/searches`; omitting it keeps the
+default unified search.
+
 ## Tips
 
 **Search is keyword-based, not fuzzy.** The query is split into words and each
