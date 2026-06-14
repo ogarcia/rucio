@@ -22,7 +22,8 @@ use rucio_core::api::{
     metrics::{HealthResponse, MetricsResponse},
     pins::{PinRequest, PinResponse, PinsResponse},
     searches::{
-        SearchDetailResponse, SearchListResponse, SearchStartedResponse, StartSearchRequest,
+        SearchDetailResponse, SearchListResponse, SearchNetwork, SearchStartedResponse,
+        StartSearchRequest,
     },
     shares::{
         AddShareRequest, AddShareResponse, ShareResponse, SharedDirsResponse, SharesResponse,
@@ -489,9 +490,16 @@ impl ApiClient {
     // Unified searches
     // -----------------------------------------------------------------------
 
-    pub async fn start_search(&self, keywords: Vec<String>) -> Result<SearchStartedResponse> {
-        self.post("/api/v1/searches", &StartSearchRequest { keywords })
-            .await
+    pub async fn start_search(
+        &self,
+        keywords: Vec<String>,
+        network: SearchNetwork,
+    ) -> Result<SearchStartedResponse> {
+        self.post(
+            "/api/v1/searches",
+            &StartSearchRequest { keywords, network },
+        )
+        .await
     }
 
     pub async fn get_search(&self, id: u64) -> Result<SearchDetailResponse> {

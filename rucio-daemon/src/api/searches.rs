@@ -12,8 +12,8 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use rucio_core::api::searches::{
-    SearchDetailResponse, SearchListResponse, SearchStartedResponse, SearchState, SearchSummary,
-    StartSearchRequest,
+    SearchDetailResponse, SearchListResponse, SearchNetwork, SearchStartedResponse, SearchState,
+    SearchSummary, StartSearchRequest,
 };
 use rucio_core::protocol::search::SearchQuery;
 #[cfg(feature = "emule-compat")]
@@ -26,11 +26,12 @@ use crate::node::messages::NodeCmd;
 // POST /api/v1/searches
 // ---------------------------------------------------------------------------
 
-/// Start a unified search
+/// Start a search
 ///
-/// Launches a keyword search on the Rucio Gossipsub network and, when the
-/// `emule-compat` feature is compiled in, also on the eMule Kad2 network.
-/// Both searches run in parallel.  Use `GET /api/v1/searches/{id}` to poll
+/// By default launches a keyword search on the Rucio Gossipsub network and,
+/// when the `emule-compat` feature is compiled in, also on the eMule Kad2
+/// network, both in parallel.  Set `network` to `rucio` or `emule` to query a
+/// single protocol instead of both.  Use `GET /api/v1/searches/{id}` to poll
 /// for results.
 ///
 /// A search is considered **Done** when 60 seconds have elapsed, or when the
@@ -41,7 +42,8 @@ use crate::node::messages::NodeCmd;
     request_body = StartSearchRequest,
     responses(
         (status = 202, description = "Search started.", body = SearchStartedResponse),
-        (status = 400, description = "No keywords provided.")
+        (status = 400, description = "No keywords provided."),
+        (status = 409, description = "Requested eMule-only search but this daemon has no eMule support.")
     )
 )]
 pub async fn post_search(
@@ -52,7 +54,7 @@ pub async fn post_search(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    let search_id = start_search_internal(&state, req.keywords).await?;
+    let search_id = start_search_internal(&state, req.keywords, req.network).await?;
     Ok((
         StatusCode::ACCEPTED,
         Json(SearchStartedResponse { id: search_id }),
@@ -230,14 +232,22 @@ pub async fn relaunch_search(
 ) -> Result<(StatusCode, Json<SearchStartedResponse>), StatusCode> {
     let peer_id = state.node_status.read().await.peer_id.clone();
 
-    // Build a fresh gossip query (new UUID, same keywords).
-    let keywords = {
+    // Build a fresh gossip query (new UUID, same keywords) and recover which
+    // network(s) the search was originally created for, so a relaunch re-runs
+    // the same legs rather than always firing both.
+    let (keywords, network) = {
         let reg = state.search_registry.read().await;
         reg.records
             .get(&id)
-            .map(|r| r.keywords.clone())
+            .map(|r| (r.keywords.clone(), r.network))
             .ok_or(StatusCode::NOT_FOUND)?
     };
+
+    #[cfg(feature = "emule-compat")]
+    let run_kad2 = network.wants_emule();
+    #[cfg(not(feature = "emule-compat"))]
+    let run_kad2 = false;
+
     let query = SearchQuery::new(keywords.clone(), peer_id);
     let new_gossip_id = query.id.0.clone();
 
@@ -252,35 +262,34 @@ pub async fn relaunch_search(
             .map(|r| r.gossip_query_id.clone())
             .ok_or(StatusCode::NOT_FOUND)?;
 
-        // Swap the gossip→id mapping for the new query UUID.
+        // Swap the gossip→id mapping for the new query UUID. Only map the new
+        // one when the Rucio leg runs (an eMule-only search has none).
         reg.gossip_to_id.remove(&old_gossip_id);
-        reg.gossip_to_id.insert(new_gossip_id.clone(), id);
+        if network.wants_rucio() {
+            reg.gossip_to_id.insert(new_gossip_id.clone(), id);
+        }
 
         if let Some(record) = reg.records.get_mut(&id) {
             record.cancelled = false;
             record.started_at = std::time::Instant::now();
             record.gossip_query_id = new_gossip_id;
-            #[cfg(not(feature = "emule-compat"))]
-            {
-                record.kad2_done = true;
-            }
-            #[cfg(feature = "emule-compat")]
-            {
-                record.kad2_done = false;
-            }
+            record.kad2_done = !run_kad2;
         }
     }
 
-    // Re-fire the Gossipsub query.
-    if state.node_cmd.send(NodeCmd::Search(query)).await.is_err() {
-        tracing::warn!("Node cmd channel closed; search published locally only");
+    // Re-fire the Gossipsub query when the Rucio leg is wanted.
+    if network.wants_rucio() {
+        if state.node_cmd.send(NodeCmd::Search(query)).await.is_err() {
+            tracing::warn!("Node cmd channel closed; search published locally only");
+        }
+        tracing::info!(search_id = id, keywords = ?keywords, "Search relaunched (Gossipsub)");
     }
 
-    tracing::info!(search_id = id, keywords = ?keywords, "Search relaunched (Gossipsub)");
-
-    // Re-fire Kad2 keyword search if compiled in.
+    // Re-fire Kad2 keyword search if compiled in and the eMule leg is wanted.
     #[cfg(feature = "emule-compat")]
-    spawn_kad2_search(&state, id, keywords);
+    if network.wants_emule() {
+        spawn_kad2_search(&state, id, keywords);
+    }
 
     Ok((StatusCode::ACCEPTED, Json(SearchStartedResponse { id })))
 }
@@ -292,7 +301,25 @@ pub async fn relaunch_search(
 /// Create a new search record and fire off Gossipsub + (optionally) Kad2.
 ///
 /// Returns the new numeric search ID.
-async fn start_search_internal(state: &AppState, keywords: Vec<String>) -> Result<u64, StatusCode> {
+async fn start_search_internal(
+    state: &AppState,
+    keywords: Vec<String>,
+    network: SearchNetwork,
+) -> Result<u64, StatusCode> {
+    // An eMule-only search on a daemon built without eMule support can never
+    // return anything; reject it so the caller gets a clear error rather than a
+    // search that closes empty.
+    #[cfg(not(feature = "emule-compat"))]
+    if network == SearchNetwork::Emule {
+        return Err(StatusCode::CONFLICT);
+    }
+
+    // The Kad2 leg runs only when eMule is compiled in AND the caller wants it.
+    #[cfg(feature = "emule-compat")]
+    let run_kad2 = network.wants_emule();
+    #[cfg(not(feature = "emule-compat"))]
+    let run_kad2 = false;
+
     let peer_id = state.node_status.read().await.peer_id.clone();
     let query = SearchQuery::new(keywords.clone(), peer_id);
     let gossip_query_id = query.id.0.clone();
@@ -306,22 +333,23 @@ async fn start_search_internal(state: &AppState, keywords: Vec<String>) -> Resul
         let record = SearchRecord {
             id,
             keywords: keywords.clone(),
+            network,
             cancelled: false,
-            // When emule-compat is not compiled there is no Kad2 search,
-            // so mark kad2_done immediately so the search closes after the
-            // shorter Gossipsub window (GOSSIP_WINDOW_SECS) rather than
-            // waiting the full KAD2_TIMEOUT_SECS.
-            #[cfg(not(feature = "emule-compat"))]
-            kad2_done: true,
-            #[cfg(feature = "emule-compat")]
-            kad2_done: false,
+            // Mark the Kad2 leg done up front whenever it won't run, so the
+            // search closes after the shorter Gossipsub window
+            // (GOSSIP_WINDOW_SECS) rather than waiting the full KAD2_TIMEOUT_SECS.
+            kad2_done: !run_kad2,
             kad2_waiting: false,
             results: Vec::new(),
             started_at: std::time::Instant::now(),
             gossip_query_id: gossip_query_id.clone(),
         };
         reg.records.insert(id, record);
-        reg.gossip_to_id.insert(gossip_query_id, id);
+        // Only map the gossip query when the Rucio leg actually runs, so stray
+        // results can't be routed to an eMule-only search.
+        if network.wants_rucio() {
+            reg.gossip_to_id.insert(gossip_query_id, id);
+        }
 
         // Auto-purge oldest finished searches if the registry is full.
         if reg.records.len() > MAX_SEARCHES {
@@ -331,16 +359,19 @@ async fn start_search_internal(state: &AppState, keywords: Vec<String>) -> Resul
         id
     };
 
-    // Fire the Gossipsub query (best-effort).
-    if state.node_cmd.send(NodeCmd::Search(query)).await.is_err() {
-        tracing::warn!("Node cmd channel closed; search published locally only");
+    // Fire the Gossipsub query (best-effort) when the Rucio leg is wanted.
+    if network.wants_rucio() {
+        if state.node_cmd.send(NodeCmd::Search(query)).await.is_err() {
+            tracing::warn!("Node cmd channel closed; search published locally only");
+        }
+        tracing::info!(search_id, keywords = ?keywords, "Rucio (Gossipsub) search started");
     }
 
-    tracing::info!(search_id, keywords = ?keywords, "Unified search started (Gossipsub)");
-
-    // Spawn Kad2 keyword search if the feature is compiled in.
+    // Spawn Kad2 keyword search if compiled in and the eMule leg is wanted.
     #[cfg(feature = "emule-compat")]
-    spawn_kad2_search(state, search_id, keywords);
+    if network.wants_emule() {
+        spawn_kad2_search(state, search_id, keywords);
+    }
 
     Ok(search_id)
 }

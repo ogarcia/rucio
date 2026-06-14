@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
-use rucio_core::api::searches::{ResultSource, SearchResult, SearchState};
+use rucio_core::api::searches::{ResultSource, SearchNetwork, SearchResult, SearchState};
 use tabled::{Table, Tabled};
 use tokio::time::{Duration, sleep};
 
@@ -26,12 +26,17 @@ const MAX_POLLS: u32 = 65;
 // start
 // ---------------------------------------------------------------------------
 
-pub async fn add(client: &ApiClient, keywords: Vec<String>, wait: bool) -> Result<()> {
+pub async fn add(
+    client: &ApiClient,
+    keywords: Vec<String>,
+    wait: bool,
+    network: SearchNetwork,
+) -> Result<()> {
     if keywords.is_empty() {
         anyhow::bail!("Provide at least one keyword.");
     }
 
-    let started = client.start_search(keywords.clone()).await?;
+    let started = client.start_search(keywords.clone(), network).await?;
     let id = started.id;
     println!("{id}");
 

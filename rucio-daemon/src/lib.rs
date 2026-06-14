@@ -1699,6 +1699,7 @@ mod tests {
             api::SearchRecord {
                 id: 1,
                 keywords: vec!["movie".to_string()],
+                network: rucio_core::api::searches::SearchNetwork::Both,
                 cancelled: false,
                 kad2_done: false,
                 kad2_waiting: false,

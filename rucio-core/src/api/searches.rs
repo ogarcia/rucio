@@ -8,10 +8,53 @@
 // Request types
 // ---------------------------------------------------------------------------
 
+/// Which network(s) a search should query.
+///
+/// Defaults to [`SearchNetwork::Both`] so a client that omits the field still
+/// gets unified results. A third-party API consumer can scope a search to a
+/// single protocol; the bundled web panel always searches both.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+    utoipa::ToSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchNetwork {
+    /// Query only the Rucio P2P network (Gossipsub).
+    Rucio,
+    /// Query only the eMule/Kad2 network.
+    Emule,
+    /// Query both networks in parallel (the default).
+    #[default]
+    Both,
+}
+
+impl SearchNetwork {
+    /// Whether the Rucio (Gossipsub) leg should run for this selection.
+    pub fn wants_rucio(self) -> bool {
+        matches!(self, SearchNetwork::Rucio | SearchNetwork::Both)
+    }
+
+    /// Whether the eMule (Kad2) leg should run for this selection.
+    pub fn wants_emule(self) -> bool {
+        matches!(self, SearchNetwork::Emule | SearchNetwork::Both)
+    }
+}
+
 /// POST /api/v1/searches — start a unified search.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct StartSearchRequest {
     pub keywords: Vec<String>,
+    /// Which network(s) to query. Optional; defaults to `both`. Lets an API
+    /// consumer focus on a single protocol (`rucio` or `emule`).
+    #[serde(default)]
+    pub network: SearchNetwork,
 }
 
 /// Response body returned by POST /api/v1/searches and POST /api/v1/searches/{id}/relaunch.

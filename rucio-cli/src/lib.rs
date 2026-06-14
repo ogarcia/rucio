@@ -5,7 +5,7 @@ pub mod state;
 pub mod table_util;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 use client::ApiClient;
 
@@ -302,6 +302,28 @@ pub enum NodeAction {
     },
 }
 
+/// Which network(s) `rucio search add` should query.
+#[derive(ValueEnum, Clone, Copy, Debug)]
+pub enum NetworkArg {
+    /// Search only the Rucio P2P network
+    Rucio,
+    /// Search only the eMule/Kad2 network
+    Emule,
+    /// Search both networks
+    Both,
+}
+
+impl From<NetworkArg> for rucio_core::api::searches::SearchNetwork {
+    fn from(n: NetworkArg) -> Self {
+        use rucio_core::api::searches::SearchNetwork;
+        match n {
+            NetworkArg::Rucio => SearchNetwork::Rucio,
+            NetworkArg::Emule => SearchNetwork::Emule,
+            NetworkArg::Both => SearchNetwork::Both,
+        }
+    }
+}
+
 /// `rucio search …` — search for files on the Rucio and eMule networks.
 #[derive(Subcommand, Debug)]
 pub enum SearchAction {
@@ -319,6 +341,9 @@ pub enum SearchAction {
         /// Poll until the search finishes and print results
         #[arg(short, long)]
         wait: bool,
+        /// Which network(s) to query (default: both)
+        #[arg(long, value_enum, default_value_t = NetworkArg::Both)]
+        network: NetworkArg,
     },
     /// Relaunch a search, keeping the same ID and preserving existing results
     Relaunch {
@@ -487,7 +512,11 @@ pub async fn run() -> Result<()> {
             NodeAction::Emule { action } => cmd::emule::run(&client, action).await,
         },
         Commands::Search { action } => match action {
-            SearchAction::Add { keywords, wait } => cmd::search::add(&client, keywords, wait).await,
+            SearchAction::Add {
+                keywords,
+                wait,
+                network,
+            } => cmd::search::add(&client, keywords, wait, network.into()).await,
             SearchAction::List => cmd::search::list(&client).await,
             SearchAction::Show { id } => cmd::search::show(&client, id).await,
             SearchAction::Cancel { id } => cmd::search::cancel(&client, id).await,

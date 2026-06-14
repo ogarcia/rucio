@@ -163,6 +163,7 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         rucio_core::api::downloads::DownloadPeerDetail,
         rucio_core::api::downloads::DownloadPiecesResponse,
         rucio_core::api::searches::StartSearchRequest,
+        rucio_core::api::searches::SearchNetwork,
         rucio_core::api::searches::SearchStartedResponse,
         rucio_core::api::searches::SearchState,
         rucio_core::api::searches::SearchSummary,
@@ -304,6 +305,9 @@ impl InternalResult {
 pub struct SearchRecord {
     pub id: u64,
     pub keywords: Vec<String>,
+    /// Which network(s) this search queries. Kept so a relaunch re-runs the
+    /// same legs the search was originally created with.
+    pub network: rucio_core::api::searches::SearchNetwork,
     pub cancelled: bool,
     pub kad2_done: bool,
     /// True while the Kad2 leg is queued behind another Kad search waiting for
