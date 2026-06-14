@@ -1169,6 +1169,18 @@ fn DownloadInfoOverlay(
                                     saving.set(true);
                                     spawn_local(async move {
                                         if api_rename(id, new.clone()).await {
+                                            // Reflect the new name in the list row.
+                                            // Paused (and other non-active) downloads
+                                            // aren't part of the WebSocket progress
+                                            // stream, so the row would otherwise keep
+                                            // the old name until a full refresh.
+                                            downloads.update(|list| {
+                                                if let Some(d) =
+                                                    list.iter_mut().find(|d| d.id == id)
+                                                {
+                                                    d.name = Some(new.clone());
+                                                }
+                                            });
                                             // Keep the modal open; reflect the new
                                             // name in the title and input.
                                             display_name.set(new);
