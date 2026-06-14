@@ -227,7 +227,7 @@ lower priority in upload queues and noticeably slower downloads.
 | Container (Docker/Podman) | `-p 4662:4662/tcp -p 4672:4672/udp` |
 | VPS / bare metal | `ufw allow 4672/udp && ufw allow 4662/tcp` |
 | Home router | Port-forward both ports → local IP of the server |
-| WSL2 | Port-forward from Windows + allow in Windows Firewall |
+| Windows (portable app) | Allow at the Firewall prompt + port-forward both ports |
 
 Both ports can be changed via their respective env vars or `config.toml` keys.
 When changed, update the firewall / port mapping accordingly.

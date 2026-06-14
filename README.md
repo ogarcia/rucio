@@ -76,6 +76,15 @@ ln -s /usr/local/bin/rucio /usr/local/bin/ruciod
 The release binary is the complete client with the web panel and eMule support
 built in.
 
+### Windows (portable app)
+
+Windows ships as a portable desktop app instead of a daemon + CLI. Download
+`rucio-<version>-windows-x86_64-portable.zip` from the [Releases](../../releases)
+page, extract it into a writable folder (Desktop or Documents, **not** Program
+Files) and run `Rucio.exe`. It bundles the daemon, web panel and eMule support in
+a single window, and all of its state lives next to the `.exe`. See the
+[installation guide](docs/user/01-installation.md#windows--portable-desktop-app).
+
 ### From source
 
 Requires Rust 1.85 or later (uses the 2024 edition).
@@ -95,6 +104,9 @@ for the details (the panel also needs the Leptos frontend built with `trunk`).
 
 ## Five-minute walkthrough
 
+> This walkthrough is for **Linux and macOS**. On Windows there is nothing to
+> set up — just launch `Rucio.exe` and the panel opens in its own window.
+
 **Start the daemon** (keeps running in the foreground; use a service manager or
 `tmux`/`screen` for persistent operation):
 
@@ -102,8 +114,11 @@ for the details (the panel also needs the Leptos frontend built with `trunk`).
 ruciod
 ```
 
-If your build includes the web panel, it is now at `http://127.0.0.1:3003/` —
-everything below can be done from there too.
+**Open the web panel.** If your build includes it (the release binary and
+container do), the daemon now serves the full control panel at
+**`http://127.0.0.1:3003/`** — share, search, download and watch progress from
+the browser. Everything below can be done from there too; the CLI steps that
+follow are the equivalent for scripting or headless setups.
 
 **Share a directory:**
 

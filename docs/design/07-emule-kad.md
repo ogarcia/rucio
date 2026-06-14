@@ -371,12 +371,12 @@ The Kad2 UDP socket must be **reachable from the internet** for bootstrap
 responses to arrive. Without inbound UDP reachability, bootstrap packets can
 be sent outbound but responses are blocked by NAT/firewall.
 
-| Environment | Action |
+| Environment | What to do |
 |---|---|
-| Container (Docker/Podman) | `-p 4672:4672` (maps both TCP and UDP) |
+| Container (Docker/Podman) | `-p 4662:4662/tcp -p 4672:4672/udp` |
 | VPS / bare metal | `ufw allow 4672/udp && ufw allow 4662/tcp` |
-| Home router | Port-forward `4672/udp` and `4662/tcp` → local machine IP |
-| WSL2 | Port-forward from Windows + Windows Firewall rules |
+| Home router | Port-forward both ports → local IP of the server |
+| Windows (portable app) | Allow at the Firewall prompt + port-forward both ports |
 
 Two ports must be open for full functionality:
 
@@ -384,5 +384,3 @@ Two ports must be open for full functionality:
 |---|---|---|---|---|
 | `4672` | `RUCIOD_EMULE_UDP_PORT` | `emule.udp_port` | UDP | Kad2 bootstrap and source search fail |
 | `4662` | `RUCIOD_EMULE_TCP_PORT` | `emule.tcp_port` | TCP | Node runs as Low-ID (slower downloads) |
-
-> **Container note:** `-p 4672:4672/udp -p 4662:4662/tcp`

@@ -2,12 +2,10 @@
 
 ## Requirements
 
-| Platform | Support |
-|---|---|
-| Linux (x86\_64, aarch64) | Full support |
-| macOS (Apple Silicon, Intel) | Full support |
-| Windows (WSL2) | Supported as Linux |
-| Windows native | Not supported |
+Rucio runs natively on Linux (x86\_64, aarch64), macOS (Apple Silicon, Intel)
+and Windows (x86\_64). On Linux and macOS it ships as a single daemon + CLI
+binary (Options A–D below); on Windows it ships as a portable desktop app — see
+[Windows](#windows--portable-desktop-app).
 
 Rust 1.85 or later is required if building from source (2024 edition features
 are used).
@@ -42,6 +40,32 @@ Verify the installation:
 ```sh
 rucio --version
 ```
+
+## Windows — portable desktop app
+
+Windows ships as a self-contained desktop app rather than a daemon + CLI pair.
+Download `rucio-<version>-windows-x86_64-portable.zip` from the
+[Releases](../../../releases) page and extract it into a folder you can write to
+— your Desktop or Documents, **not** Program Files. Then run `Rucio.exe`.
+
+It is the complete client in one window: the daemon, the eMule support and the
+web panel all run embedded inside a WebView2 window. There is nothing to install
+and no `ruciod` symlink to set up.
+
+The build is fully **portable** — all of its state (settings, database,
+downloads and node identity) lives in the same folder as `Rucio.exe`, not under
+`%APPDATA%`. Moving the folder moves your whole node with it; deleting the folder
+removes everything.
+
+On the first run the Windows Firewall will ask whether to allow Rucio to
+communicate on your networks:
+
+- **Allow** — full connectivity, including incoming connections (High-ID).
+- Decline — downloads still work, but the node runs as Low-ID (no incoming
+  connections).
+
+The app needs the Microsoft Edge **WebView2** runtime, which is preinstalled on
+Windows 10 and 11.
 
 ## Option B — Build from source
 
@@ -364,6 +388,10 @@ Run `rucio config show` at any time to see the actual paths in use.
 | Downloads | `$XDG_DOWNLOAD_DIR/rucio` or `~/Downloads/rucio` | `~/Downloads/rucio` |
 | Temp (parts) | `~/.cache/rucio/tmp` | `~/Library/Caches/rucio/tmp` |
 | eMule nodes.dat | `~/.local/share/rucio/nodes.dat` | `~/Library/Application Support/rucio/nodes.dat` |
+
+> **Windows (portable app):** the paths above do not apply — every file
+> (config, identity, database, downloads, parts, `nodes.dat`) lives next to
+> `Rucio.exe` in the folder you extracted, not under `%APPDATA%`.
 
 > **Note:** the database schema is volatile before a stable release.
 > If Rucio refuses to start after an upgrade, delete the database file and
