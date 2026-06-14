@@ -770,25 +770,39 @@ fn DownloadRow(
     // while still locating peers. Empty string = nothing to show (hidden).
     let live_info = move || -> String {
         with_row(&|d| {
-            if let Some(bps) = d.speed_bps.filter(|&b| b > 0) {
-                let mut s = format_speed(bps);
-                if let Some(eta) = d.eta_secs.filter(|&e| e > 0) {
-                    s.push_str(" · ");
-                    s.push_str(&format_eta(eta));
+            // Strictly state-driven: a paused row (or one mid-pause, before the
+            // engine clears its live stats) can still carry a stale speed/rank
+            // from the last sample, so each figure is shown only for the state it
+            // belongs to — never for paused or terminal downloads.
+            match d.state {
+                DownloadState::Downloading => {
+                    if let Some(bps) = d.speed_bps.filter(|&b| b > 0) {
+                        let mut s = format_speed(bps);
+                        if let Some(eta) = d.eta_secs.filter(|&e| e > 0) {
+                            s.push_str(" · ");
+                            s.push_str(&format_eta(eta));
+                        }
+                        return s;
+                    }
+                    String::new()
                 }
-                return s;
+                DownloadState::Queued => {
+                    if let Some(rank) = d.best_queue_rank {
+                        return format!("Queue #{rank}");
+                    }
+                    if let Some(n) = d.sources_total.filter(|&n| n > 0) {
+                        return format!("{n} source{}", if n == 1 { "" } else { "s" });
+                    }
+                    String::new()
+                }
+                DownloadState::FindingProviders | DownloadState::Stalled => {
+                    if let Some(n) = d.sources_total.filter(|&n| n > 0) {
+                        return format!("{n} source{}", if n == 1 { "" } else { "s" });
+                    }
+                    String::new()
+                }
+                _ => String::new(),
             }
-            if let Some(rank) = d.best_queue_rank {
-                return format!("Queue #{rank}");
-            }
-            if matches!(
-                d.state,
-                DownloadState::FindingProviders | DownloadState::Queued | DownloadState::Stalled
-            ) && let Some(n) = d.sources_total.filter(|&n| n > 0)
-            {
-                return format!("{n} source{}", if n == 1 { "" } else { "s" });
-            }
-            String::new()
         })
     };
 
