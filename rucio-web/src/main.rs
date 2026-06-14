@@ -124,9 +124,10 @@ fn put_limits(upload_kbps: u64, download_kbps: u64) {
 // stream doesn't carry. WASM is single-threaded so a plain Cell/RefCell is fine.
 //
 // REFRESH_IN_FLIGHT prevents stacking refreshes when the GET round-trip outlasts
-// the 1 s WS tick.  REFRESHED_IDS keeps a per-id "already refreshed" mark so a
-// single download cannot trigger the refresh more than once: by the time a
-// refreshed id matters again it would already be in a non-streamed state.
+// the 1 s WS tick.  REFRESHED_IDS keeps a per-id "already refreshed" mark so one
+// stream-exit triggers at most one refresh; the mark is cleared when the id
+// reappears in the stream (e.g. a resumed download), so a later exit refreshes
+// again.
 thread_local! {
     static REFRESH_IN_FLIGHT: Cell<bool> = const { Cell::new(false) };
     static REFRESHED_IDS: RefCell<HashSet<i64>> = RefCell::new(HashSet::new());
@@ -343,6 +344,17 @@ fn handle_event(
             // The daemon only streams *active* downloads. Merge into the existing
             // list so completed/paused/cancelled rows don't disappear.
             let incoming: HashSet<i64> = list.iter().map(|d| d.id).collect();
+
+            // A download present in the stream is live again, so drop its
+            // "already refreshed" mark. Without this, a download that left the
+            // stream once (e.g. paused → refreshed) and then came back (resumed)
+            // would keep its mark forever, so its eventual completion would be
+            // skipped by the guard below and the row would stay stuck at its last
+            // streamed state (e.g. Downloading 100%) instead of flipping to
+            // Completed.
+            if !incoming.is_empty() {
+                REFRESHED_IDS.with(|s| s.borrow_mut().retain(|id| !incoming.contains(id)));
+            }
 
             // Find downloads we still track as active but the stream omitted,
             // skipping any id we've already refreshed once.
