@@ -31,12 +31,18 @@ pub struct DownloadLiveStats {
     pub in_flight_pieces: Vec<u32>,
     /// Smoothed download speed in bytes per second (filled by the sampler).
     pub speed_bps: u64,
-    /// Live byte count including bytes from in-flight (not-yet-complete)
-    /// slices. `None` until the engine publishes one; the WS/API then fall
-    /// back to the persisted (complete-slices-only) count. Reporting this as
-    /// the single source of progress avoids the value oscillating between the
-    /// live (with partials) and persisted (without) figures.
+    /// Progress byte count — **confirmed/complete slices only**, monotonic.
+    /// `None` until the engine publishes one; the WS/API then fall back to the
+    /// persisted count. Used for the progress bar: never includes in-flight
+    /// partials, so a slice that fails and is re-fetched can't make the
+    /// percentage go backwards.
     pub bytes_done: Option<u64>,
+    /// Partial-aware live byte count (confirmed slices **plus** the bytes of
+    /// in-flight slices). `None` → fall back to `bytes_done`. Used only to
+    /// derive a smooth download speed; for eMule `bytes_done` jumps a whole
+    /// slice at a time, which would make the speed lurch, so the sampler reads
+    /// this instead.
+    pub received_live: Option<u64>,
     /// Per-peer breakdown of the sources we are downloading from (libp2p only).
     /// Empty for eMule downloads and for downloads with no active sources.
     pub peers: Vec<rucio_core::api::downloads::DownloadPeerDetail>,

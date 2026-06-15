@@ -1000,6 +1000,7 @@ pub async fn run_ed2k_download(
             let pub_done = done_vec.clone();
             let pub_ls = live_stats.clone();
             let pub_qranks = queue_ranks.clone();
+            let pub_progress = progress.clone();
             let pub_key = live_key;
             let total = num_slices;
             let pub_file_size = link.size;
@@ -1031,6 +1032,10 @@ pub async fn run_ed2k_download(
                             (s + CHUNK_SIZE as u64).min(pub_file_size) - s
                         })
                         .sum();
+                    // Partial-aware live byte count (confirmed slices + in-flight
+                    // partials) — used only to derive a smooth speed, never for
+                    // the progress bar.
+                    let received_live = pub_progress.lock().unwrap().total;
                     let (queued_sources, best_rank) = {
                         let qr = pub_qranks.lock().unwrap();
                         (qr.len() as u32, qr.values().copied().min())
@@ -1043,6 +1048,9 @@ pub async fn run_ed2k_download(
                             // partials — so the bar never retreats when a slice
                             // fails and is retried.
                             e.bytes_done = Some(confirmed_bytes);
+                            // Speed is derived from this partial-aware figure so it
+                            // stays smooth instead of lurching one slice at a time.
+                            e.received_live = Some(received_live);
                             e.queued_sources = queued_sources;
                             e.best_queue_rank = best_rank;
                         }

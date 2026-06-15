@@ -1562,7 +1562,13 @@ async fn sample_download_speeds(
     // at a time and would make the speed lurch.
     let snapshot: Vec<(i64, Option<u64>)> = {
         let g = live_stats.read().await;
-        g.iter().map(|(k, v)| (*k, v.bytes_done)).collect()
+        // Speed is derived from the partial-aware live count when present
+        // (eMule), falling back to bytes_done otherwise (libp2p, or before the
+        // first publish). bytes_done alone is confirmed-slices-only and would
+        // make eMule speed lurch one whole slice at a time.
+        g.iter()
+            .map(|(k, v)| (*k, v.received_live.or(v.bytes_done)))
+            .collect()
     };
     if snapshot.is_empty() {
         samples.clear();
