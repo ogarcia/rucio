@@ -669,6 +669,20 @@ pub async fn run_ed2k_download(
     // before any data is accepted.
     let single_part = num_slices <= 1;
 
+    // Per-part MD4 hashes used to verify each downloaded slice. For a
+    // single-part file the ed2k hash itself is the only part hash; for a
+    // multi-part file we start empty and the first source that returns a
+    // hashset reproducing the ed2k root (verified with `verify_part_hashes`)
+    // fills it. Held for the whole download — not per round — so once any
+    // source has provided it we never ask again, even across reconnects and
+    // fresh source searches. Shared so every worker verifies against the same
+    // trusted set.
+    let part_hashes: Arc<Mutex<Option<Vec<[u8; 16]>>>> = Arc::new(Mutex::new(if single_part {
+        Some(vec![*link.hash.as_bytes()])
+    } else {
+        None
+    }));
+
     // Live-stats map key: eMule downloads use negative ids (see the API).
     let live_key = -download_id;
 
@@ -919,18 +933,6 @@ pub async fn run_ed2k_download(
 
         let work_queue = Arc::new(Mutex::new(remaining));
         let done_vec = Arc::new(Mutex::new(done_slices));
-
-        // Per-part MD4 hashes used to verify each downloaded slice. For a
-        // single-part file the ed2k hash itself is the only part hash; for a
-        // multi-part file we start empty and the first source that returns a
-        // hashset reproducing the ed2k root (verified with `verify_part_hashes`)
-        // fills it for the whole round. Shared so every worker verifies against
-        // the same trusted set.
-        let part_hashes: Arc<Mutex<Option<Vec<[u8; 16]>>>> = Arc::new(Mutex::new(if single_part {
-            Some(vec![*link.hash.as_bytes()])
-        } else {
-            None
-        }));
 
         // Coherent, shared progress across workers (see ProgressState). Seeded
         // from the slices already on disk so the running total starts correct.
