@@ -732,6 +732,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                 let dt = Arc::clone(&download_throttle);
                 let reg = emule_cancel.clone();
                 let notif = notifier.clone();
+                let node_tx = handle.cmd_tx.clone();
                 tokio::spawn(async move {
                     if let Err(e) = crate::emule::run_ed2k_download(
                         &row.ed2k_link,
@@ -745,6 +746,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                         &met,
                         &dt,
                         &notif,
+                        node_tx,
                         cancel,
                         reg,
                     )
@@ -1198,10 +1200,12 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                                             let dt = Arc::clone(&download_throttle);
                                             let reg = emule_cancel.clone();
                                             let notif = notifier.clone();
+                                            let node_tx = handle.cmd_tx.clone();
                                             tokio::spawn(async move {
                                                 if let Err(e) = crate::emule::run_ed2k_download(
                                                     &link, download_id, &config, &db, &kad, &ad,
-                                                    &slots, &ls, &met, &dt, &notif, cancel, reg,
+                                                    &slots, &ls, &met, &dt, &notif, node_tx, cancel,
+                                                    reg,
                                                 )
                                                 .await
                                                 {

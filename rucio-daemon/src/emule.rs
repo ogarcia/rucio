@@ -615,6 +615,7 @@ pub async fn run_ed2k_download(
     metrics: &Arc<crate::metrics::Metrics>,
     download_throttle: &Arc<crate::throttle::TokenBucket>,
     notifier: &crate::notifier::Notifier,
+    node_tx: tokio::sync::mpsc::Sender<crate::node::messages::NodeCmd>,
     cancel: Arc<AtomicBool>,
     cancel_registry: EmuleCancelRegistry,
 ) -> Result<()> {
@@ -1596,41 +1597,40 @@ pub async fn run_ed2k_download(
     // Clean up progress file.
     let _ = tokio::fs::remove_file(&met_path).await;
 
-    // Single pass over the finished file: BLAKE3 (rucio identity) and the ed2k
-    // per-chunk MD4 hashes (for the Kad hashset we serve) in the same read, so
-    // large files are not read twice.
+    // Single pass over the finished file to compute the ed2k per-chunk MD4
+    // hashes (for the Kad hashset we serve to eMule peers). The Rucio identity
+    // is *not* a flat BLAKE3 of the file — it is the canonical merkle-flat root
+    // hash, computed separately by `index_file` below — so we no longer hash
+    // BLAKE3 here.
     let path_clone = final_path.clone();
-    let (blake3_hex, chunk_hashes) =
-        tokio::task::spawn_blocking(move || -> anyhow::Result<(String, Vec<[u8; 16]>)> {
-            use md4::{Digest, Md4};
-            use std::io::Read;
-            let mut file = std::fs::File::open(&path_clone)?;
-            let mut hasher = blake3::Hasher::new();
-            let mut chunk_hashes: Vec<[u8; 16]> = Vec::new();
-            let mut buf = vec![0u8; CHUNK_SIZE];
-            loop {
-                // Fill a full CHUNK_SIZE block (or up to EOF).
-                let mut filled = 0usize;
-                while filled < CHUNK_SIZE {
-                    match file.read(&mut buf[filled..])? {
-                        0 => break,
-                        n => filled += n,
-                    }
-                }
-                if filled == 0 {
-                    break;
-                }
-                hasher.update(&buf[..filled]);
-                chunk_hashes.push(Md4::digest(&buf[..filled]).into());
-                if filled < CHUNK_SIZE {
-                    break;
+    let chunk_hashes = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<[u8; 16]>> {
+        use md4::{Digest, Md4};
+        use std::io::Read;
+        let mut file = std::fs::File::open(&path_clone)?;
+        let mut chunk_hashes: Vec<[u8; 16]> = Vec::new();
+        let mut buf = vec![0u8; CHUNK_SIZE];
+        loop {
+            // Fill a full CHUNK_SIZE block (or up to EOF).
+            let mut filled = 0usize;
+            while filled < CHUNK_SIZE {
+                match file.read(&mut buf[filled..])? {
+                    0 => break,
+                    n => filled += n,
                 }
             }
-            Ok((hasher.finalize().to_hex().to_string(), chunk_hashes))
-        })
-        .await
-        .context("spawn_blocking for file hashing")?
-        .with_context(|| format!("hashing {}", final_path.display()))?;
+            if filled == 0 {
+                break;
+            }
+            chunk_hashes.push(Md4::digest(&buf[..filled]).into());
+            if filled < CHUNK_SIZE {
+                break;
+            }
+        }
+        Ok(chunk_hashes)
+    })
+    .await
+    .context("spawn_blocking for ed2k chunk hashing")?
+    .with_context(|| format!("hashing {}", final_path.display()))?;
 
     // ed2k hashset to serve on OP_HASHSETREQUEST (empty for single-part files or
     // if no convention reproduces the known ed2k hash — then we serve none).
@@ -1643,17 +1643,42 @@ pub async fn run_ed2k_download(
     )
     .await;
 
-    info!(dl = download_id,
-        blake3 = %blake3_hex,
-        "eMule download complete — file ready in download directory"
-    );
+    // Index the finished file into the Rucio share so it is announced to the
+    // libp2p DHT immediately (rather than only after a restart's reconcile sees
+    // it as "added"). This re-reads the file to compute the canonical
+    // merkle-flat root hash — the real Rucio id — which we then report.
+    let rucio_root_hex = match crate::api::shares::index_file(db, &final_path).await {
+        Ok(root_hash) => {
+            // Announce to the DHT so the file is shared in real time.
+            let _ = node_tx
+                .send(crate::node::messages::NodeCmd::StartProviding(
+                    root_hash.to_vec(),
+                ))
+                .await;
+            let hex = hex::encode(root_hash);
+            info!(
+                dl = download_id,
+                root_hash = %hex,
+                "eMule download complete — indexed and sharing on Rucio"
+            );
+            Some(hex)
+        }
+        Err(e) => {
+            warn!(
+                dl = download_id,
+                error = %e,
+                "Failed to index completed download into Rucio share"
+            );
+            None
+        }
+    };
 
     notifier
         .notify(
             rucio_core::api::notifications::NotificationKind::Download,
             "Download complete",
             final_name.clone(),
-            Some(blake3_hex.clone()),
+            rucio_root_hex,
         )
         .await;
 
