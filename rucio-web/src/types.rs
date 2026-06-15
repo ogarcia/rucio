@@ -508,13 +508,13 @@ pub struct ApiConfig {
 pub struct NetworkConfig {
     pub bootstrap_peers: Vec<String>,
     #[serde(default)]
-    pub upload_limit_kbps: u64,
-    #[serde(default)]
     pub download_limit_kbps: u64,
     #[serde(default)]
-    pub temp_upload_limit_kbps: u64,
+    pub upload_limit_kbps: u64,
     #[serde(default)]
     pub temp_download_limit_kbps: u64,
+    #[serde(default)]
+    pub temp_upload_limit_kbps: u64,
     #[serde(default)]
     pub max_upload_tasks: usize,
     #[serde(default)]

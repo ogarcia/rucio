@@ -140,21 +140,22 @@ pub struct NetworkConfig {
     /// the `external_ip` field in `/api/v1/status` will always be `null`.
     #[serde(default = "NetworkConfig::default_upnp")]
     pub upnp: bool,
+    /// Download bandwidth limit in KB/s.  0 = unlimited (default).
+    /// Listed before upload because most people think download-first.
+    #[serde(default)]
+    pub download_limit_kbps: u64,
     /// Upload bandwidth limit in KB/s.  0 = unlimited (default).
     #[serde(default)]
     pub upload_limit_kbps: u64,
-    /// Download bandwidth limit in KB/s.  0 = unlimited (default).
-    #[serde(default)]
-    pub download_limit_kbps: u64,
-    /// Upload cap in KB/s applied while the temporary speed limit is engaged.
+    /// Download cap in KB/s applied while the temporary speed limit is engaged.
     /// This is only the preset value; the toggle itself is runtime state and
     /// does not persist.  Default: 5120 (= 5.0 MB/s).
     #[serde(default = "NetworkConfig::default_temp_limit")]
-    pub temp_upload_limit_kbps: u64,
-    /// Download cap in KB/s applied while the temporary speed limit is engaged.
+    pub temp_download_limit_kbps: u64,
+    /// Upload cap in KB/s applied while the temporary speed limit is engaged.
     /// Default: 5120 (= 5.0 MB/s).
     #[serde(default = "NetworkConfig::default_temp_limit")]
-    pub temp_download_limit_kbps: u64,
+    pub temp_upload_limit_kbps: u64,
     /// Maximum number of concurrent chunk-upload tasks.
     ///
     /// Each inbound chunk request spawns an async task that reads from disk
@@ -193,10 +194,10 @@ impl Default for NetworkConfig {
         Self {
             bootstrap_peers: vec![],
             upnp: Self::default_upnp(),
-            upload_limit_kbps: 0,
             download_limit_kbps: 0,
-            temp_upload_limit_kbps: Self::default_temp_limit(),
+            upload_limit_kbps: 0,
             temp_download_limit_kbps: Self::default_temp_limit(),
+            temp_upload_limit_kbps: Self::default_temp_limit(),
             max_upload_tasks: Self::default_max_upload_tasks(),
             exclusive_bootstrap: false,
         }

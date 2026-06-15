@@ -112,20 +112,6 @@ rucio config set network.upnp false
 
 ---
 
-### `network.upload_limit_kbps`
-
-Maximum upload bandwidth used for serving file chunks to other peers,
-in kilobytes per second. Set to `0` for unlimited.
-
-```sh
-rucio config set network.upload_limit_kbps 500    # 500 KB/s cap
-rucio config set network.upload_limit_kbps 0      # unlimited
-```
-
-**Default:** `0` (unlimited)
-
----
-
 ### `network.download_limit_kbps`
 
 Maximum download bandwidth used when fetching file chunks, in kilobytes per
@@ -134,6 +120,20 @@ second. Set to `0` for unlimited.
 ```sh
 rucio config set network.download_limit_kbps 2000   # 2 MB/s cap
 rucio config set network.download_limit_kbps 0      # unlimited
+```
+
+**Default:** `0` (unlimited)
+
+---
+
+### `network.upload_limit_kbps`
+
+Maximum upload bandwidth used for serving file chunks to other peers,
+in kilobytes per second. Set to `0` for unlimited.
+
+```sh
+rucio config set network.upload_limit_kbps 500    # 500 KB/s cap
+rucio config set network.upload_limit_kbps 0      # unlimited
 ```
 
 **Default:** `0` (unlimited)
@@ -430,10 +430,12 @@ listen = "127.0.0.1:3003"
 # token = "secret"               # enable API auth (disabled by default)
 
 [network]
-upnp                 = true
-upload_limit_kbps    = 0         # 0 = unlimited
-download_limit_kbps  = 0         # 0 = unlimited
-max_upload_tasks     = 64        # concurrent chunk-upload tasks
+upnp                     = true
+download_limit_kbps      = 0      # 0 = unlimited
+upload_limit_kbps        = 0      # 0 = unlimited
+temp_download_limit_kbps = 5120   # cap while the temporary limit is engaged (5 MB/s)
+temp_upload_limit_kbps   = 5120   # cap while the temporary limit is engaged (5 MB/s)
+max_upload_tasks         = 64     # concurrent chunk-upload tasks
 bootstrap_peers = [
   "/ip4/203.0.113.1/tcp/4321/p2p/12D3KooWXXX...",
 ]
@@ -478,8 +480,10 @@ the file value untouched.
 | `RUCIOD_PIN_DIR` | `storage.pin_dir` | platform default | path |
 | `RUCIOD_DB_PATH` | `storage.database_path` | platform default | path |
 | `RUCIOD_BOOTSTRAP_PEERS` | `network.bootstrap_peers` | *(empty)* | comma-separated multiaddrs |
-| `RUCIOD_UPLOAD_LIMIT_KBPS` | `network.upload_limit_kbps` | `0` (unlimited) | integer KB/s |
 | `RUCIOD_DOWNLOAD_LIMIT_KBPS` | `network.download_limit_kbps` | `0` (unlimited) | integer KB/s |
+| `RUCIOD_UPLOAD_LIMIT_KBPS` | `network.upload_limit_kbps` | `0` (unlimited) | integer KB/s |
+| `RUCIOD_TEMP_DOWNLOAD_LIMIT_KBPS` | `network.temp_download_limit_kbps` | `5120` (5 MB/s) | integer KB/s |
+| `RUCIOD_TEMP_UPLOAD_LIMIT_KBPS` | `network.temp_upload_limit_kbps` | `5120` (5 MB/s) | integer KB/s |
 | `RUCIOD_MAX_UPLOAD_TASKS` | `network.max_upload_tasks` | `64` | integer ≥1 |
 | `RUCIOD_UPNP` | `network.upnp` | `true` | `true`/`false` (also `1`/`0`, `yes`/`no`, `on`/`off`) |
 | `RUCIOD_NODES_DAT` | `storage.nodes_dat_path` | *(unset)* | path |
