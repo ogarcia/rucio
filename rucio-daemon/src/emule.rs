@@ -1094,6 +1094,7 @@ pub async fn run_ed2k_download(
                         our_user_hash,
                         our_nick: nick_w.clone(),
                         min_speed_bytes_per_sec: min_speed,
+                        download_id,
                     };
 
                     // Connect once: HELLO + file request + upload-slot wait.

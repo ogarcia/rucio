@@ -445,6 +445,10 @@ pub struct DownloadOptions {
     /// Minimum sustained transfer rate (bytes/sec) below which a source is
     /// abandoned mid-slice via [`SlowPeer`]. `0` disables the check.
     pub min_speed_bytes_per_sec: u64,
+    /// Download id this session belongs to, used only to tag log lines (e.g.
+    /// the end-of-session transfer summary) so they correlate with the daemon's
+    /// per-download logs. `0` when not driven by the daemon.
+    pub download_id: i64,
 }
 
 impl Default for DownloadOptions {
@@ -461,6 +465,7 @@ impl Default for DownloadOptions {
             our_user_hash: [0u8; 16],
             our_nick: String::new(),
             min_speed_bytes_per_sec: 0,
+            download_id: 0,
         }
     }
 }
@@ -490,6 +495,8 @@ pub enum DownloadEvent {
 pub struct Session {
     /// Peer address, kept for contextual logging.
     peer: SocketAddrV4,
+    /// Download id this session serves, for log correlation only.
+    download_id: i64,
     stream: TcpStream,
     op_timeout: Duration,
     hash: Ed2kHash,
@@ -526,6 +533,7 @@ impl Drop for Session {
         let compressed_pct = self.compressed_file_bytes as f64 / file_bytes as f64 * 100.0;
         let saved_pct = saved as f64 / file_bytes as f64 * 100.0;
         info!(
+            dl = self.download_id,
             peer = %self.peer,
             "eMule transfer summary: {:.1} MiB received, {:.0}% compressed, {:.1} MiB saved on the wire ({:.1}%)",
             to_mib(file_bytes),
@@ -598,6 +606,7 @@ impl Session {
 
         Ok(Self {
             peer,
+            download_id: opts.download_id,
             stream,
             op_timeout: opts.op_timeout,
             hash: opts.hash,
@@ -670,6 +679,7 @@ impl Session {
 
         Ok(Self {
             peer,
+            download_id: opts.download_id,
             stream,
             op_timeout: opts.op_timeout,
             hash: opts.hash,
