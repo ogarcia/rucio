@@ -294,6 +294,39 @@ async fn write_frame_proto(
     stream.write_all(&msg).await
 }
 
+/// Parse an OP_HASHSETANSWER payload (file_hash[16] + count(u16 LE) +
+/// part_hash[16]*count). Returns None if malformed or for a different file.
+fn parse_hashset_answer(payload: &[u8], file_hash: &[u8]) -> Option<Vec<[u8; 16]>> {
+    if payload.len() < 18 {
+        debug!(
+            "OP_HASHSETANSWER too short ({} bytes); skipping",
+            payload.len()
+        );
+        return None;
+    }
+    if &payload[..16] != file_hash {
+        debug!("OP_HASHSETANSWER for a different file hash; skipping");
+        return None;
+    }
+    let count = u16::from_le_bytes([payload[16], payload[17]]) as usize;
+    let expected = 18 + count * 16;
+    if payload.len() < expected {
+        debug!(
+            "OP_HASHSETANSWER truncated: {count} part hashes need {expected} bytes, got {}; skipping",
+            payload.len()
+        );
+        return None;
+    }
+    let mut parts = Vec::with_capacity(count);
+    for i in 0..count {
+        let off = 18 + i * 16;
+        let mut h = [0u8; 16];
+        h.copy_from_slice(&payload[off..off + 16]);
+        parts.push(h);
+    }
+    Some(parts)
+}
+
 // ── HELLO packet ─────────────────────────────────────────────────────────────
 
 /// Build a HELLO / HELLOANSWER payload advertising ourselves.
@@ -497,11 +530,24 @@ impl Default for DownloadOptions {
 #[derive(Debug)]
 pub enum DownloadEvent {
     Connected,
-    Queued { rank: u32 },
+    Queued {
+        rank: u32,
+    },
     Started,
-    Progress { bytes_received: u64, total: u64 },
-    ChunkVerified { part_index: usize },
-    ChunkFailed { part_index: usize },
+    Progress {
+        bytes_received: u64,
+        total: u64,
+    },
+    ChunkVerified {
+        part_index: usize,
+    },
+    ChunkFailed {
+        part_index: usize,
+    },
+    /// The peer returned the per-part MD4 hashset during the handshake (before
+    /// the upload slot). Carries the parsed part hashes; the caller verifies
+    /// them against the ed2k root before trusting them.
+    Hashset(Vec<[u8; 16]>),
     Done,
 }
 
@@ -828,6 +874,35 @@ impl Session {
             }
         }
 
+        // ── HASHSET ──────────────────────────────────────────────────────────
+        // eMule requests the MD4 hashset here — after the file-request answer,
+        // before STARTUPLOADREQ — and the peer serves it without an upload slot.
+        // Emitting it as an event means we capture it even from peers that go on
+        // to queue us (so connect() later returns Err): the daemon already has the
+        // hashset by then. Single-part files have no hashset (ed2k hash == part).
+        const ED2K_PART_SIZE: u64 = 9_728_000;
+        if opts.file_size > ED2K_PART_SIZE {
+            write_frame(stream, ciphers, OP_HASHSETREQUEST, opts.hash.as_bytes())
+                .await
+                .context("send OP_HASHSETREQUEST")?;
+            for _ in 0..16 {
+                let (_p, opcode, payload) =
+                    match timeout(opts.op_timeout, read_frame(stream, ciphers)).await {
+                        Ok(Ok(f)) => f,
+                        // Timeout or read error: don't fail the handshake — the peer
+                        // is still a usable source once another supplies the hashset.
+                        _ => break,
+                    };
+                if opcode == OP_HASHSETANSWER {
+                    if let Some(parts) = parse_hashset_answer(&payload, opts.hash.as_bytes()) {
+                        on_event(DownloadEvent::Hashset(parts));
+                    }
+                    break;
+                }
+                // skip unrelated interleaved opcode and keep scanning
+            }
+        }
+
         // ── STARTUPLOAD_REQ ──────────────────────────────────────────────────
         write_frame(stream, ciphers, OP_STARTUPLOAD_REQ, opts.hash.as_bytes())
             .await
@@ -898,38 +973,12 @@ impl Session {
                 debug!("skipping opcode 0x{opcode:02x} while waiting for hashset");
                 continue;
             }
-            // Layout: file_hash(16) + count(u16 LE) + part_hash(16)*count.
             // A malformed or wrong-file answer must not abort the whole
             // exchange: the real hashset may still arrive in a later frame, so
             // we skip the bad one and keep scanning.
-            if payload.len() < 18 {
-                debug!(
-                    "OP_HASHSETANSWER too short ({} bytes); skipping",
-                    payload.len()
-                );
-                continue;
+            if let Some(parts) = parse_hashset_answer(&payload, self.hash.as_bytes()) {
+                return Ok(parts);
             }
-            if &payload[..16] != self.hash.as_bytes() {
-                debug!("OP_HASHSETANSWER for a different file hash; skipping");
-                continue;
-            }
-            let count = u16::from_le_bytes([payload[16], payload[17]]) as usize;
-            let expected = 18 + count * 16;
-            if payload.len() < expected {
-                debug!(
-                    "OP_HASHSETANSWER truncated: {count} part hashes need {expected} bytes, got {}; skipping",
-                    payload.len()
-                );
-                continue;
-            }
-            let mut parts = Vec::with_capacity(count);
-            for i in 0..count {
-                let off = 18 + i * 16;
-                let mut h = [0u8; 16];
-                h.copy_from_slice(&payload[off..off + 16]);
-                parts.push(h);
-            }
-            return Ok(parts);
         }
         bail!("peer did not return a hashset")
     }

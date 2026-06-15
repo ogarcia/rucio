@@ -1163,6 +1163,10 @@ pub async fn run_ed2k_download(
                     // twice per attempt — plain then the obfuscated retry), so
                     // they stay at debug; only an actual transfer start is info.
                     let qr_cb = qranks.clone();
+                    // Separate handle for the handshake hashset event: the closure
+                    // is `move`, but `part_hashes_w` is still needed by the
+                    // post-slot fallback below.
+                    let ph_cb = part_hashes_w.clone();
                     let mut on_connect = move |ev: DownloadEvent| match ev {
                         DownloadEvent::Connected => {
                             debug!(dl = download_id, %peer, "Connected to eMule peer")
@@ -1176,6 +1180,19 @@ pub async fn run_ed2k_download(
                         DownloadEvent::Started => {
                             qr_cb.lock().unwrap().remove(&peer);
                             debug!(dl = download_id, %peer, "Peer granted upload slot")
+                        }
+                        DownloadEvent::Hashset(hs) => {
+                            if hs.len() >= num_slices
+                                && rucio_emule::ed2k::verify_part_hashes(&hs, &hash)
+                            {
+                                let mut g = ph_cb.lock().unwrap();
+                                if g.is_none() {
+                                    *g = Some(hs);
+                                    info!(dl = download_id, %peer, "Obtained and verified ed2k hashset (handshake)");
+                                }
+                            } else {
+                                debug!(dl = download_id, %peer, got = hs.len(), need = num_slices, "Handshake hashset short or failed verification");
+                            }
                         }
                         _ => {}
                     };
