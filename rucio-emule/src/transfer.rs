@@ -882,9 +882,11 @@ impl Session {
         .context("send OP_HASHSETREQUEST")?;
 
         // Read frames until the hashset answer arrives, skipping any unrelated
-        // opcode the peer interleaves. Bounded so a peer that never answers does
-        // not hang us — it just yields no hashset and the caller moves on.
-        for _ in 0..8 {
+        // opcode the peer interleaves. A peer can emit a fair amount of chatter
+        // after granting an upload slot (FILESTATUS, queue ranking, …) before
+        // the hashset, so the budget is generous; it only guards against a peer
+        // that never answers, in which case the caller just moves on.
+        for _ in 0..32 {
             let (_proto, opcode, payload) = timeout(
                 self.op_timeout,
                 read_frame(&mut self.stream, &mut self.ciphers),
@@ -897,20 +899,28 @@ impl Session {
                 continue;
             }
             // Layout: file_hash(16) + count(u16 LE) + part_hash(16)*count.
+            // A malformed or wrong-file answer must not abort the whole
+            // exchange: the real hashset may still arrive in a later frame, so
+            // we skip the bad one and keep scanning.
             if payload.len() < 18 {
-                bail!("OP_HASHSETANSWER too short ({} bytes)", payload.len());
+                debug!(
+                    "OP_HASHSETANSWER too short ({} bytes); skipping",
+                    payload.len()
+                );
+                continue;
             }
             if &payload[..16] != self.hash.as_bytes() {
-                bail!("OP_HASHSETANSWER for a different file hash");
+                debug!("OP_HASHSETANSWER for a different file hash; skipping");
+                continue;
             }
             let count = u16::from_le_bytes([payload[16], payload[17]]) as usize;
             let expected = 18 + count * 16;
             if payload.len() < expected {
-                bail!(
-                    "OP_HASHSETANSWER truncated: {} part hashes need {expected} bytes, got {}",
-                    count,
+                debug!(
+                    "OP_HASHSETANSWER truncated: {count} part hashes need {expected} bytes, got {}; skipping",
                     payload.len()
                 );
+                continue;
             }
             let mut parts = Vec::with_capacity(count);
             for i in 0..count {

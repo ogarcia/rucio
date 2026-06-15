@@ -1199,8 +1199,11 @@ pub async fn run_ed2k_download(
                                 }
                                 info!(dl = download_id, %peer, "Obtained and verified ed2k hashset");
                             }
+                            Ok(hs) if hs.len() < num_slices => {
+                                debug!(dl = download_id, %peer, got = hs.len(), need = num_slices, "Peer returned a short hashset")
+                            }
                             Ok(_) => {
-                                debug!(dl = download_id, %peer, "Peer returned an invalid/short hashset")
+                                debug!(dl = download_id, %peer, "Peer's hashset failed ed2k verification")
                             }
                             Err(e) => {
                                 debug!(dl = download_id, %peer, error = %e, "Hashset request failed")
