@@ -1087,6 +1087,25 @@ pub async fn run_ed2k_download(
             valid_sources.into_iter().map(|s| (s, 0)).collect(),
         ));
 
+        // Pre-create the part file once, before spawning workers, so a worker
+        // never needs `create(true)`. tokio runs each file open/write on a
+        // blocking thread that `abort_all` cannot cancel, so a worker's open
+        // could otherwise complete *after* a cancel cleanup unlinked the file
+        // and recreate it as an orphan. With no `create` in the workers, a late
+        // open simply fails (ENOENT) instead of resurrecting the .part.
+        if let Some(parent) = part_path.parent() {
+            let _ = tokio::fs::create_dir_all(parent).await;
+        }
+        if let Err(e) = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&part_path)
+            .await
+        {
+            warn!(dl = download_id, error = %e, "Failed to pre-create part file");
+        }
+
         for _ in 0..max_workers {
             let work = work_queue.clone();
             let done = done_vec.clone();
@@ -1233,20 +1252,22 @@ pub async fn run_ed2k_download(
                                 None => break 'sources, // all slices taken — worker done
                             };
 
-                        // Open the part file. `download_range` seeks to each
-                        // block's absolute offset as it writes, so no initial
-                        // positioning is needed here.
+                        // Open the part file for writing. It is pre-created once
+                        // before workers spawn, so we deliberately do NOT pass
+                        // `create(true)`: if a cancel cleanup has unlinked it,
+                        // this open fails instead of resurrecting an orphan .part
+                        // from a blocking op that outlived `abort_all`.
+                        // `download_range` seeks to each block's absolute offset
+                        // as it writes, so no initial positioning is needed here.
                         let mut file = match tokio::fs::OpenOptions::new()
                             .write(true)
-                            .create(true)
-                            .truncate(false)
                             .open(&part)
                             .await
                         {
                             Ok(f) => f,
                             Err(e) => {
-                                // Filesystem error, not the peer's fault — return
-                                // the slice and stop this worker.
+                                // File gone (cancelled) or a real FS error — either
+                                // way return the slice and stop this worker.
                                 warn!(dl = download_id, %peer, slice = slice_idx, error = %e, "Failed to open part file");
                                 work.lock().unwrap().push_front((slice_idx, slice_start, slice_end));
                                 break 'sources;
