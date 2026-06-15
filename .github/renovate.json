@@ -27,7 +27,10 @@
     {
       "customType": "regex",
       "description": "Keep the trunk version pinned in the Containerfile and container.yml current.",
-      "fileMatch": ["(^|/)Containerfile$", "^\\.github/workflows/container\\.yml$"],
+      "managerFilePatterns": [
+        "/(^|/)Containerfile$/",
+        "/^\\.github/workflows/container\\.yml$/"
+      ],
       "matchStrings": ["TRUNK_VERSION[=:]\\s*\"?(?<currentValue>[0-9][0-9.]*)\"?"],
       "datasourceTemplate": "github-releases",
       "depNameTemplate": "trunk-rs/trunk",
