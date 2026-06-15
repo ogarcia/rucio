@@ -960,6 +960,15 @@ impl Session {
         let mut current_part_start = start;
         let mut batch_end = (start + 3 * PART_WINDOW).min(end);
 
+        // Diagnostics for MD4 mismatches: whether any block in the current part
+        // arrived compressed, and whether a block's start offset did not line up
+        // with where we expected the next byte (out-of-order / gap). We assemble
+        // the part by sequential append, so a non-contiguous delivery would
+        // corrupt it — this tells us if that's what's happening vs genuinely bad
+        // data from the peer. Reset at each part boundary.
+        let mut part_had_compressed = false;
+        let mut part_non_contiguous = false;
+
         // Reassembles fragmented OP_PACKEDPART blocks (see `PackedReassembler`).
         let mut packed = PackedReassembler::default();
 
@@ -1026,11 +1035,20 @@ impl Session {
                         warn!("malformed SENDINGPART (too short: {} bytes)", payload.len());
                         continue;
                     }
-                    let range_end = if i64 {
-                        u64::from_le_bytes(payload[24..32].try_into().unwrap())
+                    let (range_start, range_end) = if i64 {
+                        (
+                            u64::from_le_bytes(payload[16..24].try_into().unwrap()),
+                            u64::from_le_bytes(payload[24..32].try_into().unwrap()),
+                        )
                     } else {
-                        u32::from_le_bytes(payload[20..24].try_into().unwrap()) as u64
+                        (
+                            u32::from_le_bytes(payload[16..20].try_into().unwrap()) as u64,
+                            u32::from_le_bytes(payload[20..24].try_into().unwrap()) as u64,
+                        )
                     };
+                    if range_start != bytes_received {
+                        part_non_contiguous = true;
+                    }
                     let data = &payload[hdr..];
 
                     self.plain_bytes += data.len() as u64;
@@ -1054,12 +1072,22 @@ impl Session {
                         if let Some(expected) = expected_part_hash
                             && chunk_hash != expected
                         {
+                            warn!(
+                                part_index,
+                                part_buf_len = part_buf.len(),
+                                expected_len = (part_end.min(end)) - current_part_start,
+                                had_compressed = part_had_compressed,
+                                non_contiguous = part_non_contiguous,
+                                "MD4 mismatch diagnostics"
+                            );
                             on_event(DownloadEvent::ChunkFailed { part_index });
                             return Err(anyhow::Error::new(ChunkHashMismatch { part_index }));
                         }
                         on_event(DownloadEvent::ChunkVerified { part_index });
                         part_buf.clear();
                         current_part_start = bytes_received;
+                        part_had_compressed = false;
+                        part_non_contiguous = false;
                     }
 
                     if bytes_received >= batch_end && bytes_received < end {
@@ -1104,6 +1132,11 @@ impl Session {
                         )
                     };
 
+                    if range_start != bytes_received {
+                        part_non_contiguous = true;
+                    }
+                    part_had_compressed = true;
+
                     let decompressed = match packed.push(range_start, packed_size, &payload[hdr..])
                     {
                         Ok(Some(data)) => data,
@@ -1146,12 +1179,22 @@ impl Session {
                         if let Some(expected) = expected_part_hash
                             && chunk_hash != expected
                         {
+                            warn!(
+                                part_index,
+                                part_buf_len = part_buf.len(),
+                                expected_len = (part_end.min(end)) - current_part_start,
+                                had_compressed = part_had_compressed,
+                                non_contiguous = part_non_contiguous,
+                                "MD4 mismatch diagnostics"
+                            );
                             on_event(DownloadEvent::ChunkFailed { part_index });
                             return Err(anyhow::Error::new(ChunkHashMismatch { part_index }));
                         }
                         on_event(DownloadEvent::ChunkVerified { part_index });
                         part_buf.clear();
                         current_part_start = bytes_received;
+                        part_had_compressed = false;
+                        part_non_contiguous = false;
                     }
 
                     if bytes_received >= batch_end && bytes_received < end {
