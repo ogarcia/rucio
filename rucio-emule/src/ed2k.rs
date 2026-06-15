@@ -176,6 +176,34 @@ pub fn finalize_hashset(chunk_hashes: &[[u8; 16]], size: u64, target: &Ed2kHash)
     Vec::new()
 }
 
+/// Verify a received part-hash set reproduces the file's known ed2k hash:
+/// MD4 of the concatenated part hashes must equal `target`. eMule may or may
+/// not include the trailing null-chunk for exact multiples of CHUNK_SIZE, so
+/// accept the concatenation as-is and also with the last hash dropped.
+/// Returns true if either reproduces `target`.
+pub fn verify_part_hashes(part_hashes: &[[u8; 16]], target: &Ed2kHash) -> bool {
+    if part_hashes.is_empty() {
+        return false;
+    }
+    let root_of = |parts: &[[u8; 16]]| -> [u8; 16] {
+        let mut concat = Vec::with_capacity(parts.len() * 16);
+        for p in parts {
+            concat.extend_from_slice(p);
+        }
+        Md4::digest(&concat).into()
+    };
+    if &root_of(part_hashes) == target.as_bytes() {
+        return true;
+    }
+    // The peer may have appended an extra null chunk (exact-multiple
+    // convention) we do not count — retry without the trailing hash.
+    if part_hashes.len() > 1 && &root_of(&part_hashes[..part_hashes.len() - 1]) == target.as_bytes()
+    {
+        return true;
+    }
+    false
+}
+
 // ── Link parsing ─────────────────────────────────────────────────────────────
 
 /// A parsed `ed2k://|file|…|…|…|/` link.
@@ -350,6 +378,39 @@ mod tests {
         let target = Ed2kHash::from_bytes(Md4::digest(&concat).into());
         let hs = finalize_hashset(&[chunk], CHUNK_SIZE as u64, &target);
         assert_eq!(hs, concat);
+    }
+
+    #[test]
+    fn test_verify_part_hashes_two_parts() {
+        let parts = [[3u8; 16], [5u8; 16]];
+        let mut concat = Vec::new();
+        concat.extend_from_slice(&parts[0]);
+        concat.extend_from_slice(&parts[1]);
+        let target = Ed2kHash::from_bytes(Md4::digest(&concat).into());
+        assert!(verify_part_hashes(&parts, &target));
+        // A different target must not verify.
+        let wrong = Ed2kHash::from_bytes([0xCDu8; 16]);
+        assert!(!verify_part_hashes(&parts, &wrong));
+    }
+
+    #[test]
+    fn test_verify_part_hashes_tolerates_extra_null_chunk() {
+        // Real part hashes for the file are [a, b]; the peer also appended the
+        // null chunk. Dropping the trailing hash must reproduce the target.
+        let parts = [[1u8; 16], [2u8; 16]];
+        let mut concat = Vec::new();
+        concat.extend_from_slice(&parts[0]);
+        concat.extend_from_slice(&parts[1]);
+        let target = Ed2kHash::from_bytes(Md4::digest(&concat).into());
+        let null_chunk: [u8; 16] = Md4::digest(b"").into();
+        let with_null = [parts[0], parts[1], null_chunk];
+        assert!(verify_part_hashes(&with_null, &target));
+    }
+
+    #[test]
+    fn test_verify_part_hashes_empty_is_false() {
+        let target = Ed2kHash::from_bytes([0u8; 16]);
+        assert!(!verify_part_hashes(&[], &target));
     }
 
     #[test]

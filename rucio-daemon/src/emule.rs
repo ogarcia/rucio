@@ -663,6 +663,11 @@ pub async fn run_ed2k_download(
 
     // Number of ed2k slices (one per CHUNK_SIZE block).
     let num_slices = link.size.div_ceil(CHUNK_SIZE as u64) as usize;
+    // A single-part file (file_size <= CHUNK_SIZE) has no hashset: its ed2k hash
+    // IS the MD4 of that one part, so we can verify directly without asking a
+    // peer. Multi-part files must obtain (and verify) the hashset from a source
+    // before any data is accepted.
+    let single_part = num_slices <= 1;
 
     // Live-stats map key: eMule downloads use negative ids (see the API).
     let live_key = -download_id;
@@ -915,6 +920,18 @@ pub async fn run_ed2k_download(
         let work_queue = Arc::new(Mutex::new(remaining));
         let done_vec = Arc::new(Mutex::new(done_slices));
 
+        // Per-part MD4 hashes used to verify each downloaded slice. For a
+        // single-part file the ed2k hash itself is the only part hash; for a
+        // multi-part file we start empty and the first source that returns a
+        // hashset reproducing the ed2k root (verified with `verify_part_hashes`)
+        // fills it for the whole round. Shared so every worker verifies against
+        // the same trusted set.
+        let part_hashes: Arc<Mutex<Option<Vec<[u8; 16]>>>> = Arc::new(Mutex::new(if single_part {
+            Some(vec![*link.hash.as_bytes()])
+        } else {
+            None
+        }));
+
         // Coherent, shared progress across workers (see ProgressState). Seeded
         // from the slices already on disk so the running total starts correct.
         let progress = {
@@ -1078,6 +1095,7 @@ pub async fn run_ed2k_download(
             let qranks = queue_ranks.clone();
             let nick_w = our_nick.clone();
             let min_speed = min_speed_bytes;
+            let part_hashes_w = part_hashes.clone();
 
             join_set.spawn(async move {
                 // Work one source at a time: connect once, then download as many
@@ -1156,6 +1174,42 @@ pub async fn run_ed2k_download(
                         }
                     };
 
+                    // Multi-part files: before accepting any data we need the
+                    // verified per-part hashset. If nobody has it yet, ask this
+                    // peer. We only accept a hashset that reproduces the file's
+                    // ed2k root hash (verify_part_hashes), so a lying peer cannot
+                    // poison verification for the whole round.
+                    if !single_part && part_hashes_w.lock().unwrap().is_none() {
+                        match session.request_hashset().await {
+                            Ok(hs)
+                                if hs.len() >= num_slices
+                                    && rucio_emule::ed2k::verify_part_hashes(&hs, &hash) =>
+                            {
+                                let mut g = part_hashes_w.lock().unwrap();
+                                if g.is_none() {
+                                    *g = Some(hs);
+                                }
+                                info!(dl = download_id, %peer, "Obtained and verified ed2k hashset");
+                            }
+                            Ok(_) => {
+                                debug!(dl = download_id, %peer, "Peer returned an invalid/short hashset")
+                            }
+                            Err(e) => {
+                                debug!(dl = download_id, %peer, error = %e, "Hashset request failed")
+                            }
+                        }
+                    }
+                    // Still no verified hashset (this peer did not provide one and
+                    // no other worker has yet): we cannot verify integrity against
+                    // this peer, so return it to the pool and try another source
+                    // rather than download unverifiable data.
+                    if !single_part && part_hashes_w.lock().unwrap().is_none() {
+                        if attempts + 1 < MAX_SOURCE_ATTEMPTS {
+                            pool.lock().unwrap().push_back((source, attempts + 1));
+                        }
+                        continue 'sources;
+                    }
+
                     // Download slices over this one connection until the queue is
                     // empty, we're cancelled, or the session breaks.
                     loop {
@@ -1229,8 +1283,23 @@ pub async fn run_ed2k_download(
                             _ => {}
                         };
 
+                        // Expected MD4 for this slice. For single-part this is the
+                        // ed2k hash; for multi-part it is the verified part hash
+                        // (always Some here — we bailed above without a hashset).
+                        let expected = part_hashes_w
+                            .lock()
+                            .unwrap()
+                            .as_ref()
+                            .and_then(|h| h.get(slice_idx).copied());
+
                         match session
-                            .download_range(slice_start, slice_end, &mut file, &mut on_progress)
+                            .download_range(
+                                slice_start,
+                                slice_end,
+                                expected,
+                                &mut file,
+                                &mut on_progress,
+                            )
                             .await
                         {
                             Ok(_) => {
@@ -1290,6 +1359,30 @@ pub async fn run_ed2k_download(
                                     .await;
                                 });
                                 // Keep the session; fetch the next slice over it.
+                            }
+                            Err(e) if e.is::<rucio_emule::transfer::ChunkHashMismatch>() => {
+                                // A completed part whose MD4 doesn't match the
+                                // hashset — corrupt data (bad disk on the peer, a
+                                // malicious peer, or a rare glitch). Treat it as a
+                                // recoverable failure rather than dropping the
+                                // source outright: roll back the slice, requeue it,
+                                // and give the source another chance (attempts+1).
+                                // A source that keeps serving corrupt parts exhausts
+                                // MAX_SOURCE_ATTEMPTS and is then dropped on its own.
+                                warn!(dl = download_id, %peer, slice = slice_idx,
+                                    attempt = attempts + 1,
+                                    "Part failed MD4 verification — corrupt data, will retry");
+                                {
+                                    let mut p = progress_w.lock().unwrap();
+                                    let prev = p.per_slice[slice_idx];
+                                    p.total -= prev;
+                                    p.per_slice[slice_idx] = 0;
+                                }
+                                work.lock().unwrap().push_front((slice_idx, slice_start, slice_end));
+                                if attempts + 1 < MAX_SOURCE_ATTEMPTS {
+                                    pool.lock().unwrap().push_back((source, attempts + 1));
+                                }
+                                continue 'sources;
                             }
                             Err(e) => {
                                 let too_slow =
@@ -1364,6 +1457,38 @@ pub async fn run_ed2k_download(
         // don't fall through into the retry/backoff sleep first.
         if cancel.load(Ordering::Relaxed) {
             continue;
+        }
+
+        // Multi-part file and no source in the whole round provided a hashset
+        // that reproduces the ed2k root hash: we cannot verify integrity, so
+        // there is nothing to retry productively. Fail the download with a
+        // visible error (keeping the .part) instead of looping forever.
+        if !single_part && part_hashes.lock().unwrap().is_none() {
+            warn!(
+                dl = download_id,
+                "No source provided a valid ed2k hashset — cannot verify integrity, failing download"
+            );
+            let _ = crate::db::emule_downloads::set_status(
+                db,
+                download_id,
+                "error",
+                Some("No source provided a valid ed2k hashset — cannot verify file integrity"),
+            )
+            .await;
+            // Terminal error: drop the in-memory entries but keep the .part/.met
+            // so a future attempt can resume (a "shutdown"-style cleanup never
+            // deletes the partial file).
+            cleanup_on_stop(
+                "error",
+                &part_path,
+                &met_path,
+                active_downloads,
+                &hash_key,
+                live_stats,
+                live_key,
+            )
+            .await;
+            return Ok(());
         }
 
         // Check if all slices are now done (drop guard before any await).

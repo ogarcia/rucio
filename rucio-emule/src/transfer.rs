@@ -413,6 +413,27 @@ impl std::fmt::Display for SlowPeer {
 
 impl std::error::Error for SlowPeer {}
 
+/// Returned by `download_range` when a downloaded part's MD4 does not match the
+/// expected hash from the ed2k hashset — the data is corrupt (or the peer is
+/// malicious). The caller should re-fetch the part from a different source and
+/// drop this one.
+#[derive(Debug)]
+pub struct ChunkHashMismatch {
+    pub part_index: usize,
+}
+
+impl std::fmt::Display for ChunkHashMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "part {} failed MD4 verification against the ed2k hashset",
+            self.part_index
+        )
+    }
+}
+
+impl std::error::Error for ChunkHashMismatch {}
+
 // ── Download options ──────────────────────────────────────────────────────────
 
 /// Options for [`download_file`] and [`Session::connect`].
@@ -847,10 +868,73 @@ impl Session {
         Ok(())
     }
 
+    /// Ask the peer for the file's ed2k hashset (OP_HASHSETREQUEST) and return the
+    /// per-part MD4 hashes parsed from OP_HASHSETANSWER. Used by the downloader to
+    /// verify each part. Errors on timeout / malformed reply.
+    pub async fn request_hashset(&mut self) -> Result<Vec<[u8; 16]>> {
+        write_frame(
+            &mut self.stream,
+            &mut self.ciphers,
+            OP_HASHSETREQUEST,
+            self.hash.as_bytes(),
+        )
+        .await
+        .context("send OP_HASHSETREQUEST")?;
+
+        // Read frames until the hashset answer arrives, skipping any unrelated
+        // opcode the peer interleaves. Bounded so a peer that never answers does
+        // not hang us — it just yields no hashset and the caller moves on.
+        for _ in 0..8 {
+            let (_proto, opcode, payload) = timeout(
+                self.op_timeout,
+                read_frame(&mut self.stream, &mut self.ciphers),
+            )
+            .await
+            .context("OP_HASHSETANSWER timeout")?
+            .context("read OP_HASHSETANSWER")?;
+            if opcode != OP_HASHSETANSWER {
+                debug!("skipping opcode 0x{opcode:02x} while waiting for hashset");
+                continue;
+            }
+            // Layout: file_hash(16) + count(u16 LE) + part_hash(16)*count.
+            if payload.len() < 18 {
+                bail!("OP_HASHSETANSWER too short ({} bytes)", payload.len());
+            }
+            if &payload[..16] != self.hash.as_bytes() {
+                bail!("OP_HASHSETANSWER for a different file hash");
+            }
+            let count = u16::from_le_bytes([payload[16], payload[17]]) as usize;
+            let expected = 18 + count * 16;
+            if payload.len() < expected {
+                bail!(
+                    "OP_HASHSETANSWER truncated: {} part hashes need {expected} bytes, got {}",
+                    count,
+                    payload.len()
+                );
+            }
+            let mut parts = Vec::with_capacity(count);
+            for i in 0..count {
+                let off = 18 + i * 16;
+                let mut h = [0u8; 16];
+                h.copy_from_slice(&payload[off..off + 16]);
+                parts.push(h);
+            }
+            return Ok(parts);
+        }
+        bail!("peer did not return a hashset")
+    }
+
     /// Download bytes `[start, end)` from the peer, writing to `out_writer`.
     ///
     /// The caller must have already seeked `out_writer` to `start` before
     /// calling this method.  Returns the final `bytes_received` value.
+    ///
+    /// When `expected_part_hash` is `Some`, the MD4 of the assembled part is
+    /// checked against it once the part completes; a mismatch emits
+    /// [`DownloadEvent::ChunkFailed`] and fails with [`ChunkHashMismatch`] so the
+    /// caller can drop this (corrupt/malicious) source and re-fetch elsewhere.
+    /// On a match it emits [`DownloadEvent::ChunkVerified`]. With `None` no
+    /// verification is performed (the part is accepted as-is).
     ///
     /// Emits [`DownloadEvent::Progress`] and [`DownloadEvent::ChunkVerified`]
     /// (or [`DownloadEvent::ChunkFailed`]) via `on_event`.
@@ -858,6 +942,7 @@ impl Session {
         &mut self,
         start: u64,
         end: u64,
+        expected_part_hash: Option<[u8; 16]>,
         out_writer: &mut W,
         on_event: &mut F,
     ) -> Result<u64>
@@ -965,7 +1050,13 @@ impl Session {
                     let part_end = current_part_start + CHUNK_SIZE as u64;
                     if bytes_received >= part_end || bytes_received >= end {
                         let part_index = (current_part_start / CHUNK_SIZE as u64) as usize;
-                        let _chunk_hash = Md4::digest(&part_buf);
+                        let chunk_hash: [u8; 16] = Md4::digest(&part_buf).into();
+                        if let Some(expected) = expected_part_hash
+                            && chunk_hash != expected
+                        {
+                            on_event(DownloadEvent::ChunkFailed { part_index });
+                            return Err(anyhow::Error::new(ChunkHashMismatch { part_index }));
+                        }
                         on_event(DownloadEvent::ChunkVerified { part_index });
                         part_buf.clear();
                         current_part_start = bytes_received;
@@ -1051,7 +1142,13 @@ impl Session {
                     let part_end = current_part_start + CHUNK_SIZE as u64;
                     if bytes_received >= part_end || bytes_received >= end {
                         let part_index = (current_part_start / CHUNK_SIZE as u64) as usize;
-                        let _chunk_hash = Md4::digest(&part_buf);
+                        let chunk_hash: [u8; 16] = Md4::digest(&part_buf).into();
+                        if let Some(expected) = expected_part_hash
+                            && chunk_hash != expected
+                        {
+                            on_event(DownloadEvent::ChunkFailed { part_index });
+                            return Err(anyhow::Error::new(ChunkHashMismatch { part_index }));
+                        }
                         on_event(DownloadEvent::ChunkVerified { part_index });
                         part_buf.clear();
                         current_part_start = bytes_received;
@@ -1102,6 +1199,10 @@ where
         .download_range(
             opts.start_offset,
             opts.file_size,
+            // Per-part verification is driven by the daemon's multi-source
+            // downloader, which supplies the expected hash; this single-peer
+            // convenience wrapper does not verify.
+            None,
             &mut out_writer,
             &mut on_event,
         )
