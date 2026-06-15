@@ -195,7 +195,7 @@ pub async fn put_config(
     new_cfg.emule.min_source_speed_kib_s = c.emule.min_source_speed_kib_s;
     // identity_path and api.listen intentionally not writable at runtime
 
-    match new_cfg.save() {
+    match new_cfg.save(state.config_path.as_deref()) {
         Ok(()) => StatusCode::NO_CONTENT,
         Err(e) => {
             tracing::error!("Failed to save config: {e}");
@@ -291,7 +291,7 @@ pub async fn put_limits(State(state): State<AppState>, Json(req): Json<SpeedLimi
         Config::load(state.config_path.as_deref()).unwrap_or_else(|_| (*state.config).clone());
     cfg.network.upload_limit_kbps = req.upload_kbps;
     cfg.network.download_limit_kbps = req.download_kbps;
-    match cfg.save() {
+    match cfg.save(state.config_path.as_deref()) {
         Ok(()) => StatusCode::NO_CONTENT,
         Err(e) => {
             tracing::error!("Failed to save config: {e}");
@@ -355,7 +355,7 @@ pub async fn put_notification_settings(
     cfg.notifications.enabled = req.enabled;
     cfg.notifications.downloads = req.downloads;
     cfg.notifications.system = req.system;
-    match cfg.save() {
+    match cfg.save(state.config_path.as_deref()) {
         Ok(()) => StatusCode::NO_CONTENT,
         Err(e) => {
             tracing::error!("Failed to save notification settings: {e}");
@@ -405,7 +405,7 @@ pub async fn put_webhooks(
         Err(_) => (*state.config).clone(),
     };
     cfg.notifications.webhooks = webhooks;
-    match cfg.save() {
+    match cfg.save(state.config_path.as_deref()) {
         Ok(()) => StatusCode::NO_CONTENT,
         Err(e) => {
             tracing::error!("Failed to save webhooks: {e}");

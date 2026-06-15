@@ -765,11 +765,21 @@ impl Config {
     }
 
     /// Persist the current configuration to disk.
-    pub fn save(&self) -> Result<()> {
-        let path = default_config_dir().join("config.toml");
-        std::fs::create_dir_all(path.parent().unwrap())?;
+    ///
+    /// `path` must be the same location the config was loaded from (the daemon's
+    /// `--config` path, or `None` for the default `config.toml`). Resolving it
+    /// the same way [`Config::load`] does keeps a `--config` daemon writing back
+    /// to its own file instead of silently saving to the default path — which
+    /// would make API changes (e.g. speed limits) vanish on the next restart.
+    pub fn save(&self, path: Option<&std::path::Path>) -> Result<()> {
+        let resolved = path
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| default_config_dir().join("config.toml"));
+        if let Some(parent) = resolved.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
         let contents = toml::to_string_pretty(self)?;
-        std::fs::write(path, contents)?;
+        std::fs::write(resolved, contents)?;
         Ok(())
     }
 }
