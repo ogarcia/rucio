@@ -982,10 +982,10 @@ pub async fn run_ed2k_download(
             let pub_work = work_queue.clone();
             let pub_done = done_vec.clone();
             let pub_ls = live_stats.clone();
-            let pub_progress = progress.clone();
             let pub_qranks = queue_ranks.clone();
             let pub_key = live_key;
             let total = num_slices;
+            let pub_file_size = link.size;
             tokio::spawn(async move {
                 loop {
                     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -1000,7 +1000,20 @@ pub async fn run_ed2k_download(
                         .filter(|i| !done.get(*i).copied().unwrap_or(false) && !queued.contains(i))
                         .map(|i| i as u32)
                         .collect();
-                    let live_bytes = pub_progress.lock().unwrap().total;
+                    // Progress is the sum of *confirmed* slices (those written to
+                    // .part.met), not in-flight partials. This keeps the bar
+                    // monotonic: a slice in flight that fails and is re-fetched
+                    // never makes the percentage go backwards. Live speed is
+                    // tracked separately, and in-flight pieces are shown above.
+                    let confirmed_bytes: u64 = done
+                        .iter()
+                        .enumerate()
+                        .filter(|&(_, &d)| d)
+                        .map(|(i, _)| {
+                            let s = i as u64 * CHUNK_SIZE as u64;
+                            (s + CHUNK_SIZE as u64).min(pub_file_size) - s
+                        })
+                        .sum();
                     let (queued_sources, best_rank) = {
                         let qr = pub_qranks.lock().unwrap();
                         (qr.len() as u32, qr.values().copied().min())
@@ -1009,9 +1022,10 @@ pub async fn run_ed2k_download(
                     match s.get_mut(&pub_key) {
                         Some(e) => {
                             e.in_flight_pieces = in_flight;
-                            // Single source of progress for the WS/API, with
-                            // in-flight partials folded in (see DownloadLiveStats).
-                            e.bytes_done = Some(live_bytes);
+                            // Confirmed-slice progress (monotonic), not in-flight
+                            // partials — so the bar never retreats when a slice
+                            // fails and is retried.
+                            e.bytes_done = Some(confirmed_bytes);
                             e.queued_sources = queued_sources;
                             e.best_queue_rank = best_rank;
                         }
