@@ -18,7 +18,6 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
-use tokio::io::AsyncSeekExt;
 use tokio::net::UdpSocket;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
@@ -1231,7 +1230,9 @@ pub async fn run_ed2k_download(
                                 None => break 'sources, // all slices taken — worker done
                             };
 
-                        // Open part file seeked to this slice's start offset.
+                        // Open the part file. `download_range` seeks to each
+                        // block's absolute offset as it writes, so no initial
+                        // positioning is needed here.
                         let mut file = match tokio::fs::OpenOptions::new()
                             .write(true)
                             .create(true)
@@ -1248,11 +1249,6 @@ pub async fn run_ed2k_download(
                                 break 'sources;
                             }
                         };
-                        if let Err(e) = file.seek(std::io::SeekFrom::Start(slice_start)).await {
-                            warn!(dl = download_id, %peer, slice = slice_idx, error = %e, "Failed to seek part file");
-                            work.lock().unwrap().push_front((slice_idx, slice_start, slice_end));
-                            break 'sources;
-                        }
 
                         // Update the shared ProgressState so every in-flight slice
                         // is reflected at once. The in-flight publisher mirrors the
