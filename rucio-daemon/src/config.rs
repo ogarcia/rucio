@@ -599,6 +599,28 @@ impl Config {
     /// | `RUCIOD_EMULE_MAX_CONCURRENT_DOWNLOADS` | `emule.max_concurrent_downloads` | integer 1-50 |
     /// | `RUCIOD_EMULE_MIN_SOURCE_SPEED_KIB_S` | `emule.min_source_speed_kib_s` | integer (0 = off) |
     /// | `RUCIOD_UPNP`               | `network.upnp`               | `true`/`false`     |
+    /// Apply a `u64` environment-variable override to a config field, logging
+    /// when it replaces a *different* value the config file (or default) already
+    /// held. Env vars intentionally win over the file, but a forgotten one
+    /// silently shadowing an edited file value is a debugging trap (e.g. a
+    /// stale `RUCIOD_UPLOAD_LIMIT_KBPS` in a unit file masking `upload_limit_kbps`),
+    /// so surface it at startup.
+    fn env_override_u64(field: &mut u64, var: &str) {
+        if let Ok(v) = std::env::var(var)
+            && !v.is_empty()
+            && let Ok(n) = v.parse::<u64>()
+        {
+            if n != *field {
+                tracing::warn!(
+                    "{var}={n} overrides the config-file value ({}); \
+                     environment variables take precedence over the config file",
+                    *field
+                );
+            }
+            *field = n;
+        }
+    }
+
     pub fn apply_env_overrides(&mut self) {
         if let Ok(v) = std::env::var("RUCIOD_API_LISTEN")
             && !v.is_empty()
@@ -635,30 +657,22 @@ impl Config {
         {
             self.network.bootstrap_peers = v.split(',').map(|s| s.trim().to_string()).collect();
         }
-        if let Ok(v) = std::env::var("RUCIOD_UPLOAD_LIMIT_KBPS")
-            && !v.is_empty()
-            && let Ok(n) = v.parse::<u64>()
-        {
-            self.network.upload_limit_kbps = n;
-        }
-        if let Ok(v) = std::env::var("RUCIOD_DOWNLOAD_LIMIT_KBPS")
-            && !v.is_empty()
-            && let Ok(n) = v.parse::<u64>()
-        {
-            self.network.download_limit_kbps = n;
-        }
-        if let Ok(v) = std::env::var("RUCIOD_TEMP_UPLOAD_LIMIT_KBPS")
-            && !v.is_empty()
-            && let Ok(n) = v.parse::<u64>()
-        {
-            self.network.temp_upload_limit_kbps = n;
-        }
-        if let Ok(v) = std::env::var("RUCIOD_TEMP_DOWNLOAD_LIMIT_KBPS")
-            && !v.is_empty()
-            && let Ok(n) = v.parse::<u64>()
-        {
-            self.network.temp_download_limit_kbps = n;
-        }
+        Self::env_override_u64(
+            &mut self.network.download_limit_kbps,
+            "RUCIOD_DOWNLOAD_LIMIT_KBPS",
+        );
+        Self::env_override_u64(
+            &mut self.network.upload_limit_kbps,
+            "RUCIOD_UPLOAD_LIMIT_KBPS",
+        );
+        Self::env_override_u64(
+            &mut self.network.temp_download_limit_kbps,
+            "RUCIOD_TEMP_DOWNLOAD_LIMIT_KBPS",
+        );
+        Self::env_override_u64(
+            &mut self.network.temp_upload_limit_kbps,
+            "RUCIOD_TEMP_UPLOAD_LIMIT_KBPS",
+        );
         if let Ok(v) = std::env::var("RUCIOD_MAX_UPLOAD_TASKS")
             && !v.is_empty()
             && let Ok(n) = v.parse::<usize>()
