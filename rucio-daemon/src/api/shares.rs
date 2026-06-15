@@ -567,6 +567,25 @@ pub(crate) fn file_mtime_secs(path: &Path) -> i64 {
 }
 
 pub(crate) async fn index_file(db: &crate::db::Db, path: &Path) -> anyhow::Result<[u8; 32]> {
+    // Idempotent: if this path is already indexed with the same size + mtime,
+    // the content is unchanged — return the existing root hash without
+    // re-hashing or re-inserting (the `shared_files` row has UNIQUE path and
+    // root_hash, so a blind re-insert would error). This lets two indexers race
+    // harmlessly — e.g. a just-completed eMule download indexing itself while
+    // the watcher fires for the same new file — without a spurious failure.
+    let path_str = path.to_string_lossy();
+    if let Some(row) = db::shares::get_by_path(db, &path_str).await? {
+        let disk_size = std::fs::metadata(path)
+            .map(|m| m.len() as i64)
+            .unwrap_or(-1);
+        if disk_size == row.size
+            && file_mtime_secs(path) == row.mtime
+            && let Ok(existing) = <[u8; 32]>::try_from(row.root_hash.as_slice())
+        {
+            return Ok(existing);
+        }
+    }
+
     let path_owned = path.to_path_buf();
 
     let fh =
