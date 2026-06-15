@@ -146,8 +146,20 @@ const EMULE_PROTOCOL_VERSION: u8 = 0x01;
 /// Client version byte advertised in OP_EMULEINFOANSWER. A value in `0x25..=0x27`
 /// makes eMule recognise us as an eMule client *without* inferring any implicit
 /// extended feature (UDP reask, source exchange, shared-dir browsing) — we
-/// expose none, which matches what we actually implement.
+/// expose none, which matches what we actually implement. The one capability we
+/// do support (data compression) is advertised explicitly via an `ET_*` tag.
 const EMULE_VERSION_SHORT: u8 = 0x27;
+/// eMule capability tag carried in OP_EMULEINFO: data-compression version
+/// (`ET_COMPRESSION`). We advertise only the features we actually honour.
+const ET_COMPRESSION: u8 = 0x20;
+/// eMule integer tag value type (`TAGTYPE_UINT32`), used when serialising tags
+/// the way eMule's `CTag::WriteTagToFile` does for a named integer.
+const TAGTYPE_UINT32: u8 = 0x03;
+/// Data-compression protocol version we advertise (eMule `ET_COMPRESSION`
+/// value): `1` = zlib, the only scheme eMule defines. Advertising it lets peers
+/// send us zlib-packed blocks (OP_COMPRESSEDPART) — smaller on the wire for
+/// compressible data — instead of raw OP_SENDINGPART.
+const DATA_COMPRESSION_VERSION: u32 = 1;
 
 // ── Framing ───────────────────────────────────────────────────────────────────
 
@@ -164,14 +176,24 @@ fn build_message_proto(proto: u8, opcode: u8, payload: &[u8]) -> Vec<u8> {
     msg
 }
 
-/// Build the `OP_EMULEINFOANSWER` payload: our advertised client version, the
-/// extended-protocol version, and an empty tag list (no extended features).
-/// Enough for a peer to recognise us as an eMule client.
+/// Build the `OP_EMULEINFO`/`OP_EMULEINFOANSWER` payload: our advertised client
+/// version, the extended-protocol version, and a one-entry tag list announcing
+/// the single eMule capability we honour — data compression (`ET_COMPRESSION`).
+/// This makes peers send us zlib-packed data blocks (`OP_COMPRESSEDPART`)
+/// instead of raw `OP_SENDINGPART`. Other eMule features (UDP reask, source
+/// exchange, …) are deliberately omitted because we do not implement them.
 fn build_emule_info() -> Vec<u8> {
-    let mut p = Vec::with_capacity(6);
+    let mut p = Vec::with_capacity(14);
     p.push(EMULE_VERSION_SHORT);
     p.push(EMULE_PROTOCOL_VERSION);
-    p.extend_from_slice(&0u32.to_le_bytes()); // tag count = 0
+    p.extend_from_slice(&1u32.to_le_bytes()); // tag count = 1
+    // ET_COMPRESSION = 1, serialised the way eMule's `CTag::WriteTagToFile`
+    // writes a named integer tag: type byte, 16-bit name length, 1-byte name
+    // id, then the 32-bit LE value.
+    p.push(TAGTYPE_UINT32);
+    p.extend_from_slice(&1u16.to_le_bytes()); // name length = 1
+    p.push(ET_COMPRESSION);
+    p.extend_from_slice(&DATA_COMPRESSION_VERSION.to_le_bytes());
     p
 }
 
@@ -466,6 +488,8 @@ pub enum DownloadEvent {
 /// construction, call [`Session::download_range`] one or more times to
 /// retrieve specific byte ranges from the peer.
 pub struct Session {
+    /// Peer address, kept for contextual logging.
+    peer: SocketAddrV4,
     stream: TcpStream,
     op_timeout: Duration,
     hash: Ed2kHash,
@@ -475,6 +499,10 @@ pub struct Session {
     ciphers: ObfCiphers,
     /// Minimum sustained rate (bytes/sec); `0` disables the slow-peer check.
     min_speed_bytes_per_sec: u64,
+    /// Whether the compressed / uncompressed transfer mode has already been
+    /// logged for this peer, so each mode is logged at most once per session.
+    logged_compressed: bool,
+    logged_plain: bool,
 }
 
 impl Session {
@@ -538,12 +566,15 @@ impl Session {
         Self::do_handshake(peer, &mut stream, &mut ciphers, opts, &our_hash, on_event).await?;
 
         Ok(Self {
+            peer,
             stream,
             op_timeout: opts.op_timeout,
             hash: opts.hash,
             file_size: opts.file_size,
             ciphers,
             min_speed_bytes_per_sec: opts.min_speed_bytes_per_sec,
+            logged_compressed: false,
+            logged_plain: false,
         })
     }
 
@@ -606,12 +637,15 @@ impl Session {
         Self::do_handshake(peer, &mut stream, &mut ciphers, opts, &our_hash, on_event).await?;
 
         Ok(Self {
+            peer,
             stream,
             op_timeout: opts.op_timeout,
             hash: opts.hash,
             file_size: opts.file_size,
             ciphers,
             min_speed_bytes_per_sec: opts.min_speed_bytes_per_sec,
+            logged_compressed: false,
+            logged_plain: false,
         })
     }
 
@@ -696,6 +730,22 @@ impl Session {
             }
             debug!(%peer, "skipping opcode 0x{opcode:02x} during hello handshake");
         }
+
+        // ── EMULEINFO ─────────────────────────────────────────────────────────
+        // Announce our eMule capabilities (data compression) so the peer sends
+        // us zlib-packed blocks (OP_COMPRESSEDPART) instead of raw data. eMule
+        // sends this right after the HELLO exchange. We don't wait for the
+        // peer's OP_EMULEINFOANSWER: the request loops below skip any opcode
+        // that isn't the one they expect, so the answer is consumed harmlessly.
+        write_frame_proto(
+            stream,
+            ciphers,
+            PROTO_EMULE,
+            OP_EMULEINFO,
+            &build_emule_info(),
+        )
+        .await
+        .context("send OP_EMULEINFO")?;
 
         // ── FILEREQUEST ──────────────────────────────────────────────────────
         write_frame(stream, ciphers, OP_FILEREQUEST, opts.hash.as_bytes())
@@ -855,6 +905,11 @@ impl Session {
                     };
                     let data = &payload[hdr..];
 
+                    if !self.logged_plain {
+                        self.logged_plain = true;
+                        info!(peer = %self.peer, compressed = false, "eMule data transfer: uncompressed");
+                    }
+
                     out_writer
                         .write_all(data)
                         .await
@@ -934,6 +989,11 @@ impl Session {
                     };
 
                     let range_end = range_start + decompressed.len() as u64;
+
+                    if !self.logged_compressed {
+                        self.logged_compressed = true;
+                        info!(peer = %self.peer, compressed = true, "eMule data transfer: zlib compressed");
+                    }
 
                     out_writer
                         .write_all(&decompressed)
@@ -1740,12 +1800,16 @@ mod tests {
 
     #[test]
     fn emule_info_payload() {
-        // version + EMULE_PROTOCOL + tagcount(0): recognised as eMule, no tags.
+        // version + EMULE_PROTOCOL + tagcount(1) + one ET_COMPRESSION tag:
+        // recognised as eMule and advertising zlib data compression.
         let info = build_emule_info();
-        assert_eq!(
-            info,
-            [EMULE_VERSION_SHORT, EMULE_PROTOCOL_VERSION, 0, 0, 0, 0]
-        );
+        let mut expected = vec![EMULE_VERSION_SHORT, EMULE_PROTOCOL_VERSION];
+        expected.extend_from_slice(&1u32.to_le_bytes()); // tag count = 1
+        expected.push(TAGTYPE_UINT32);
+        expected.extend_from_slice(&1u16.to_le_bytes()); // name length = 1
+        expected.push(ET_COMPRESSION);
+        expected.extend_from_slice(&DATA_COMPRESSION_VERSION.to_le_bytes());
+        assert_eq!(info, expected);
     }
 
     #[test]
