@@ -1468,35 +1468,20 @@ pub async fn run_ed2k_download(
         }
 
         // Multi-part file and no source in the whole round provided a hashset
-        // that reproduces the ed2k root hash: we cannot verify integrity, so
-        // there is nothing to retry productively. Fail the download with a
-        // visible error (keeping the .part) instead of looping forever.
+        // that reproduces the ed2k root hash: we can't verify integrity yet, so
+        // we can't accept any data. Failing the download here is too harsh —
+        // re-adding it is costly for the user, and the usual cause is simply
+        // that none of the current sources hold the file. Fall through to the
+        // retry path below, which clears the source cache, triggers a fresh Kad
+        // search and tries again with backoff, exactly like a download that
+        // hasn't found sources yet. (`done_count` is 0 in this case, so the
+        // `!all_done` branch handles it; the loop is bounded only by the user
+        // pausing or cancelling.)
         if !single_part && part_hashes.lock().unwrap().is_none() {
-            warn!(
+            info!(
                 dl = download_id,
-                "No source provided a valid ed2k hashset — cannot verify integrity, failing download"
+                "No source provided a valid ed2k hashset yet — searching for more sources and retrying"
             );
-            let _ = crate::db::emule_downloads::set_status(
-                db,
-                download_id,
-                "error",
-                Some("No source provided a valid ed2k hashset — cannot verify file integrity"),
-            )
-            .await;
-            // Terminal error: drop the in-memory entries but keep the .part/.met
-            // so a future attempt can resume (a "shutdown"-style cleanup never
-            // deletes the partial file).
-            cleanup_on_stop(
-                "error",
-                &part_path,
-                &met_path,
-                active_downloads,
-                &hash_key,
-                live_stats,
-                live_key,
-            )
-            .await;
-            return Ok(());
         }
 
         // Check if all slices are now done (drop guard before any await).
