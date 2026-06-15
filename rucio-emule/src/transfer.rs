@@ -499,10 +499,41 @@ pub struct Session {
     ciphers: ObfCiphers,
     /// Minimum sustained rate (bytes/sec); `0` disables the slow-peer check.
     min_speed_bytes_per_sec: u64,
-    /// Whether the compressed / uncompressed transfer mode has already been
-    /// logged for this peer, so each mode is logged at most once per session.
-    logged_compressed: bool,
-    logged_plain: bool,
+    /// File bytes received uncompressed (OP_SENDINGPART); these travel 1:1 on
+    /// the wire. Counted for the end-of-session compression summary.
+    plain_bytes: u64,
+    /// File bytes received via OP_COMPRESSEDPART, measured after decompression.
+    compressed_file_bytes: u64,
+    /// Wire bytes those compressed blocks actually occupied (sum of each block's
+    /// `packed_size`). `compressed_file_bytes - compressed_wire_bytes` is the
+    /// bandwidth compression saved us.
+    compressed_wire_bytes: u64,
+}
+
+impl Drop for Session {
+    /// Log a one-line compression summary when the session with a peer ends, so
+    /// the real benefit of data compression is visible: how much of the file
+    /// arrived packed and how many wire bytes that saved. Skipped for sessions
+    /// that never transferred file data (queued or handshake-only).
+    fn drop(&mut self) {
+        let file_bytes = self.plain_bytes + self.compressed_file_bytes;
+        if file_bytes == 0 {
+            return;
+        }
+        let wire_bytes = self.plain_bytes + self.compressed_wire_bytes;
+        let saved = file_bytes.saturating_sub(wire_bytes);
+        let to_mib = |b: u64| b as f64 / (1024.0 * 1024.0);
+        let compressed_pct = self.compressed_file_bytes as f64 / file_bytes as f64 * 100.0;
+        let saved_pct = saved as f64 / file_bytes as f64 * 100.0;
+        info!(
+            peer = %self.peer,
+            "eMule transfer summary: {:.1} MiB received, {:.0}% compressed, {:.1} MiB saved on the wire ({:.1}%)",
+            to_mib(file_bytes),
+            compressed_pct,
+            to_mib(saved),
+            saved_pct,
+        );
+    }
 }
 
 impl Session {
@@ -573,8 +604,9 @@ impl Session {
             file_size: opts.file_size,
             ciphers,
             min_speed_bytes_per_sec: opts.min_speed_bytes_per_sec,
-            logged_compressed: false,
-            logged_plain: false,
+            plain_bytes: 0,
+            compressed_file_bytes: 0,
+            compressed_wire_bytes: 0,
         })
     }
 
@@ -644,8 +676,9 @@ impl Session {
             file_size: opts.file_size,
             ciphers,
             min_speed_bytes_per_sec: opts.min_speed_bytes_per_sec,
-            logged_compressed: false,
-            logged_plain: false,
+            plain_bytes: 0,
+            compressed_file_bytes: 0,
+            compressed_wire_bytes: 0,
         })
     }
 
@@ -905,10 +938,7 @@ impl Session {
                     };
                     let data = &payload[hdr..];
 
-                    if !self.logged_plain {
-                        self.logged_plain = true;
-                        info!(peer = %self.peer, compressed = false, "eMule data transfer: uncompressed");
-                    }
+                    self.plain_bytes += data.len() as u64;
 
                     out_writer
                         .write_all(data)
@@ -990,10 +1020,11 @@ impl Session {
 
                     let range_end = range_start + decompressed.len() as u64;
 
-                    if !self.logged_compressed {
-                        self.logged_compressed = true;
-                        info!(peer = %self.peer, compressed = true, "eMule data transfer: zlib compressed");
-                    }
+                    // `packed_size` is the whole block's compressed length; the
+                    // reassembler only returns `Some` once, when the block is
+                    // complete, so each block is counted exactly once here.
+                    self.compressed_file_bytes += decompressed.len() as u64;
+                    self.compressed_wire_bytes += packed_size as u64;
 
                     out_writer
                         .write_all(&decompressed)
