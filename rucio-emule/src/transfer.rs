@@ -926,8 +926,10 @@ impl Session {
 
     /// Download bytes `[start, end)` from the peer, writing to `out_writer`.
     ///
-    /// The caller must have already seeked `out_writer` to `start` before
-    /// calling this method.  Returns the final `bytes_received` value.
+    /// Each received block is written at its absolute file offset via
+    /// `seek` + `write_all`, so peers serving blocks out of order cannot
+    /// corrupt the file or the assembled part used for MD4 verification.
+    /// Returns the final `bytes_received` value.
     ///
     /// When `expected_part_hash` is `Some`, the MD4 of the assembled part is
     /// checked against it once the part completes; a mismatch emits
@@ -947,7 +949,7 @@ impl Session {
         on_event: &mut F,
     ) -> Result<u64>
     where
-        W: tokio::io::AsyncWrite + Unpin,
+        W: tokio::io::AsyncWrite + tokio::io::AsyncSeek + Unpin,
         F: FnMut(DownloadEvent),
     {
         const PART_WINDOW: u64 = 180 * 1024;
@@ -955,19 +957,25 @@ impl Session {
         // fields would overflow past 4 GiB (the download would stall there).
         let large_file = self.file_size > u32::MAX as u64;
 
+        // High-water mark of the largest `range_end` seen (clamped to `end`).
+        // Peers may serve blocks out of order, so this is *not* a count of the
+        // bytes assembled — it only drives the (approximate) progress reporting
+        // and the windowed request pacing (`batch_end`).
         let mut bytes_received = start;
-        let mut part_buf: Vec<u8> = Vec::new();
+        // Total bytes actually placed inside `[start, end)`. This is the
+        // authoritative completion signal: the range is done once it reaches
+        // `end - start`, regardless of arrival order.
+        let mut total_filled: u64 = 0;
+        // Current part `[current_part_start, part_end)`; `part_buf` is sized to
+        // the part length and blocks are placed by their offset within it so the
+        // MD4 is computed over correctly ordered bytes. `part_filled` counts the
+        // bytes placed in the current part.
         let mut current_part_start = start;
+        let mut part_end = (current_part_start + CHUNK_SIZE as u64).min(end);
+        let mut part_len = (part_end - current_part_start) as usize;
+        let mut part_buf: Vec<u8> = vec![0u8; part_len];
+        let mut part_filled: u64 = 0;
         let mut batch_end = (start + 3 * PART_WINDOW).min(end);
-
-        // Diagnostics for MD4 mismatches: whether any block in the current part
-        // arrived compressed, and whether a block's start offset did not line up
-        // with where we expected the next byte (out-of-order / gap). We assemble
-        // the part by sequential append, so a non-contiguous delivery would
-        // corrupt it — this tells us if that's what's happening vs genuinely bad
-        // data from the peer. Reset at each part boundary.
-        let mut part_had_compressed = false;
-        let mut part_non_contiguous = false;
 
         // Reassembles fragmented OP_PACKEDPART blocks (see `PackedReassembler`).
         let mut packed = PackedReassembler::default();
@@ -994,7 +1002,7 @@ impl Session {
         .await?;
 
         loop {
-            if bytes_received >= end {
+            if total_filled >= end - start {
                 break;
             }
 
@@ -1046,51 +1054,34 @@ impl Session {
                             u32::from_le_bytes(payload[20..24].try_into().unwrap()) as u64,
                         )
                     };
-                    if range_start != bytes_received {
-                        part_non_contiguous = true;
-                    }
                     let data = &payload[hdr..];
 
                     self.plain_bytes += data.len() as u64;
 
-                    out_writer
-                        .write_all(data)
-                        .await
-                        .context("write chunk data")?;
-                    bytes_received = range_end.min(end);
+                    place_block(
+                        out_writer,
+                        start,
+                        end,
+                        expected_part_hash,
+                        range_start,
+                        data,
+                        &mut current_part_start,
+                        &mut part_end,
+                        &mut part_len,
+                        &mut part_buf,
+                        &mut part_filled,
+                        &mut total_filled,
+                        on_event,
+                    )
+                    .await?;
 
+                    bytes_received = range_end.min(end).max(bytes_received);
                     on_event(DownloadEvent::Progress {
                         bytes_received,
                         total: self.file_size,
                     });
 
-                    part_buf.extend_from_slice(data);
-                    let part_end = current_part_start + CHUNK_SIZE as u64;
-                    if bytes_received >= part_end || bytes_received >= end {
-                        let part_index = (current_part_start / CHUNK_SIZE as u64) as usize;
-                        let chunk_hash: [u8; 16] = Md4::digest(&part_buf).into();
-                        if let Some(expected) = expected_part_hash
-                            && chunk_hash != expected
-                        {
-                            warn!(
-                                part_index,
-                                part_buf_len = part_buf.len(),
-                                expected_len = (part_end.min(end)) - current_part_start,
-                                had_compressed = part_had_compressed,
-                                non_contiguous = part_non_contiguous,
-                                "MD4 mismatch diagnostics"
-                            );
-                            on_event(DownloadEvent::ChunkFailed { part_index });
-                            return Err(anyhow::Error::new(ChunkHashMismatch { part_index }));
-                        }
-                        on_event(DownloadEvent::ChunkVerified { part_index });
-                        part_buf.clear();
-                        current_part_start = bytes_received;
-                        part_had_compressed = false;
-                        part_non_contiguous = false;
-                    }
-
-                    if bytes_received >= batch_end && bytes_received < end {
+                    if bytes_received >= batch_end && total_filled < end - start {
                         send_request_parts(
                             &mut self.stream,
                             &mut self.ciphers,
@@ -1132,11 +1123,6 @@ impl Session {
                         )
                     };
 
-                    if range_start != bytes_received {
-                        part_non_contiguous = true;
-                    }
-                    part_had_compressed = true;
-
                     let decompressed = match packed.push(range_start, packed_size, &payload[hdr..])
                     {
                         Ok(Some(data)) => data,
@@ -1160,44 +1146,30 @@ impl Session {
                     self.compressed_file_bytes += decompressed.len() as u64;
                     self.compressed_wire_bytes += packed_size as u64;
 
-                    out_writer
-                        .write_all(&decompressed)
-                        .await
-                        .context("write compressed chunk data")?;
-                    bytes_received = range_end.min(end);
+                    place_block(
+                        out_writer,
+                        start,
+                        end,
+                        expected_part_hash,
+                        range_start,
+                        &decompressed,
+                        &mut current_part_start,
+                        &mut part_end,
+                        &mut part_len,
+                        &mut part_buf,
+                        &mut part_filled,
+                        &mut total_filled,
+                        on_event,
+                    )
+                    .await?;
 
+                    bytes_received = range_end.min(end).max(bytes_received);
                     on_event(DownloadEvent::Progress {
                         bytes_received,
                         total: self.file_size,
                     });
 
-                    part_buf.extend_from_slice(&decompressed);
-                    let part_end = current_part_start + CHUNK_SIZE as u64;
-                    if bytes_received >= part_end || bytes_received >= end {
-                        let part_index = (current_part_start / CHUNK_SIZE as u64) as usize;
-                        let chunk_hash: [u8; 16] = Md4::digest(&part_buf).into();
-                        if let Some(expected) = expected_part_hash
-                            && chunk_hash != expected
-                        {
-                            warn!(
-                                part_index,
-                                part_buf_len = part_buf.len(),
-                                expected_len = (part_end.min(end)) - current_part_start,
-                                had_compressed = part_had_compressed,
-                                non_contiguous = part_non_contiguous,
-                                "MD4 mismatch diagnostics"
-                            );
-                            on_event(DownloadEvent::ChunkFailed { part_index });
-                            return Err(anyhow::Error::new(ChunkHashMismatch { part_index }));
-                        }
-                        on_event(DownloadEvent::ChunkVerified { part_index });
-                        part_buf.clear();
-                        current_part_start = bytes_received;
-                        part_had_compressed = false;
-                        part_non_contiguous = false;
-                    }
-
-                    if bytes_received >= batch_end && bytes_received < end {
+                    if bytes_received >= batch_end && total_filled < end - start {
                         send_request_parts(
                             &mut self.stream,
                             &mut self.ciphers,
@@ -1221,6 +1193,116 @@ impl Session {
     }
 }
 
+/// Place one received block at its absolute file offset and into the current
+/// part buffer, advancing the part when it completes.
+///
+/// `data` is the plain (already decompressed) bytes of the block starting at
+/// absolute offset `range_start`. The block is written to `out_writer` by
+/// seeking to `range_start` first, so out-of-order delivery cannot corrupt the
+/// file. The same bytes are copied into `part_buf` at their offset within the
+/// current part `[*current_part_start, *part_end)`; once `*part_filled` covers
+/// the part, its MD4 is verified against `expected_part_hash` (when `Some`) and
+/// the cursor advances to the next part.
+///
+/// Bytes that fall outside `[*current_part_start, *part_end)` (e.g. a block that
+/// straddles a part boundary, which the daemon's one-part-per-call contract
+/// avoids) are written to disk but only the in-part portion is counted toward
+/// the part buffer; nothing panics. `total_filled` accumulates every byte that
+/// lands within `[start, end)`.
+#[allow(clippy::too_many_arguments)]
+async fn place_block<W, F>(
+    out_writer: &mut W,
+    start: u64,
+    end: u64,
+    expected_part_hash: Option<[u8; 16]>,
+    range_start: u64,
+    data: &[u8],
+    current_part_start: &mut u64,
+    part_end: &mut u64,
+    part_len: &mut usize,
+    part_buf: &mut Vec<u8>,
+    part_filled: &mut u64,
+    total_filled: &mut u64,
+    on_event: &mut F,
+) -> Result<()>
+where
+    W: tokio::io::AsyncWrite + tokio::io::AsyncSeek + Unpin,
+    F: FnMut(DownloadEvent),
+{
+    if data.is_empty() {
+        return Ok(());
+    }
+
+    // Write the block to disk at its absolute offset.
+    out_writer
+        .seek(std::io::SeekFrom::Start(range_start))
+        .await
+        .context("seek to chunk offset")?;
+    out_writer
+        .write_all(data)
+        .await
+        .context("write chunk data")?;
+
+    // Count bytes that land inside the requested range `[start, end)`.
+    let in_range_lo = range_start.max(start);
+    let in_range_hi = (range_start + data.len() as u64).min(end);
+    if in_range_hi > in_range_lo {
+        *total_filled += in_range_hi - in_range_lo;
+    }
+
+    // Place the in-part portion of the block into `part_buf`. A well-behaved
+    // peer keeps each block within a single part, but we clamp defensively.
+    let blk_end = range_start + data.len() as u64;
+    let in_part_lo = range_start.max(*current_part_start);
+    let in_part_hi = blk_end.min(*part_end);
+    if in_part_hi > in_part_lo {
+        let dst_off = (in_part_lo - *current_part_start) as usize;
+        let src_off = (in_part_lo - range_start) as usize;
+        let n = (in_part_hi - in_part_lo) as usize;
+        part_buf[dst_off..dst_off + n].copy_from_slice(&data[src_off..src_off + n]);
+        *part_filled += n as u64;
+    } else if blk_end > *part_end {
+        // The block reaches past the current part boundary (unexpected under
+        // the one-part-per-call contract). Log and keep going; the file bytes
+        // are already on disk and the MD4 over the part will catch any hole.
+        warn!(
+            range_start,
+            block_len = data.len(),
+            current_part_start = *current_part_start,
+            part_end = *part_end,
+            "block crosses part boundary; bytes beyond the part are not buffered"
+        );
+    }
+
+    // Advance through every part the accumulated data now completes. (Normally
+    // at most one; the loop also tolerates a part that was filled by earlier
+    // out-of-order blocks.)
+    while *part_filled >= *part_len as u64 && *current_part_start < end {
+        let part_index = (*current_part_start / CHUNK_SIZE as u64) as usize;
+        let chunk_hash: [u8; 16] = Md4::digest(&part_buf[..*part_len]).into();
+        if let Some(expected) = expected_part_hash
+            && chunk_hash != expected
+        {
+            on_event(DownloadEvent::ChunkFailed { part_index });
+            return Err(anyhow::Error::new(ChunkHashMismatch { part_index }));
+        }
+        on_event(DownloadEvent::ChunkVerified { part_index });
+
+        // Advance to the next part (if any).
+        *current_part_start = *part_end;
+        if *current_part_start >= end {
+            break;
+        }
+        *part_end = (*current_part_start + CHUNK_SIZE as u64).min(end);
+        *part_len = (*part_end - *current_part_start) as usize;
+        part_buf.clear();
+        part_buf.resize(*part_len, 0);
+        *part_filled = 0;
+    }
+
+    Ok(())
+}
+
 // ── download_file ─────────────────────────────────────────────────────────────
 
 /// Download a file from a single eMule peer, writing data to `out_writer`.
@@ -1234,7 +1316,7 @@ pub async fn download_file<W, F>(
     mut on_event: F,
 ) -> Result<u64>
 where
-    W: tokio::io::AsyncWrite + Unpin,
+    W: tokio::io::AsyncWrite + tokio::io::AsyncSeek + Unpin,
     F: FnMut(DownloadEvent),
 {
     let mut session = Session::connect(peer, &opts, &mut on_event).await?;
@@ -2258,5 +2340,140 @@ mod tests {
         let good = zlib_compress(b"hello world");
         let out = r.push(0, good.len(), &good).unwrap();
         assert_eq!(out.as_deref(), Some(b"hello world".as_slice()));
+    }
+
+    // ── place_block (out-of-order assembly) ─────────────────────────────────
+
+    /// Regression test for the bug where eMule blocks arriving out of order
+    /// corrupted the assembled file. `place_block` seeks to each block's
+    /// absolute offset, so the on-disk bytes must end up in order regardless of
+    /// the arrival order.
+    #[tokio::test]
+    async fn place_block_reorders_out_of_order_blocks() {
+        let data = sample_payload(1000);
+        let expected_part_hash: Option<[u8; 16]> = Some(Md4::digest(&data).into());
+
+        // Single small part: start = 0, end = 1000.
+        let start = 0u64;
+        let end = 1000u64;
+        let mut cursor = std::io::Cursor::new(Vec::<u8>::new());
+
+        let mut current_part_start = 0u64;
+        let mut part_end = 1000u64;
+        let mut part_len = 1000usize;
+        let mut part_buf = vec![0u8; 1000];
+        let mut part_filled = 0u64;
+        let mut total_filled = 0u64;
+
+        let mut events: Vec<DownloadEvent> = Vec::new();
+        let mut on_event = |e| events.push(e);
+
+        // Deliver 10 blocks of 100 bytes each, in reverse order (offset 900
+        // first, ..., offset 0 last).
+        for off in (0..1000usize).step_by(100).rev() {
+            let range_start = off as u64;
+            place_block(
+                &mut cursor,
+                start,
+                end,
+                expected_part_hash,
+                range_start,
+                &data[off..off + 100],
+                &mut current_part_start,
+                &mut part_end,
+                &mut part_len,
+                &mut part_buf,
+                &mut part_filled,
+                &mut total_filled,
+                &mut on_event,
+            )
+            .await
+            .unwrap();
+        }
+
+        // 1. The file holds `data` in the correct order despite reverse arrival.
+        assert_eq!(cursor.get_ref(), &data);
+
+        // 2. Byte counters reflect a fully completed part: the part is done and
+        //    we have advanced past the end of the range. (`part_filled` is only
+        //    reset when a *next* part starts; here the part is the last one, so
+        //    it stays at the full part length.)
+        assert_eq!(total_filled, 1000);
+        assert_eq!(current_part_start, 1000);
+        assert_eq!(current_part_start, end, "advanced past the final part");
+
+        // 3. Exactly one ChunkVerified for part 0 and no ChunkFailed.
+        let verified: Vec<usize> = events
+            .iter()
+            .filter_map(|e| match e {
+                DownloadEvent::ChunkVerified { part_index } => Some(*part_index),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(verified, vec![0]);
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, DownloadEvent::ChunkFailed { .. })),
+            "no ChunkFailed expected on a good part"
+        );
+    }
+
+    /// A wrong expected hash for the completed part must surface a
+    /// [`ChunkHashMismatch`] error and emit [`DownloadEvent::ChunkFailed`].
+    #[tokio::test]
+    async fn place_block_detects_corrupt_part() {
+        let data = sample_payload(1000);
+        let expected_part_hash: Option<[u8; 16]> = Some([0xAA; 16]); // wrong hash
+
+        let start = 0u64;
+        let end = 1000u64;
+        let mut cursor = std::io::Cursor::new(Vec::<u8>::new());
+
+        let mut current_part_start = 0u64;
+        let mut part_end = 1000u64;
+        let mut part_len = 1000usize;
+        let mut part_buf = vec![0u8; 1000];
+        let mut part_filled = 0u64;
+        let mut total_filled = 0u64;
+
+        let mut events: Vec<DownloadEvent> = Vec::new();
+        let mut on_event = |e| events.push(e);
+
+        let mut result = Ok(());
+        for off in (0..1000usize).step_by(100).rev() {
+            let range_start = off as u64;
+            result = place_block(
+                &mut cursor,
+                start,
+                end,
+                expected_part_hash,
+                range_start,
+                &data[off..off + 100],
+                &mut current_part_start,
+                &mut part_end,
+                &mut part_len,
+                &mut part_buf,
+                &mut part_filled,
+                &mut total_filled,
+                &mut on_event,
+            )
+            .await;
+        }
+
+        // The call completing the part must fail with ChunkHashMismatch.
+        let err = result.expect_err("corrupt part must error");
+        let mismatch = err
+            .downcast_ref::<ChunkHashMismatch>()
+            .expect("error should be a ChunkHashMismatch");
+        assert_eq!(mismatch.part_index, 0);
+
+        // And a ChunkFailed event for part 0 must have been emitted.
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, DownloadEvent::ChunkFailed { part_index: 0 })),
+            "expected ChunkFailed {{ part_index: 0 }}"
+        );
     }
 }
