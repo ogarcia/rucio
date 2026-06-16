@@ -13,3 +13,4 @@ under the hood.
 | [05 — Node classes](05-node-classes.md) | HighID / LowID / Unknown classification and connectivity display |
 | [06 — Hashing](06-hashing.md) | BLAKE3 content addressing, magnet link format, offline hashing |
 | [07 — eMule / Kad2](07-emule-kad.md) | eMule compatibility: KadTask, packed packets, bootstrap, ed2k download flow |
+| [08 — eMule / Kad2 limitations](08-emule-kad-limitations.md) | Inherited network quirks (not Rucio bugs): accent-sensitive search, unreliable source counts |

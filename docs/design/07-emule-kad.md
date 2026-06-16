@@ -2,7 +2,8 @@
 
 > This document covers the `rucio-emule` crate and all eMule/Kad2-related
 > behaviour. It applies only when the daemon is compiled with the
-> `emule-compat` feature flag.
+> `emule-compat` feature flag. For quirks inherited from the network itself
+> (not Rucio bugs), see [08 — eMule / Kad2 limitations](08-emule-kad-limitations.md).
 
 ## Overview
 
