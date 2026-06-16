@@ -28,6 +28,24 @@ normalization split is enforced by
 `rucio_core::protocol::search::lowercase_keyword` (Kad) versus the folding
 path used for native search.
 
+## Whole-word, minimum-length keyword index
+
+Kad indexes only **whole words of 3 or more characters**. There is no
+partial-word or substring search: a query for `1x` never matches `1x01`, and a
+keyword shorter than 3 characters returns nothing from eMule.
+
+**Why.** eMule clients tokenize a file name into whole words and publish each
+word (lowercased) of 3+ characters as a separate keyword key in the DHT. The
+index holds no entry for substrings or for 1–2 character tokens, so there is
+simply nothing to match against.
+
+**How Rucio behaves.** We skip the (guaranteed-empty) eMule lookup for 1–2
+character keywords, so those searches also finish a little faster, and
+otherwise send the whole word as-is. To get eMule matches, search a longer word
+that actually appears in the file name (e.g. `1x01` instead of `1x`). The
+user-facing version of this advice is in the
+[user search guide](../user/05-searching.md).
+
 ## Unreliable keyword source counts
 
 A Kad keyword result can report, say, **50 sources**, yet when you try to
