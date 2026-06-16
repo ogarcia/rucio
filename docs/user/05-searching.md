@@ -82,7 +82,9 @@ diacritics, so `camion` and `camión` return the same Rucio results. The
 eMule/Kad network only lowercases keywords — it does **not** fold accents — so
 `camión` and `camion` are distinct entries in its index and return different
 results. To get eMule matches, type the keyword with the same accents it has in
-the file name.
+the file name. This — and other quirks that come from the eMule network rather
+than from Rucio — is explained in
+[eMule/Kad network limitations](../design/08-emule-kad-limitations.md).
 
 **Results depend on connected peers.** If the network is small or your node has
 few connections, results may be sparse. Check `rucio node status` to see how many
@@ -91,6 +93,14 @@ peers you are connected to.
 **The same file from multiple peers is deduplicated by hash.** If three peers
 share an identical file, it appears as one row with `Peers: 3`. Rucio will
 download chunks from all of them in parallel.
+
+**On the eMule network, the peer/source count is only a hint.** A Kad result
+may advertise many sources yet have no real provider when you try to download
+it — the number is a published, unverified value cached by the network, not a
+live check. Rucio confirms real availability when it looks for providers, so a
+result that "had sources" but finds none is the network being unreliable, not a
+Rucio fault. See
+[eMule/Kad network limitations](../design/08-emule-kad-limitations.md).
 
 **You can download without searching** if you already have a magnet link:
 
