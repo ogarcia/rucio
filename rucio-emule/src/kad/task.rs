@@ -14,7 +14,6 @@
 //! - Answers commands sent via [`KadHandle`]:
 //!   - [`KadCommand::Bootstrap`]      — connect to the network from nodes.dat
 //!   - [`KadCommand::SearchSources`]  — iterative Kad2 source search
-//!   - [`KadCommand::Status`]         — return current routing-table size
 //!
 //! ## Why a single task owns the socket
 //!
@@ -103,8 +102,6 @@ pub enum KadCommand {
         file_size: u64,
         reply: oneshot::Sender<Vec<KadSource>>,
     },
-    /// Return current routing-table contact count.
-    Status { reply: oneshot::Sender<usize> },
     /// Keyword search — returns up to N results with file name, hash, size.
     SearchKeyword {
         keyword: String,
@@ -225,10 +222,14 @@ impl KadHandle {
     }
 
     /// Number of contacts currently in the routing table.
+    ///
+    /// Reads the shared routing table directly rather than round-tripping a
+    /// command through the task loop: the loop runs long operations (notably
+    /// `do_bootstrap`) inline and would not service a command for tens of
+    /// seconds, hanging every caller — including the `/emule/status` handler
+    /// the web UI's settings modal polls. Mirrors `dump_nodes_dat`.
     pub async fn contact_count(&self) -> usize {
-        let (tx, rx) = oneshot::channel();
-        let _ = self.tx.send(KadCommand::Status { reply: tx }).await;
-        rx.await.unwrap_or(0)
+        self.routing_table.read().await.len()
     }
 
     /// Read the routing table directly (non-blocking snapshot).
@@ -556,10 +557,6 @@ async fn run_task(
                         debug!(sent = pkts.len(), %target, "Started Kad2 source publish");
                         send_out_packets(&socket, pkts, our_udp_key).await;
                         active_search = Some(search);
-                    }
-                    KadCommand::Status { reply } => {
-                        let count = routing_table.read().await.len();
-                        let _ = reply.send(count);
                     }
                 }
             }
