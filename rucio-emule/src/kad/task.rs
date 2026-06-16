@@ -35,7 +35,7 @@ use crate::ed2k::Ed2kHash;
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::sync::{RwLock, mpsc, oneshot};
@@ -375,6 +375,10 @@ async fn run_task(
     // Latches once we first decode an obfuscated incoming packet, so we log
     // "obfuscation active" a single time instead of per packet.
     let mut obfusc_logged = false;
+    // Set while a detached bootstrap task is running. Keeps a second concurrent
+    // bootstrap (e.g. several downloads re-bootstrapping at once) from flooding
+    // the network with duplicate requests — it returns the current count instead.
+    let bootstrap_active = Arc::new(AtomicBool::new(false));
     if !our_external_ip.is_unspecified() {
         info!(%our_external_ip, "Using configured external IP for Kad2 obfuscation");
     }
@@ -447,7 +451,39 @@ async fn run_task(
                         }
                         if Instant::now() >= keepalive_tick {
                             keepalive_tick = Instant::now() + cfg.keepalive_interval;
-                            send_keepalive(&socket, our_id, our_udp_key, our_external_ip, &cfg, &routing_table, &last_seeds).await;
+                            // If the table got thin, re-bootstrap instead of just
+                            // pinging — detached, like the Bootstrap command, so
+                            // the loop stays responsive rather than freezing for
+                            // the whole bootstrap. The guard avoids overlapping it
+                            // with a bootstrap that is already running.
+                            let low = routing_table.read().await.len() < cfg.min_contacts;
+                            if low
+                                && !last_seeds.is_empty()
+                                && bootstrap_active
+                                    .compare_exchange(
+                                        false,
+                                        true,
+                                        Ordering::AcqRel,
+                                        Ordering::Acquire,
+                                    )
+                                    .is_ok()
+                            {
+                                info!("Kad2 routing table low — re-bootstrapping");
+                                let (tx, _rx) = oneshot::channel();
+                                spawn_bootstrap_task(
+                                    &socket,
+                                    our_id,
+                                    our_udp_key,
+                                    &cfg,
+                                    &routing_table,
+                                    last_seeds.clone(),
+                                    tx,
+                                    &bootstrap_active,
+                                );
+                            } else {
+                                send_keepalive(&socket, our_id, our_udp_key, &cfg, &routing_table)
+                                    .await;
+                            }
                         }
                         // Probe for callbacks: aggressively until we know our IP,
                         // then periodically to keep the connectivity verdict fresh.
@@ -467,16 +503,32 @@ async fn run_task(
                 match cmd {
                     KadCommand::Bootstrap { seeds, reply } => {
                         last_seeds = seeds.clone();
-                        let (count, learned_ip) = do_bootstrap(
-                            &socket, our_id, our_udp_key, our_external_ip, &cfg, &routing_table, seeds
-                        ).await;
-                        if let Some(ip) = ip_votes.record(learned_ip) {
-                            our_external_ip = ip;
-                            info!(external_ip = %ip, "External IP learned during Kad bootstrap");
+                        // Run the bootstrap detached so the loop keeps servicing
+                        // the socket (peers, keepalives, searches, commands)
+                        // while it runs. The bootstrap only *sends*; this loop
+                        // ingests every response via `handle_packet` (which also
+                        // learns our external IP through `ip_votes` below), so it
+                        // never needs the socket's read side. The guard turns a
+                        // concurrent bootstrap into a no-op that returns the
+                        // current contact count.
+                        if bootstrap_active
+                            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                            .is_ok()
+                        {
+                            spawn_bootstrap_task(
+                                &socket,
+                                our_id,
+                                our_udp_key,
+                                &cfg,
+                                &routing_table,
+                                seeds,
+                                reply,
+                                &bootstrap_active,
+                            );
+                        } else {
+                            debug!("Kad2 bootstrap already in progress — returning current count");
+                            let _ = reply.send(routing_table.read().await.len());
                         }
-                        // Ask a few contacts to connect back and report our IP.
-                        send_firewall_checks(&socket, &cfg, &routing_table, our_udp_key).await;
-                        let _ = reply.send(count);
                     }
                     KadCommand::SearchSources { hash, file_size, reply } => {
                         if active_search.is_some() {
@@ -946,156 +998,105 @@ async fn handle_packet(
     None
 }
 
-// ── Bootstrap helper ──────────────────────────────────────────────────────────
+// ── Bootstrap (send-only) ───────────────────────────────────────────────────
 
-async fn do_bootstrap(
-    socket: &UdpSocket,
+/// Spawn [`bootstrap_sender`] as a detached task. The caller must have just won
+/// the `bootstrap_active` guard via `compare_exchange(false -> true)`; the task
+/// clears it on completion. Centralises the spawn used by both the `Bootstrap`
+/// command and the keepalive's re-bootstrap-when-thin path.
+#[allow(clippy::too_many_arguments)]
+fn spawn_bootstrap_task(
+    socket: &Arc<UdpSocket>,
     our_id: KadId,
     our_udp_key: u32,
-    our_external_ip: std::net::Ipv4Addr,
     cfg: &KadTaskConfig,
     routing_table: &Arc<RwLock<RoutingTable>>,
     seeds: Vec<Contact>,
-) -> (usize, std::net::Ipv4Addr) {
+    reply: oneshot::Sender<usize>,
+    bootstrap_active: &Arc<AtomicBool>,
+) {
+    tokio::spawn(bootstrap_sender(
+        Arc::clone(socket),
+        our_id,
+        our_udp_key,
+        cfg.clone(),
+        Arc::clone(routing_table),
+        seeds,
+        reply,
+        Arc::clone(bootstrap_active),
+    ));
+}
+
+/// Drive a Kad2 bootstrap by *sending only*, run as a detached task.
+///
+/// It fires BOOTSTRAP_REQ / HELLO_REQ at the seeds, then sleeps between rounds
+/// and re-reads the shared routing table — which the main loop fills via
+/// [`handle_packet`] as the responses arrive — to query any newly discovered
+/// contacts. It never calls `recv_from`: the task loop owns the socket's read
+/// side and keeps servicing peers, keepalives, searches and commands while this
+/// runs concurrently. Replies with the final contact count, and the `active`
+/// flag is cleared on completion (including early returns / panics) via the
+/// drop guard so a later bootstrap can run.
+#[allow(clippy::too_many_arguments)]
+async fn bootstrap_sender(
+    socket: Arc<UdpSocket>,
+    our_id: KadId,
+    our_udp_key: u32,
+    cfg: KadTaskConfig,
+    routing_table: Arc<RwLock<RoutingTable>>,
+    seeds: Vec<Contact>,
+    reply: oneshot::Sender<usize>,
+    active: Arc<AtomicBool>,
+) {
+    struct ClearOnDrop(Arc<AtomicBool>);
+    impl Drop for ClearOnDrop {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::Release);
+        }
+    }
+    let _guard = ClearOnDrop(active);
+
     if seeds.is_empty() {
-        return (routing_table.read().await.len(), our_external_ip);
+        let _ = reply.send(routing_table.read().await.len());
+        return;
     }
 
     info!(seeds = seeds.len(), "Kad2 bootstrapping");
-    let mut our_external_ip = our_external_ip; // make locally mutable
+    const BOOTSTRAP_ROUNDS: usize = 5;
+    const TARGET_CONTACTS: usize = 200;
+    // Wait between rounds to let the loop ingest responses before we query the
+    // newly discovered contacts. The loop processes each packet within
+    // milliseconds, so this is just RTT slack — not a hard search deadline.
+    const ROUND_WAIT: Duration = Duration::from_millis(1500);
 
-    // ── Round 0: send BOOTSTRAP_REQ + HELLO_REQ to all seeds ─────────────
-    let mut recv_buf = [0u8; 4096];
-    let pkt = encode_bootstrap_req();
-    let hello0 = encode_hello_req(&our_id, cfg.tcp_port);
+    let boot = encode_bootstrap_req();
+    let hello = encode_hello_req(&our_id, cfg.tcp_port);
+    let mut already_queried: std::collections::HashSet<std::net::SocketAddrV4> =
+        seeds.iter().map(|c| c.socket_addr_udp()).collect();
+
+    // Round 0: BOOTSTRAP_REQ (plain — seeds accept it unobfuscated) + HELLO_REQ
+    // to every seed.
     let mut sent = 0usize;
     for seed in &seeds {
         let addr = SocketAddr::V4(seed.socket_addr_udp());
         tracing::trace!(%addr, id = %seed.id, ver = seed.version, "Sending BOOTSTRAP_REQ to seed");
-        // Send BOOTSTRAP_REQ plain — seeds accept it without obfuscation.
-        if socket.send_to(&pkt, addr).await.is_ok() {
+        if socket.send_to(&boot, addr).await.is_ok() {
             sent += 1;
         }
-        // Also send HELLO_REQ so seeds can reply with HelloRes.
-        let _ = socket.send_to(&hello0, addr).await;
+        let _ = socket.send_to(&hello, addr).await;
     }
     debug!(sent, "Sent BOOTSTRAP_REQ packets (round 0)");
 
-    // Collect responses; also send BOOTSTRAP_REQ to newly discovered contacts
-    // for up to `BOOTSTRAP_ROUNDS` additional rounds.
-    const BOOTSTRAP_ROUNDS: usize = 5;
-    const TARGET_CONTACTS: usize = 200;
-    // Maximum wall-clock time per round (hard cap).
-    const ROUND_DEADLINE_SECS: u64 = 5;
-    // If no packet arrives within this window, consider the round done early.
-    const ROUND_IDLE_SECS: u64 = 1;
-    let mut already_queried: std::collections::HashSet<std::net::SocketAddrV4> =
-        seeds.iter().map(|c| c.socket_addr_udp()).collect();
-
+    // Subsequent rounds: let the loop ingest the responses, then query any newly
+    // discovered contacts we have not queried yet.
     for round in 0..BOOTSTRAP_ROUNDS {
-        let round_deadline = Instant::now() + Duration::from_secs(ROUND_DEADLINE_SECS);
-        let mut idle_deadline = Instant::now() + Duration::from_secs(ROUND_IDLE_SECS);
-        loop {
-            let remaining = round_deadline
-                .min(idle_deadline)
-                .saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                break;
-            }
-            match timeout(remaining, socket.recv_from(&mut recv_buf)).await {
-                Ok(Ok((n, src))) => {
-                    // Reset the idle timer — we are still receiving responses.
-                    idle_deadline = Instant::now() + Duration::from_secs(ROUND_IDLE_SECS);
-                    let raw = &recv_buf[..n];
-                    // Try plain decode; if that fails, attempt deobfuscation.
-                    let decoded = {
-                        let r = decode(raw);
-                        if r.is_err() {
-                            if let SocketAddr::V4(a) = src {
-                                if let Some(plain) = super::obfuscation::deobfuscate(
-                                    raw,
-                                    our_udp_key,
-                                    *a.ip(),
-                                    Some(our_id.as_bytes()),
-                                ) {
-                                    trace!(%src, plain_hex = %hex::encode(&plain[..plain.len().min(32)]), "Deobfuscated bootstrap packet");
-                                    decode(&plain)
-                                } else {
-                                    r
-                                }
-                            } else {
-                                r
-                            }
-                        } else {
-                            r
-                        }
-                    };
-                    match decoded {
-                        Ok(KadPacket::BootstrapRes(res)) => {
-                            let mut rt = routing_table.write().await;
-                            for c in res.contacts {
-                                rt.insert(c);
-                            }
-                            debug!(
-                                "BootstrapRes from {src} (round {round}), table={}",
-                                rt.len()
-                            );
-                        }
-                        Ok(KadPacket::HelloReq(hello)) | Ok(KadPacket::HelloRes(hello)) => {
-                            if let SocketAddr::V4(addr) = src {
-                                trace!(
-                                    %src,
-                                    id = %hello.id,
-                                    ver = hello.version,
-                                    tag_count = hello.tag_count,
-                                    udp_key = ?hello.udp_key,
-                                    sender_ip = ?hello.sender_ip,
-                                    "Bootstrap HelloReq/Res"
-                                );
-                                // Learn our external IP from TAG_SENDER_IP in HelloRes.
-                                if our_external_ip.is_unspecified()
-                                    && let Some(our_ip) = hello.sender_ip
-                                    && !our_ip.is_unspecified()
-                                {
-                                    our_external_ip = our_ip;
-                                    debug!(%our_external_ip, "Learned external IP from bootstrap HelloRes");
-                                }
-                                let contact = Contact {
-                                    id: hello.id,
-                                    ip: *addr.ip(),
-                                    udp_port: addr.port(),
-                                    tcp_port: hello.tcp_port,
-                                    version: hello.version,
-                                    udp_key: hello.udp_key,
-                                };
-                                routing_table.write().await.insert_or_update_key(contact);
-                            }
-                            let ack = encode_hello_res_ack(&our_id);
-                            let _ = socket.send_to(&ack, src).await;
-                        }
-                        Ok(other) => {
-                            tracing::trace!("bootstrap: unexpected packet from {src}: {other:?}");
-                        }
-                        Err(e) => {
-                            tracing::trace!(
-                                "bootstrap: unrecognised packet from {src}: {e:?} bytes={}",
-                                n
-                            );
-                        }
-                    }
-                }
-                Ok(Err(e)) => warn!("bootstrap recv error: {e}"),
-                Err(_) => break, // timeout (idle or hard deadline)
-            }
-        }
+        tokio::time::sleep(ROUND_WAIT).await;
 
         let count = routing_table.read().await.len();
         if count >= TARGET_CONTACTS {
             break;
         }
-
-        // Send BOOTSTRAP_REQ + HELLO_REQ to newly discovered contacts.
-        let new_contacts: Vec<_> = {
+        let new_contacts: Vec<Contact> = {
             let rt = routing_table.read().await;
             rt.all_contacts()
                 .filter(|c| !already_queried.contains(&c.socket_addr_udp()))
@@ -1110,27 +1111,28 @@ async fn do_bootstrap(
             round = round + 1,
             "Starting next bootstrap round"
         );
-        let hello = encode_hello_req(&our_id, cfg.tcp_port);
         for c in &new_contacts {
             let addr = SocketAddr::V4(c.socket_addr_udp());
             already_queried.insert(c.socket_addr_udp());
-            let _ = socket.send_to(&pkt, addr).await;
-            // Send HELLO_REQ: use the peer's known UDPKey if available, otherwise plain.
-            // (key_from_kad_id doesn't work in practice — peers don't implement it)
-            send_kad_pkt(socket, &hello, addr, c.udp_key, our_udp_key).await;
+            let _ = socket.send_to(&boot, addr).await;
+            // HELLO_REQ: use the peer's known UDPKey if available, otherwise plain.
+            send_kad_pkt(&socket, &hello, addr, c.udp_key, our_udp_key).await;
         }
     }
 
     // After bootstrap we only have contacts in low-indexed XOR buckets (far nodes).
     // Run an iterative find_node(our_id) to discover near-neighbourhood contacts.
-    do_find_node(socket, our_id, our_udp_key, cfg, routing_table).await;
+    find_node_sender(&socket, our_id, our_udp_key, &cfg, &routing_table).await;
+
+    // Ask a few contacts to connect back and report our external IP.
+    send_firewall_checks(&socket, &cfg, &routing_table, our_udp_key).await;
 
     let count = routing_table.read().await.len();
     info!(contacts = count, "Kad2 bootstrap complete");
-    (count, our_external_ip)
+    let _ = reply.send(count);
 }
 
-// ── Post-bootstrap find_node ──────────────────────────────────────────────────
+// ── Post-bootstrap find_node (send-only) ─────────────────────────────────────
 
 /// Iterative find-node lookup for `our_id` to fill near-neighbourhood k-buckets.
 ///
@@ -1138,7 +1140,11 @@ async fn do_bootstrap(
 /// BOOTSTRAP_RES returns arbitrary contacts.  Querying the closest known contacts
 /// for nodes near our own ID iteratively discovers high-indexed buckets (nodes
 /// XOR-close to us), which are essential for search convergence near our keyspace.
-async fn do_find_node(
+///
+/// Send-only, like [`bootstrap_sender`]: it queries the closest known contacts,
+/// sleeps to let the loop ingest the RES contacts (via [`handle_packet`]), and
+/// repeats. It never reads the socket.
+async fn find_node_sender(
     socket: &UdpSocket,
     our_id: KadId,
     our_udp_key: u32,
@@ -1146,15 +1152,13 @@ async fn do_find_node(
     routing_table: &Arc<RwLock<RoutingTable>>,
 ) {
     const ROUNDS: usize = 3;
-    const ROUND_SECS: u64 = 4;
-    const IDLE_SECS: u64 = 1;
+    const ROUND_WAIT: Duration = Duration::from_millis(1500);
 
     let req = encode_req(0, &our_id, &our_id);
-    let mut recv_buf = [0u8; 4096];
     let mut queried: std::collections::HashSet<std::net::SocketAddrV4> = Default::default();
 
     for round in 0..ROUNDS {
-        let candidates: Vec<_> = {
+        let candidates: Vec<Contact> = {
             let rt = routing_table.read().await;
             rt.closest_to(&our_id, cfg.alpha)
                 .into_iter()
@@ -1170,59 +1174,7 @@ async fn do_find_node(
             send_kad_pkt(socket, &req, addr, c.udp_key, our_udp_key).await;
         }
         debug!(sent = candidates.len(), round, "Kad2 find_node round");
-
-        let deadline = Instant::now() + Duration::from_secs(ROUND_SECS);
-        let mut idle = Instant::now() + Duration::from_secs(IDLE_SECS);
-        loop {
-            let remaining = deadline.min(idle).saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                break;
-            }
-            match timeout(remaining, socket.recv_from(&mut recv_buf)).await {
-                Ok(Ok((n, src))) => {
-                    idle = Instant::now() + Duration::from_secs(IDLE_SECS);
-                    let raw = &recv_buf[..n];
-                    let decoded = match decode(raw) {
-                        Ok(p) => Ok(p),
-                        Err(_) => {
-                            if let SocketAddr::V4(a) = src {
-                                if let Some(plain) = super::obfuscation::deobfuscate(
-                                    raw,
-                                    our_udp_key,
-                                    *a.ip(),
-                                    Some(our_id.as_bytes()),
-                                ) {
-                                    decode(&plain)
-                                } else {
-                                    continue;
-                                }
-                            } else {
-                                continue;
-                            }
-                        }
-                    };
-                    match decoded {
-                        Ok(KadPacket::Res(res)) => {
-                            let mut rt = routing_table.write().await;
-                            for c in res.contacts {
-                                rt.insert(c);
-                            }
-                        }
-                        Ok(KadPacket::BootstrapRes(res)) => {
-                            let mut rt = routing_table.write().await;
-                            for c in res.contacts {
-                                rt.insert(c);
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                _ => break,
-            }
-        }
-
-        let count = routing_table.read().await.len();
-        debug!(contacts = count, round, "Kad2 find_node round complete");
+        tokio::time::sleep(ROUND_WAIT).await;
     }
 
     let count = routing_table.read().await.len();
@@ -1231,41 +1183,16 @@ async fn do_find_node(
 
 // ── Keep-alive ────────────────────────────────────────────────────────────────
 
+/// Re-bootstrapping when the table is thin is handled by the task loop (see the
+/// keepalive branch), which spawns it detached — so this only ever pings.
 async fn send_keepalive(
     socket: &UdpSocket,
     our_id: KadId,
     our_udp_key: u32,
-    our_external_ip: std::net::Ipv4Addr,
     cfg: &KadTaskConfig,
     routing_table: &Arc<RwLock<RoutingTable>>,
-    last_seeds: &[Contact],
 ) {
     let count = routing_table.read().await.len();
-
-    if count < cfg.min_contacts {
-        // Routing table is too small — re-bootstrap instead of just pinging.
-        if last_seeds.is_empty() {
-            debug!("Kad2 keepalive: routing table low ({count}) but no seeds available, skipping");
-            return;
-        }
-        info!(
-            contacts = count,
-            min = cfg.min_contacts,
-            seeds = last_seeds.len(),
-            "Kad2 routing table low — re-bootstrapping"
-        );
-        do_bootstrap(
-            socket,
-            our_id,
-            our_udp_key,
-            our_external_ip,
-            cfg,
-            routing_table,
-            last_seeds.to_vec(),
-        )
-        .await;
-        return;
-    }
 
     // Normal keepalive: send HELLO_REQ to 3 randomly-selected contacts so that
     // we cycle through the whole table over time rather than always hitting the
