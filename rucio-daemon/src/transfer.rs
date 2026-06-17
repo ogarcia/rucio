@@ -2288,7 +2288,12 @@ async fn build_manifest_response(db: &Db, root_hash: &[u8; 32]) -> ManifestRespo
 
     let file_row = match file_row {
         Ok(Some(r)) => r,
-        Ok(None) => return ManifestResponse::NotFound,
+        // Not a completed share — fall back to an in-progress download
+        // (partial sharing). The manifest is pure metadata, all of which the
+        // download row already knows, so a partial node can bootstrap a fresh
+        // downloader even before it has the whole file (and even if the origin
+        // seeder has gone away). Downloads use the fixed rucio chunk size.
+        Ok(None) => return manifest_from_download(db, root_hash).await,
         Err(e) => return ManifestResponse::Error(e.to_string()),
     };
 
@@ -2304,6 +2309,27 @@ async fn build_manifest_response(db: &Db, root_hash: &[u8; 32]) -> ManifestRespo
         total_size,
         chunk_size,
         chunk_count: derive_chunk_count(total_size, chunk_size),
+    }
+}
+
+/// Manifest for a file we are still downloading (partial sharing): the metadata
+/// comes from the `downloads` row, with the fixed rucio chunk size. Lets a peer
+/// that only knows a partial node still fetch the manifest and start pulling the
+/// chunks that node already holds.
+async fn manifest_from_download(db: &Db, root_hash: &[u8; 32]) -> ManifestResponse {
+    match db::downloads::get_by_root_hash(db, root_hash).await {
+        Ok(Some(dl)) => {
+            let total_size = dl.total_size as u64;
+            ManifestResponse::Ok {
+                root_hash: *root_hash,
+                name: dl.name,
+                total_size,
+                chunk_size: CHUNK_SIZE,
+                chunk_count: derive_chunk_count(total_size, CHUNK_SIZE),
+            }
+        }
+        Ok(None) => ManifestResponse::NotFound,
+        Err(e) => ManifestResponse::Error(e.to_string()),
     }
 }
 
