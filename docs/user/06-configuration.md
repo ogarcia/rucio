@@ -98,6 +98,41 @@ rucio config unset storage.temp_dir
 
 ---
 
+### `storage.outboard_dir`
+
+Directory for the **bao outboard cache** of completed shares — one small
+`<root_hash>.obao` sidecar per served file (sharded into subdirectories by the
+first hash byte). These are the BLAKE3 verified-streaming Merkle trees that let
+the node serve any chunk with a self-verifying proof; they are **regenerable**
+from the file at any time, so the directory is safe to wipe.
+
+It defaults to a directory **beside** `temp_dir` (not inside it), so the
+short-lived transfer scratch and this longer-lived cache stay independent. It is
+configurable on its own because a large library's outboards add up (about
+1/16384 of the total shared bytes — roughly 3 MB per 50 GB shared) and you may
+want them on a different volume. In-progress downloads keep their partial
+outboard next to the `.part` file in `temp_dir`, not here.
+
+Most entries are written **lazily** — the first time a peer requests a chunk of
+a file — so a freshly-started node with a small library may have an empty (or
+absent until first served) outboard directory. Only files at or above 1 GiB get
+their outboard persisted eagerly at index time. The directory itself is created
+on startup.
+
+```sh
+rucio config set storage.outboard_dir /mnt/big/rucio-outboards
+rucio config unset storage.outboard_dir     # back to <cache>/rucio/outboards
+```
+
+**Default:**
+
+| Platform | Default path |
+|---|---|
+| Linux | `~/.cache/rucio/outboards` |
+| macOS | `~/Library/Caches/rucio/outboards` |
+
+---
+
 ### `storage.shared_dirs`
 
 A list of directories to share **declaratively**, in addition to any you add
@@ -428,6 +463,31 @@ rucio config set emule.enabled true
 
 ---
 
+### `emule.identity_path`
+
+Path to the persistent **eMule user-hash identity** — the 16-byte hash advertised
+to eMule peers that keys your upload credit (and thus your queue priority). It is
+generated on first start if absent; back it up to keep the credit you earn by
+seeding across reinstalls. The libp2p mirror of this is `node.identity_path`.
+
+Kept separate from `node.identity_path` so each can be relocated independently,
+but defaults next to it (`emule_identity.key` in the same config dir) so both
+node identities sit together out of the box.
+
+```sh
+rucio config set emule.identity_path /mnt/data/emule_identity.key
+rucio config unset emule.identity_path
+```
+
+**Default:**
+
+| Platform | Default path |
+|---|---|
+| Linux | `~/.config/rucio/emule_identity.key` |
+| macOS | `~/Library/Application Support/rucio/emule_identity.key` |
+
+---
+
 ### `emule.tcp_port`
 
 TCP port on which ruciod listens for incoming eMule peer connections.
@@ -646,6 +706,7 @@ exclusive_bootstrap  = false       # true = use only the peers above (separate n
 # download_dir   = "~/Downloads/rucio/downloads"
 # pin_dir        = "~/Downloads/rucio/pins"
 # temp_dir       = "~/.cache/rucio/tmp"
+# outboard_dir   = "~/.cache/rucio/outboards"  # regenerable bao cache; relocate for large libraries
 # nodes_dat_path = "~/.local/share/rucio/nodes.dat"  # omit to disable Kad bootstrap
 # shared_dirs    = ["/srv/media"]  # protected shares declared here, survive a DB reset
 
@@ -657,6 +718,7 @@ download_slots_per_file  = 5
 max_upload_slots         = 4
 max_concurrent_downloads = 3
 min_source_speed_kib_s   = 2
+# identity_path = "~/.config/rucio/emule_identity.key"  # user-hash credit identity
 # temp_dir     = "~/.cache/rucio/emule-tmp"  # platform default
 # external_ip  = "1.2.3.4"                   # auto-detected via UPnP or peer responses
 ```
@@ -677,9 +739,11 @@ the file value untouched.
 |---|---|---|---|
 | `RUCIOD_API_LISTEN` | `api.listen` | `127.0.0.1:3003` | `host:port` |
 | `RUCIOD_P2P_LISTEN` | `node.listen_addrs` | `/ip4/0.0.0.0/tcp/4321,/ip6/::/tcp/4321` | comma-separated multiaddrs |
-| `RUCIOD_BASE_DIR` | *(portable mode)* | *(unset)* | absolute path — roots identity, DB, downloads, temp, pins and nodes.dat under one dir |
+| `RUCIOD_IDENTITY_PATH` | `node.identity_path` | `<config dir>/identity.key` | path |
+| `RUCIOD_BASE_DIR` | *(portable mode)* | *(unset)* | absolute path — roots identity, DB, downloads, temp, outboards, pins and nodes.dat under one dir |
 | `RUCIOD_DOWNLOAD_DIR` | `storage.download_dir` | platform default | path |
 | `RUCIOD_TEMP_DIR` | `storage.temp_dir` | platform default | path |
+| `RUCIOD_OUTBOARD_DIR` | `storage.outboard_dir` | `<cache>/rucio/outboards` | path |
 | `RUCIOD_PIN_DIR` | `storage.pin_dir` | platform default | path |
 | `RUCIOD_DB_PATH` | `storage.database_path` | platform default | path |
 | `RUCIOD_SHARED_DIRS` | `storage.shared_dirs` | *(empty)* | comma-separated paths |
@@ -692,6 +756,7 @@ the file value untouched.
 | `RUCIOD_UPNP` | `network.upnp` | `true` | `true`/`false` (also `1`/`0`, `yes`/`no`, `on`/`off`) |
 | `RUCIOD_NODES_DAT` | `storage.nodes_dat_path` | *(unset)* | path |
 | `RUCIOD_EMULE_ENABLED` | `emule.enabled` | `true` | `true`/`false` (also `1`/`0`, `yes`/`no`, `on`/`off`) |
+| `RUCIOD_EMULE_IDENTITY_PATH` | `emule.identity_path` | `<config dir>/emule_identity.key` | path |
 | `RUCIOD_EMULE_TEMP_DIR` | `emule.temp_dir` | platform default | path |
 | `RUCIOD_EMULE_TCP_PORT` | `emule.tcp_port` | `4662` | integer 1–65535 |
 | `RUCIOD_EMULE_UDP_PORT` | `emule.udp_port` | `4672` | integer 1–65535 |

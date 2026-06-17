@@ -1671,9 +1671,10 @@ pub async fn run_ed2k_download(
     // libp2p DHT immediately (rather than only after a restart's reconcile sees
     // it as "added"). This re-reads the file to compute the canonical BLAKE3
     // root hash — the real Rucio id — which we then report. eMule downloads are
-    // often large, so persist the outboard eagerly (Some temp_dir).
+    // often large, so persist the outboard eagerly (Some outboard_dir).
     let rucio_root_hex =
-        match crate::api::shares::index_file(db, &final_path, Some(&config.storage.temp_dir)).await
+        match crate::api::shares::index_file(db, &final_path, Some(&config.storage.outboard_dir))
+            .await
         {
             Ok(root_hash) => {
                 // Announce to the DHT so the file is shared in real time.

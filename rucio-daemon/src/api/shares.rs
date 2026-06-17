@@ -266,7 +266,7 @@ pub async fn add_share(
     let db = state.db.clone();
     let cmd_tx = state.node_cmd.clone();
     let indexing_count = state.indexing_count.clone();
-    let temp_dir = state.config.storage.temp_dir.clone();
+    let outboard_dir = state.config.storage.outboard_dir.clone();
     indexing_count.fetch_add(total, Ordering::Relaxed);
     // Latch so the main loop fires an "indexing complete" notification once this
     // batch drains, even if it finishes between two ws ticks.
@@ -274,7 +274,7 @@ pub async fn add_share(
     tokio::spawn(async move {
         let mut errors: Vec<String> = vec![];
         for path in paths {
-            match index_file(&db, &path, Some(&temp_dir)).await {
+            match index_file(&db, &path, Some(&outboard_dir)).await {
                 Ok(root_hash) => {
                     // Announce to Kademlia that we provide this hash.
                     let _ = cmd_tx
@@ -429,7 +429,7 @@ pub async fn remove_share(
                 .send(crate::node::messages::NodeCmd::StopProviding(arr.to_vec()))
                 .await;
             // Drop the regenerable outboard cache for this hash.
-            crate::transfer::remove_share_outboard(&state.config.storage.temp_dir, &arr).await;
+            crate::transfer::remove_share_outboard(&state.config.storage.outboard_dir, &arr).await;
             StatusCode::NO_CONTENT
         }
         Ok(false) => StatusCode::NOT_FOUND,
@@ -510,8 +510,11 @@ pub async fn remove_shares_by_path(
             // outboard.
             for hash in hashes {
                 if let Ok(arr) = <[u8; 32]>::try_from(hash.as_slice()) {
-                    crate::transfer::remove_share_outboard(&state.config.storage.temp_dir, &arr)
-                        .await;
+                    crate::transfer::remove_share_outboard(
+                        &state.config.storage.outboard_dir,
+                        &arr,
+                    )
+                    .await;
                 }
                 let _ = state
                     .node_cmd
@@ -576,15 +579,15 @@ pub(crate) fn file_mtime_secs(path: &Path) -> i64 {
 
 /// Index a file into the share list and return its root hash.
 ///
-/// `temp_dir` is the daemon's temp dir (parent of the outboard cache): when
-/// `Some`, a large file's bao outboard — already computed as a byproduct of
-/// hashing — is persisted to the cache so the first chunk request doesn't re-read
-/// the whole file to rebuild it. Pass `None` to skip that (the lazy serve path
-/// regenerates it on demand).
+/// `outboard_dir` is the share outboard cache directory: when `Some`, a large
+/// file's bao outboard — already computed as a byproduct of hashing — is
+/// persisted to the cache so the first chunk request doesn't re-read the whole
+/// file to rebuild it. Pass `None` to skip that (the lazy serve path regenerates
+/// it on demand).
 pub(crate) async fn index_file(
     db: &crate::db::Db,
     path: &Path,
-    temp_dir: Option<&Path>,
+    outboard_dir: Option<&Path>,
 ) -> anyhow::Result<[u8; 32]> {
     // Idempotent: if this path is already indexed with the same size + mtime,
     // the content is unchanged — return the existing root hash without
@@ -638,9 +641,9 @@ pub(crate) async fn index_file(
 
     // Save the outboard for large files so the first peer to request a chunk
     // doesn't trigger a full re-read to rebuild it (no-op below the threshold).
-    if let Some(temp_dir) = temp_dir {
+    if let Some(outboard_dir) = outboard_dir {
         crate::transfer::persist_share_outboard_if_large(
-            temp_dir,
+            outboard_dir,
             &fh.root_hash,
             fh.size,
             &fh.outboard,

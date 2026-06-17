@@ -152,6 +152,13 @@ pub async fn show(client: &ApiClient) -> Result<()> {
         )
     );
     println!(
+        "  outboard_dir  = {}",
+        pending_scalar(
+            &cur.storage.outboard_dir,
+            p.map(|p| p.storage.outboard_dir.as_str()),
+        )
+    );
+    println!(
         "  database_path = {}",
         pending_scalar(
             &cur.storage.database_path,
@@ -168,6 +175,10 @@ pub async fn show(client: &ApiClient) -> Result<()> {
             &e.enabled.to_string(),
             pe.map(|pe| pe.enabled.to_string()).as_deref(),
         )
+    );
+    println!(
+        "  identity_path            = {}",
+        color::value(&e.identity_path)
     );
     println!(
         "  temp_dir                 = {}",
@@ -232,6 +243,7 @@ pub async fn set(client: &ApiClient, key: &str, value: &str) -> Result<()> {
     match key {
         "storage.download_dir" => c.storage.download_dir = value.to_string(),
         "storage.temp_dir" => c.storage.temp_dir = value.to_string(),
+        "storage.outboard_dir" => c.storage.outboard_dir = value.to_string(),
         "network.bootstrap_peers" => {
             if !c.network.bootstrap_peers.contains(&value.to_string()) {
                 c.network.bootstrap_peers.push(value.to_string());
@@ -283,6 +295,7 @@ pub async fn set(client: &ApiClient, key: &str, value: &str) -> Result<()> {
              Settable keys:\n\
                storage.download_dir\n\
                storage.temp_dir\n\
+               storage.outboard_dir\n\
                network.bootstrap_peers         (appends)\n\
                node.listen_addrs               (appends)\n\
                network.upload_limit_kbps       (KB/s, 0 = unlimited, applied immediately)\n\

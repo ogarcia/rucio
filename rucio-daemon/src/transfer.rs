@@ -339,6 +339,7 @@ impl DownloadEngine {
         dest_dir: PathBuf,
         pin_dir: PathBuf,
         temp_dir: PathBuf,
+        outboard_dir: PathBuf,
         metrics: Arc<Metrics>,
         upload_semaphore: Arc<Semaphore>,
         upload_scheduler: Arc<crate::upload_scheduler::UploadScheduler>,
@@ -347,7 +348,6 @@ impl DownloadEngine {
         upload_stats: Arc<crate::upload_stats::UploadRegistry>,
         notifier: crate::notifier::Notifier,
     ) -> Self {
-        let outboard_dir = outboards_dir(&temp_dir);
         Self {
             db,
             cmd_tx,
@@ -2047,13 +2047,6 @@ fn partial_outboard_path(dest_path: &std::path::Path) -> PathBuf {
     PathBuf::from(s)
 }
 
-/// The share outboard cache directory, derived from the daemon's `temp_dir`.
-/// Holds the regenerable bao outboards of *completed* shares (in-progress
-/// downloads keep theirs next to the `.part`, not here).
-pub fn outboards_dir(temp_dir: &std::path::Path) -> PathBuf {
-    temp_dir.join("outboards")
-}
-
 /// The cached full outboard for a *completed* share, keyed by root hash:
 /// `<outboard_dir>/<aa>/<root_hex>.obao`, where `aa` is the first hash byte in
 /// hex. Sharding by the first byte (256 buckets) keeps any single directory
@@ -2078,7 +2071,7 @@ pub const EAGER_OUTBOARD_THRESHOLD: u64 = 1024 * 1024 * 1024; // 1 GiB
 /// this just saves it rather than recomputing later. Best-effort: on any error
 /// the lazy path regenerates it on first serve.
 pub async fn persist_share_outboard_if_large(
-    temp_dir: &std::path::Path,
+    outboard_dir: &std::path::Path,
     root_hash: &[u8; 32],
     size: u64,
     outboard: &[u8],
@@ -2086,7 +2079,7 @@ pub async fn persist_share_outboard_if_large(
     if size < EAGER_OUTBOARD_THRESHOLD {
         return;
     }
-    let path = share_outboard_path(&outboards_dir(temp_dir), root_hash);
+    let path = share_outboard_path(outboard_dir, root_hash);
     if let Some(parent) = path.parent()
         && tokio::fs::create_dir_all(parent).await.is_err()
     {
@@ -2095,27 +2088,26 @@ pub async fn persist_share_outboard_if_large(
     let _ = tokio::fs::write(&path, outboard).await;
 }
 
-/// Best-effort removal of a completed share's cached outboard, given the
-/// daemon's `temp_dir`. Called when a share is un-indexed so its `.obao`
-/// doesn't linger. A missing file is fine (lazily generated, may never have
-/// existed). The shard subdirectory is left in place — it's reused by sibling
-/// hashes and pruning it would race concurrent writers.
-pub async fn remove_share_outboard(temp_dir: &std::path::Path, root_hash: &[u8; 32]) {
-    let path = share_outboard_path(&outboards_dir(temp_dir), root_hash);
+/// Best-effort removal of a completed share's cached outboard from the share
+/// outboard cache (`outboard_dir`). Called when a share is un-indexed so its
+/// `.obao` doesn't linger. A missing file is fine (lazily generated, may never
+/// have existed). The shard subdirectory is left in place — it's reused by
+/// sibling hashes and pruning it would race concurrent writers.
+pub async fn remove_share_outboard(outboard_dir: &std::path::Path, root_hash: &[u8; 32]) {
+    let path = share_outboard_path(outboard_dir, root_hash);
     let _ = tokio::fs::remove_file(path).await;
 }
 
-/// Garbage-collect orphaned share outboards: walk `<temp_dir>/outboards` and
+/// Garbage-collect orphaned share outboards: walk the `outboard_dir` cache and
 /// delete every `.obao` whose root hash is no longer a completed share. The
 /// cache holds only completed-share outboards (keyed by root hash), so the
 /// `shared_files` table is the authority. Cheap on a stable library (a sharded
 /// directory walk + one indexed lookup per file) and a backstop for removals
 /// that didn't clean up inline (watcher de-index, startup reconcile, a crash
 /// between the DB delete and the file delete). Returns the number removed.
-pub async fn gc_orphan_outboards(db: &Db, temp_dir: &std::path::Path) -> usize {
-    let dir = outboards_dir(temp_dir);
+pub async fn gc_orphan_outboards(db: &Db, outboard_dir: &std::path::Path) -> usize {
     let mut removed = 0usize;
-    let mut buckets = match tokio::fs::read_dir(&dir).await {
+    let mut buckets = match tokio::fs::read_dir(outboard_dir).await {
         Ok(rd) => rd,
         Err(_) => return 0, // cache dir doesn't exist yet — nothing to GC
     };
@@ -2553,6 +2545,7 @@ mod tests {
             tmp.path().to_path_buf(),
             tmp.path().join("pins"),
             tmp.path().to_path_buf(),
+            tmp.path().join("outboards"),
             metrics,
             Arc::new(tokio::sync::Semaphore::new(64)),
             Arc::new(crate::upload_scheduler::UploadScheduler::new()),
@@ -2795,7 +2788,7 @@ mod tests {
         .unwrap();
 
         for h in [&live, &orphan] {
-            let p = share_outboard_path(&outboards_dir(temp), h);
+            let p = share_outboard_path(temp, h);
             tokio::fs::create_dir_all(p.parent().unwrap())
                 .await
                 .unwrap();
@@ -2805,11 +2798,11 @@ mod tests {
         let removed = gc_orphan_outboards(&db, temp).await;
         assert_eq!(removed, 1, "exactly the orphan should be pruned");
         assert!(
-            share_outboard_path(&outboards_dir(temp), &live).exists(),
+            share_outboard_path(temp, &live).exists(),
             "the live share's outboard must survive"
         );
         assert!(
-            !share_outboard_path(&outboards_dir(temp), &orphan).exists(),
+            !share_outboard_path(temp, &orphan).exists(),
             "the orphan outboard must be gone"
         );
     }
@@ -2819,7 +2812,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let temp = dir.path();
         let h = [0x33u8; 32];
-        let p = share_outboard_path(&outboards_dir(temp), &h);
+        let p = share_outboard_path(temp, &h);
         tokio::fs::create_dir_all(p.parent().unwrap())
             .await
             .unwrap();

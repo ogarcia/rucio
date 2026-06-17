@@ -116,6 +116,7 @@ pub fn ConfigModal(
     // Storage fields (database_path is read-only).
     let f_st_dl = RwSignal::new(String::new());
     let f_st_tmp = RwSignal::new(String::new());
+    let f_st_outboard = RwSignal::new(String::new());
     let f_st_pin = RwSignal::new(String::new());
     let f_st_db = RwSignal::new(String::new());
     // eMule fields.
@@ -168,6 +169,7 @@ pub fn ConfigModal(
                 f_excl_boot.set(snap.network.exclusive_bootstrap);
                 f_st_dl.set(snap.storage.download_dir.clone());
                 f_st_tmp.set(snap.storage.temp_dir.clone());
+                f_st_outboard.set(snap.storage.outboard_dir.clone());
                 f_st_pin.set(snap.storage.pin_dir.clone());
                 f_st_db.set(snap.storage.database_path.clone());
                 f_em_enabled.set(snap.emule.enabled);
@@ -247,6 +249,7 @@ pub fn ConfigModal(
         // Storage (database_path is read-only and left as loaded).
         snap.storage.download_dir = f_st_dl.get_untracked().trim().to_string();
         snap.storage.temp_dir = f_st_tmp.get_untracked().trim().to_string();
+        snap.storage.outboard_dir = f_st_outboard.get_untracked().trim().to_string();
         snap.storage.pin_dir = f_st_pin.get_untracked().trim().to_string();
         // eMule. Numeric fields keep their previous value if left blank/invalid.
         snap.emule.enabled = f_em_enabled.get_untracked();
@@ -445,6 +448,12 @@ pub fn ConfigModal(
                                         <input class="config-input" type="text"
                                             prop:value=move || f_st_tmp.get()
                                             on:input=move |e| f_st_tmp.set(event_target_value(&e))/>
+                                    </div>
+                                    <div class="config-field">
+                                        <label class="config-label">"Outboard directory"</label>
+                                        <input class="config-input" type="text"
+                                            prop:value=move || f_st_outboard.get()
+                                            on:input=move |e| f_st_outboard.set(event_target_value(&e))/>
                                     </div>
                                     <div class="config-field">
                                         <label class="config-label">"Database path (read-only)"</label>

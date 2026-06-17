@@ -61,6 +61,11 @@ pub struct ConfigSnapshot {
 pub struct EmuleConfig {
     /// Whether the eMule / Kad2 subsystem is enabled at runtime.
     pub enabled: bool,
+    /// Path to the eMule user-hash identity file (credit identity). Read-only:
+    /// shown for information but, like `node.identity_path`, not writable at
+    /// runtime.
+    #[serde(default)]
+    pub identity_path: String,
     /// Directory where in-progress eMule `.part` files are stored.
     pub temp_dir: String,
     /// UDP port for the Kad2 socket.
@@ -132,6 +137,9 @@ fn default_temp_limit() -> u64 {
 pub struct StorageConfig {
     pub download_dir: String,
     pub temp_dir: String,
+    /// Directory for the regenerable bao outboard cache of completed shares.
+    #[serde(default)]
+    pub outboard_dir: String,
     /// Directory where pinned (fetched-and-kept) content lives.
     #[serde(default)]
     pub pin_dir: String,

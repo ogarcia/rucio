@@ -216,6 +216,14 @@ pub struct EmuleConfig {
     #[serde(default = "EmuleConfig::default_enabled")]
     pub enabled: bool,
 
+    /// Path to the persistent eMule user-hash identity file (the credit identity
+    /// advertised to peers). Kept separate from `node.identity_path` so each can
+    /// be relocated independently, but defaults next to it (`emule_identity.key`
+    /// in the config dir) so both node identities sit together out of the box.
+    /// Override via `RUCIOD_EMULE_IDENTITY_PATH`.
+    #[serde(default = "default_emule_identity_path")]
+    pub identity_path: PathBuf,
+
     /// Directory for in-progress eMule downloads (.part files).
     ///
     /// Separate from the rucio temp dir so eMule and libp2p partials never
@@ -335,6 +343,7 @@ impl Default for EmuleConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            identity_path: default_emule_identity_path(),
             temp_dir: default_emule_temp_dir(),
             tcp_port: Self::default_tcp_port(),
             udp_port: 4672,
@@ -357,6 +366,17 @@ pub struct StorageConfig {
     /// Chunks that are already downloaded are shared from here.
     /// Files are moved to `download_dir` once fully downloaded.
     pub temp_dir: PathBuf,
+    /// Directory for the regenerable bao outboard cache of completed shares
+    /// (one `<root_hex>.obao` per served file, sharded by the first hash byte).
+    /// Defaults to `<cache>/rucio/outboards` — a sibling of `temp_dir`, not
+    /// inside it, so the transfer scratch and this longer-lived cache stay
+    /// independent. Configurable because a large library's outboards can add up
+    /// (~1/16384 of total shared bytes) and the user may want them off the cache
+    /// volume. Disposable — every entry is rebuilt from the file on demand.
+    /// `serde(default)` so configs written before this key existed still load.
+    /// Override via `RUCIOD_OUTBOARD_DIR`.
+    #[serde(default = "default_outboard_dir")]
+    pub outboard_dir: PathBuf,
     /// Directory where pinned files (fetched to keep available) are stored and
     /// always shared. Kept separate from `download_dir` so it is unambiguous
     /// which content the node hosts on purpose. `serde(default)` so configs
@@ -405,6 +425,7 @@ impl Default for StorageConfig {
         Self {
             download_dir: default_download_dir(),
             temp_dir: default_temp_dir(),
+            outboard_dir: default_outboard_dir(),
             pin_dir: default_pin_dir(),
             database_path: default_data_dir().join("rucio.db"),
             nodes_dat_path: None,
@@ -511,6 +532,13 @@ fn xdg_download_dir(home: &std::path::Path) -> Option<PathBuf> {
     None
 }
 
+/// Default path for the eMule user-hash identity: `emule_identity.key` in the
+/// same config dir as the libp2p `identity.key`. Honours `RUCIOD_BASE_DIR`
+/// (portable mode) through `default_config_dir`.
+fn default_emule_identity_path() -> PathBuf {
+    default_config_dir().join("emule_identity.key")
+}
+
 fn default_emule_temp_dir() -> PathBuf {
     if let Some(base) = base_dir_override() {
         return base.join("emule-tmp");
@@ -600,8 +628,10 @@ impl Config {
     /// |-----------------------------|------------------------------|--------------------|
     /// | `RUCIOD_API_LISTEN`         | `api.listen`                 | `host:port`        |
     /// | `RUCIOD_P2P_LISTEN`         | `node.listen_addrs`          | comma-separated multiaddrs |
+    /// | `RUCIOD_IDENTITY_PATH`      | `node.identity_path`         | path               |
     /// | `RUCIOD_DOWNLOAD_DIR`       | `storage.download_dir`       | path               |
     /// | `RUCIOD_TEMP_DIR`           | `storage.temp_dir`           | path               |
+    /// | `RUCIOD_OUTBOARD_DIR`       | `storage.outboard_dir`       | path               |
     /// | `RUCIOD_PIN_DIR`            | `storage.pin_dir`            | path               |
     /// | `RUCIOD_DB_PATH`            | `storage.database_path`      | path               |
     /// | `RUCIOD_SHARED_DIRS`        | `storage.shared_dirs`        | comma-separated paths |
@@ -610,6 +640,7 @@ impl Config {
     /// | `RUCIOD_DOWNLOAD_LIMIT_KBPS`| `network.download_limit_kbps`| integer KB/s, 0=unlimited |
     /// | `RUCIOD_MAX_UPLOAD_TASKS`   | `network.max_upload_tasks`   | integer ≥1, default 64    |
     /// | `RUCIOD_EMULE_ENABLED`      | `emule.enabled`              | `true`/`false`     |
+    /// | `RUCIOD_EMULE_IDENTITY_PATH`| `emule.identity_path`        | path               |
     /// | `RUCIOD_EMULE_TEMP_DIR`     | `emule.temp_dir`             | path               |
     /// | `RUCIOD_NODES_DAT`          | `storage.nodes_dat_path`     | path               |
     /// | `RUCIOD_EMULE_TCP_PORT`     | `emule.tcp_port`             | integer 1-65535    |
@@ -652,6 +683,11 @@ impl Config {
         {
             self.node.listen_addrs = v.split(',').map(|s| s.trim().to_string()).collect();
         }
+        if let Ok(v) = std::env::var("RUCIOD_IDENTITY_PATH")
+            && !v.is_empty()
+        {
+            self.node.identity_path = PathBuf::from(v);
+        }
         if let Ok(v) = std::env::var("RUCIOD_DOWNLOAD_DIR")
             && !v.is_empty()
         {
@@ -666,6 +702,11 @@ impl Config {
             && !v.is_empty()
         {
             self.storage.temp_dir = PathBuf::from(v);
+        }
+        if let Ok(v) = std::env::var("RUCIOD_OUTBOARD_DIR")
+            && !v.is_empty()
+        {
+            self.storage.outboard_dir = PathBuf::from(v);
         }
         if let Ok(v) = std::env::var("RUCIOD_DB_PATH")
             && !v.is_empty()
@@ -713,6 +754,11 @@ impl Config {
             && !v.is_empty()
         {
             self.emule.enabled = !matches!(v.to_lowercase().as_str(), "false" | "0" | "no" | "off");
+        }
+        if let Ok(v) = std::env::var("RUCIOD_EMULE_IDENTITY_PATH")
+            && !v.is_empty()
+        {
+            self.emule.identity_path = PathBuf::from(v);
         }
         if let Ok(v) = std::env::var("RUCIOD_EMULE_TEMP_DIR")
             && !v.is_empty()
@@ -875,6 +921,22 @@ fn default_temp_dir() -> PathBuf {
         .join("tmp")
 }
 
+/// Default directory for the share outboard cache: `<cache>/rucio/outboards`,
+/// a **sibling** of `temp_dir` rather than living inside it. Outboards are
+/// regenerable but longer-lived than the `.part` scratch in `temp_dir`, so they
+/// don't belong under a directory a user might reasonably wipe between runs.
+/// Disposable enough to sit in the cache dir, persistent enough to stand apart
+/// from the transfer scratch. Honours portable mode.
+fn default_outboard_dir() -> PathBuf {
+    if let Some(base) = base_dir_override() {
+        return base.join("outboards");
+    }
+    dirs::cache_dir()
+        .unwrap_or_else(|| home_dir().join(".cache"))
+        .join("rucio")
+        .join("outboards")
+}
+
 /// Default directory for pinned files. Kept under the data dir (next to the DB),
 /// separate from the user's `download_dir`, so pinned/mirrored content the node
 /// hosts on purpose is clearly system-managed and never nested in downloads.
@@ -939,6 +1001,78 @@ mod tests {
         assert_eq!(
             cfg.storage.shared_dirs,
             vec![PathBuf::from("/srv/media"), PathBuf::from("/srv/iso")]
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn env_override_outboard_dir() {
+        unsafe { std::env::set_var("RUCIOD_OUTBOARD_DIR", "/mnt/big/outboards") };
+        let mut cfg = Config::default();
+        cfg.apply_env_overrides();
+        unsafe { std::env::remove_var("RUCIOD_OUTBOARD_DIR") };
+        assert_eq!(
+            cfg.storage.outboard_dir,
+            PathBuf::from("/mnt/big/outboards")
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn env_override_identity_path() {
+        unsafe { std::env::set_var("RUCIOD_IDENTITY_PATH", "/keys/node.key") };
+        let mut cfg = Config::default();
+        cfg.apply_env_overrides();
+        unsafe { std::env::remove_var("RUCIOD_IDENTITY_PATH") };
+        assert_eq!(cfg.node.identity_path, PathBuf::from("/keys/node.key"));
+    }
+
+    #[test]
+    #[serial]
+    fn env_override_emule_identity_path() {
+        unsafe { std::env::set_var("RUCIOD_EMULE_IDENTITY_PATH", "/keys/emule.key") };
+        let mut cfg = Config::default();
+        cfg.apply_env_overrides();
+        unsafe { std::env::remove_var("RUCIOD_EMULE_IDENTITY_PATH") };
+        assert_eq!(cfg.emule.identity_path, PathBuf::from("/keys/emule.key"));
+    }
+
+    #[test]
+    #[serial]
+    fn default_outboard_dir_is_a_sibling_of_temp_dir() {
+        let cfg = Config::default();
+        // Sibling, NOT nested inside temp_dir.
+        assert!(
+            !cfg.storage.outboard_dir.starts_with(&cfg.storage.temp_dir),
+            "outboard_dir must not live inside temp_dir, got {:?}",
+            cfg.storage.outboard_dir
+        );
+        assert_eq!(
+            cfg.storage.outboard_dir.parent(),
+            cfg.storage.temp_dir.parent(),
+            "outboard_dir and temp_dir should share a parent (both under <cache>/rucio)"
+        );
+        assert_eq!(
+            cfg.storage
+                .outboard_dir
+                .file_name()
+                .and_then(|n| n.to_str()),
+            Some("outboards")
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn default_emule_identity_path_sits_next_to_identity_key() {
+        let cfg = Config::default();
+        assert_eq!(
+            cfg.emule.identity_path.file_name().and_then(|n| n.to_str()),
+            Some("emule_identity.key")
+        );
+        // Defaults into the same directory as the libp2p identity key.
+        assert_eq!(
+            cfg.emule.identity_path.parent(),
+            cfg.node.identity_path.parent()
         );
     }
 
@@ -1136,9 +1270,11 @@ mod tests {
         unsafe { std::env::remove_var("RUCIOD_BASE_DIR") };
 
         assert_eq!(cfg.node.identity_path, base.join("identity.key"));
+        assert_eq!(cfg.emule.identity_path, base.join("emule_identity.key"));
         assert_eq!(cfg.storage.database_path, base.join("rucio.db"));
         assert_eq!(cfg.storage.download_dir, base.join("downloads"));
         assert_eq!(cfg.storage.temp_dir, base.join("tmp"));
+        assert_eq!(cfg.storage.outboard_dir, base.join("outboards"));
         assert_eq!(nodes, base.join("nodes.dat"));
     }
 

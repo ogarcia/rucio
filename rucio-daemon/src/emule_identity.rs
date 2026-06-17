@@ -6,23 +6,22 @@
 //! and persist it so the credit we earn by seeding accrues to a single, stable
 //! identity across restarts.
 //!
-//! It lives in a file next to the libp2p `identity.key`, *not* in the database:
-//! both are long-lived identities that must survive a database rebuild (the DB
-//! holds only reconstructible state). See [`rucio_net::identity`] for the rucio
-//! side — this is the eMule mirror of it.
+//! It lives at `emule.identity_path` (defaulting next to the libp2p
+//! `identity.key`), *not* in the database: both are long-lived identities that
+//! must survive a database rebuild (the DB holds only reconstructible state).
+//! See [`rucio_net::identity`] for the rucio side — this is the eMule mirror of
+//! it.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use tracing::{info, warn};
 
-/// Where the eMule user hash lives: next to the libp2p `identity.key`, so both
-/// node identities sit together and move together if `identity_path` is changed.
+/// Where the eMule user hash lives: `emule.identity_path`. Defaults next to the
+/// libp2p `identity.key` (so both node identities sit together out of the box),
+/// but is independently configurable.
 pub fn path(config: &crate::config::Config) -> PathBuf {
-    config
-        .node
-        .identity_path
-        .with_file_name("emule_identity.key")
+    config.emule.identity_path.clone()
 }
 
 /// Load the 16-byte user hash from `path`, creating it on first run.

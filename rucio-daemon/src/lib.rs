@@ -112,10 +112,11 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
     info!("Starting Rucio daemon v{}", env!("CARGO_PKG_VERSION"));
 
     // --- Storage directories ------------------------------------------------
-    // Ensure download_dir, temp_dir and pin_dir exist.
+    // Ensure download_dir, temp_dir, outboard_dir and pin_dir exist.
     for dir in [
         &config.storage.download_dir,
         &config.storage.temp_dir,
+        &config.storage.outboard_dir,
         &config.storage.pin_dir,
     ] {
         std::fs::create_dir_all(dir)
@@ -129,6 +130,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
     // download_dir can't leak partial files onto the network.
     let excluded_index_dirs = std::sync::Arc::new(vec![
         config.storage.temp_dir.clone(),
+        config.storage.outboard_dir.clone(),
         config.emule.temp_dir.clone(),
     ]);
     // Warn (don't block — the watcher handles it) about the nested-temp footgun.
@@ -315,6 +317,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
     let dest_dir = config.storage.download_dir.clone();
     let pin_dir = config.storage.pin_dir.clone();
     let temp_dir = config.storage.temp_dir.clone();
+    let outboard_dir = config.storage.outboard_dir.clone();
     let download_throttle = Arc::new(throttle::TokenBucket::new(
         config.network.download_limit_kbps,
     ));
@@ -354,6 +357,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         dest_dir,
         pin_dir,
         temp_dir,
+        outboard_dir,
         Arc::clone(&session_metrics),
         Arc::clone(&upload_semaphore),
         Arc::clone(&upload_scheduler),
@@ -418,7 +422,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         let excluded = Arc::clone(&excluded_index_dirs);
         let ed2k_tx = ed2k_index_tx.clone();
         let indexing_seen = Arc::clone(&indexing_seen);
-        let temp_dir = config.storage.temp_dir.clone();
+        let outboard_dir = config.storage.outboard_dir.clone();
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(24 * 3600));
             loop {
@@ -435,7 +439,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                 // Prune cached outboards of shares removed since the last sweep
                 // (watcher de-index, files vanished from disk, a crash between
                 // the DB delete and the inline file delete).
-                transfer::gc_orphan_outboards(&db, &temp_dir).await;
+                transfer::gc_orphan_outboards(&db, &outboard_dir).await;
             }
         })
     };

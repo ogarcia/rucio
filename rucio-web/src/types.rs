@@ -526,6 +526,8 @@ pub struct StorageConfig {
     pub download_dir: String,
     pub temp_dir: String,
     #[serde(default)]
+    pub outboard_dir: String,
+    #[serde(default)]
     pub pin_dir: String,
     pub database_path: String,
 }
@@ -533,6 +535,9 @@ pub struct StorageConfig {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct EmuleConfig {
     pub enabled: bool,
+    /// Read-only (like `node.identity_path`); kept for a lossless round-trip.
+    #[serde(default)]
+    pub identity_path: String,
     pub temp_dir: String,
     pub udp_port: u16,
     pub tcp_port: u16,

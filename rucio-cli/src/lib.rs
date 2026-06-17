@@ -371,6 +371,7 @@ pub enum ConfigAction {
     /// Settable keys:
     ///   storage.download_dir            <path>
     ///   storage.temp_dir                <path>
+    ///   storage.outboard_dir            <path>
     ///   network.bootstrap_peers         <multiaddr>  (appends to the list)
     ///   node.listen_addrs               <multiaddr>  (appends to the list)
     ///   network.upload_limit_kbps       <integer>    (0 = unlimited, applied immediately)

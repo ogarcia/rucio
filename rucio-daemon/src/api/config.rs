@@ -104,11 +104,13 @@ fn build_snapshot(
         storage: StorageConfig {
             download_dir: cfg.storage.download_dir.to_string_lossy().into_owned(),
             temp_dir: cfg.storage.temp_dir.to_string_lossy().into_owned(),
+            outboard_dir: cfg.storage.outboard_dir.to_string_lossy().into_owned(),
             pin_dir: cfg.storage.pin_dir.to_string_lossy().into_owned(),
             database_path: cfg.storage.database_path.to_string_lossy().into_owned(),
         },
         emule: EmuleConfig {
             enabled: cfg.emule.enabled,
+            identity_path: cfg.emule.identity_path.to_string_lossy().into_owned(),
             temp_dir: cfg.emule.temp_dir.to_string_lossy().into_owned(),
             udp_port: cfg.emule.udp_port,
             tcp_port: cfg.emule.tcp_port,
@@ -134,7 +136,8 @@ fn build_snapshot(
 /// - `node.listen_addrs`, `network.bootstrap_peers`, `network.max_upload_tasks`,
 ///   `storage.*`, `emule.*`
 ///
-/// Read-only fields (`node.identity_path`, `api.listen`) are silently ignored.
+/// Read-only fields (`node.identity_path`, `emule.identity_path`, `api.listen`)
+/// are silently ignored.
 #[utoipa::path(
     put,
     path = "/api/v1/config",
@@ -178,8 +181,11 @@ pub async fn put_config(
     new_cfg.network.exclusive_bootstrap = c.network.exclusive_bootstrap;
     new_cfg.storage.download_dir = c.storage.download_dir.into();
     new_cfg.storage.temp_dir = c.storage.temp_dir.into();
-    // pin_dir was added later (serde default ""); an older client that doesn't
-    // send it must not blank the configured value.
+    // outboard_dir and pin_dir were added later (serde default ""); an older
+    // client that doesn't send them must not blank the configured value.
+    if !c.storage.outboard_dir.trim().is_empty() {
+        new_cfg.storage.outboard_dir = c.storage.outboard_dir.into();
+    }
     if !c.storage.pin_dir.trim().is_empty() {
         new_cfg.storage.pin_dir = c.storage.pin_dir.into();
     }
@@ -193,7 +199,8 @@ pub async fn put_config(
     new_cfg.emule.max_concurrent_downloads = c.emule.max_concurrent_downloads.clamp(1, 50);
     new_cfg.emule.nick = c.emule.nick.trim().to_string();
     new_cfg.emule.min_source_speed_kib_s = c.emule.min_source_speed_kib_s;
-    // identity_path and api.listen intentionally not writable at runtime
+    // node.identity_path, emule.identity_path and api.listen intentionally not
+    // writable at runtime
 
     match new_cfg.save(state.config_path.as_deref()) {
         Ok(()) => StatusCode::NO_CONTENT,
