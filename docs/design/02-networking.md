@@ -152,9 +152,9 @@ consecutive idle cycles (no new results in the last polling window).
 
 ### request_response
 
-File transfer uses libp2p's `request_response` behaviour with a custom
-protocol (`/rucio/transfer/2.0.0`). See
-[Transfer protocol](03-transfer-protocol.md) for details.
+File transfer uses libp2p's `request_response` behaviour with two custom
+protocols: `/rucio/manifest/1.0.0` (metadata) and `/rucio/transfer/1.0.0`
+(chunks). See [Transfer protocol](03-transfer-protocol.md) for details.
 
 ### Circuit relay server
 

@@ -1,9 +1,13 @@
 # Transfer protocol
 
-Protocol identifier: `/rucio/transfer/2.0.0`
+File exchange uses two libp2p `request_response` protocols:
 
-Built on libp2p `request_response`. All messages are encoded with
-[bincode](https://github.com/bincode-org/bincode).
+- `/rucio/manifest/1.0.0` — fetch a file's metadata (name, size, chunk count)
+- `/rucio/transfer/1.0.0` — fetch individual chunks (carries Peer Exchange too)
+
+Pre-1.0 the protocol version tracks Rucio's major version rather than being
+bumped on its own. Messages are length-prefixed and encoded with
+[postcard](https://github.com/jamesmunns/postcard).
 
 ## Chunk layout
 
@@ -30,42 +34,49 @@ stays backward-compatible because each file declares its own.
 Before downloading any data, the downloader fetches the **manifest** from a
 provider. The manifest contains the authoritative metadata for the file.
 
-**Request:**
+**Request** (`/rucio/manifest/1.0.0`):
 
 ```rust
-TransferRequest::Manifest { root_hash: [u8; 32] }
+ManifestRequest { root_hash: [u8; 32] }
 ```
 
-**Response:**
+**Response** (an enum — `Ok` shown; otherwise `NotFound` or `Error(String)`):
 
 ```rust
-TransferResponse::Manifest {
+ManifestResponse::Ok {
+    root_hash:   [u8; 32],
     name:        String,
     total_size:  u64,
-    chunk_count: u32,
-    peers:       Vec<String>,   // PEX: other known providers (multiaddrs)
+    chunk_size:  u32,   // bytes per transfer chunk (4 MiB)
+    chunk_count: u32,   // ceil(total_size / chunk_size)
 }
 ```
 
-The `peers` field implements Peer Exchange (PEX): the responding node shares
-what other providers it knows about. The downloader may dial those peers for
-parallel chunk downloads.
+A node that is still downloading the file can answer too, deriving the metadata
+from its own download row — so a fresh downloader can bootstrap from a peer that
+doesn't yet have the whole file (see [Partial sharing](#partial-sharing)).
 
 ## Chunk request
 
+**Request** (`/rucio/transfer/1.0.0`):
+
 ```rust
-TransferRequest::Chunk {
-    root_hash:   [u8; 32],
-    chunk_index: u32,
+ChunkRequest { root_hash: [u8; 32], chunk_idx: u32 }
+```
+
+**Response** (`Ok` shown; otherwise `NotFound` or `Error(String)`):
+
+```rust
+ChunkResponse::Ok {
+    data:  Vec<u8>,        // a self-verifying bao slice (proof nodes + bytes)
+    peers: Vec<String>,    // PEX: other known providers (multiaddrs)
 }
 ```
 
-```rust
-TransferResponse::Chunk {
-    chunk_index: u32,
-    data:        Vec<u8>,   // a self-verifying bao slice (proof nodes + bytes)
-}
-```
+Every `Ok` response also carries `peers` — Peer Exchange: the responder shares
+other providers it knows about, which the downloader may dial for more parallel
+sources. The requester correlates the response to its chunk by the libp2p
+request id, so the index isn't echoed back.
 
 `data` is **not** raw bytes: it is a BLAKE3 verified-streaming *slice* — the
 chunk's bytes interleaved with the Merkle proof nodes needed to check them
@@ -82,14 +93,14 @@ none have to be trusted. See [06-hashing](06-hashing.md) for the tree details.
 downloader                          provider(s)
     |                                   |
     |-- Manifest request -------------> |
-    |<- Manifest response (+ PEX) ----- |
+    |<- Manifest response ------------- |
     |                                   |
     |  (dial PEX peers if available)    |
     |                                   |
     |-- Chunk 0 request --------------> |
     |-- Chunk 1 request --------------> | (pipelined)
-    |<- Chunk 0 data ------------------- |
-    |<- Chunk 1 data ------------------- |
+    |<- Chunk 0 data ------------------ |
+    |<- Chunk 1 data ------------------ |
     |   ...                             |
     |-- Chunk N request --------------> |
     |<- Chunk N slice ----------------- |
