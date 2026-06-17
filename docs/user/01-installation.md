@@ -385,7 +385,8 @@ Run `rucio config show` at any time to see the actual paths in use.
 | Config | `~/.config/rucio/config.toml` | `~/Library/Application Support/rucio/config.toml` |
 | Identity key | `~/.config/rucio/identity.key` | same parent dir |
 | Database | `~/.local/share/rucio/rucio.db` | `~/Library/Application Support/rucio/rucio.db` |
-| Downloads | `$XDG_DOWNLOAD_DIR/rucio` or `~/Downloads/rucio` | `~/Downloads/rucio` |
+| Downloads | `$XDG_DOWNLOAD_DIR/rucio/downloads` or `~/Downloads/rucio/downloads` | `~/Downloads/rucio/downloads` |
+| Pinned content | `~/Downloads/rucio/pins` (sibling of downloads) | `~/Downloads/rucio/pins` |
 | Temp (parts) | `~/.cache/rucio/tmp` | `~/Library/Caches/rucio/tmp` |
 | eMule nodes.dat | `~/.local/share/rucio/nodes.dat` | `~/Library/Application Support/rucio/nodes.dat` |
 

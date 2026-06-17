@@ -16,8 +16,8 @@ have it.
 ## Where pinned files go
 
 A pinned file you had to fetch lands in the **pin directory** (`storage.pin_dir`,
-by default a `pins` folder next to the daemon's data, e.g.
-`~/.local/share/rucio/pins`). It's kept separate from your normal downloads so
+by default a `pins` folder beside your downloads in the Rucio content folder,
+e.g. `~/Downloads/rucio/pins`). It's kept separate from your normal downloads so
 it's clear which content the node hosts on purpose.
 
 Two exceptions:

@@ -187,15 +187,19 @@ Downloads land in two stages:
 `temp_dir` and `download_dir` are on different filesystems (EXDEV), it falls
 back to a full copy followed by deletion of the source.
 
-Path resolution precedence (example for `download_dir` on Linux):
+`download_dir` and `pin_dir` default to `downloads/` and `pins/` as siblings
+under one visible Rucio content folder, resolved with this precedence (Linux):
 
 ```
 1. Explicit value in config.toml
-2. $XDG_DOWNLOAD_DIR/rucio      (Linux desktop environments)
-3. ~/Downloads/rucio             (common default)
-4. ~/rucio                       (server / no XDG)
-5. /tmp/rucio                    (last resort)
+2. $XDG_DOWNLOAD_DIR/rucio/{downloads,pins}   (Linux desktop environments)
+3. ~/Downloads/rucio/{downloads,pins}          (common default)
+4. ~/rucio/{downloads,pins}                    (server / no XDG)
+5. /tmp/rucio/{downloads,pins}                 (last resort)
 ```
+
+App *state* (the SQLite database, identity key) lives under the data/config
+dirs instead — only user-facing content goes in the content folder.
 
 `home_dir()` filters out any result that is not an absolute path, whether it
 comes from the `$HOME` environment variable or from the `dirs` crate. This

@@ -37,13 +37,18 @@ rucio config set storage.download_dir /mnt/data/downloads
 rucio config unset storage.download_dir     # revert to platform default
 ```
 
+Completed downloads and pinned content both live under one visible Rucio folder
+(`downloads/` and `pins/` as siblings), so the files you host are easy to find
+and browse — unlike the database and identity key, which stay in the hidden
+app-state directories.
+
 **Default:**
 
 | Platform | Default path |
 |---|---|
-| Linux (desktop) | `$XDG_DOWNLOAD_DIR/rucio` or `~/Downloads/rucio` |
-| macOS | `~/Downloads/rucio` |
-| Linux (server / no XDG) | `~/rucio` |
+| Linux (desktop) | `$XDG_DOWNLOAD_DIR/rucio/downloads` or `~/Downloads/rucio/downloads` |
+| macOS | `~/Downloads/rucio/downloads` |
+| Linux (server / no XDG) | `~/rucio/downloads` |
 
 ---
 
@@ -51,15 +56,17 @@ rucio config unset storage.download_dir     # revert to platform default
 
 Directory where pinned content that had to be fetched is stored and shared. Kept
 separate from `download_dir` so it's clear which files the node hosts on purpose.
-See [Pinning](10-pinning.md).
+Pinned files are content you deliberately keep available (sometimes the only live
+copy on the network), so they sit next to your downloads in a persistent,
+visible place — not in a cache. See [Pinning](10-pinning.md).
 
 ```sh
 rucio config set storage.pin_dir /mnt/data/rucio-pins
 rucio config unset storage.pin_dir
 ```
 
-**Default:** a `pins` directory next to the daemon's data directory (e.g.
-`~/.local/share/rucio/pins` on Linux).
+**Default:** a `pins` directory beside `downloads/` in the Rucio content folder
+(e.g. `~/Downloads/rucio/pins` on Linux desktop).
 
 ---
 
@@ -478,7 +485,8 @@ exclusive_bootstrap  = false       # true = use only the peers above (separate n
 
 [storage]
 # Paths below show Linux defaults; see the sections above for macOS paths.
-# download_dir   = "~/Downloads/rucio"
+# download_dir   = "~/Downloads/rucio/downloads"
+# pin_dir        = "~/Downloads/rucio/pins"
 # temp_dir       = "~/.cache/rucio/tmp"
 # nodes_dat_path = "~/.local/share/rucio/nodes.dat"  # omit to disable Kad bootstrap
 # shared_dirs    = ["/srv/media"]  # protected shares declared here, survive a DB reset

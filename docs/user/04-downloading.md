@@ -112,7 +112,7 @@ rucio download clean 7b4a            # removes a specific entry by hash prefix
 ## Where files land
 
 Finished downloads are moved to `storage.download_dir` (default:
-`~/Downloads/rucio` on most systems). Check the current value with:
+`~/Downloads/rucio/downloads` on most systems). Check the current value with:
 
 ```sh
 rucio config show

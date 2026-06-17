@@ -413,7 +413,14 @@ impl Default for StorageConfig {
     }
 }
 
-/// Resolve the default download directory with a three-step fallback:
+/// The user-facing Rucio content folder, which holds `downloads/` and `pins/`
+/// as siblings. It lives in a **visible, persistent** location (the user's
+/// download dir) — not a hidden app-state dir like `~/.local/share` and not a
+/// disposable cache like `~/.cache` — because both shared downloads and pinned
+/// content are files the user keeps and browses. App *state* (the database,
+/// identity key) stays under the data/config dirs instead.
+///
+/// Three-step fallback:
 ///
 /// 1. `$XDG_DOWNLOAD_DIR` from `~/.config/user-dirs.dirs` — **Linux only**
 ///    (macOS does not use this mechanism)
@@ -422,12 +429,7 @@ impl Default for StorageConfig {
 /// 3. `$HOME/rucio` — always resolvable
 ///
 /// A `rucio/` subdirectory is appended in every case.
-fn default_download_dir() -> PathBuf {
-    // Portable mode: keep finished files inside the app folder too.
-    if let Some(base) = base_dir_override() {
-        return base.join("downloads");
-    }
-
+fn default_content_dir() -> PathBuf {
     let home = home_dir();
 
     // 1. XDG user-dirs — Linux desktop only.
@@ -445,6 +447,15 @@ fn default_download_dir() -> PathBuf {
 
     // 3. $HOME/rucio — always resolvable (servers, Alpine, Docker, …).
     home.join("rucio")
+}
+
+/// Default directory for completed downloads: `<content dir>/downloads`.
+fn default_download_dir() -> PathBuf {
+    // Portable mode: keep finished files inside the app folder too.
+    if let Some(base) = base_dir_override() {
+        return base.join("downloads");
+    }
+    default_content_dir().join("downloads")
 }
 
 /// Return the user's home directory.
@@ -867,11 +878,15 @@ fn default_temp_dir() -> PathBuf {
 /// Default directory for pinned files. Kept under the data dir (next to the DB),
 /// separate from the user's `download_dir`, so pinned/mirrored content the node
 /// hosts on purpose is clearly system-managed and never nested in downloads.
+/// Default directory for pinned content: `<content dir>/pins`, a sibling of the
+/// downloads dir. Pinned files are content the user deliberately keeps available
+/// (sometimes the only live copy on the network), so they belong next to the
+/// downloads in a visible, persistent place — not in app-state or cache dirs.
 fn default_pin_dir() -> PathBuf {
     if let Some(base) = base_dir_override() {
         return base.join("pins");
     }
-    default_data_dir().join("pins")
+    default_content_dir().join("pins")
 }
 
 // --- Tests -------------------------------------------------------------------
