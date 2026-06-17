@@ -42,14 +42,49 @@ pub struct SharesResponse {
     pub total: u64,
 }
 
+/// Why a watched directory exists — drives how the UI labels it and whether it
+/// can be removed through the API. Every kind except `User` is protected
+/// (declared by configuration or managed by the daemon) and cannot be removed
+/// via `DELETE /api/v1/shares`.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+    utoipa::ToSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum SharedDirKind {
+    /// A folder the user added through the app; removable.
+    #[default]
+    User,
+    /// The global download directory.
+    Downloads,
+    /// The pin directory, where pinned content is kept.
+    Pins,
+    /// A category's destination directory.
+    Category,
+    /// Declared in `[storage].shared_dirs` in the config file.
+    Config,
+}
+
 /// A shared directory (watched folder) with aggregate counts.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct SharedDirResponse {
     /// Absolute path of the watched directory.
     pub path: String,
-    /// True for the download directory, which is always shared and cannot be
-    /// removed.
+    /// True for directories that cannot be removed through the API (every
+    /// `kind` other than `user`).
     pub protected: bool,
+    /// Why this directory is shared — lets the UI label it (Downloads, Pins,
+    /// Category, Config) instead of treating every protected dir as the
+    /// download dir. Defaults to `user` for backward compatibility.
+    #[serde(default)]
+    pub kind: SharedDirKind,
     /// Number of indexed files under this directory.
     pub file_count: u64,
     /// Total size of indexed files under this directory, in bytes.

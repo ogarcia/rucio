@@ -123,8 +123,9 @@ pub async fn list(
 }
 
 /// List the directories being shared (the watched set), with how many files
-/// each contains and their total size. Protected dirs (the download/pin dirs
-/// and any category dir) cannot be removed with `share remove`.
+/// each contains and their total size. Protected dirs (the download/pin dirs,
+/// any category dir, and config-declared `shared_dirs`) cannot be removed with
+/// `share remove`.
 pub async fn dirs(client: &ApiClient) -> Result<()> {
     let resp = client.list_shared_dirs().await?;
     if resp.dirs.is_empty() {
@@ -170,7 +171,7 @@ pub async fn dirs(client: &ApiClient) -> Result<()> {
     println!("{table}");
     println!(
         "{} director{} · remove one with `rucio share remove <#>` · protected = \
-         cannot be removed (download/pin/category dir)",
+         cannot be removed (download/pin/category/config dir)",
         resp.dirs.len(),
         if resp.dirs.len() == 1 { "y" } else { "ies" }
     );
@@ -212,7 +213,7 @@ pub async fn remove(client: &ApiClient, target: &str) -> Result<()> {
         })?;
         if dir.protected {
             bail!(
-                "directory #{n} ({}) is protected and cannot be removed (download/pin/category dir)",
+                "directory #{n} ({}) is protected and cannot be removed (download/pin/category/config dir)",
                 dir.path
             );
         }

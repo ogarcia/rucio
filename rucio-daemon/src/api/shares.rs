@@ -10,8 +10,8 @@ use axum::Json;
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::StatusCode;
 use rucio_core::api::shares::{
-    AddShareRequest, AddShareResponse, ShareResponse, SharedDirResponse, SharedDirsResponse,
-    SharesResponse,
+    AddShareRequest, AddShareResponse, ShareResponse, SharedDirKind, SharedDirResponse,
+    SharedDirsResponse, SharesResponse,
 };
 use rucio_core::protocol::chunk::{CHUNK_SIZE, Hash};
 use rucio_core::protocol::magnet::MagnetLink;
@@ -67,14 +67,51 @@ fn build_magnet(root_hash: &[u8], name: &str, size: u64, self_peer_id: &str) -> 
 pub async fn list_shares(State(state): State<AppState>) -> Json<SharedDirsResponse> {
     let dirs = db::shared_dirs::list(&state.db).await.unwrap_or_default();
 
+    // Classify each protected dir by origin so the UI can label it correctly
+    // (download dir, pin dir, a category dir, or a config-declared share) rather
+    // than treating every protected dir as the download directory. Paths are
+    // normalised the same way `shared_dirs` stores them (trailing slash stripped).
+    let norm = |p: &Path| p.to_string_lossy().trim_end_matches('/').to_string();
+    let download_dir = norm(&state.config.storage.download_dir);
+    let pin_dir = norm(&state.config.storage.pin_dir);
+    let config_dirs: std::collections::HashSet<String> = state
+        .config
+        .storage
+        .shared_dirs
+        .iter()
+        .map(|p| norm(p))
+        .collect();
+    let category_dirs: std::collections::HashSet<String> = db::categories::pinned_dirs(&state.db)
+        .await
+        .unwrap_or_default()
+        .iter()
+        .map(|p| p.trim_end_matches('/').to_string())
+        .collect();
+
     let mut out = Vec::with_capacity(dirs.len());
     for d in dirs {
         let (file_count, total_size) = db::shares::count_and_size_by_prefix(&state.db, &d.path)
             .await
             .unwrap_or((0, 0));
+        let kind = if !d.protected {
+            SharedDirKind::User
+        } else if d.path == download_dir {
+            SharedDirKind::Downloads
+        } else if d.path == pin_dir {
+            SharedDirKind::Pins
+        } else if config_dirs.contains(&d.path) {
+            SharedDirKind::Config
+        } else if category_dirs.contains(&d.path) {
+            SharedDirKind::Category
+        } else {
+            // Protected but matching no known origin (e.g. a former destination
+            // mid-reconcile): label it generically rather than as Downloads.
+            SharedDirKind::Config
+        };
         out.push(SharedDirResponse {
             path: d.path,
             protected: d.protected,
+            kind,
             file_count: file_count as u64,
             total_size: total_size as u64,
         });

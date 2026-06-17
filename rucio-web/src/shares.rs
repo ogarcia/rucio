@@ -10,8 +10,8 @@ use leptos::task::spawn_local;
 use crate::icons::{self, Icon};
 use crate::statusbar::StatusBar;
 use crate::types::{
-    AddShareResponse, PinsResponse, ShareFile, SharedDir, SharedDirsResponse, SharesFilesResponse,
-    format_size,
+    AddShareResponse, PinsResponse, ShareFile, SharedDir, SharedDirKind, SharedDirsResponse,
+    SharesFilesResponse, format_size,
 };
 
 // ── API ─────────────────────────────────────────────────────────────────────
@@ -371,7 +371,7 @@ pub fn SharesTab(
                                 let path_click = d.path.clone();
                                 let path_class = d.path.clone();
                                 let path_rm = d.path.clone();
-                                let protected = d.protected;
+                                let kind = d.kind;
                                 view! {
                                     <li
                                         class=move || if selected_dir.get().as_deref() == Some(path_class.as_str()) {
@@ -397,13 +397,7 @@ pub fn SharesTab(
                                                 {format!("{} file(s) · {}", d.file_count, format_size(d.total_size))}
                                             </span>
                                         </div>
-                                        {if protected {
-                                            view! {
-                                                <span class="share-badge" title="The download directory is always shared">
-                                                    "Downloads"
-                                                </span>
-                                            }.into_any()
-                                        } else {
+                                        {if kind == SharedDirKind::User {
                                             view! {
                                                 <button
                                                     class="icon-btn icon-btn-danger"
@@ -429,6 +423,35 @@ pub fn SharesTab(
                                                 >
                                                     <Icon paths=icons::TRASH/>
                                                 </button>
+                                            }.into_any()
+                                        } else {
+                                            let (label, badge_class, title) = match kind {
+                                                SharedDirKind::Pins => (
+                                                    "Pins",
+                                                    "share-badge share-badge-pins",
+                                                    "The pin directory is always shared",
+                                                ),
+                                                SharedDirKind::Category => (
+                                                    "Category",
+                                                    "share-badge share-badge-category",
+                                                    "A category destination directory; always shared",
+                                                ),
+                                                SharedDirKind::Config => (
+                                                    "Config",
+                                                    "share-badge share-badge-config",
+                                                    "Declared in [storage].shared_dirs; managed from the config file, not removable here",
+                                                ),
+                                                // Downloads (and the User case, unreachable here).
+                                                _ => (
+                                                    "Downloads",
+                                                    "share-badge share-badge-downloads",
+                                                    "The download directory is always shared",
+                                                ),
+                                            };
+                                            view! {
+                                                <span class=badge_class title=title>
+                                                    {label}
+                                                </span>
                                             }.into_any()
                                         }}
                                     </li>

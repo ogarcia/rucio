@@ -74,11 +74,30 @@ pub struct EmuleStatusResponse {
 
 // ── Shares ─────────────────────────────────────────────────────────────────
 
+/// Why a watched directory exists — drives the badge in the Shares tab.
+#[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SharedDirKind {
+    /// A folder the user added through the app; removable.
+    #[default]
+    User,
+    /// The global download directory.
+    Downloads,
+    /// The pin directory.
+    Pins,
+    /// A category's destination directory.
+    Category,
+    /// Declared in `[storage].shared_dirs` in the config file.
+    Config,
+}
+
 /// A watched directory (the unit of add/remove). GET /api/v1/shares.
 #[derive(Deserialize, Clone, Debug, PartialEq)]
 pub struct SharedDir {
     pub path: String,
     pub protected: bool,
+    #[serde(default)]
+    pub kind: SharedDirKind,
     pub file_count: u64,
     pub total_size: u64,
 }

@@ -1175,6 +1175,11 @@
             background: var(--sa); color: var(--sa-fg);
             padding: 0.1rem 0.45rem; border-radius: 9999px; white-space: nowrap;
         }
+        /* Per-origin badge colours so protected dirs aren't all "Downloads". */
+        .share-badge-downloads { background: var(--sa); color: var(--sa-fg); }
+        .share-badge-pins      { background: var(--sd); color: var(--sd-fg); }
+        .share-badge-category  { background: var(--sn); color: var(--sn-fg); }
+        .share-badge-config    { background: var(--sp); color: var(--sp-fg); }
 
         /* Pin state pill (Pins tab): green when present, blue while fetching,
            neutral grey when pinned-but-absent. Uses the theme status vars so it
