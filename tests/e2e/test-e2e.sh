@@ -28,8 +28,9 @@ info() { echo -e "${YELLOW}→${NC} $*"; }
 # ---------------------------------------------------------------------------
 # 0. Pre-checks
 # ---------------------------------------------------------------------------
-command -v curl >/dev/null || fail "curl is not installed"
-command -v jq   >/dev/null || fail "jq is not installed"
+command -v curl   >/dev/null || fail "curl is not installed"
+command -v jq     >/dev/null || fail "jq is not installed"
+command -v b3sum  >/dev/null || fail "b3sum is not installed (BLAKE3 root-hash check)"
 
 info "Building binaries..."
 cargo build --manifest-path "$WORKSPACE_ROOT/Cargo.toml" -p rucio-daemon -p rucio-cli --quiet
@@ -42,8 +43,9 @@ TEST_DIR=$(mktemp -d /tmp/rucio-XXXXXX)
 info "Test workspace: $TEST_DIR"
 
 mkdir -p \
-    "$TEST_DIR/node-a/data" "$TEST_DIR/node-a/downloads" \
-    "$TEST_DIR/node-b/data" "$TEST_DIR/node-b/downloads"
+    "$TEST_DIR/node-a/data" "$TEST_DIR/node-a/downloads" "$TEST_DIR/node-a/temp" \
+    "$TEST_DIR/node-a/share" \
+    "$TEST_DIR/node-b/data" "$TEST_DIR/node-b/downloads" "$TEST_DIR/node-b/temp"
 
 # Write config for node A
 cat > "$TEST_DIR/node-a/config.toml" <<EOF
@@ -56,6 +58,7 @@ listen = "127.0.0.1:17070"
 
 [storage]
 download_dir  = "$TEST_DIR/node-a/downloads"
+temp_dir      = "$TEST_DIR/node-a/temp"
 database_path = "$TEST_DIR/node-a/data/rucio.db"
 
 [network]
@@ -73,18 +76,26 @@ listen = "127.0.0.1:17071"
 
 [storage]
 download_dir  = "$TEST_DIR/node-b/downloads"
+temp_dir      = "$TEST_DIR/node-b/temp"
 database_path = "$TEST_DIR/node-b/data/rucio.db"
 
 [network]
 bootstrap_peers = []
 EOF
 
-# Create a 2 MiB random test file
-TEST_FILE="$TEST_DIR/test-file.bin"
-info "Creating 2 MiB test file..."
-dd if=/dev/urandom of="$TEST_FILE" bs=1M count=2 2>/dev/null
+# Create a 10 MiB random test file: with 4 MiB chunks this spans three chunks
+# (4 + 4 + 2 MiB), so the transfer exercises multi-chunk bao verified streaming
+# and a short final chunk — not just a single-chunk happy path. It lives in a
+# dedicated directory because the share API registers directories, not files.
+TEST_FILE="$TEST_DIR/node-a/share/test-file.bin"
+info "Creating 10 MiB test file..."
+dd if=/dev/urandom of="$TEST_FILE" bs=1M count=10 2>/dev/null
 ORIGINAL_SHA256=$(sha256sum "$TEST_FILE" | cut -d' ' -f1)
+# The Rucio root hash IS the canonical BLAKE3 of the content (bao tree root),
+# so b3sum of the file must equal the magnet's root hash.
+ORIGINAL_BLAKE3=$(b3sum --no-names "$TEST_FILE")
 info "SHA-256: $ORIGINAL_SHA256"
+info "BLAKE3:  $ORIGINAL_BLAKE3"
 
 # ---------------------------------------------------------------------------
 # Cleanup on exit — always show where logs are
@@ -135,26 +146,30 @@ info "Node B PeerId: $PEER_B"
 # ---------------------------------------------------------------------------
 # 4. Share the test file on node A
 # ---------------------------------------------------------------------------
-info "Sharing test file on node A..."
+info "Sharing test directory on node A..."
 SHARE_RESP=$(curl -sf -X POST "$API_A/api/v1/shares" \
     -H 'Content-Type: application/json' \
-    -d "{\"path\": \"$TEST_FILE\"}")
+    -d "{\"path\": \"$TEST_DIR/node-a/share\"}")
 QUEUED=$(echo "$SHARE_RESP" | jq -r '.queued')
 [[ "$QUEUED" -ge 1 ]] || fail "Share request did not queue any files"
-ok "File queued for indexing"
+ok "Directory queued for indexing"
 
-# Wait for background indexing to complete
+# Wait for background indexing to complete (files live under /shares/files;
+# /shares lists the registered directories).
 for i in $(seq 1 20); do
-    COUNT=$(curl -sf "$API_A/api/v1/shares" | jq '.shares | length')
+    COUNT=$(curl -sf "$API_A/api/v1/shares/files" | jq '.shares | length')
     [[ "$COUNT" -ge 1 ]] && break
     sleep 0.5
 done
-SHARES=$(curl -sf "$API_A/api/v1/shares")
+SHARES=$(curl -sf "$API_A/api/v1/shares/files")
 [[ "$(echo "$SHARES" | jq '.shares | length')" -ge 1 ]] || \
     fail "File was not indexed on node A (check $TEST_DIR/node-a/daemon.log)"
 ok "File indexed on node A"
 ROOT_HASH=$(echo "$SHARES" | jq -r '.shares[0].root_hash')
 info "Root hash: $ROOT_HASH"
+[[ "$ROOT_HASH" == "$ORIGINAL_BLAKE3" ]] || \
+    fail "Root hash != BLAKE3 of the file ($ROOT_HASH vs $ORIGINAL_BLAKE3)"
+ok "Root hash equals the file's canonical BLAKE3"
 
 # ---------------------------------------------------------------------------
 # 5. Wait for mDNS peer discovery
@@ -172,21 +187,22 @@ ok "Node B discovered node A ($PEERS peer(s))"
 # ---------------------------------------------------------------------------
 # 6. Search from node B
 # ---------------------------------------------------------------------------
-info "Searching for 'test-file' from node B..."
+info "Searching for 'test' on the Rucio network from node B..."
 
 # The Gossipsub mesh may not be fully formed the instant mDNS discovers the
 # peer.  We re-issue the search query every 3 s until results arrive (up to
-# 30 s total) rather than firing once and waiting passively.
+# 30 s total) rather than firing once and waiting passively. Restrict to the
+# `rucio` network so we don't wait on eMule/Kad (no nodes.dat here).
 RESULTS="{}"
 RESULT_COUNT=0
 for attempt in $(seq 1 10); do
-    QUERY_ID=$(curl -sf -X POST "$API_B/api/v1/search" \
+    QUERY_ID=$(curl -sf -X POST "$API_B/api/v1/searches" \
         -H 'Content-Type: application/json' \
-        -d '{"keywords": ["test-file"]}' | jq -r '.query_id')
-    info "Query ID: $QUERY_ID (attempt $attempt)"
+        -d '{"keywords": ["test"], "network": "rucio"}' | jq -r '.id')
+    info "Search ID: $QUERY_ID (attempt $attempt)"
 
     for i in $(seq 1 6); do
-        RESULTS=$(curl -sf "$API_B/api/v1/search/$QUERY_ID")
+        RESULTS=$(curl -sf "$API_B/api/v1/searches/$QUERY_ID")
         RESULT_COUNT=$(echo "$RESULTS" | jq '.results | length')
         [[ "$RESULT_COUNT" -ge 1 ]] && break
         sleep 0.5
@@ -200,10 +216,12 @@ done
 [[ "$RESULT_COUNT" -ge 1 ]] || fail "No search results found on node B"
 ok "Found $RESULT_COUNT result(s)"
 
-MAGNET=$(echo "$RESULTS"  | jq -r '.results[0].magnet')
-PROVIDER=$(echo "$RESULTS" | jq -r '.results[0].provider')
-info "Magnet:   $MAGNET"
-info "Provider: $PROVIDER"
+# A Rucio result carries the download link as `download_link` and the known
+# providers as a `providers` array (the magnet also embeds them).
+MAGNET=$(echo "$RESULTS"    | jq -r '.results[0].download_link')
+PROVIDERS=$(echo "$RESULTS" | jq -c '.results[0].providers // []')
+info "Magnet:    $MAGNET"
+info "Providers: $PROVIDERS"
 
 # ---------------------------------------------------------------------------
 # 7. Download from node B
@@ -212,7 +230,7 @@ info "Starting download on node B..."
 HTTP_CODE=$(curl -sf -o /dev/null -w "%{http_code}" \
     -X POST "$API_B/api/v1/downloads" \
     -H 'Content-Type: application/json' \
-    -d "{\"magnet\": \"$MAGNET\", \"provider\": \"$PROVIDER\"}")
+    -d "{\"magnet\": \"$MAGNET\", \"providers\": $PROVIDERS}")
 [[ "$HTTP_CODE" == "202" ]] || fail "Download request rejected (HTTP $HTTP_CODE)"
 ok "Download queued (HTTP 202)"
 
