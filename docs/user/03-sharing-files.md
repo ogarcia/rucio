@@ -18,6 +18,15 @@ The daemon begins indexing immediately. Indexing walks the directory tree,
 computes a BLAKE3 hash for every file, stores the results in the database and
 announces them to the Kademlia DHT.
 
+### Declaring shares in the config
+
+Directories added with `rucio share add` live in the database. You can also
+declare a fixed set in the config under [`storage.shared_dirs`](06-configuration.md#storageshared_dirs)
+(or the `RUCIOD_SHARED_DIRS` environment variable). Those are re-shared on every
+startup as **protected** directories — they can be declared while the daemon is
+stopped, survive a database reset, and aren't removable through the API. This is
+the recommended approach for containers and reproducible/headless deployments.
+
 ## Checking indexing progress
 
 Large directories can take a while to index. Check how many files are still

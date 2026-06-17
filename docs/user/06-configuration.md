@@ -84,6 +84,41 @@ rucio config unset storage.temp_dir
 
 ---
 
+### `storage.shared_dirs`
+
+A list of directories to share **declaratively**, in addition to any you add
+through the app. Unlike directories added with `rucio share add` (or the web
+UI) — which live only in the database — these are written in the config file,
+so they:
+
+- can be declared **while the daemon is stopped** (edit the file, then start);
+- are **protected** (always re-shared on startup and not removable through the
+  API — like the download directory); and
+- **survive a database reset**.
+
+They are reconciled on every startup: each is created on disk if missing and
+indexed by the file watcher. This is the recommended way to pin a fixed share
+layout for containers or reproducible/headless deployments.
+
+```toml
+[storage]
+shared_dirs = ["/srv/media/music", "/srv/media/video"]
+```
+
+Or via the environment (comma-separated):
+
+```sh
+RUCIOD_SHARED_DIRS="/srv/media/music,/srv/media/video"
+```
+
+To stop sharing one of these, remove it from the config and restart — the API
+won't delete a config-declared share. Directories added through the app are
+unaffected and stay removable as usual.
+
+**Default:** empty (no extra directories).
+
+---
+
 ### `network.upnp`
 
 Enable or disable automatic UPnP/IGD port mapping. When enabled, the daemon
@@ -446,6 +481,7 @@ exclusive_bootstrap  = false       # true = use only the peers above (separate n
 # download_dir   = "~/Downloads/rucio"
 # temp_dir       = "~/.cache/rucio/tmp"
 # nodes_dat_path = "~/.local/share/rucio/nodes.dat"  # omit to disable Kad bootstrap
+# shared_dirs    = ["/srv/media"]  # protected shares declared here, survive a DB reset
 
 [emule]
 enabled            = true
@@ -479,6 +515,7 @@ the file value untouched.
 | `RUCIOD_TEMP_DIR` | `storage.temp_dir` | platform default | path |
 | `RUCIOD_PIN_DIR` | `storage.pin_dir` | platform default | path |
 | `RUCIOD_DB_PATH` | `storage.database_path` | platform default | path |
+| `RUCIOD_SHARED_DIRS` | `storage.shared_dirs` | *(empty)* | comma-separated paths |
 | `RUCIOD_BOOTSTRAP_PEERS` | `network.bootstrap_peers` | *(empty)* | comma-separated multiaddrs |
 | `RUCIOD_DOWNLOAD_LIMIT_KBPS` | `network.download_limit_kbps` | `0` (unlimited) | integer KB/s |
 | `RUCIOD_UPLOAD_LIMIT_KBPS` | `network.upload_limit_kbps` | `0` (unlimited) | integer KB/s |

@@ -100,6 +100,17 @@ When a directory is removed:
 1. All rows with `dir_path` matching the removed directory are deleted.
 2. The daemon stops announcing those hashes.
 
+### Declarative shares
+
+Beyond directories added at runtime (stored in the DB), `storage.shared_dirs`
+in the config declares a fixed set. On every startup `reconcile_protected_dirs`
+folds them — together with `download_dir`, `pin_dir` and category dirs — into
+the protected set: created on disk if missing, indexed by the watcher, and
+flagged undeletable through the API. Because they live in the config rather than
+the DB, they survive a database reset and can be declared while the daemon is
+stopped (useful for containers). The daemon only reads them; it never writes the
+config back, so there is no second mutable source of truth.
+
 ## WatcherService
 
 The `WatcherService` monitors shared directories for filesystem changes using
