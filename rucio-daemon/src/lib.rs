@@ -412,6 +412,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         let excluded = Arc::clone(&excluded_index_dirs);
         let ed2k_tx = ed2k_index_tx.clone();
         let indexing_seen = Arc::clone(&indexing_seen);
+        let temp_dir = config.storage.temp_dir.clone();
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(24 * 3600));
             loop {
@@ -425,6 +426,10 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                     &indexing_seen,
                 )
                 .await;
+                // Prune cached outboards of shares removed since the last sweep
+                // (watcher de-index, files vanished from disk, a crash between
+                // the DB delete and the inline file delete).
+                transfer::gc_orphan_outboards(&db, &temp_dir).await;
             }
         })
     };

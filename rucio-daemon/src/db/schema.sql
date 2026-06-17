@@ -37,20 +37,10 @@ CREATE TABLE IF NOT EXISTS shared_files (
 -- is a full table scan, making a rescan of a large share O(files squared).
 CREATE INDEX IF NOT EXISTS idx_shared_files_path ON shared_files(path);
 
--- ---------------------------------------------------------------------------
--- chunks
--- Individual chunks that belong to a shared file.
--- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS chunks (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    shared_file_id  INTEGER NOT NULL REFERENCES shared_files(id) ON DELETE CASCADE,
-    idx             INTEGER NOT NULL,      -- 0-indexed position within file
-    hash            BLOB    NOT NULL,      -- 32 bytes
-    size            INTEGER NOT NULL,      -- bytes
-    UNIQUE (shared_file_id, idx)
-);
-
-CREATE INDEX IF NOT EXISTS idx_chunks_hash ON chunks(hash);
+-- No per-chunk hash table: with bao verified streaming a chunk is verified as
+-- a slice against the file's root_hash, and chunk_count is derived as
+-- ceil(size / chunk_size). The Merkle tree (outboard) lives as a regenerable
+-- sidecar file, not in the DB.
 
 -- ---------------------------------------------------------------------------
 -- pins
@@ -223,7 +213,6 @@ CREATE TABLE IF NOT EXISTS download_chunks (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     download_id     INTEGER NOT NULL REFERENCES downloads(id) ON DELETE CASCADE,
     idx             INTEGER NOT NULL,
-    hash            BLOB    NOT NULL,
     size            INTEGER NOT NULL,
     status          TEXT    NOT NULL DEFAULT 'pending',
     -- 'pending' | 'downloading' | 'done'

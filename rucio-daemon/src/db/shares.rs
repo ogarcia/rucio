@@ -1,4 +1,4 @@
-//! Queries for the `shared_files` and `chunks` tables.
+//! Queries for the `shared_files` table.
 
 use anyhow::Result;
 use sqlx::Row;
@@ -33,15 +33,14 @@ pub struct NewSharedFile<'a> {
     pub added_at: u64,
     /// File modification time (Unix seconds); change signal for the rescan.
     pub mtime: i64,
-    /// (idx, hash, size)
-    pub chunks: &'a [(u32, [u8; 32], u32)],
 }
 
-/// Insert a new shared file and its chunks in a single transaction.
-/// Returns the new `shared_files.id`.
+/// Insert a new shared file. Returns the new `shared_files.id`.
+///
+/// No per-chunk rows are stored: with bao verified streaming a chunk is served
+/// as a slice verified against `root_hash`, and `chunk_count` is derived from
+/// `size` / `chunk_size`. The Merkle tree lives in a regenerable outboard sidecar.
 pub async fn insert(db: &Db, f: NewSharedFile<'_>) -> Result<i64> {
-    let mut tx = db.begin().await?;
-
     let file_id: i64 = sqlx::query(
         "INSERT INTO shared_files (root_hash, name, size, mime_type, path, chunk_size, added_at, mtime)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -54,22 +53,20 @@ pub async fn insert(db: &Db, f: NewSharedFile<'_>) -> Result<i64> {
     .bind(f.chunk_size as i64)
     .bind(f.added_at as i64)
     .bind(f.mtime)
-    .execute(&mut *tx)
+    .execute(db)
     .await?
     .last_insert_rowid();
 
-    for (idx, hash, chunk_sz) in f.chunks {
-        sqlx::query("INSERT INTO chunks (shared_file_id, idx, hash, size) VALUES (?1, ?2, ?3, ?4)")
-            .bind(file_id)
-            .bind(*idx as i64)
-            .bind(hash.as_slice())
-            .bind(*chunk_sz as i64)
-            .execute(&mut *tx)
-            .await?;
-    }
-
-    tx.commit().await?;
     Ok(file_id)
+}
+
+/// Number of chunks a fully-indexed file has: `ceil(size / chunk_size)`.
+fn derive_chunk_count(size: i64, chunk_size: i64) -> i64 {
+    if chunk_size > 0 {
+        (size as u64).div_ceil(chunk_size as u64) as i64
+    } else {
+        0
+    }
 }
 
 /// List all shared files (no chunk join).
@@ -152,18 +149,13 @@ pub async fn list_page(
     const COUNT_SQL: &str = "SELECT COUNT(*) FROM shared_files \
          WHERE (?1 IS NULL OR name LIKE ?1 ESCAPE '\\') \
            AND (?2 IS NULL OR path = ?2 OR path LIKE ?3 ESCAPE '\\')";
-    const PAGE_SQL: &str = "SELECT sf.id, sf.root_hash, sf.name, sf.size, sf.mime_type, sf.path, \
-                sf.chunk_size, sf.added_at, sf.mtime, COUNT(c.id) AS chunk_count \
-         FROM ( \
-             SELECT * FROM shared_files \
-             WHERE (?1 IS NULL OR name LIKE ?1 ESCAPE '\\') \
-               AND (?2 IS NULL OR path = ?2 OR path LIKE ?3 ESCAPE '\\') \
-             ORDER BY added_at DESC \
-             LIMIT ?4 OFFSET ?5 \
-         ) sf \
-         LEFT JOIN chunks c ON c.shared_file_id = sf.id \
-         GROUP BY sf.id \
-         ORDER BY sf.added_at DESC";
+    const PAGE_SQL: &str = "SELECT id, root_hash, name, size, mime_type, path, \
+                chunk_size, added_at, mtime \
+         FROM shared_files \
+         WHERE (?1 IS NULL OR name LIKE ?1 ESCAPE '\\') \
+           AND (?2 IS NULL OR path = ?2 OR path LIKE ?3 ESCAPE '\\') \
+         ORDER BY added_at DESC \
+         LIMIT ?4 OFFSET ?5";
 
     let total: i64 = sqlx::query_scalar(COUNT_SQL)
         .bind(name_pat.as_deref())
@@ -172,7 +164,7 @@ pub async fn list_page(
         .fetch_one(db)
         .await?;
 
-    // Slice first (cheap, index-friendly), then join chunks for just the page.
+    // Slice the page directly; chunk_count is derived from size/chunk_size.
     let rows = sqlx::query(PAGE_SQL)
         .bind(name_pat.as_deref())
         .bind(dir_eq.as_deref())
@@ -184,17 +176,21 @@ pub async fn list_page(
 
     let files = rows
         .iter()
-        .map(|r| SharedFileRow {
-            id: r.get("id"),
-            root_hash: r.get("root_hash"),
-            name: r.get("name"),
-            size: r.get("size"),
-            mime_type: r.get("mime_type"),
-            path: r.get("path"),
-            chunk_size: r.get("chunk_size"),
-            added_at: r.get("added_at"),
-            mtime: r.get("mtime"),
-            chunk_count: r.get("chunk_count"),
+        .map(|r| {
+            let size: i64 = r.get("size");
+            let chunk_size: i64 = r.get("chunk_size");
+            SharedFileRow {
+                id: r.get("id"),
+                root_hash: r.get("root_hash"),
+                name: r.get("name"),
+                size,
+                mime_type: r.get("mime_type"),
+                path: r.get("path"),
+                chunk_size,
+                added_at: r.get("added_at"),
+                mtime: r.get("mtime"),
+                chunk_count: derive_chunk_count(size, chunk_size),
+            }
         })
         .collect();
 
@@ -216,29 +212,29 @@ pub async fn list_root_hashes(db: &Db) -> Result<Vec<Vec<u8>>> {
 /// Fetch a single shared file by its root hash. Returns `None` if not found.
 pub async fn get_by_hash(db: &Db, root_hash: &[u8; 32]) -> Result<Option<SharedFileRow>> {
     let row = sqlx::query(
-        "SELECT sf.id, sf.root_hash, sf.name, sf.size, sf.mime_type, sf.path,
-                sf.chunk_size, sf.added_at, sf.mtime,
-                COUNT(c.id) AS chunk_count
-         FROM shared_files sf
-         LEFT JOIN chunks c ON c.shared_file_id = sf.id
-         WHERE sf.root_hash = ?1
-         GROUP BY sf.id",
+        "SELECT id, root_hash, name, size, mime_type, path, chunk_size, added_at, mtime
+         FROM shared_files
+         WHERE root_hash = ?1",
     )
     .bind(root_hash.as_slice())
     .fetch_optional(db)
     .await?;
 
-    Ok(row.map(|r| SharedFileRow {
-        id: r.get("id"),
-        root_hash: r.get("root_hash"),
-        name: r.get("name"),
-        size: r.get("size"),
-        mime_type: r.get("mime_type"),
-        path: r.get("path"),
-        chunk_size: r.get("chunk_size"),
-        added_at: r.get("added_at"),
-        mtime: r.get("mtime"),
-        chunk_count: r.get("chunk_count"),
+    Ok(row.map(|r| {
+        let size: i64 = r.get("size");
+        let chunk_size: i64 = r.get("chunk_size");
+        SharedFileRow {
+            id: r.get("id"),
+            root_hash: r.get("root_hash"),
+            name: r.get("name"),
+            size,
+            mime_type: r.get("mime_type"),
+            path: r.get("path"),
+            chunk_size,
+            added_at: r.get("added_at"),
+            mtime: r.get("mtime"),
+            chunk_count: derive_chunk_count(size, chunk_size),
+        }
     }))
 }
 
@@ -279,29 +275,29 @@ pub async fn delete_by_path(db: &Db, path: &str) -> Result<Option<Vec<u8>>> {
 /// Look up a shared file by its exact on-disk path (uses the `path` index).
 pub async fn get_by_path(db: &Db, path: &str) -> Result<Option<SharedFileRow>> {
     let row = sqlx::query(
-        "SELECT sf.id, sf.root_hash, sf.name, sf.size, sf.mime_type, sf.path,
-                sf.chunk_size, sf.added_at, sf.mtime,
-                COUNT(c.id) AS chunk_count
-         FROM shared_files sf
-         LEFT JOIN chunks c ON c.shared_file_id = sf.id
-         WHERE sf.path = ?1
-         GROUP BY sf.id",
+        "SELECT id, root_hash, name, size, mime_type, path, chunk_size, added_at, mtime
+         FROM shared_files
+         WHERE path = ?1",
     )
     .bind(path)
     .fetch_optional(db)
     .await?;
 
-    Ok(row.map(|r| SharedFileRow {
-        id: r.get("id"),
-        root_hash: r.get("root_hash"),
-        name: r.get("name"),
-        size: r.get("size"),
-        mime_type: r.get("mime_type"),
-        path: r.get("path"),
-        chunk_size: r.get("chunk_size"),
-        added_at: r.get("added_at"),
-        mtime: r.get("mtime"),
-        chunk_count: r.get("chunk_count"),
+    Ok(row.map(|r| {
+        let size: i64 = r.get("size");
+        let chunk_size: i64 = r.get("chunk_size");
+        SharedFileRow {
+            id: r.get("id"),
+            root_hash: r.get("root_hash"),
+            name: r.get("name"),
+            size,
+            mime_type: r.get("mime_type"),
+            path: r.get("path"),
+            chunk_size,
+            added_at: r.get("added_at"),
+            mtime: r.get("mtime"),
+            chunk_count: derive_chunk_count(size, chunk_size),
+        }
     }))
 }
 
@@ -402,17 +398,10 @@ mod tests {
         [seed; 32]
     }
 
-    fn dummy_chunks(n: u32) -> Vec<(u32, [u8; 32], u32)> {
-        (0..n)
-            .map(|i| (i, dummy_hash(i as u8 + 10), 4096))
-            .collect()
-    }
-
     #[tokio::test]
     async fn insert_and_list() {
         let (db, _dir) = test_db().await;
         let hash = dummy_hash(1);
-        let chunks = dummy_chunks(3);
 
         let id = insert(
             &db,
@@ -425,7 +414,6 @@ mod tests {
                 chunk_size: 4096,
                 added_at: 1_000_000,
                 mtime: 0,
-                chunks: &chunks,
             },
         )
         .await
@@ -458,7 +446,6 @@ mod tests {
                 chunk_size: 4096,
                 added_at: 1_000_000,
                 mtime: 0,
-                chunks: &[],
             },
         )
         .await
@@ -481,7 +468,6 @@ mod tests {
     async fn rename_path_repoints_keeping_hash() {
         let (db, _dir) = test_db().await;
         let hash = dummy_hash(7);
-        let chunks = dummy_chunks(2);
         insert(
             &db,
             NewSharedFile {
@@ -493,7 +479,6 @@ mod tests {
                 chunk_size: 4096,
                 added_at: 1,
                 mtime: 55,
-                chunks: &chunks,
             },
         )
         .await
@@ -542,7 +527,6 @@ mod tests {
                     chunk_size: 4096,
                     added_at: 1_000_000,
                     mtime: 0,
-                    chunks: &[],
                 },
             )
             .await
@@ -574,7 +558,6 @@ mod tests {
                     chunk_size: 4096,
                     added_at: 1_000_000,
                     mtime: 0,
-                    chunks: &[],
                 },
             )
             .await
@@ -611,7 +594,6 @@ mod tests {
                     chunk_size: 4096,
                     added_at: 1_000_000 + i as u64,
                     mtime: 0,
-                    chunks: &[],
                 },
             )
             .await
@@ -658,7 +640,6 @@ mod tests {
                     chunk_size: 4096,
                     added_at: 1_000_000,
                     mtime: 0,
-                    chunks: &[],
                 },
             )
             .await
@@ -679,38 +660,5 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-    }
-
-    #[tokio::test]
-    async fn chunks_cascade_on_file_delete() {
-        let (db, _dir) = test_db().await;
-        let hash = dummy_hash(5);
-        let chunks = dummy_chunks(4);
-
-        insert(
-            &db,
-            NewSharedFile {
-                root_hash: &hash,
-                name: "big.bin",
-                size: 16384,
-                mime_type: None,
-                path: "/tmp/big.bin",
-                chunk_size: 4096,
-                added_at: 1_000_000,
-                mtime: 0,
-                chunks: &chunks,
-            },
-        )
-        .await
-        .unwrap();
-
-        delete_by_hash(&db, &hash).await.unwrap();
-
-        // Chunks should have been deleted by CASCADE.
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chunks")
-            .fetch_one(&db)
-            .await
-            .unwrap();
-        assert_eq!(count, 0);
     }
 }

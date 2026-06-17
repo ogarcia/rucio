@@ -161,7 +161,7 @@ pub async fn finalize_pending(
     total_size: u64,
     dest_path: &str,
     now: u64,
-    chunks: &[(u32, [u8; 32], u32)], // (idx, hash, size)
+    chunks: &[(u32, u32)], // (idx, size)
 ) -> Result<()> {
     let mut tx = db.begin().await?;
 
@@ -177,16 +177,13 @@ pub async fn finalize_pending(
     .execute(&mut *tx)
     .await?;
 
-    for (idx, hash, size) in chunks {
-        sqlx::query(
-            "INSERT INTO download_chunks (download_id, idx, hash, size) VALUES (?1, ?2, ?3, ?4)",
-        )
-        .bind(id)
-        .bind(*idx as i64)
-        .bind(hash.as_slice())
-        .bind(*size as i64)
-        .execute(&mut *tx)
-        .await?;
+    for (idx, size) in chunks {
+        sqlx::query("INSERT INTO download_chunks (download_id, idx, size) VALUES (?1, ?2, ?3)")
+            .bind(id)
+            .bind(*idx as i64)
+            .bind(*size as i64)
+            .execute(&mut *tx)
+            .await?;
     }
 
     tx.commit().await?;
@@ -398,7 +395,6 @@ pub async fn fail_by_hash(db: &Db, root_hash: &[u8; 32]) -> Result<()> {
 #[derive(Debug, Clone)]
 pub struct ChunkRow {
     pub idx: u32,
-    pub hash: Vec<u8>,
     pub size: u32,
     pub status: String, // 'pending' | 'downloading' | 'done'
 }
@@ -422,7 +418,7 @@ pub async fn list_resumable(db: &Db) -> Result<Vec<DownloadRow>> {
 /// Return all chunk rows for the given download, ordered by idx.
 pub async fn chunks_for(db: &Db, download_id: i64) -> Result<Vec<ChunkRow>> {
     let rows = sqlx::query(
-        "SELECT idx, hash, size, status
+        "SELECT idx, size, status
          FROM download_chunks
          WHERE download_id = ?1
          ORDER BY idx ASC",
@@ -435,7 +431,6 @@ pub async fn chunks_for(db: &Db, download_id: i64) -> Result<Vec<ChunkRow>> {
         .iter()
         .map(|r| ChunkRow {
             idx: r.get::<i64, _>("idx") as u32,
-            hash: r.get("hash"),
             size: r.get::<i64, _>("size") as u32,
             status: r.get("status"),
         })
@@ -488,8 +483,8 @@ mod tests {
         [seed; 32]
     }
 
-    fn chunks(n: u32) -> Vec<(u32, [u8; 32], u32)> {
-        (0..n).map(|i| (i, hash(i as u8 + 20), 4096)).collect()
+    fn chunks(n: u32) -> Vec<(u32, u32)> {
+        (0..n).map(|i| (i, 4096)).collect()
     }
 
     #[tokio::test]

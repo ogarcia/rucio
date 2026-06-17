@@ -45,6 +45,8 @@ serde_json  = "1"
 
 # hashing
 blake3      = "1"
+# BLAKE3 verified streaming (Merkle tree outboard, range proofs)
+bao-tree    = { version = "0.16", default-features = false, features = ["validate"] }
 
 # compression
 flate2      = { version = "1", default-features = false, features = ["zlib-rs"] }

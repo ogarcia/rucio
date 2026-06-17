@@ -1,4 +1,4 @@
-use crate::protocol::chunk::{Chunk, Hash};
+use crate::protocol::chunk::Hash;
 
 /// Full descriptor of a file shared on the network.
 /// This is what gets exchanged during search and announced in the DHT.
@@ -10,8 +10,8 @@ pub struct FileDescriptor {
     pub size: u64,
     /// BLAKE3 root hash of the Merkle tree — canonical identifier of the file.
     pub root_hash: Hash,
-    /// Ordered list of chunk descriptors.
-    pub chunks: Vec<Chunk>,
+    /// Number of transfer chunks (`ceil(size / CHUNK_SIZE)`).
+    pub chunk_count: u32,
     /// Optional MIME type.
     pub mime_type: Option<String>,
     /// Unix timestamp (seconds) when the descriptor was created.
@@ -21,6 +21,6 @@ pub struct FileDescriptor {
 impl FileDescriptor {
     /// Number of chunks in this file.
     pub fn chunk_count(&self) -> usize {
-        self.chunks.len()
+        self.chunk_count as usize
     }
 }

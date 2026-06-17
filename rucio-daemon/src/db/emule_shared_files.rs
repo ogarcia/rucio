@@ -195,7 +195,6 @@ mod tests {
 
     async fn insert_share(db: &Db, path: &str, seed: u8) {
         let hash = [seed; 32];
-        let chunks = [(0u32, [seed; 32], 4096u32)];
         crate::db::shares::insert(
             db,
             crate::db::shares::NewSharedFile {
@@ -207,7 +206,6 @@ mod tests {
                 chunk_size: 4096,
                 added_at: 1_000_000,
                 mtime: 42,
-                chunks: &chunks,
             },
         )
         .await

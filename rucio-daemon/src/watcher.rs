@@ -396,7 +396,10 @@ async fn on_file_upsert(
         }
     }
 
-    match index_file(db, path).await {
+    // None: a watcher re-index (content changed on disk) is a rare path; let the
+    // outboard regenerate lazily on first serve rather than thread temp_dir
+    // through the watcher just for this optimisation.
+    match index_file(db, path, None).await {
         Ok(root_hash) => {
             debug!(path = %path.display(), "Watcher: indexed");
             let _ = node_tx

@@ -1,3 +1,4 @@
+pub mod bao;
 pub mod chunk;
 pub mod file;
 pub mod hashing;

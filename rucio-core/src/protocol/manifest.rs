@@ -10,15 +10,11 @@ pub struct ManifestRequest {
     pub root_hash: [u8; 32],
 }
 
-/// A single chunk descriptor returned in a manifest.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct ChunkInfo {
-    pub idx: u32,
-    pub hash: [u8; 32],
-    pub size: u32,
-}
-
 /// The response to a [`ManifestRequest`].
+///
+/// With bao verified streaming the manifest no longer carries per-chunk hashes:
+/// each chunk is fetched as a self-verifying slice checked against `root_hash`.
+/// The manifest is now just the metadata needed to plan the download.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum ManifestResponse {
     /// The manifest was found.
@@ -26,8 +22,10 @@ pub enum ManifestResponse {
         root_hash: [u8; 32],
         name: String,
         total_size: u64,
+        /// Transfer chunk size in bytes (the unit of a `ChunkRequest`).
         chunk_size: u32,
-        chunks: Vec<ChunkInfo>,
+        /// Number of transfer chunks: `ceil(total_size / chunk_size)`.
+        chunk_count: u32,
     },
     /// The provider does not have this file.
     NotFound,

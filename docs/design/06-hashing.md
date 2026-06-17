@@ -18,20 +18,47 @@ NVMe drive the entire hashing pipeline is effectively I/O-bound.
 
 ## Hash granularity
 
-Rucio computes a single **root hash** per file. This is not a Merkle tree
-over chunks — it is a flat BLAKE3 hash of the entire file content.
+Rucio computes a single **root hash** per file. BLAKE3 is internally a Merkle
+tree over 1 KiB chunks, and its finalized output — the standard `blake3::hash`
+of the content — is the root of that tree. Rucio uses exactly that value as the
+root hash, so it is both the canonical file identifier *and* the anchor for
+**verified streaming**: any byte range can be checked against the root with a
+`log(n)`-sized proof, without trusting a separate per-chunk hash list.
 
 ```rust
 pub fn hash_file(path: &Path) -> Result<FileHash> {
-    let mut hasher = blake3::Hasher::new();
-    // reads the file in 64 KiB buffers
-    hasher.update_reader(file)?;
-    Ok(FileHash { hash: hasher.finalize() })
+    // bao::compute_outboard streams the file once, returning the root
+    // (== blake3::hash of the content) and the pre-order outboard (the tree
+    // of interior hashes) used later to slice and verify any range.
+    let (root, outboard, size) = bao::compute_outboard(path)?;
+    Ok(FileHash { root_hash: *root.as_bytes(), size, outboard, /* mime */ })
 }
 ```
 
 The root hash serves as the canonical identifier for a file. Two files with
 identical content have the same hash regardless of their name or location.
+
+### Verified streaming with bao
+
+The Merkle tree is materialised with the [`bao-tree`](https://crates.io/crates/bao-tree)
+crate (the same building block iroh-blobs uses). The tree is built with a
+**block size of 1 MiB** (`2^10` BLAKE3 chunks of 1 KiB); the table of interior
+hashes — the *outboard* — is roughly `size / 16384` bytes, a few MB even for
+tens of GB of data.
+
+- The **outboard is not stored in the database.** For a completed share it
+  lives as a regenerable sidecar `<outboard_dir>/<root_hex>.obao`, rebuilt from
+  the file on demand if missing. For an in-progress download it is the
+  `<part>.obao` companion of the `.part`, filled in chunk by chunk as proof
+  nodes arrive.
+- A transfer chunk (4 MiB, fixed) is exactly four 1 MiB blocks, so every chunk
+  request covers whole subtrees. That alignment is what lets a node serve a
+  chunk it already holds from a *partially* downloaded file (partial sharing),
+  and what lets a chunk's slice be verified in isolation against the root.
+
+This replaces the earlier scheme, where the manifest carried a flat list of
+per-chunk hashes and the root was the hash of that list — that never tied the
+parts back to the whole, and grew the manifest linearly with file size.
 
 ## FileHash and collect_files
 

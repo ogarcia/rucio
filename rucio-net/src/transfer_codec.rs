@@ -1,4 +1,4 @@
-//! Codec for the `/rucio/transfer/2.0.0` request-response protocol.
+//! Codec for the `/rucio/transfer/1.0.0` request-response protocol.
 
 use async_trait::async_trait;
 use libp2p::futures::{AsyncRead, AsyncWrite};
@@ -16,7 +16,7 @@ pub struct TransferProtocol;
 
 impl AsRef<str> for TransferProtocol {
     fn as_ref(&self) -> &str {
-        "/rucio/transfer/2.0.0"
+        "/rucio/transfer/1.0.0"
     }
 }
 

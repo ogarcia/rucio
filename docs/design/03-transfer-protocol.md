@@ -63,12 +63,18 @@ TransferRequest::Chunk {
 ```rust
 TransferResponse::Chunk {
     chunk_index: u32,
-    data:        Vec<u8>,
+    data:        Vec<u8>,   // a self-verifying bao slice (proof nodes + bytes)
 }
 ```
 
-Chunk data is served directly from disk — the daemon reads the corresponding
-byte range of the shared file on demand.
+`data` is **not** raw bytes: it is a BLAKE3 verified-streaming *slice* — the
+chunk's bytes interleaved with the Merkle proof nodes needed to check them
+against the file's `root_hash`. The producer builds it with `bao::encode_slice`
+from the file and its outboard; the downloader checks it with
+`bao::decode_slice_into`, which writes the verified bytes to their offset in the
+`.part` and folds the proof into the partial outboard. A slice that doesn't
+match the root is rejected — so the manifest carries **no** per-chunk hashes and
+none have to be trusted. See [06-hashing](06-hashing.md) for the tree details.
 
 ## Download flow
 
@@ -86,21 +92,30 @@ downloader                          provider(s)
     |<- Chunk 1 data ------------------- |
     |   ...                             |
     |-- Chunk N request --------------> |
-    |<- Chunk N data ------------------- |
+    |<- Chunk N slice ----------------- |
     |                                   |
-    |  (verify root hash, move .part)   |
+    |  (each slice verified on arrival; |
+    |   when complete, move .part)      |
 ```
+
+Every slice is verified against the root as it arrives, so by the time the last
+chunk lands the `.part` is integral by construction — there is no separate
+whole-file re-hash step at the end.
 
 Chunk requests to different peers can be interleaved — the download engine
 tracks which chunks have been requested and which have been received.
 
 ## In-progress storage
 
-While downloading, chunks are written sequentially to a `.part` file in
-`storage.temp_dir`. The file name is `<root_hash_hex>.part`.
+While downloading, verified chunk bytes are written to a `.part` file in
+`storage.temp_dir`, each at its own offset (not necessarily in order). A
+companion `<part>.obao` sidecar holds the partial bao outboard, grown as each
+slice's proof nodes arrive; it lets us serve verified chunks (partial sharing)
+and resume after a restart.
 
 On completion, the `.part` file is renamed (or copied if on a different
-filesystem) to `storage.download_dir/<name>`.
+filesystem) to `storage.download_dir/<name>`, and its now-complete outboard is
+promoted to the share outboard cache (`<temp_dir>/outboards/<root_hex>.obao`).
 
 ## Partial sharing
 
@@ -112,9 +127,10 @@ a freshly introduced file to spread.
   announces the file to the DHT (`StartProviding(root_hash)`), once per
   download.
 - Incoming chunk requests for a hash that isn't a completed share fall back to
-  the in-progress download: the chunk is served from the `.part` **only if it
-  is marked `done`** in `download_chunks` (i.e. already hash-verified on
-  receipt). A chunk we don't yet hold returns `NotFound` — we never serve bytes
+  the in-progress download: the chunk is served from the `.part` (sliced via its
+  `.part.obao` outboard) **only if it is marked `done`** in `download_chunks`
+  (i.e. its slice already verified on receipt, so its subtree is present in the
+  outboard). A chunk we don't yet hold returns `NotFound` — we never serve bytes
   from a half-written chunk.
 - On **completion**, the file moves to `download_dir`, is indexed as an ordinary
   share, and is served by the normal shared-files path; the provider
@@ -156,8 +172,9 @@ If providers are already known (from a search result or a magnet link with
 
 ## Error handling
 
-- If a chunk response contains the wrong index or wrong data, it is discarded
-  and re-requested from another provider.
+- If a chunk's slice fails verification against the root hash (wrong or
+  corrupt data), the decode is rejected, the chunk is re-queued for another
+  provider, and the offending peer is deprioritised.
 - If a provider disconnects mid-transfer, the engine marks that provider as
   unavailable and redistributes its pending chunks to other providers.
 - If no providers remain, the download transitions to `failed`.

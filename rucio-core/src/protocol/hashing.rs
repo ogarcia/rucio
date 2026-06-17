@@ -5,42 +5,43 @@
 
 use std::path::Path;
 
-use crate::protocol::chunk::CHUNK_SIZE;
-
 /// Result of hashing a single file.
 pub struct FileHash {
-    /// BLAKE3 Merkle root over all chunk hashes.
+    /// BLAKE3 root hash of the file — its canonical identifier and the root of
+    /// the bao verified-streaming Merkle tree (== `blake3::hash` of the content).
     pub root_hash: [u8; 32],
     /// Total file size in bytes.
     pub size: u64,
-    /// Per-chunk metadata: `(index, hash, size_bytes)`.
-    pub chunks: Vec<(u32, [u8; 32], u32)>,
+    /// Pre-order bao outboard (the tree of inner hashes) for this file. Persist
+    /// it to serve verifiable chunk slices later; regenerable from the file.
+    pub outboard: Vec<u8>,
     /// Detected MIME type, if any.
     pub mime_type: Option<String>,
 }
 
-/// Read a file, split into [`CHUNK_SIZE`] chunks, compute per-chunk BLAKE3
-/// hashes and the Merkle root hash.  Also sniffs the MIME type.
+/// Read a file, compute its BLAKE3 root hash and bao verified-streaming outboard
+/// (the Merkle tree of inner hashes), and sniff the MIME type. The root hash is
+/// exactly `blake3::hash` of the content; the outboard lets us later serve any
+/// chunk as a slice that a downloader verifies against that root.
 ///
 /// This function performs blocking I/O and should be called inside
 /// `tokio::task::spawn_blocking` when used from async code.
 pub fn hash_file(path: &Path) -> anyhow::Result<FileHash> {
     use std::io::Read;
 
-    let mut file = std::fs::File::open(path)?;
-
     // Defence in depth: hash only regular files. A character device such as
-    // /dev/zero yields endless bytes, so the read loop below would never reach
-    // EOF and would spin forever. Indexing runs in a background task and the
-    // read happens on a spawn_blocking thread, so this does not stall the
-    // daemon's startup — but the indexing task walks files sequentially, so a
-    // single never-ending read wedges *all* further indexing and leaks that
+    // /dev/zero yields endless bytes, so the read would never reach EOF and
+    // would spin forever. Indexing runs in a background task and the read
+    // happens on a spawn_blocking thread, so this does not stall the daemon's
+    // startup — but the indexing task walks files sequentially, so a single
+    // never-ending read wedges *all* further indexing and leaks that
     // blocking-pool thread for good. Opening such a node succeeds, so fstat the
     // *open descriptor* (not the path — that avoids a TOCTOU) and reject
     // anything that isn't a regular file. The enumeration paths already filter
     // with `is_file()` (which is also why a shared directory's subdirectories
     // are simply walked, never hashed); this is the last-line guard for a path
     // that changed type after enumeration, or for any future caller.
+    let mut file = std::fs::File::open(path)?;
     let meta = file.metadata()?;
     if !meta.is_file() {
         anyhow::bail!(
@@ -50,57 +51,20 @@ pub fn hash_file(path: &Path) -> anyhow::Result<FileHash> {
         );
     }
 
-    let mut chunks: Vec<(u32, [u8; 32], u32)> = Vec::new();
-    let mut file_size: u64 = 0;
-    let mut idx: u32 = 0;
+    // MIME sniff from the first bytes (magic numbers), before the outboard pass.
+    let mut header = [0u8; 8192];
+    let n = file.read(&mut header).unwrap_or(0);
+    let mime_type = detect_mime(path, (n > 0).then_some(&header[..n]));
+    drop(file);
 
-    let chunk_sz = CHUNK_SIZE as usize;
-    let mut buf = vec![0u8; chunk_sz];
-    let mut header_buf: Option<Vec<u8>> = None;
-
-    loop {
-        let mut bytes_read = 0;
-        // Fill the buffer fully (or until EOF).
-        loop {
-            let n = file.read(&mut buf[bytes_read..])?;
-            if n == 0 {
-                break;
-            }
-            bytes_read += n;
-            if bytes_read == chunk_sz {
-                break;
-            }
-        }
-        if bytes_read == 0 {
-            break;
-        }
-        let chunk_data = &buf[..bytes_read];
-        if header_buf.is_none() {
-            header_buf = Some(chunk_data[..bytes_read.min(8192)].to_vec());
-        }
-        let hash = *blake3::hash(chunk_data).as_bytes();
-        chunks.push((idx, hash, bytes_read as u32));
-        file_size += bytes_read as u64;
-        idx += 1;
-    }
-
-    // Root hash: BLAKE3 over the concatenation of all chunk hashes (Merkle-flat).
-    let root_hash = if chunks.is_empty() {
-        *blake3::hash(&[]).as_bytes()
-    } else {
-        let mut hasher = blake3::Hasher::new();
-        for (_, chunk_hash, _) in &chunks {
-            hasher.update(chunk_hash);
-        }
-        *hasher.finalize().as_bytes()
-    };
-
-    let mime_type = detect_mime(path, header_buf.as_deref());
+    // Streaming bao pass: root hash + pre-order outboard (file is not loaded
+    // into RAM; the outboard itself is small).
+    let (root, outboard, size) = crate::protocol::bao::compute_outboard(path)?;
 
     Ok(FileHash {
-        root_hash,
-        size: file_size,
-        chunks,
+        root_hash: *root.as_bytes(),
+        size,
+        outboard,
         mime_type,
     })
 }
@@ -192,7 +156,8 @@ mod tests {
         let fh2 = hash_file(&path).unwrap();
         assert_eq!(fh1.root_hash, fh2.root_hash);
         assert_eq!(fh1.size, 11);
-        assert_eq!(fh1.chunks.len(), 1);
+        // Root is the standard blake3 of the content.
+        assert_eq!(&fh1.root_hash, blake3::hash(b"hello world").as_bytes());
     }
 
     #[test]
@@ -211,7 +176,7 @@ mod tests {
         let path = write_file(&dir, "empty.bin", b"");
         let fh = hash_file(&path).unwrap();
         assert_eq!(fh.size, 0);
-        assert_eq!(fh.chunks.len(), 0);
+        assert_eq!(&fh.root_hash, blake3::hash(b"").as_bytes());
     }
 
     // A character device like /dev/zero never reaches EOF: opening it succeeds,

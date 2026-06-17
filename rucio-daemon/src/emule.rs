@@ -1669,33 +1669,36 @@ pub async fn run_ed2k_download(
 
     // Index the finished file into the Rucio share so it is announced to the
     // libp2p DHT immediately (rather than only after a restart's reconcile sees
-    // it as "added"). This re-reads the file to compute the canonical
-    // merkle-flat root hash — the real Rucio id — which we then report.
-    let rucio_root_hex = match crate::api::shares::index_file(db, &final_path).await {
-        Ok(root_hash) => {
-            // Announce to the DHT so the file is shared in real time.
-            let _ = node_tx
-                .send(crate::node::messages::NodeCmd::StartProviding(
-                    root_hash.to_vec(),
-                ))
-                .await;
-            let hex = hex::encode(root_hash);
-            info!(
-                dl = download_id,
-                root_hash = %hex,
-                "eMule download complete — indexed and sharing on Rucio"
-            );
-            Some(hex)
-        }
-        Err(e) => {
-            warn!(
-                dl = download_id,
-                error = %e,
-                "Failed to index completed download into Rucio share"
-            );
-            None
-        }
-    };
+    // it as "added"). This re-reads the file to compute the canonical BLAKE3
+    // root hash — the real Rucio id — which we then report. eMule downloads are
+    // often large, so persist the outboard eagerly (Some temp_dir).
+    let rucio_root_hex =
+        match crate::api::shares::index_file(db, &final_path, Some(&config.storage.temp_dir)).await
+        {
+            Ok(root_hash) => {
+                // Announce to the DHT so the file is shared in real time.
+                let _ = node_tx
+                    .send(crate::node::messages::NodeCmd::StartProviding(
+                        root_hash.to_vec(),
+                    ))
+                    .await;
+                let hex = hex::encode(root_hash);
+                info!(
+                    dl = download_id,
+                    root_hash = %hex,
+                    "eMule download complete — indexed and sharing on Rucio"
+                );
+                Some(hex)
+            }
+            Err(e) => {
+                warn!(
+                    dl = download_id,
+                    error = %e,
+                    "Failed to index completed download into Rucio share"
+                );
+                None
+            }
+        };
 
     notifier
         .notify(

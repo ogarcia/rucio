@@ -31,7 +31,6 @@ use std::time::Instant;
 use anyhow::{Result, anyhow, bail};
 use libp2p::{PeerId, request_response::OutboundRequestId};
 use tokio::fs;
-use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::{Semaphore, mpsc, oneshot};
 use tracing::{debug, info, warn};
 
@@ -218,16 +217,21 @@ struct ActiveDownload {
     download_id: i64,
     dest_path: PathBuf,
     chunk_size: u32,
+    /// Total file size in bytes (defines the bao tree and the last chunk size).
+    total_size: u64,
     /// Chunks not yet started: ordered queue for fair dispatch.
     queued: VecDeque<u32>,
     /// Chunks that are in-flight or done.
     in_flight: HashSet<u32>,
-    /// Chunks whose hash verified and were written to disk.
+    /// Chunks whose slice verified and were written to disk.
     done: HashSet<u32>,
     /// Total chunk count (for completion detection).
     total_chunks: usize,
-    /// hash and byte-size for each chunk index.
-    chunk_meta: HashMap<u32, ([u8; 32], u32)>,
+    /// Pre-order bao outboard, grown as each chunk's slice is verified. Shared
+    /// behind a mutex so a `spawn_blocking` decode can update it; serialises the
+    /// decodes of one download (different downloads use different mutexes).
+    /// Persisted to `<dest_path>.obao` for resumption and to serve partial chunks.
+    partial_outboard: Arc<std::sync::Mutex<Vec<u8>>>,
     /// Known providers for this download.
     providers: Vec<PeerId>,
     /// Per-provider slot tracking.
@@ -295,6 +299,10 @@ pub struct DownloadEngine {
     pin_dir: PathBuf,
     /// Temporary directory for in-progress downloads (.part files).
     temp_dir: PathBuf,
+    /// Cache of regenerable bao outboards for *completed* shares, keyed by root
+    /// hash (`<outboard_dir>/<root_hex>.obao`). Built on demand the first time a
+    /// chunk of a complete share is served; deletable at any time (regenerated).
+    outboard_dir: PathBuf,
     pending_manifests: HashMap<[u8; 32], PendingManifest>,
     active: HashMap<[u8; 32], ActiveDownload>,
     /// All peers known to have a given file, discovered via DHT or PEX.
@@ -339,12 +347,14 @@ impl DownloadEngine {
         upload_stats: Arc<crate::upload_stats::UploadRegistry>,
         notifier: crate::notifier::Notifier,
     ) -> Self {
+        let outboard_dir = outboards_dir(&temp_dir);
         Self {
             db,
             cmd_tx,
             dest_dir,
             pin_dir,
             temp_dir,
+            outboard_dir,
             pending_manifests: HashMap::new(),
             active: HashMap::new(),
             known_providers: HashMap::new(),
@@ -579,17 +589,11 @@ impl DownloadEngine {
             .unwrap_or(CHUNK_SIZE);
 
         let dest_path = PathBuf::from(&row.dest_path);
+        let total_size = row.total_size as u64;
 
-        let mut chunk_meta: HashMap<u32, ([u8; 32], u32)> = HashMap::new();
         let mut queued: VecDeque<u32> = VecDeque::new();
         let mut done: HashSet<u32> = HashSet::new();
-
         for c in &chunk_rows {
-            let mut hash = [0u8; 32];
-            if c.hash.len() == 32 {
-                hash.copy_from_slice(&c.hash);
-            }
-            chunk_meta.insert(c.idx, (hash, c.size));
             if c.status == "done" {
                 done.insert(c.idx);
             } else {
@@ -597,7 +601,7 @@ impl DownloadEngine {
             }
         }
 
-        let total_chunks = chunk_meta.len();
+        let total_chunks = chunk_rows.len();
 
         // Reset any 'downloading' chunks back to 'pending' in the DB so
         // their state is consistent (they were interrupted mid-flight).
@@ -605,16 +609,26 @@ impl DownloadEngine {
             warn!(id = row.id, "Could not reset in-flight chunks: {e}");
         }
 
+        // Reload the partial bao outboard (grown as chunks were verified) so we
+        // can resume verification and serve the chunks we already hold; start
+        // empty if the sidecar is missing or the wrong size.
+        let want_len = rucio_core::protocol::bao::outboard_len(total_size);
+        let partial = match std::fs::read(partial_outboard_path(&dest_path)) {
+            Ok(b) if b.len() == want_len => b,
+            _ => vec![0u8; want_len],
+        };
+
         let done_count = done.len();
         let dl = ActiveDownload {
             download_id: row.id,
             dest_path,
             chunk_size,
+            total_size,
             queued,
             in_flight: HashSet::new(),
             done,
             total_chunks,
-            chunk_meta,
+            partial_outboard: Arc::new(std::sync::Mutex::new(partial)),
             providers: vec![],
             peer_state: HashMap::new(),
             inflight_map: HashMap::new(),
@@ -986,10 +1000,15 @@ impl DownloadEngine {
         // Only ever delete a `.part`: never a completed file the user owns.
         if let Some(path) = part_path
             && path.extension().is_some_and(|e| e == "part")
-            && let Err(e) = tokio::fs::remove_file(&path).await
-            && e.kind() != std::io::ErrorKind::NotFound
         {
-            warn!(path = %path.display(), "Could not remove .part file on cancel: {e}");
+            if let Err(e) = tokio::fs::remove_file(&path).await
+                && e.kind() != std::io::ErrorKind::NotFound
+            {
+                warn!(path = %path.display(), "Could not remove .part file on cancel: {e}");
+            }
+            // Drop its outboard sidecar too, so a cancelled download leaves
+            // nothing behind in temp_dir.
+            let _ = tokio::fs::remove_file(partial_outboard_path(&path)).await;
         }
 
         // Stop announcing it: the .part (and its verified chunks) are gone, so we
@@ -1086,6 +1105,12 @@ impl DownloadEngine {
                         "Could not move .part on rename: {e}");
                     return;
                 }
+                // Keep the outboard sidecar alongside its `.part`.
+                let _ = tokio::fs::rename(
+                    partial_outboard_path(&old_part),
+                    partial_outboard_path(&new_part),
+                )
+                .await;
                 self.active.get_mut(&h).unwrap().dest_path = new_part.clone();
                 if let Err(e) = db::downloads::set_dest_path(
                     &self.db,
@@ -1116,6 +1141,12 @@ impl DownloadEngine {
                     warn!(download_id, "Could not move .part on rename: {e}");
                     return;
                 }
+                // Keep the outboard sidecar alongside its `.part`.
+                let _ = tokio::fs::rename(
+                    partial_outboard_path(&old_part),
+                    partial_outboard_path(&new_part),
+                )
+                .await;
                 if let Err(e) = db::downloads::set_dest_path(
                     &self.db,
                     download_id,
@@ -1147,7 +1178,7 @@ impl DownloadEngine {
                 name,
                 total_size,
                 chunk_size,
-                chunks,
+                chunk_count,
             } => {
                 let pending = match self.pending_manifests.remove(&root_hash) {
                     Some(p) => p,
@@ -1179,8 +1210,17 @@ impl DownloadEngine {
                     name_with_frag(&chosen_name, &name_frag(&root_hash))
                 ));
 
-                let chunk_tuples: Vec<(u32, [u8; 32], u32)> =
-                    chunks.iter().map(|c| (c.idx, c.hash, c.size)).collect();
+                let total_chunks = chunk_count as usize;
+                // Per-chunk byte sizes derive from the geometry (every chunk is
+                // `chunk_size` except a possibly-shorter last one) — there are no
+                // per-chunk hashes any more; verification is against the root.
+                let chunk_tuples: Vec<(u32, u32)> = (0..chunk_count)
+                    .map(|idx| {
+                        let start = idx as u64 * chunk_size as u64;
+                        let sz = (total_size - start).min(chunk_size as u64) as u32;
+                        (idx, sz)
+                    })
+                    .collect();
 
                 // Use the placeholder row created at start(), updating it with
                 // the real manifest data and inserting chunk rows.
@@ -1218,13 +1258,7 @@ impl DownloadEngine {
                     }
                 }
 
-                let mut chunk_meta = HashMap::new();
-                let mut queued = VecDeque::new();
-                for c in &chunks {
-                    chunk_meta.insert(c.idx, (c.hash, c.size));
-                    queued.push_back(c.idx);
-                }
-                let total_chunks = chunk_meta.len();
+                let queued: VecDeque<u32> = (0..chunk_count).collect();
 
                 let mut peer_state = HashMap::new();
                 for &p in &pending.providers {
@@ -1235,11 +1269,15 @@ impl DownloadEngine {
                     download_id: dl_id,
                     dest_path,
                     chunk_size,
+                    total_size,
                     queued,
                     in_flight: HashSet::new(),
                     done: HashSet::new(),
                     total_chunks,
-                    chunk_meta,
+                    partial_outboard: Arc::new(std::sync::Mutex::new(vec![
+                        0u8;
+                        rucio_core::protocol::bao::outboard_len(total_size)
+                    ])),
                     providers: pending.providers,
                     peer_state,
                     inflight_map: HashMap::new(),
@@ -1444,36 +1482,56 @@ impl DownloadEngine {
                 // Process PEX peers — parse before mutably borrowing self further.
                 let pex: Vec<PeerId> = pex_peers.iter().filter_map(|s| s.parse().ok()).collect();
 
-                let (expected_hash, chunk_size) = match dl.chunk_meta.get(&chunk_idx) {
-                    Some(v) => *v,
-                    None => {
-                        warn!(chunk_idx, "Received unsolicited chunk");
-                        return;
-                    }
-                };
-
-                // Verify hash.
-                if blake3::hash(&data).as_bytes() != &expected_hash {
-                    warn!(chunk_idx, %peer, "Chunk hash mismatch — re-queuing");
-                    self.metrics.record_rejected();
-                    // Re-queue for another peer.
-                    dl.queued.push_back(chunk_idx);
-                    self.dispatch_requests(root_hash).await;
+                if chunk_idx as usize >= dl.total_chunks {
+                    warn!(chunk_idx, "Received unsolicited chunk");
                     return;
                 }
+                let nominal = dl.chunk_size;
+                let total_size = dl.total_size;
+                // Actual byte length of this chunk (last one may be shorter).
+                let chunk_size =
+                    (total_size - chunk_idx as u64 * nominal as u64).min(nominal as u64) as u32;
+                let dest_path = dl.dest_path.clone();
+                let ob = Arc::clone(&dl.partial_outboard);
 
-                // Throttle download bandwidth before writing to disk. Rucio
-                // transfers take priority over eMule on the shared cap.
+                // Throttle download bandwidth before the (CPU + disk) verify.
+                // Rucio transfers take priority over eMule on the shared cap.
                 self.download_throttle
                     .acquire(data.len() as u64, Priority::High)
                     .await;
 
-                // Write to disk.
-                let offset = chunk_idx as u64 * dl.chunk_size as u64;
-                let dest_path = dl.dest_path.clone();
-                if let Err(e) = write_chunk(&dest_path, offset, &data).await {
-                    warn!(chunk_idx, "Failed to write chunk to disk: {e}");
+                // Verify the bao slice against the file root, write the verified
+                // bytes at their offset, and fold the slice's proof nodes into the
+                // partial outboard — all on a blocking thread, under the download's
+                // lock (which serialises this download's decodes; other downloads
+                // use other locks). The outboard is cloned so a failed verify
+                // leaves the accumulated tree intact.
+                let verify = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+                    let ranges =
+                        rucio_core::protocol::bao::chunk_ranges(chunk_idx, nominal, total_size);
+                    let mut dest = std::fs::OpenOptions::new().write(true).open(&dest_path)?;
+                    let mut guard = ob.lock().unwrap();
+                    let updated = rucio_core::protocol::bao::decode_slice_into(
+                        &data,
+                        &ranges,
+                        &mut dest,
+                        blake3::Hash::from_bytes(root_hash),
+                        total_size,
+                        guard.clone(),
+                    )
+                    .map_err(|e| anyhow::anyhow!("slice verify failed: {e}"))?;
+                    // Persist for resumption / partial sharing before releasing.
+                    let _ = std::fs::write(partial_outboard_path(&dest_path), &updated);
+                    *guard = updated;
+                    Ok(())
+                })
+                .await;
+
+                if !matches!(verify, Ok(Ok(()))) {
+                    warn!(chunk_idx, %peer, "Chunk slice failed verification — re-queuing");
+                    self.metrics.record_rejected();
                     dl.queued.push_back(chunk_idx);
+                    self.dispatch_requests(root_hash).await;
                     return;
                 }
 
@@ -1600,6 +1658,20 @@ impl DownloadEngine {
                                 to   = %final_path.display(),
                                 "Download moved to download_dir"
                             );
+                            // The accumulated `.part.obao` is the full outboard
+                            // (every chunk was verified). Promote it to the share
+                            // outboard cache so serving doesn't recompute it; if
+                            // this fails the producer regenerates from the file.
+                            let part_obao = partial_outboard_path(&part_path);
+                            let share_obao = share_outboard_path(&self.outboard_dir, &root_hash);
+                            if let Some(parent) = share_obao.parent() {
+                                let _ = tokio::fs::create_dir_all(parent).await;
+                            }
+                            if let Err(e) = crate::fsutil::move_file(&part_obao, &share_obao).await
+                            {
+                                debug!("Could not promote outboard sidecar (will regenerate): {e}");
+                                let _ = tokio::fs::remove_file(&part_obao).await;
+                            }
                             if let Err(e) = db::downloads::set_dest_path(
                                 &self.db,
                                 dl_id,
@@ -1877,6 +1949,7 @@ impl DownloadEngine {
         let scheduler = Arc::clone(&self.upload_scheduler);
         let upload_stats = Arc::clone(&self.upload_stats);
         let root_hash = request.root_hash;
+        let outboard_dir = self.outboard_dir.clone();
 
         tokio::spawn(async move {
             let started = std::time::Instant::now();
@@ -1887,7 +1960,7 @@ impl DownloadEngine {
                 .await
                 .expect("upload semaphore closed");
 
-            let response = read_chunk_from_db(&db, &request, pex_peers).await;
+            let response = read_chunk_from_db(&db, &request, &outboard_dir, pex_peers).await;
             let (kind, bytes) = match &response {
                 ChunkResponse::Ok { data, .. } => ("ok", data.len()),
                 ChunkResponse::NotFound => ("not_found", 0),
@@ -1965,32 +2038,135 @@ impl DownloadEngine {
 // I/O helpers
 // ---------------------------------------------------------------------------
 
-async fn write_chunk(path: &PathBuf, offset: u64, data: &[u8]) -> Result<()> {
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .open(path)
-        .await
-        .map_err(|e| anyhow!("opening dest file for write: {e}"))?;
-    file.seek(std::io::SeekFrom::Start(offset)).await?;
-    file.write_all(data).await?;
-    Ok(())
+/// The sidecar holding the (partial or full) bao outboard for a file at
+/// `dest_path`: `<dest_path>.obao`. While downloading, this is the `.part`'s
+/// companion that `decode_ranges` fills in chunk by chunk.
+fn partial_outboard_path(dest_path: &std::path::Path) -> PathBuf {
+    let mut s = dest_path.as_os_str().to_owned();
+    s.push(".obao");
+    PathBuf::from(s)
+}
+
+/// The share outboard cache directory, derived from the daemon's `temp_dir`.
+/// Holds the regenerable bao outboards of *completed* shares (in-progress
+/// downloads keep theirs next to the `.part`, not here).
+pub fn outboards_dir(temp_dir: &std::path::Path) -> PathBuf {
+    temp_dir.join("outboards")
+}
+
+/// The cached full outboard for a *completed* share, keyed by root hash:
+/// `<outboard_dir>/<aa>/<root_hex>.obao`, where `aa` is the first hash byte in
+/// hex. Sharding by the first byte (256 buckets) keeps any single directory
+/// small even with millions of shares, instead of piling every `.obao` into one
+/// directory (which degrades many filesystems). Regenerable from the file at
+/// any time.
+fn share_outboard_path(outboard_dir: &std::path::Path, root_hash: &[u8; 32]) -> PathBuf {
+    let hex = hex::encode(root_hash);
+    outboard_dir.join(&hex[..2]).join(format!("{hex}.obao"))
+}
+
+/// Files at or above this size get their outboard persisted at index time, so
+/// the first chunk request doesn't pay a second full read of the file to rebuild
+/// it. Below it, re-outboarding lazily on demand is cheap, so we don't write a
+/// sidecar until the file is actually served — keeping the cache to in-demand
+/// files instead of one `.obao` per shared file.
+pub const EAGER_OUTBOARD_THRESHOLD: u64 = 1024 * 1024 * 1024; // 1 GiB
+
+/// Persist a freshly-computed outboard into the share cache, but only for files
+/// large enough that a lazy re-read would hurt (>= [`EAGER_OUTBOARD_THRESHOLD`]).
+/// The outboard is a byproduct of the hashing pass `index_file` already runs, so
+/// this just saves it rather than recomputing later. Best-effort: on any error
+/// the lazy path regenerates it on first serve.
+pub async fn persist_share_outboard_if_large(
+    temp_dir: &std::path::Path,
+    root_hash: &[u8; 32],
+    size: u64,
+    outboard: &[u8],
+) {
+    if size < EAGER_OUTBOARD_THRESHOLD {
+        return;
+    }
+    let path = share_outboard_path(&outboards_dir(temp_dir), root_hash);
+    if let Some(parent) = path.parent()
+        && tokio::fs::create_dir_all(parent).await.is_err()
+    {
+        return;
+    }
+    let _ = tokio::fs::write(&path, outboard).await;
+}
+
+/// Best-effort removal of a completed share's cached outboard, given the
+/// daemon's `temp_dir`. Called when a share is un-indexed so its `.obao`
+/// doesn't linger. A missing file is fine (lazily generated, may never have
+/// existed). The shard subdirectory is left in place — it's reused by sibling
+/// hashes and pruning it would race concurrent writers.
+pub async fn remove_share_outboard(temp_dir: &std::path::Path, root_hash: &[u8; 32]) {
+    let path = share_outboard_path(&outboards_dir(temp_dir), root_hash);
+    let _ = tokio::fs::remove_file(path).await;
+}
+
+/// Garbage-collect orphaned share outboards: walk `<temp_dir>/outboards` and
+/// delete every `.obao` whose root hash is no longer a completed share. The
+/// cache holds only completed-share outboards (keyed by root hash), so the
+/// `shared_files` table is the authority. Cheap on a stable library (a sharded
+/// directory walk + one indexed lookup per file) and a backstop for removals
+/// that didn't clean up inline (watcher de-index, startup reconcile, a crash
+/// between the DB delete and the file delete). Returns the number removed.
+pub async fn gc_orphan_outboards(db: &Db, temp_dir: &std::path::Path) -> usize {
+    let dir = outboards_dir(temp_dir);
+    let mut removed = 0usize;
+    let mut buckets = match tokio::fs::read_dir(&dir).await {
+        Ok(rd) => rd,
+        Err(_) => return 0, // cache dir doesn't exist yet — nothing to GC
+    };
+    while let Ok(Some(bucket)) = buckets.next_entry().await {
+        let mut files = match tokio::fs::read_dir(bucket.path()).await {
+            Ok(rd) => rd,
+            Err(_) => continue,
+        };
+        while let Ok(Some(entry)) = files.next_entry().await {
+            let path = entry.path();
+            // Parse the root hash from `<root_hex>.obao`; skip anything else.
+            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            if path.extension().and_then(|e| e.to_str()) != Some("obao") {
+                continue;
+            }
+            let Ok(bytes) = hex::decode(stem) else {
+                continue;
+            };
+            let Ok(root_hash): Result<[u8; 32], _> = bytes.try_into() else {
+                continue;
+            };
+            match db::shares::get_by_hash(db, &root_hash).await {
+                Ok(Some(_)) => {} // still a share — keep
+                Ok(None) => {
+                    if tokio::fs::remove_file(&path).await.is_ok() {
+                        removed += 1;
+                    }
+                }
+                Err(_) => {} // DB hiccup — leave it for the next sweep
+            }
+        }
+    }
+    if removed > 0 {
+        debug!(removed, "GC: pruned orphaned share outboards");
+    }
+    removed
 }
 
 async fn read_chunk_from_db(
     db: &Db,
     request: &ChunkRequest,
+    outboard_dir: &std::path::Path,
     pex_peers: Vec<String>,
 ) -> ChunkResponse {
-    let row = sqlx::query(
-        "SELECT c.idx, c.size, sf.path, sf.chunk_size
-         FROM chunks c
-         JOIN shared_files sf ON sf.id = c.shared_file_id
-         WHERE sf.root_hash = ?1 AND c.idx = ?2",
-    )
-    .bind(request.root_hash.as_slice())
-    .bind(request.chunk_idx as i64)
-    .fetch_optional(db)
-    .await;
+    use sqlx::Row;
+    let row = sqlx::query("SELECT path, size, chunk_size FROM shared_files WHERE root_hash = ?1")
+        .bind(request.root_hash.as_slice())
+        .fetch_optional(db)
+        .await;
 
     let row = match row {
         Ok(Some(r)) => r,
@@ -1999,36 +2175,65 @@ async fn read_chunk_from_db(
         Err(e) => return ChunkResponse::Error(e.to_string()),
     };
 
-    use sqlx::Row;
     let path: String = row.get("path");
+    let total_size: i64 = row.get("size");
     let chunk_size: i64 = row.get("chunk_size");
-    let idx: i64 = row.get("idx");
-    let size: i64 = row.get("size");
+    let total_size = total_size as u64;
+    let chunk_size = chunk_size as u32;
+    let chunk_idx = request.chunk_idx;
+    let root = blake3::Hash::from_bytes(request.root_hash);
+    let outboard_path = share_outboard_path(outboard_dir, &request.root_hash);
 
-    let offset = idx as u64 * chunk_size as u64;
-    match read_file_range(&path, offset, size as usize).await {
-        Ok(data) => ChunkResponse::Ok {
+    // Build the self-verifying slice off the async runtime: bao encode reads the
+    // data range and (if absent) recomputes the whole outboard — both blocking.
+    let result = tokio::task::spawn_blocking(move || -> std::io::Result<Vec<u8>> {
+        let data_path = std::path::PathBuf::from(&path);
+        // Load the cached outboard, regenerating it from the file if it is
+        // missing or stale (wrong length for the file's tree).
+        let want_len = rucio_core::protocol::bao::outboard_len(total_size);
+        let outboard = match std::fs::read(&outboard_path) {
+            Ok(bytes) if bytes.len() == want_len => bytes,
+            _ => {
+                let (_root, bytes, _size) =
+                    rucio_core::protocol::bao::compute_outboard(&data_path)?;
+                if let Some(parent) = outboard_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let _ = std::fs::write(&outboard_path, &bytes);
+                bytes
+            }
+        };
+        let ranges = rucio_core::protocol::bao::chunk_ranges(chunk_idx, chunk_size, total_size);
+        rucio_core::protocol::bao::encode_slice(&data_path, outboard, root, total_size, &ranges)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(data)) => ChunkResponse::Ok {
             data,
             peers: pex_peers,
         },
+        Ok(Err(e)) => ChunkResponse::Error(e.to_string()),
         Err(e) => ChunkResponse::Error(e.to_string()),
     }
 }
 
 /// Partial sharing: serve a chunk we hold for a file we are *still downloading*.
 ///
-/// Only chunks already marked `done` are served — those were verified against
-/// their hash when received, so we never hand out bytes from a half-written or
-/// unverified chunk. The bytes come from the download's `.part` (its
-/// `dest_path` while in progress). Once the download completes the file is
-/// indexed as a normal share and served by the path above instead.
+/// Only chunks already marked `done` are served — those passed verified
+/// streaming when received, so their subtree is present in the `.part`'s
+/// outboard sidecar and we can emit a valid slice. The bytes come from the
+/// download's `.part` (its `dest_path` while in progress) and its `.part.obao`.
+/// Once the download completes the file is indexed as a normal share and served
+/// by the path above instead.
 async fn read_chunk_from_partial(
     db: &Db,
     request: &ChunkRequest,
     pex_peers: Vec<String>,
 ) -> ChunkResponse {
+    use sqlx::Row;
     let row = sqlx::query(
-        "SELECT dc.size AS size, d.dest_path AS dest_path
+        "SELECT d.dest_path AS dest_path, d.total_size AS total_size
          FROM download_chunks dc
          JOIN downloads d ON d.id = dc.download_id
          WHERE d.root_hash = ?1 AND dc.idx = ?2 AND dc.status = 'done'",
@@ -2044,16 +2249,30 @@ async fn read_chunk_from_partial(
         Err(e) => return ChunkResponse::Error(e.to_string()),
     };
 
-    use sqlx::Row;
     let path: String = row.get("dest_path");
-    let size: i64 = row.get("size");
-    // Downloads use the fixed rucio chunk size; the offset is idx * CHUNK_SIZE.
-    let offset = request.chunk_idx as u64 * CHUNK_SIZE as u64;
-    match read_file_range(&path, offset, size as usize).await {
-        Ok(data) => ChunkResponse::Ok {
+    let total_size: i64 = row.get("total_size");
+    let total_size = total_size as u64;
+    let chunk_idx = request.chunk_idx;
+    let root = blake3::Hash::from_bytes(request.root_hash);
+
+    // Downloads use the fixed rucio chunk size.
+    let result = tokio::task::spawn_blocking(move || -> std::io::Result<Vec<u8>> {
+        let data_path = std::path::PathBuf::from(&path);
+        let outboard = std::fs::read(partial_outboard_path(&data_path))?;
+        let ranges = rucio_core::protocol::bao::chunk_ranges(chunk_idx, CHUNK_SIZE, total_size);
+        rucio_core::protocol::bao::encode_slice(&data_path, outboard, root, total_size, &ranges)
+    })
+    .await;
+
+    match result {
+        // A done chunk whose proof nodes aren't yet in the partial outboard
+        // (sidecar lost) can't be sliced; report NotFound so the peer retries
+        // elsewhere rather than treating it as a hard error.
+        Ok(Ok(data)) => ChunkResponse::Ok {
             data,
             peers: pex_peers,
         },
+        Ok(Err(_)) => ChunkResponse::NotFound,
         Err(e) => ChunkResponse::Error(e.to_string()),
     }
 }
@@ -2073,47 +2292,28 @@ async fn build_manifest_response(db: &Db, root_hash: &[u8; 32]) -> ManifestRespo
         Err(e) => return ManifestResponse::Error(e.to_string()),
     };
 
-    let file_id: i64 = file_row.get("id");
     let name: String = file_row.get("name");
     let total_size: i64 = file_row.get("size");
     let chunk_size: i64 = file_row.get("chunk_size");
-
-    let chunk_rows =
-        sqlx::query("SELECT idx, hash, size FROM chunks WHERE shared_file_id = ?1 ORDER BY idx")
-            .bind(file_id)
-            .fetch_all(db)
-            .await;
-
-    let chunk_rows = match chunk_rows {
-        Ok(r) => r,
-        Err(e) => return ManifestResponse::Error(e.to_string()),
-    };
-
-    let chunks = chunk_rows
-        .iter()
-        .map(|r| {
-            let idx: i64 = r.get("idx");
-            let hash_bytes: Vec<u8> = r.get("hash");
-            let size: i64 = r.get("size");
-            let mut hash = [0u8; 32];
-            if hash_bytes.len() == 32 {
-                hash.copy_from_slice(&hash_bytes);
-            }
-            rucio_core::protocol::manifest::ChunkInfo {
-                idx: idx as u32,
-                hash,
-                size: size as u32,
-            }
-        })
-        .collect();
+    let total_size = total_size as u64;
+    let chunk_size = chunk_size as u32;
 
     ManifestResponse::Ok {
         root_hash: *root_hash,
         name,
-        total_size: total_size as u64,
-        chunk_size: chunk_size as u32,
-        chunks,
+        total_size,
+        chunk_size,
+        chunk_count: derive_chunk_count(total_size, chunk_size),
     }
+}
+
+/// Number of `chunk_size`-byte chunks covering `total_size` (ceiling). A
+/// zero-byte file has zero chunks.
+fn derive_chunk_count(total_size: u64, chunk_size: u32) -> u32 {
+    if chunk_size == 0 {
+        return 0;
+    }
+    total_size.div_ceil(chunk_size as u64) as u32
 }
 
 /// Build our `/have` answer for a file: which of its chunks we can serve right
@@ -2123,18 +2323,14 @@ async fn build_have_response(db: &Db, root_hash: &[u8; 32]) -> HaveResponse {
     use sqlx::Row;
 
     // Complete share: every chunk is on disk.
-    let shared = sqlx::query("SELECT id FROM shared_files WHERE root_hash = ?1")
+    let shared = sqlx::query("SELECT size, chunk_size FROM shared_files WHERE root_hash = ?1")
         .bind(root_hash.as_slice())
         .fetch_optional(db)
         .await;
     if let Ok(Some(row)) = shared {
-        let file_id: i64 = row.get("id");
-        let count = sqlx::query("SELECT COUNT(*) AS n FROM chunks WHERE shared_file_id = ?1")
-            .bind(file_id)
-            .fetch_one(db)
-            .await
-            .map(|r| r.get::<i64, _>("n") as usize)
-            .unwrap_or(0);
+        let size: i64 = row.get("size");
+        let chunk_size: i64 = row.get("chunk_size");
+        let count = derive_chunk_count(size as u64, chunk_size as u32) as usize;
         let mut bitmap = vec![0xFFu8; bitmap_bytes(count)];
         mask_trailing_bits(&mut bitmap, count);
         return HaveResponse::Ok {
@@ -2167,18 +2363,6 @@ async fn build_have_response(db: &Db, root_hash: &[u8; 32]) -> HaveResponse {
     }
 
     HaveResponse::NotFound
-}
-
-async fn read_file_range(path: &str, offset: u64, len: usize) -> Result<Vec<u8>> {
-    use tokio::io::AsyncReadExt;
-
-    let mut file = fs::File::open(path)
-        .await
-        .map_err(|e| anyhow!("opening shared file {path}: {e}"))?;
-    file.seek(std::io::SeekFrom::Start(offset)).await?;
-    let mut buf = vec![0u8; len];
-    file.read_exact(&mut buf).await?;
-    Ok(buf)
 }
 
 // ---------------------------------------------------------------------------
@@ -2229,9 +2413,25 @@ async fn persist_completed(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rucio_core::protocol::manifest::ChunkInfo;
     use std::time::Duration;
     use tokio::sync::mpsc;
+
+    /// Build a single-chunk bao fixture for `data`: returns its real `root_hash`
+    /// (= `blake3::hash(data)`) and a self-verifying slice for chunk 0 of a file
+    /// of length `data.len()` (chunk_size = the whole file). Used by tests that
+    /// must drive a real verified-streaming decode.
+    fn bao_one_chunk(data: &[u8]) -> ([u8; 32], Vec<u8>) {
+        use std::io::Write;
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        f.write_all(data).unwrap();
+        f.flush().unwrap();
+        let (root, ob, size) = rucio_core::protocol::bao::compute_outboard(f.path()).unwrap();
+        let chunk_size = (data.len() as u32).max(1);
+        let ranges = rucio_core::protocol::bao::chunk_ranges(0, chunk_size, size);
+        let slice =
+            rucio_core::protocol::bao::encode_slice(f.path(), ob, root, size, &ranges).unwrap();
+        (*root.as_bytes(), slice)
+    }
 
     #[test]
     fn mask_trailing_bits_clears_padding_in_last_byte() {
@@ -2265,15 +2465,22 @@ mod tests {
     /// A minimal ActiveDownload with `total` chunks and a zeroed availability
     /// bitmap, for exercising the bitmap helpers without a full engine.
     fn test_download(total: usize) -> ActiveDownload {
+        let total_size = total as u64 * CHUNK_SIZE as u64;
         ActiveDownload {
             download_id: 1,
             dest_path: PathBuf::from("/tmp/x.part"),
             chunk_size: CHUNK_SIZE,
+            total_size,
             queued: VecDeque::new(),
             in_flight: HashSet::new(),
             done: HashSet::new(),
             total_chunks: total,
-            chunk_meta: HashMap::new(),
+            partial_outboard: Arc::new(std::sync::Mutex::new(vec![
+                0u8;
+                rucio_core::protocol::bao::outboard_len(
+                    total_size
+                )
+            ])),
             providers: vec![],
             peer_state: HashMap::new(),
             inflight_map: HashMap::new(),
@@ -2465,7 +2672,13 @@ mod tests {
         let part = dir.path().join("file.bin.part");
         let data = b"contents of chunk zero".to_vec();
         tokio::fs::write(&part, &data).await.unwrap();
-        let hash = [9u8; 32];
+        // Write the outboard sidecar the producer needs to slice the chunk; the
+        // download's root hash is the canonical blake3 of the file content.
+        let (root, outboard, size) = rucio_core::protocol::bao::compute_outboard(&part).unwrap();
+        tokio::fs::write(partial_outboard_path(&part), &outboard)
+            .await
+            .unwrap();
+        let hash = *root.as_bytes();
 
         // An in-progress download whose .part holds one verified ('done') chunk.
         sqlx::query(
@@ -2473,7 +2686,7 @@ mod tests {
              VALUES (?1, 'file.bin', ?2, ?3, 'downloading', ?2, 0, 0)",
         )
         .bind(hash.as_slice())
-        .bind(data.len() as i64)
+        .bind(size as i64)
         .bind(part.to_str().unwrap())
         .execute(&db)
         .await
@@ -2484,23 +2697,38 @@ mod tests {
             .await
             .unwrap();
         sqlx::query(
-            "INSERT INTO download_chunks (download_id, idx, hash, size, status)
-             VALUES (?1, 0, ?2, ?3, 'done')",
+            "INSERT INTO download_chunks (download_id, idx, size, status)
+             VALUES (?1, 0, ?2, 'done')",
         )
         .bind(dl_id)
-        .bind([0u8; 32].as_slice())
-        .bind(data.len() as i64)
+        .bind(size as i64)
         .execute(&db)
         .await
         .unwrap();
 
-        // Chunk 0 is done → served from the .part.
+        // Chunk 0 is done → served from the .part as a verifying slice that
+        // decodes back to the original bytes.
         let req = ChunkRequest {
             root_hash: hash,
             chunk_idx: 0,
         };
         match read_chunk_from_partial(&db, &req, vec![]).await {
-            ChunkResponse::Ok { data: got, .. } => assert_eq!(got, data),
+            ChunkResponse::Ok { data: slice, .. } => {
+                let ranges = rucio_core::protocol::bao::chunk_ranges(0, CHUNK_SIZE, size);
+                let mut out = tempfile::NamedTempFile::new().unwrap();
+                out.as_file().set_len(size).unwrap();
+                rucio_core::protocol::bao::decode_slice_into(
+                    &slice,
+                    &ranges,
+                    out.as_file_mut(),
+                    root,
+                    size,
+                    vec![0u8; rucio_core::protocol::bao::outboard_len(size)],
+                )
+                .expect("served slice must verify against the root");
+                let got = std::fs::read(out.path()).unwrap();
+                assert_eq!(got, data);
+            }
             _ => panic!("expected the done chunk to be served"),
         }
 
@@ -2513,6 +2741,68 @@ mod tests {
             read_chunk_from_partial(&db, &req2, vec![]).await,
             ChunkResponse::NotFound
         ));
+    }
+
+    #[tokio::test]
+    async fn gc_prunes_orphan_outboards_keeps_live_shares() {
+        let (db, dir) = make_db().await;
+        let temp = dir.path();
+
+        // A live share (row in shared_files) and an orphan (no row), each with a
+        // cached outboard at its sharded path.
+        let live = [0x11u8; 32];
+        let orphan = [0x22u8; 32];
+        crate::db::shares::insert(
+            &db,
+            crate::db::shares::NewSharedFile {
+                root_hash: &live,
+                name: "live.bin",
+                size: 4096,
+                mime_type: None,
+                path: "/tmp/live.bin",
+                chunk_size: 4096,
+                added_at: 1,
+                mtime: 0,
+            },
+        )
+        .await
+        .unwrap();
+
+        for h in [&live, &orphan] {
+            let p = share_outboard_path(&outboards_dir(temp), h);
+            tokio::fs::create_dir_all(p.parent().unwrap())
+                .await
+                .unwrap();
+            tokio::fs::write(&p, b"outboard bytes").await.unwrap();
+        }
+
+        let removed = gc_orphan_outboards(&db, temp).await;
+        assert_eq!(removed, 1, "exactly the orphan should be pruned");
+        assert!(
+            share_outboard_path(&outboards_dir(temp), &live).exists(),
+            "the live share's outboard must survive"
+        );
+        assert!(
+            !share_outboard_path(&outboards_dir(temp), &orphan).exists(),
+            "the orphan outboard must be gone"
+        );
+    }
+
+    #[tokio::test]
+    async fn remove_share_outboard_deletes_the_sidecar() {
+        let dir = tempfile::tempdir().unwrap();
+        let temp = dir.path();
+        let h = [0x33u8; 32];
+        let p = share_outboard_path(&outboards_dir(temp), &h);
+        tokio::fs::create_dir_all(p.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&p, b"x").await.unwrap();
+
+        remove_share_outboard(temp, &h).await;
+        assert!(!p.exists(), "outboard sidecar should be deleted");
+        // Idempotent: a second call on a missing file is a no-op (no panic).
+        remove_share_outboard(temp, &h).await;
     }
 
     // -----------------------------------------------------------------------
@@ -2846,11 +3136,7 @@ mod tests {
             name: "ghost.bin".to_string(),
             total_size: 100,
             chunk_size: 100,
-            chunks: vec![ChunkInfo {
-                idx: 0,
-                hash: [0u8; 32],
-                size: 100,
-            }],
+            chunk_count: 1,
         };
         engine
             .on_manifest_received(fake_request_id(1), peer(1), response, 0)
@@ -2866,7 +3152,6 @@ mod tests {
         let hash = [0x21u8; 32];
         let magnet = fake_magnet(&hash, "happy.bin", 100);
         let p = peer(1);
-        let chunk_hash = *blake3::hash(b"hello").as_bytes();
 
         // Use spawn_acker so dispatch_requests doesn't deadlock waiting for id_rx
         let (acker_handle, stop_tx) = spawn_acker(rx);
@@ -2878,11 +3163,7 @@ mod tests {
             name: "happy.bin".to_string(),
             total_size: 5,
             chunk_size: 5,
-            chunks: vec![ChunkInfo {
-                idx: 0,
-                hash: chunk_hash,
-                size: 5,
-            }],
+            chunk_count: 1,
         };
         engine
             .on_manifest_received(fake_request_id(2), p, response, 0)
@@ -2929,7 +3210,6 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (mut engine, rx, _db_dir) = make_engine(&tmp).await;
         let hash = [0x30u8; 32];
-        let correct_chunk_hash = *blake3::hash(b"correct data").as_bytes();
         let magnet = fake_magnet(&hash, "mis.bin", 12);
         let p = peer(1);
 
@@ -2947,11 +3227,7 @@ mod tests {
                     name: "mis.bin".to_string(),
                     total_size: 12,
                     chunk_size: 12,
-                    chunks: vec![ChunkInfo {
-                        idx: 0,
-                        hash: correct_chunk_hash,
-                        size: 12,
-                    }],
+                    chunk_count: 1,
                 },
                 0,
             )
@@ -3018,7 +3294,6 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (mut engine, rx, _db_dir) = make_engine(&tmp).await;
         let hash = [0x32u8; 32];
-        let chunk_hash = *blake3::hash(b"some data xx").as_bytes();
         let magnet = fake_magnet(&hash, "dead.bin", 12);
         let p = peer(1);
 
@@ -3034,11 +3309,7 @@ mod tests {
                     name: "dead.bin".to_string(),
                     total_size: 12,
                     chunk_size: 12,
-                    chunks: vec![ChunkInfo {
-                        idx: 0,
-                        hash: chunk_hash,
-                        size: 12,
-                    }],
+                    chunk_count: 1,
                 },
                 0,
             )
@@ -3081,7 +3352,6 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (mut engine, rx, _db_dir) = make_engine(&tmp).await;
         let hash = [0x3au8; 32];
-        let chunk_hash = *blake3::hash(b"slowpeerdata").as_bytes();
         let magnet = fake_magnet(&hash, "slow.bin", 12);
         let p = peer(1);
         let (acker_handle, stop_tx) = spawn_acker(rx);
@@ -3096,11 +3366,7 @@ mod tests {
                     name: "slow.bin".to_string(),
                     total_size: 12,
                     chunk_size: 12,
-                    chunks: vec![ChunkInfo {
-                        idx: 0,
-                        hash: chunk_hash,
-                        size: 12,
-                    }],
+                    chunk_count: 1,
                 },
                 0,
             )
@@ -3155,8 +3421,9 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (mut engine, rx, _db_dir) = make_engine(&tmp).await;
         let data = b"hello";
-        let hash = [0x31u8; 32];
-        let chunk_hash = *blake3::hash(data).as_bytes();
+        // The root hash IS blake3 of the content; the chunk arrives as a bao
+        // slice that verifies against it.
+        let (hash, slice) = bao_one_chunk(data);
         let magnet = fake_magnet(&hash, "ok.bin", data.len() as u64);
         let p = peer(1);
 
@@ -3172,11 +3439,7 @@ mod tests {
                     name: "ok.bin".to_string(),
                     total_size: data.len() as u64,
                     chunk_size: data.len() as u32,
-                    chunks: vec![ChunkInfo {
-                        idx: 0,
-                        hash: chunk_hash,
-                        size: data.len() as u32,
-                    }],
+                    chunk_count: 1,
                 },
                 0,
             )
@@ -3206,7 +3469,7 @@ mod tests {
                 req_id,
                 p,
                 ChunkResponse::Ok {
-                    data: data.to_vec(),
+                    data: slice,
                     peers: vec![],
                 },
             )
@@ -3304,7 +3567,6 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (mut engine, mut rx, _db_dir) = make_engine(&tmp).await;
         let hash = [0xf2u8; 32];
-        let chunk_hash = *blake3::hash(b"data").as_bytes();
 
         let id =
             db::downloads::create_pending(&engine.db, &hash, Some("resume.bin"), 1_000, true, None)
@@ -3318,7 +3580,7 @@ mod tests {
             4096,
             tmp.path().join("resume.bin.part").to_str().unwrap(),
             1_000,
-            &[(0, chunk_hash, 4096)],
+            &[(0, 4096)],
         )
         .await
         .unwrap();
@@ -3350,7 +3612,6 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (mut engine, mut rx, _db_dir) = make_engine(&tmp).await;
         let hash = [0xf3u8; 32];
-        let chunk_hash = *blake3::hash(b"data").as_bytes();
 
         let id =
             db::downloads::create_pending(&engine.db, &hash, Some("pause.bin"), 1_000, true, None)
@@ -3364,7 +3625,7 @@ mod tests {
             4096,
             tmp.path().join("pause.bin.part").to_str().unwrap(),
             1_000,
-            &[(0, chunk_hash, 4096)],
+            &[(0, 4096)],
         )
         .await
         .unwrap();

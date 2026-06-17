@@ -478,7 +478,6 @@ mod tests {
                 chunk_size: 4096,
                 added_at: 1,
                 mtime: 0,
-                chunks: &[(0, [9u8; 32], 4096)],
             },
         )
         .await
@@ -648,7 +647,6 @@ mod tests {
                 chunk_size: 100,
                 added_at: 1,
                 mtime: 0,
-                chunks: &[(0, [7u8; 32], 100)],
             },
         )
         .await
@@ -870,7 +868,6 @@ mod tests {
                 chunk_size: 4,
                 added_at: 1,
                 mtime: 0,
-                chunks: &[(0, [3u8; 32], 4)],
             },
         )
         .await
