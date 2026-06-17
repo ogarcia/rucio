@@ -17,71 +17,116 @@ This is a deliberate trade-off: migration infrastructure is non-trivial to
 implement correctly, and the schema is still evolving. A proper migration
 system will be introduced before the first stable release.
 
+Anything declared in the config rather than the DB survives a reset — notably
+`storage.shared_dirs`, which is re-shared on every startup (see
+[Configuration](../user/06-configuration.md#storageshared_dirs)).
+
 ### Tables
 
-#### `shares`
+The authoritative schema lives in [`rucio-daemon/src/db/schema.sql`](../../rucio-daemon/src/db/schema.sql);
+this section describes the central tables and the model, not every column. All
+hashes are stored as raw `BLOB` (32-byte BLAKE3, or 16-byte MD4 for eMule), not
+hex. Surrogate `id` columns are plain `INTEGER PRIMARY KEY` (auto-assigned
+rowids; no `AUTOINCREMENT`, since the durable cross-node identity is the content
+hash).
 
-Stores every indexed file.
+#### `shared_files`
+
+Stores every indexed file that this node shares.
 
 | Column | Type | Description |
 |---|---|---|
-| `id` | INTEGER PK | Auto-increment row ID |
-| `root_hash` | TEXT UNIQUE | BLAKE3 hash hex, primary key for lookups |
+| `id` | INTEGER PK | Row ID |
+| `root_hash` | BLOB UNIQUE | 32-byte BLAKE3 — the canonical file id (= `blake3` of the content; see [Hashing](06-hashing.md)) |
 | `name` | TEXT | File name |
 | `size` | INTEGER | File size in bytes |
 | `mime_type` | TEXT | Detected MIME type |
-| `path` | TEXT | Absolute path on disk |
-| `dir_path` | TEXT | Parent shared directory path |
-| `indexed_at` | INTEGER | Unix timestamp of last indexing |
+| `path` | TEXT | Absolute path on disk (indexed) |
+| `chunk_size` | INTEGER | Transfer chunk size (default 4 MiB) |
+| `added_at` | INTEGER | Unix timestamp first indexed |
+| `mtime` | INTEGER | File mtime — the change signal for re-indexing |
 
-The `dir_path` column enables bulk operations on a shared directory: when a
-directory is removed, all rows with a matching `dir_path` prefix are deleted
-in a single query (`delete_by_path_prefix`).
+Removing a shared directory deletes all rows whose `path` is under that prefix
+in one query (`delete_by_path_prefix`). There is no per-chunk hash table: with
+BLAKE3 verified streaming each chunk is checked as a self-verifying slice
+against `root_hash`, and the Merkle tree (outboard) lives as a regenerable
+sidecar on disk, not in the DB (see [Transfer protocol](03-transfer-protocol.md)).
 
-The `download_dir` is protected at the application layer — attempting to add
-it as a shared directory returns a 409 error.
+#### `shared_dirs`
+
+The set of registered share directories the watcher monitors.
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | INTEGER PK | Row ID |
+| `path` | TEXT UNIQUE | Absolute directory path |
+| `protected` | INTEGER | `1` = cannot be removed via the API |
+| `added_at` | INTEGER | Unix timestamp |
+
+The `download_dir`, `pin_dir`, category dirs and `storage.shared_dirs` entries
+are reconciled in as `protected` on startup; the DELETE share endpoint refuses
+to remove a protected directory (403). Dirs added with `rucio share add` are
+unprotected and removable.
 
 #### `downloads`
 
-Tracks every download, past and present.
+Tracks every libp2p download, past and present. (eMule downloads live in a
+separate `emule_downloads` table so the eMule subsystem stays detachable.)
 
 | Column | Type | Description |
 |---|---|---|
-| `id` | INTEGER PK | Auto-increment row ID |
-| `root_hash` | TEXT UNIQUE | BLAKE3 hash of the target file |
-| `name` | TEXT | File name (may be null until manifest is fetched) |
-| `total_size` | INTEGER | File size in bytes (null until manifest) |
-| `dest_path` | TEXT | Final destination path (null until manifest) |
+| `id` | INTEGER PK | Row ID |
+| `root_hash` | BLOB UNIQUE | BLAKE3 of the target file |
+| `name` | TEXT | File name |
+| `total_size` | INTEGER | File size in bytes |
+| `dest_path` | TEXT | `.part` path while downloading, final path once complete |
 | `status` | TEXT | See states below |
-| `progress` | INTEGER | Bytes received so far |
-| `created_at` | INTEGER | Unix timestamp |
-| `completed_at` | INTEGER | Unix timestamp (null if not done) |
+| `bytes_done` | INTEGER | Bytes received so far |
+| `error_msg` | TEXT | Failure reason (null unless failed) |
+| `category_id` | INTEGER FK → categories.id | NULL = global download dir (`ON DELETE SET NULL`) |
+| `added_at` / `updated_at` | INTEGER | Unix timestamps |
 
-**Status values:** `finding_providers`, `queued`, `downloading`, `completed`,
-`failed`, `cancelled`.
+**Status values:** `finding_providers`, `queued`, `downloading`, `stalled`,
+`paused`, `completed`, `failed`, `cancelled`.
 
-#### `chunks`
+#### `download_chunks`
 
-Tracks the state of each individual chunk for active downloads.
-
-| Column | Type | Description |
-|---|---|---|
-| `download_id` | INTEGER FK → downloads.id | |
-| `chunk_index` | INTEGER | Zero-based chunk index |
-| `status` | TEXT | `pending`, `in_flight`, `done` |
-
-`in_flight` chunks are reset to `pending` on startup (via
-`reset_in_flight_chunks`) so they are re-requested after a crash or restart.
-
-#### `peers`
-
-Stores discovered peers for display in `rucio node peers` and for bootstrap hints.
+Per-chunk state for an in-progress download.
 
 | Column | Type | Description |
 |---|---|---|
-| `peer_id` | TEXT UNIQUE | libp2p PeerID (base58) |
+| `id` | INTEGER PK | Row ID |
+| `download_id` | INTEGER FK → downloads.id | `ON DELETE CASCADE` |
+| `idx` | INTEGER | Zero-based chunk index |
+| `size` | INTEGER | Chunk size in bytes |
+| `status` | TEXT | `pending`, `downloading`, `done` |
+
+There is no per-chunk hash column — a chunk is verified as a bao slice against
+the file's `root_hash` on arrival. `downloading` chunks are reset to `pending`
+on startup so they are re-requested after a crash or restart.
+
+#### `known_peers`
+
+Discovered peers, shown in `rucio node peers` and reused as bootstrap hints.
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | INTEGER PK | Row ID |
+| `peer_id` | TEXT UNIQUE | libp2p PeerId (base58) |
 | `addrs` | TEXT | JSON array of known multiaddrs |
-| `last_seen` | INTEGER | Unix timestamp |
+| `first_seen` / `last_seen` | INTEGER | Unix timestamps |
+| `high_id` | INTEGER | `1` = HighID, `0` = LowID |
+
+#### Other tables
+
+- `pins` and the cooperative-pinning cluster (`pin_subscriptions`,
+  `pin_subscription_collections`, `subscription_seen_collections`,
+  `mirror_pins`, `mirror_owned`, `mirror_optouts`) — see [Pinning](../user/10-pinning.md).
+- `categories` — optional download categories (name, dir, color, keyword rules).
+- `emule_downloads` / `emule_shared_files` — eMule transfers and the files
+  seeded back to Kad after they finish.
+- `notifications` — in-app notification centre records.
+- `metrics` — a single row of cumulative lifetime counters.
 
 ## Directory sharing model
 
@@ -128,8 +173,15 @@ whose debounce window has elapsed are processed (re-hashed and re-announced).
 
 Downloads land in two stages:
 
-1. **In progress:** `<temp_dir>/<hash>.part` — written chunk by chunk.
-2. **Complete:** moved to `<download_dir>/<name>` via `move_file()`.
+1. **In progress:** `<temp_dir>/<name>.<frag>.part`, written chunk by chunk
+   (each verified slice at its offset), alongside a `<part>.obao` sidecar that
+   accumulates the bao outboard as chunks verify. The sidecar is what lets the
+   node serve verified chunks while still downloading (partial sharing) and
+   resume after a restart.
+2. **Complete:** moved to `<download_dir>/<name>` (or the pin/category dir) via
+   `move_file()`, and the now-complete outboard is promoted to the share
+   outboard cache at `<temp_dir>/outboards/<aa>/<root_hex>.obao` (sharded by the
+   first hash byte). That cache is regenerable and pruned of orphans on startup.
 
 `move_file()` attempts an atomic rename first. If the rename fails because
 `temp_dir` and `download_dir` are on different filesystems (EXDEV), it falls
