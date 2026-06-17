@@ -1,273 +1,370 @@
 #!/usr/bin/env bash
-# test-e2e.sh — End-to-end test for Rucio
+# test-e2e.sh — End-to-end tests for Rucio (BLAKE3 verified streaming).
 #
-# Starts two daemon instances (A and B), shares a file on A,
-# searches from B, downloads it, and verifies the SHA-256 hash.
+# Spins up isolated daemons on loopback and exercises the native (libp2p)
+# transfer path end to end. Scenarios:
+#
+#   1. Basic transfer — node A shares a file, node B searches for it, downloads
+#      it, and the content is verified. Also asserts the root hash IS the file's
+#      canonical BLAKE3 (the bao tree root).
+#   2. Partial sharing — a node serves verified chunks straight from its `.part`
+#      (via the bao `.part.obao` slice path) while it is still downloading.
+#   3. Resumption — a download interrupted (SIGKILL) mid-flight resumes from its
+#      `.part` + `.part.obao` with its verified chunks intact (no restart from
+#      zero). Driving the rest to completion needs DHT provider rediscovery,
+#      which a single-host loopback swarm can't form reliably — see the note in
+#      the scenario; that leg is covered by manual / real-network testing.
 #
 # Usage:
 #   bash tests/e2e/test-e2e.sh        (from workspace root)
 #   bash test-e2e.sh                   (from tests/e2e/)
 #
-# Requirements:
-#   - curl and jq installed
+# Requirements: curl, jq, b3sum
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORKSPACE_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 RUCIOD="$WORKSPACE_ROOT/target/debug/ruciod"
-API_A="http://127.0.0.1:17070"
-API_B="http://127.0.0.1:17071"
+
+CHUNK=$((4 * 1024 * 1024))      # 4 MiB transfer chunk
+FILE_MIB=20                     # test file size — spans 5 chunks
+# Download throttle (KB/s) for the nodes we need to catch mid-transfer. Tuned so
+# a single chunk's rate-limit wait (~2s for 4 MiB at 2 MB/s) stays well under the
+# manifest/chunk request timeout — the throttle is awaited on the engine loop, so
+# too low a rate makes a busy downloader briefly unresponsive to other peers.
+SLOW_KBPS=2000
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
-
 ok()   { echo -e "${GREEN}✓${NC} $*"; }
 fail() { echo -e "${RED}✗${NC} $*"; exit 1; }
 info() { echo -e "${YELLOW}→${NC} $*"; }
+section() { echo -e "\n${YELLOW}══ $* ══${NC}"; }
 
 # ---------------------------------------------------------------------------
-# 0. Pre-checks
+# 0. Pre-checks + build
 # ---------------------------------------------------------------------------
-command -v curl   >/dev/null || fail "curl is not installed"
-command -v jq     >/dev/null || fail "jq is not installed"
-command -v b3sum  >/dev/null || fail "b3sum is not installed (BLAKE3 root-hash check)"
+command -v curl  >/dev/null || fail "curl is not installed"
+command -v jq    >/dev/null || fail "jq is not installed"
+command -v b3sum >/dev/null || fail "b3sum is not installed (BLAKE3 root-hash check)"
 
 info "Building binaries..."
 cargo build --manifest-path "$WORKSPACE_ROOT/Cargo.toml" -p rucio-daemon -p rucio-cli --quiet
 [[ -f "$RUCIOD" ]] || fail "ruciod not found at $RUCIOD"
 
-# ---------------------------------------------------------------------------
-# 1. Create isolated temp workspace
-# ---------------------------------------------------------------------------
 TEST_DIR=$(mktemp -d /tmp/rucio-XXXXXX)
 info "Test workspace: $TEST_DIR"
 
-mkdir -p \
-    "$TEST_DIR/node-a/data" "$TEST_DIR/node-a/downloads" "$TEST_DIR/node-a/temp" \
-    "$TEST_DIR/node-a/share" \
-    "$TEST_DIR/node-b/data" "$TEST_DIR/node-b/downloads" "$TEST_DIR/node-b/temp"
+declare -a ALL_PIDS=()
 
-# Write config for node A
-cat > "$TEST_DIR/node-a/config.toml" <<EOF
-[node]
-identity_path = "$TEST_DIR/node-a/identity.key"
-listen_addrs  = ["/ip4/0.0.0.0/tcp/14321"]
-
-[api]
-listen = "127.0.0.1:17070"
-
-[storage]
-download_dir  = "$TEST_DIR/node-a/downloads"
-temp_dir      = "$TEST_DIR/node-a/temp"
-database_path = "$TEST_DIR/node-a/data/rucio.db"
-
-[network]
-bootstrap_peers = []
-EOF
-
-# Write config for node B
-cat > "$TEST_DIR/node-b/config.toml" <<EOF
-[node]
-identity_path = "$TEST_DIR/node-b/identity.key"
-listen_addrs  = ["/ip4/0.0.0.0/tcp/14322"]
-
-[api]
-listen = "127.0.0.1:17071"
-
-[storage]
-download_dir  = "$TEST_DIR/node-b/downloads"
-temp_dir      = "$TEST_DIR/node-b/temp"
-database_path = "$TEST_DIR/node-b/data/rucio.db"
-
-[network]
-bootstrap_peers = []
-EOF
-
-# Create a 10 MiB random test file: with 4 MiB chunks this spans three chunks
-# (4 + 4 + 2 MiB), so the transfer exercises multi-chunk bao verified streaming
-# and a short final chunk — not just a single-chunk happy path. It lives in a
-# dedicated directory because the share API registers directories, not files.
-TEST_FILE="$TEST_DIR/node-a/share/test-file.bin"
-info "Creating 10 MiB test file..."
-dd if=/dev/urandom of="$TEST_FILE" bs=1M count=10 2>/dev/null
-ORIGINAL_SHA256=$(sha256sum "$TEST_FILE" | cut -d' ' -f1)
-# The Rucio root hash IS the canonical BLAKE3 of the content (bao tree root),
-# so b3sum of the file must equal the magnet's root hash.
-ORIGINAL_BLAKE3=$(b3sum --no-names "$TEST_FILE")
-info "SHA-256: $ORIGINAL_SHA256"
-info "BLAKE3:  $ORIGINAL_BLAKE3"
-
-# ---------------------------------------------------------------------------
-# Cleanup on exit — always show where logs are
-# ---------------------------------------------------------------------------
 cleanup() {
     info "Stopping daemons..."
-    kill "${PID_A:-}" "${PID_B:-}" 2>/dev/null || true
+    for pid in "${ALL_PIDS[@]:-}"; do kill "$pid" 2>/dev/null || true; done
     wait 2>/dev/null || true
     echo ""
     info "Logs and artefacts are in: $TEST_DIR"
-    info "  Node A log: $TEST_DIR/node-a/daemon.log"
-    info "  Node B log: $TEST_DIR/node-b/daemon.log"
 }
 trap cleanup EXIT
 
 # ---------------------------------------------------------------------------
-# 2. Start both daemons
+# Helpers
 # ---------------------------------------------------------------------------
-info "Starting node A (API :17070, P2P :14321)..."
-"$RUCIOD" --config "$TEST_DIR/node-a/config.toml" \
-    > "$TEST_DIR/node-a/daemon.log" 2>&1 &
-PID_A=$!
 
-info "Starting node B (API :17071, P2P :14322)..."
-"$RUCIOD" --config "$TEST_DIR/node-b/config.toml" \
-    > "$TEST_DIR/node-b/daemon.log" 2>&1 &
-PID_B=$!
+# write_config <name> <api_port> <p2p_port> [dl_limit_kbps] [bootstrap_multiaddr]
+write_config() {
+    local name=$1 api=$2 p2p=$3 dl=${4:-0} boot=${5:-}
+    local base="$TEST_DIR/$name"
+    local boot_line="bootstrap_peers     = []"
+    [[ -n "$boot" ]] && boot_line="bootstrap_peers     = [\"$boot\"]"
+    mkdir -p "$base/data" "$base/downloads" "$base/temp" "$base/share"
+    cat > "$base/config.toml" <<EOF
+[node]
+identity_path = "$base/identity.key"
+listen_addrs  = ["/ip4/0.0.0.0/tcp/$p2p"]
+
+[api]
+listen = "127.0.0.1:$api"
+
+[storage]
+download_dir  = "$base/downloads"
+temp_dir      = "$base/temp"
+database_path = "$base/data/rucio.db"
+
+[network]
+$boot_line
+exclusive_bootstrap = true
+download_limit_kbps = $dl
+EOF
+    printf -v "${name//-/_}_API" '%s' "http://127.0.0.1:$api"
+}
+
+# launch <name> [log_suffix] — (re)launch the daemon from its existing config.
+launch() {
+    local name=$1 suffix=${2:-}
+    local base="$TEST_DIR/$name"
+    "$RUCIOD" --config "$base/config.toml" > "$base/daemon${suffix}.log" 2>&1 &
+    local pid=$!
+    ALL_PIDS+=("$pid")
+    printf -v "${name//-/_}_PID" '%s' "$pid"
+}
+
+# wait_api <api_url> <name>
+wait_api() {
+    local url=$1 name=$2
+    for _ in $(seq 1 40); do
+        curl -sf "$url/api/v1/status" >/dev/null 2>&1 && return 0
+        sleep 0.5
+    done
+    fail "$name did not start in time (check $TEST_DIR/$name/daemon.log)"
+}
+
+# peer_id <api_url>
+peer_id() { curl -sf "$1/api/v1/status" | jq -r '.peer_id'; }
+
+# wait_peers <api_url> <name> — wait until at least one peer is discovered.
+wait_peers() {
+    local url=$1 name=$2
+    for _ in $(seq 1 30); do
+        [[ "$(curl -sf "$url/api/v1/peers" | jq '.peers | length')" -ge 1 ]] && return 0
+        sleep 0.5
+    done
+    fail "$name discovered no peers via mDNS"
+}
+
+# start_download <api_url> <magnet> <providers_json>
+start_download() {
+    local code
+    code=$(curl -sf -o /dev/null -w "%{http_code}" -X POST "$1/api/v1/downloads" \
+        -H 'Content-Type: application/json' \
+        -d "{\"magnet\": \"$2\", \"providers\": $3}")
+    [[ "$code" == "202" ]] || fail "Download request rejected (HTTP $code)"
+}
+
+# dl_state / dl_bytes <api_url>; dl_id <api_url>; pieces_done <api_url> <id>
+dl_state() { curl -sf "$1/api/v1/downloads" | jq -r '.downloads[0].state // "unknown"'; }
+dl_bytes() { curl -sf "$1/api/v1/downloads" | jq -r '.downloads[0].bytes_done // 0'; }
+dl_id()    { curl -sf "$1/api/v1/downloads" | jq -r '.downloads[0].id // empty'; }
+pieces_done() { curl -sf "$1/api/v1/downloads/$2" | jq -r '.pieces_done // 0'; }
+
+# wait_partial <api_url> <name> — block until at least one chunk is *verified*
+# (pieces_done >= 1) but the download is not yet complete, so the node holds
+# slice-able partial content. Gating on verified pieces (not bytes_done, which
+# counts bytes received on the wire before verification) guarantees a resumed
+# download has real progress to keep.
+wait_partial() {
+    local url=$1 name=$2 id st done
+    for _ in $(seq 1 40); do id=$(dl_id "$url"); [[ -n "$id" ]] && break; sleep 0.25; done
+    [[ -n "$id" ]] || fail "$name: no download row appeared"
+    for _ in $(seq 1 120); do
+        st=$(dl_state "$url"); done=$(pieces_done "$url" "$id")
+        [[ "$st" == "Completed" ]] && fail "$name completed before we could catch it partial (throttle too high?)"
+        [[ "$st" == "Failed" ]]    && fail "$name download failed"
+        [[ "$done" -ge 1 ]] && return 0
+        sleep 0.5
+    done
+    fail "$name never reached a partial state (>= 1 verified chunk)"
+}
+
+# wait_complete <api_url> <name>
+wait_complete() {
+    local url=$1 name=$2 st
+    for _ in $(seq 1 240); do
+        st=$(dl_state "$url")
+        [[ "$st" == "Completed" ]] && return 0
+        [[ "$st" == "Failed" ]] && fail "$name download failed (check $TEST_DIR/$name)"
+        sleep 0.5
+    done
+    fail "$name download did not complete (last state: $(dl_state "$url"))"
+}
+
+# verify_download <name> — find the downloaded file and check its SHA-256.
+verify_download() {
+    local name=$1 f got
+    f=$(find "$TEST_DIR/$name/downloads" -type f | head -n1)
+    [[ -f "$f" ]] || fail "$name: downloaded file not found"
+    got=$(sha256sum "$f" | cut -d' ' -f1)
+    [[ "$got" == "$ORIGINAL_SHA256" ]] || fail "$name: SHA-256 mismatch — file corrupted!"
+}
+
+# served_chunks <api_url> — session chunks_served counter.
+served_chunks() { curl -sf "$1/api/v1/metrics" | jq -r '.session.chunks_served // 0'; }
 
 # ---------------------------------------------------------------------------
-# 3. Wait for both APIs to be ready
+# Test file (lives in node-a's share dir; the share API registers directories)
 # ---------------------------------------------------------------------------
-info "Waiting for daemons to start..."
-for i in $(seq 1 40); do
-    A_OK=$(curl -sf "$API_A/api/v1/status" >/dev/null 2>&1 && echo yes || echo no)
-    B_OK=$(curl -sf "$API_B/api/v1/status" >/dev/null 2>&1 && echo yes || echo no)
-    [[ "$A_OK" == "yes" && "$B_OK" == "yes" ]] && break
-    sleep 0.5
-done
-curl -sf "$API_A/api/v1/status" >/dev/null || fail "Node A did not start in time (check $TEST_DIR/node-a/daemon.log)"
-curl -sf "$API_B/api/v1/status" >/dev/null || fail "Node B did not start in time (check $TEST_DIR/node-b/daemon.log)"
+write_config node-a 17070 14321
+TEST_FILE="$TEST_DIR/node-a/share/test-file.bin"
+info "Creating ${FILE_MIB} MiB test file..."
+dd if=/dev/urandom of="$TEST_FILE" bs=1M count="$FILE_MIB" 2>/dev/null
+ORIGINAL_SHA256=$(sha256sum "$TEST_FILE" | cut -d' ' -f1)
+ORIGINAL_BLAKE3=$(b3sum --no-names "$TEST_FILE")
+SIZE=$((FILE_MIB * 1024 * 1024))
+info "SHA-256: $ORIGINAL_SHA256"
+info "BLAKE3:  $ORIGINAL_BLAKE3"
+
+# ===========================================================================
+# Scenario 1 — basic transfer A → B
+# ===========================================================================
+section "Scenario 1: basic transfer (A shares, B downloads)"
+
+# A is the root seeder. Every other node is bootstrapped off a known peer
+# (B,C,E off A; D off C) rather than left to mDNS: an explicit connection forms
+# the Gossipsub mesh and request-response links deterministically, which a
+# freshly-started single-host swarm otherwise does flakily.
+info "Starting node A (:17070)..."
+launch node-a; wait_api "$node_a_API" node-a
+PEER_A=$(peer_id "$node_a_API")
+A_ADDR="/ip4/127.0.0.1/tcp/14321/p2p/$PEER_A"
+info "Node A PeerId: $PEER_A"
+
+info "Starting node B (:17071, bootstrapped off A)..."
+write_config node-b 17071 14322 0 "$A_ADDR"
+launch node-b; wait_api "$node_b_API" node-b
 ok "Both nodes up"
 
-PEER_A=$(curl -sf "$API_A/api/v1/status" | jq -r '.peer_id')
-PEER_B=$(curl -sf "$API_B/api/v1/status" | jq -r '.peer_id')
-info "Node A PeerId: $PEER_A"
-info "Node B PeerId: $PEER_B"
-
-# ---------------------------------------------------------------------------
-# 4. Share the test file on node A
-# ---------------------------------------------------------------------------
 info "Sharing test directory on node A..."
-SHARE_RESP=$(curl -sf -X POST "$API_A/api/v1/shares" \
+QUEUED=$(curl -sf -X POST "$node_a_API/api/v1/shares" \
     -H 'Content-Type: application/json' \
-    -d "{\"path\": \"$TEST_DIR/node-a/share\"}")
-QUEUED=$(echo "$SHARE_RESP" | jq -r '.queued')
+    -d "{\"path\": \"$TEST_DIR/node-a/share\"}" | jq -r '.queued')
 [[ "$QUEUED" -ge 1 ]] || fail "Share request did not queue any files"
-ok "Directory queued for indexing"
 
-# Wait for background indexing to complete (files live under /shares/files;
-# /shares lists the registered directories).
-for i in $(seq 1 20); do
-    COUNT=$(curl -sf "$API_A/api/v1/shares/files" | jq '.shares | length')
-    [[ "$COUNT" -ge 1 ]] && break
+for _ in $(seq 1 20); do
+    [[ "$(curl -sf "$node_a_API/api/v1/shares/files" | jq '.shares | length')" -ge 1 ]] && break
     sleep 0.5
 done
-SHARES=$(curl -sf "$API_A/api/v1/shares/files")
-[[ "$(echo "$SHARES" | jq '.shares | length')" -ge 1 ]] || \
-    fail "File was not indexed on node A (check $TEST_DIR/node-a/daemon.log)"
-ok "File indexed on node A"
+SHARES=$(curl -sf "$node_a_API/api/v1/shares/files")
+[[ "$(echo "$SHARES" | jq '.shares | length')" -ge 1 ]] || fail "File not indexed on node A"
 ROOT_HASH=$(echo "$SHARES" | jq -r '.shares[0].root_hash')
-info "Root hash: $ROOT_HASH"
+ok "File indexed on node A (root $ROOT_HASH)"
 [[ "$ROOT_HASH" == "$ORIGINAL_BLAKE3" ]] || \
-    fail "Root hash != BLAKE3 of the file ($ROOT_HASH vs $ORIGINAL_BLAKE3)"
+    fail "Root hash != file BLAKE3 ($ROOT_HASH vs $ORIGINAL_BLAKE3)"
 ok "Root hash equals the file's canonical BLAKE3"
 
-# ---------------------------------------------------------------------------
-# 5. Wait for mDNS peer discovery
-# ---------------------------------------------------------------------------
-info "Waiting for mDNS peer discovery (up to 15s)..."
-for i in $(seq 1 30); do
-    PEERS=$(curl -sf "$API_B/api/v1/peers" | jq '.peers | length')
-    [[ "$PEERS" -ge 1 ]] && break
-    sleep 0.5
-done
-PEERS=$(curl -sf "$API_B/api/v1/peers" | jq '.peers | length')
-[[ "$PEERS" -ge 1 ]] || fail "Node B did not discover node A via mDNS"
-ok "Node B discovered node A ($PEERS peer(s))"
+# A clean magnet (no embedded provider) — providers are passed explicitly so
+# each scenario controls exactly which peers a downloader is told about.
+MAGNET="rucio:$ROOT_HASH?name=test-file.bin&size=$SIZE"
 
-# ---------------------------------------------------------------------------
-# 6. Search from node B
-# ---------------------------------------------------------------------------
+info "Waiting for mDNS discovery between A and B..."
+wait_peers "$node_b_API" node-b
+ok "Node B discovered the swarm"
+
 info "Searching for 'test' on the Rucio network from node B..."
-
-# The Gossipsub mesh may not be fully formed the instant mDNS discovers the
-# peer.  We re-issue the search query every 3 s until results arrive (up to
-# 30 s total) rather than firing once and waiting passively. Restrict to the
-# `rucio` network so we don't wait on eMule/Kad (no nodes.dat here).
-RESULTS="{}"
-RESULT_COUNT=0
+RESULT_COUNT=0; RESULTS="{}"
 for attempt in $(seq 1 10); do
-    QUERY_ID=$(curl -sf -X POST "$API_B/api/v1/searches" \
+    QID=$(curl -sf -X POST "$node_b_API/api/v1/searches" \
         -H 'Content-Type: application/json' \
         -d '{"keywords": ["test"], "network": "rucio"}' | jq -r '.id')
-    info "Search ID: $QUERY_ID (attempt $attempt)"
-
-    for i in $(seq 1 6); do
-        RESULTS=$(curl -sf "$API_B/api/v1/searches/$QUERY_ID")
+    for _ in $(seq 1 6); do
+        RESULTS=$(curl -sf "$node_b_API/api/v1/searches/$QID")
         RESULT_COUNT=$(echo "$RESULTS" | jq '.results | length')
         [[ "$RESULT_COUNT" -ge 1 ]] && break
         sleep 0.5
     done
-
     [[ "$RESULT_COUNT" -ge 1 ]] && break
-    # No results yet — pause briefly before re-querying.
     sleep 1
 done
+[[ "$RESULT_COUNT" -ge 1 ]] || fail "No search results on node B"
+ok "Search returned $RESULT_COUNT result(s)"
+SEARCH_LINK=$(echo "$RESULTS" | jq -r --arg h "$ROOT_HASH" \
+    '.results[] | select(.download_link | startswith("rucio:" + $h)) | .download_link' | head -n1)
+[[ -n "$SEARCH_LINK" ]] || fail "Search results did not include our shared file"
+ok "Search found our file by its root hash"
 
-[[ "$RESULT_COUNT" -ge 1 ]] || fail "No search results found on node B"
-ok "Found $RESULT_COUNT result(s)"
+info "Downloading on node B (provider A)..."
+start_download "$node_b_API" "$MAGNET" "[\"$PEER_A\"]"
+ok "Download queued"
+wait_complete "$node_b_API" node-b
+verify_download node-b
+ok "Node B download completed and SHA-256 verified"
 
-# A Rucio result carries the download link as `download_link` and the known
-# providers as a `providers` array (the magnet also embeds them).
-MAGNET=$(echo "$RESULTS"    | jq -r '.results[0].download_link')
-PROVIDERS=$(echo "$RESULTS" | jq -c '.results[0].providers // []')
-info "Magnet:    $MAGNET"
-info "Providers: $PROVIDERS"
+# ===========================================================================
+# Scenario 2 — partial sharing (C serves from its .part while downloading)
+# ===========================================================================
+section "Scenario 2: partial sharing (D pulls from a still-downloading C)"
 
-# ---------------------------------------------------------------------------
-# 7. Download from node B
-# ---------------------------------------------------------------------------
-info "Starting download on node B..."
-HTTP_CODE=$(curl -sf -o /dev/null -w "%{http_code}" \
-    -X POST "$API_B/api/v1/downloads" \
-    -H 'Content-Type: application/json' \
-    -d "{\"magnet\": \"$MAGNET\", \"providers\": $PROVIDERS}")
-[[ "$HTTP_CODE" == "202" ]] || fail "Download request rejected (HTTP $HTTP_CODE)"
-ok "Download queued (HTTP 202)"
+# C downloads from A, throttled, so it stays partial long enough to serve.
+write_config node-c 17072 14323 "$SLOW_KBPS" "$A_ADDR"
+launch node-c; wait_api "$node_c_API" node-c
+wait_peers "$node_c_API" node-c
+PEER_C=$(peer_id "$node_c_API")
+C_ADDR="/ip4/127.0.0.1/tcp/14323/p2p/$PEER_C"
+info "Node C PeerId: $PEER_C (throttled ${SLOW_KBPS} KB/s)"
 
-# ---------------------------------------------------------------------------
-# 8. Wait for completion
-# ---------------------------------------------------------------------------
-info "Waiting for download to complete (up to 60s)..."
-STATUS="unknown"
-for i in $(seq 1 120); do
-    DOWNLOADS=$(curl -sf "$API_B/api/v1/downloads")
-    STATUS=$(echo "$DOWNLOADS" | jq -r '.downloads[0].state // "unknown"')
-    [[ "$STATUS" == "Completed" || "$STATUS" == "Failed" ]] && break
-    sleep 0.5
-done
-[[ "$STATUS" == "Completed" ]] || \
-    fail "Download did not complete — final state: $STATUS (check $TEST_DIR/node-b/daemon.log)"
-ok "Download completed"
+info "Starting throttled download on node C (provider A)..."
+start_download "$node_c_API" "$MAGNET" "[\"$PEER_A\"]"
+wait_partial "$node_c_API" node-c
+ok "Node C holds verified partial content (>= 1 chunk, still downloading)"
 
-# ---------------------------------------------------------------------------
-# 9. Verify integrity
-# ---------------------------------------------------------------------------
-DEST_FILE=$(find "$TEST_DIR/node-b/downloads" -type f | head -1)
-[[ -f "$DEST_FILE" ]] || fail "Downloaded file not found under $TEST_DIR/node-b/downloads"
-info "Downloaded file: $DEST_FILE"
+# D is told ONLY about C (provider) and bootstrapped off C, so it reliably has
+# C's address to fetch the manifest (served straight from C's in-progress
+# download row) and pull the chunks C already holds from its .part — exercising
+# the partial-serve path. Once C finishes it hands D the rest.
+write_config node-d 17073 14324 0 "$C_ADDR"
+launch node-d; wait_api "$node_d_API" node-d
+wait_peers "$node_d_API" node-d
+info "Starting download on node D (provider C only)..."
+start_download "$node_d_API" "$MAGNET" "[\"$PEER_C\"]"
+wait_complete "$node_d_API" node-d
+verify_download node-d
+ok "Node D download completed and SHA-256 verified"
 
-DOWNLOADED_SHA256=$(sha256sum "$DEST_FILE" | cut -d' ' -f1)
-info "Original   SHA-256: $ORIGINAL_SHA256"
-info "Downloaded SHA-256: $DOWNLOADED_SHA256"
-[[ "$ORIGINAL_SHA256" == "$DOWNLOADED_SHA256" ]] || fail "SHA-256 mismatch — file is corrupted!"
-ok "SHA-256 matches — file integrity verified"
+C_SERVED=$(served_chunks "$node_c_API")
+[[ "$C_SERVED" -ge 1 ]] || \
+    fail "Node C served no chunks — partial sharing path did not run"
+ok "Node C served $C_SERVED chunk(s) while still downloading (partial sharing)"
 
-# ---------------------------------------------------------------------------
-# Done
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# Scenario 3 — resumption (interrupt mid-download, restart, resume from .part)
+# ===========================================================================
+section "Scenario 3: resumption (SIGKILL mid-download, restart, resume from disk)"
+
+# This asserts the migration's deterministic guarantee: an interrupted download
+# resumes from its persisted `.part` + `.part.obao`, with its already-verified
+# chunks intact (it does NOT re-download from zero). Driving the *remaining*
+# chunks to completion afterwards needs provider rediscovery via the Kademlia
+# DHT, which does not form reliably between LowId nodes on a single loopback
+# host — that leg is covered by manual / real-network testing, not asserted here.
+write_config node-e 17074 14325 "$SLOW_KBPS" "$A_ADDR"
+launch node-e; wait_api "$node_e_API" node-e
+wait_peers "$node_e_API" node-e
+info "Starting throttled download on node E (provider A)..."
+start_download "$node_e_API" "$MAGNET" "[\"$PEER_A\"]"
+wait_partial "$node_e_API" node-e
+ok "Node E reached partial state (>= 1 verified chunk on disk)"
+
+info "Killing node E (SIGKILL) mid-download..."
+kill -9 "$node_e_PID" 2>/dev/null || true
+wait "$node_e_PID" 2>/dev/null || true
+PART_OBAO=$(find "$TEST_DIR/node-e/temp" -name '*.part.obao' | head -n1)
+[[ -f "$PART_OBAO" ]] || fail "No .part.obao sidecar on disk after interrupt"
+[[ -s "$PART_OBAO" ]] || fail ".part.obao sidecar is empty"
+ok "Partial outboard sidecar persisted: $(basename "$PART_OBAO")"
+
+info "Restarting node E..."
+launch node-e .restart
+wait_api "$node_e_API" node-e
+sleep 2  # let resume_interrupted run
+# Strip ANSI colour codes the tracing logger embeds, so `done=N` matches.
+RESUME_LINE=$(grep "Download resumed" "$TEST_DIR/node-e/daemon.restart.log" \
+    | head -n1 | sed 's/\x1b\[[0-9;]*m//g')
+[[ -n "$RESUME_LINE" ]] || \
+    fail "Node E did not resume the interrupted download (expected a resume log line)"
+# The resume log reports done=N/total — N must be >= 1 (verified chunks kept).
+echo "$RESUME_LINE" | grep -qE 'done=[1-9]' || \
+    fail "Node E resumed with zero verified chunks — it restarted from scratch"
+ok "Node E resumed from its .part with verified chunks intact (no restart from zero)"
+
+# Progress is preserved across the restart: the API still reports the bytes that
+# were already verified (>= one full chunk), not a reset to zero.
+RESUMED_BYTES=$(dl_bytes "$node_e_API")
+[[ "$RESUMED_BYTES" -gt 0 ]] || \
+    fail "Resumed download lost its progress (bytes_done reset to 0)"
+ok "Resumed download preserved its progress ($RESUMED_BYTES bytes on the books)"
+
+# ===========================================================================
 echo ""
 echo -e "${GREEN}══════════════════════════════════════════${NC}"
-echo -e "${GREEN}  All checks passed — end-to-end test OK  ${NC}"
+echo -e "${GREEN}  All scenarios passed — end-to-end OK    ${NC}"
 echo -e "${GREEN}══════════════════════════════════════════${NC}"
 echo ""
 info "Artefacts kept at: $TEST_DIR"
