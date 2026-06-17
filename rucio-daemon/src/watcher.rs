@@ -90,12 +90,23 @@ pub fn spawn(
     node_tx: mpsc::Sender<NodeCmd>,
     indexing_count: Arc<AtomicUsize>,
     excluded: Arc<Vec<PathBuf>>,
+    outboard_dir: PathBuf,
     ed2k_tx: Option<mpsc::Sender<PathBuf>>,
 ) -> (WatcherHandle, tokio::task::JoinHandle<()>) {
     let (cmd_tx, cmd_rx) = mpsc::channel::<WatcherCmd>(64);
 
     let task = tokio::spawn(async move {
-        if let Err(e) = run(db, node_tx, cmd_rx, indexing_count, excluded, ed2k_tx).await {
+        if let Err(e) = run(
+            db,
+            node_tx,
+            cmd_rx,
+            indexing_count,
+            excluded,
+            outboard_dir,
+            ed2k_tx,
+        )
+        .await
+        {
             warn!("WatcherService exited with error: {e}");
         }
     });
@@ -113,6 +124,7 @@ async fn run(
     mut cmd_rx: mpsc::Receiver<WatcherCmd>,
     indexing_count: Arc<AtomicUsize>,
     excluded: Arc<Vec<PathBuf>>,
+    outboard_dir: PathBuf,
     ed2k_tx: Option<mpsc::Sender<PathBuf>>,
 ) -> Result<()> {
     // Bridge: notify (sync) → tokio (async)
@@ -183,6 +195,7 @@ async fn run(
                     &db,
                     &node_tx,
                     &indexing_count,
+                    &outboard_dir,
                     ed2k_tx.as_ref(),
                 ).await;
             }
@@ -332,6 +345,7 @@ async fn flush_pending(
     db: &Db,
     node_tx: &mpsc::Sender<NodeCmd>,
     indexing_count: &AtomicUsize,
+    outboard_dir: &Path,
     ed2k_tx: Option<&mpsc::Sender<PathBuf>>,
 ) {
     let now = Instant::now();
@@ -358,7 +372,7 @@ async fn flush_pending(
     let to_index: Vec<&PathBuf> = ready.iter().filter(|p| p.is_file()).collect();
     indexing_count.fetch_add(to_index.len(), Ordering::Relaxed);
     for path in to_index {
-        on_file_upsert(path, db, node_tx, ed2k_tx).await;
+        on_file_upsert(path, db, node_tx, outboard_dir, ed2k_tx).await;
         indexing_count.fetch_sub(1, Ordering::Relaxed);
     }
 }
@@ -373,6 +387,7 @@ async fn on_file_upsert(
     path: &Path,
     db: &Db,
     node_tx: &mpsc::Sender<NodeCmd>,
+    outboard_dir: &Path,
     ed2k_tx: Option<&mpsc::Sender<PathBuf>>,
 ) {
     let path_str = path.to_string_lossy().into_owned();
@@ -396,10 +411,12 @@ async fn on_file_upsert(
         }
     }
 
-    // None: a watcher re-index (content changed on disk) is a rare path; let the
-    // outboard regenerate lazily on first serve rather than thread temp_dir
-    // through the watcher just for this optimisation.
-    match index_file(db, path, None).await {
+    // Persist the bao outboard eagerly for large files (>= the threshold in
+    // `index_file`), exactly like an API-added or eMule-completed share — the
+    // watcher does the *initial* indexing of `shared_dirs`, not just rare
+    // re-indexes, so a large file dropped into a watched dir must get its
+    // outboard too instead of paying a full re-read on the first chunk request.
+    match index_file(db, path, Some(outboard_dir)).await {
         Ok(root_hash) => {
             debug!(path = %path.display(), "Watcher: indexed");
             let _ = node_tx
@@ -493,6 +510,7 @@ pub async fn reconcile_shares(
     node_tx: &mpsc::Sender<NodeCmd>,
     indexing_count: &AtomicUsize,
     excluded: &[PathBuf],
+    outboard_dir: &Path,
     ed2k_tx: Option<&mpsc::Sender<PathBuf>>,
     indexing_seen: &AtomicBool,
 ) {
@@ -586,7 +604,7 @@ pub async fn reconcile_shares(
     }
     indexing_count.fetch_add(to_upsert.len(), Ordering::Relaxed);
     for path in &to_upsert {
-        on_file_upsert(path, db, node_tx, ed2k_tx).await;
+        on_file_upsert(path, db, node_tx, outboard_dir, ed2k_tx).await;
         indexing_count.fetch_sub(1, Ordering::Relaxed);
     }
 

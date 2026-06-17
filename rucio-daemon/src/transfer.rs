@@ -2081,11 +2081,25 @@ pub async fn persist_share_outboard_if_large(
     }
     let path = share_outboard_path(outboard_dir, root_hash);
     if let Some(parent) = path.parent()
-        && tokio::fs::create_dir_all(parent).await.is_err()
+        && let Err(e) = tokio::fs::create_dir_all(parent).await
     {
+        warn!(
+            dir = %parent.display(),
+            "Could not create outboard cache directory: {e}; the outboard will be regenerated lazily on first serve"
+        );
         return;
     }
-    let _ = tokio::fs::write(&path, outboard).await;
+    match tokio::fs::write(&path, outboard).await {
+        Ok(()) => debug!(
+            path = %path.display(),
+            bytes = outboard.len(),
+            "Persisted share outboard eagerly"
+        ),
+        Err(e) => warn!(
+            path = %path.display(),
+            "Could not write share outboard: {e}; it will be regenerated lazily on first serve"
+        ),
+    }
 }
 
 /// Best-effort removal of a completed share's cached outboard from the share

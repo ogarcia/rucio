@@ -398,6 +398,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         handle.cmd_tx.clone(),
         Arc::clone(&indexing_count),
         Arc::clone(&excluded_index_dirs),
+        config.storage.outboard_dir.clone(),
         ed2k_index_tx.clone(),
     );
 
@@ -432,6 +433,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                     &node_tx,
                     &indexing_count,
                     &excluded,
+                    &outboard_dir,
                     ed2k_tx.as_ref(),
                     &indexing_seen,
                 )
