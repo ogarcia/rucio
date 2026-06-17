@@ -368,6 +368,13 @@ pub struct StorageConfig {
     /// Optional — eMule Kad search is disabled when this is `None`.
     #[serde(default)]
     pub nodes_dat_path: Option<PathBuf>,
+    /// Directories to share that are declared here rather than added through the
+    /// API. They are reconciled into the share list as *protected* (undeletable
+    /// via the API) on every startup, so they survive a database reset and can
+    /// be added while the daemon is stopped — handy for reproducible/container
+    /// deployments. Dirs added through the API still live only in the database.
+    #[serde(default)]
+    pub shared_dirs: Vec<PathBuf>,
 }
 
 // --- Defaults ----------------------------------------------------------------
@@ -401,6 +408,7 @@ impl Default for StorageConfig {
             pin_dir: default_pin_dir(),
             database_path: default_data_dir().join("rucio.db"),
             nodes_dat_path: None,
+            shared_dirs: Vec::new(),
         }
     }
 }
@@ -585,6 +593,7 @@ impl Config {
     /// | `RUCIOD_TEMP_DIR`           | `storage.temp_dir`           | path               |
     /// | `RUCIOD_PIN_DIR`            | `storage.pin_dir`            | path               |
     /// | `RUCIOD_DB_PATH`            | `storage.database_path`      | path               |
+    /// | `RUCIOD_SHARED_DIRS`        | `storage.shared_dirs`        | comma-separated paths |
     /// | `RUCIOD_BOOTSTRAP_PEERS`    | `network.bootstrap_peers`    | comma-separated multiaddrs |
     /// | `RUCIOD_UPLOAD_LIMIT_KBPS`  | `network.upload_limit_kbps`  | integer KB/s, 0=unlimited |
     /// | `RUCIOD_DOWNLOAD_LIMIT_KBPS`| `network.download_limit_kbps`| integer KB/s, 0=unlimited |
@@ -651,6 +660,15 @@ impl Config {
             && !v.is_empty()
         {
             self.storage.database_path = PathBuf::from(v);
+        }
+        if let Ok(v) = std::env::var("RUCIOD_SHARED_DIRS")
+            && !v.is_empty()
+        {
+            self.storage.shared_dirs = v
+                .split(',')
+                .map(|s| PathBuf::from(s.trim()))
+                .filter(|p| !p.as_os_str().is_empty())
+                .collect();
         }
         if let Ok(v) = std::env::var("RUCIOD_BOOTSTRAP_PEERS")
             && !v.is_empty()
@@ -893,6 +911,20 @@ mod tests {
         cfg.apply_env_overrides();
         unsafe { std::env::remove_var("RUCIOD_API_LISTEN") };
         assert_eq!(cfg.api.listen, "0.0.0.0:8080");
+    }
+
+    #[test]
+    #[serial]
+    fn env_override_shared_dirs() {
+        unsafe { std::env::set_var("RUCIOD_SHARED_DIRS", "/srv/media , /srv/iso ,") };
+        let mut cfg = Config::default();
+        cfg.apply_env_overrides();
+        unsafe { std::env::remove_var("RUCIOD_SHARED_DIRS") };
+        // Trimmed, and the trailing empty segment is dropped.
+        assert_eq!(
+            cfg.storage.shared_dirs,
+            vec![PathBuf::from("/srv/media"), PathBuf::from("/srv/iso")]
+        );
     }
 
     #[test]

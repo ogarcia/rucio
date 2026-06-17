@@ -235,6 +235,7 @@ async fn reconcile(state: &AppState) {
         &state.db,
         &state.config.storage.download_dir,
         &state.config.storage.pin_dir,
+        &state.config.storage.shared_dirs,
     )
     .await
     {

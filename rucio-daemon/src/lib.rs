@@ -296,11 +296,17 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
     // against a just-started daemon can open its WebSocket without waiting on
     // this best-effort startup work.)
 
-    // --- Shared dirs: reconcile the protected set (global + category dirs) ---
-    // If download_dir changed in the config (or a category dir was removed), the
-    // previous one is demoted to an ordinary (removable) share.
-    if let Err(e) =
-        reconcile_protected_dirs(&db, &config.storage.download_dir, &config.storage.pin_dir).await
+    // --- Shared dirs: reconcile the protected set (global + category +
+    // config-declared dirs) --- If download_dir changed in the config (or a
+    // category dir was removed), the previous one is demoted to an ordinary
+    // (removable) share.
+    if let Err(e) = reconcile_protected_dirs(
+        &db,
+        &config.storage.download_dir,
+        &config.storage.pin_dir,
+        &config.storage.shared_dirs,
+    )
+    .await
     {
         warn!("Could not reconcile protected shared dirs: {e}");
     }
@@ -1535,6 +1541,7 @@ pub(crate) async fn reconcile_protected_dirs(
     db: &db::Db,
     global_download_dir: &std::path::Path,
     pin_dir: &std::path::Path,
+    config_dirs: &[std::path::PathBuf],
 ) -> Result<()> {
     let dl_path = global_download_dir.to_string_lossy().into_owned();
     let pin_path = pin_dir.to_string_lossy().into_owned();
@@ -1542,17 +1549,25 @@ pub(crate) async fn reconcile_protected_dirs(
         warn!("Could not load category download dirs: {e}");
         Vec::new()
     });
-    // Create each category dir on disk so the watcher can index it (the global
-    // download_dir, temp_dir and pin_dir are created elsewhere on startup).
-    for d in &cat_dirs {
+    // Directories declared in [storage].shared_dirs: reconciled as protected
+    // shares on every startup, so they survive a DB reset and can be declared
+    // while the daemon is stopped. Dirs added via the API stay DB-only.
+    let cfg_dirs: Vec<String> = config_dirs
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    // Create each on disk so the watcher can index it (the global download_dir,
+    // temp_dir and pin_dir are created elsewhere on startup).
+    for d in cat_dirs.iter().chain(cfg_dirs.iter()) {
         if let Err(e) = std::fs::create_dir_all(d) {
-            warn!(dir = %d, "Could not create category download dir: {e}");
+            warn!(dir = %d, "Could not create shared/category dir: {e}");
         }
     }
-    let mut protected: Vec<&str> = Vec::with_capacity(2 + cat_dirs.len());
+    let mut protected: Vec<&str> = Vec::with_capacity(2 + cat_dirs.len() + cfg_dirs.len());
     protected.push(&dl_path);
     protected.push(&pin_path);
     protected.extend(cat_dirs.iter().map(String::as_str));
+    protected.extend(cfg_dirs.iter().map(String::as_str));
     db::shared_dirs::set_protected_dirs(db, &protected, now_secs()).await
 }
 
