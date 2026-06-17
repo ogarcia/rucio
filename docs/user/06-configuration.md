@@ -65,8 +65,15 @@ rucio config set storage.pin_dir /mnt/data/rucio-pins
 rucio config unset storage.pin_dir
 ```
 
-**Default:** a `pins` directory beside `downloads/` in the Rucio content folder
-(e.g. `~/Downloads/rucio/pins` on Linux desktop).
+A `pins` directory beside `downloads/` in the same Rucio content folder.
+
+**Default:**
+
+| Platform | Default path |
+|---|---|
+| Linux (desktop) | `$XDG_DOWNLOAD_DIR/rucio/pins` or `~/Downloads/rucio/pins` |
+| macOS | `~/Downloads/rucio/pins` |
+| Linux (server / no XDG) | `~/rucio/pins` |
 
 ---
 
@@ -126,6 +133,43 @@ unaffected and stay removable as usual.
 
 ---
 
+### `storage.database_path`
+
+Path to the SQLite database holding all persistent state (shares, downloads,
+peers, pins, …). This is app state, not content, so it lives in the data
+directory rather than the content folder. Pre-1.0 the schema is volatile: if it
+changes between versions the file must be deleted and the daemon restarted (see
+[Storage](../design/04-storage.md)).
+
+```sh
+rucio config set storage.database_path /mnt/data/rucio.db
+rucio config unset storage.database_path
+```
+
+**Default:**
+
+| Platform | Default path |
+|---|---|
+| Linux | `~/.local/share/rucio/rucio.db` |
+| macOS | `~/Library/Application Support/rucio/rucio.db` |
+
+---
+
+### `storage.nodes_dat_path`
+
+Path to an eMule `nodes.dat` file used to bootstrap the Kad2 network. **Optional
+— when unset, eMule Kad search is disabled.** Point it at a `nodes.dat` you have
+(or one fetched by the daemon) to enable Kad bootstrap and source search.
+
+```sh
+rucio config set storage.nodes_dat_path ~/.local/share/rucio/nodes.dat
+rucio config unset storage.nodes_dat_path     # disable Kad bootstrap
+```
+
+**Default:** unset (no Kad bootstrap file).
+
+---
+
 ### `network.upnp`
 
 Enable or disable automatic UPnP/IGD port mapping. When enabled, the daemon
@@ -179,6 +223,22 @@ rucio config set network.upload_limit_kbps 0      # unlimited
 ```
 
 **Default:** `0` (unlimited)
+
+---
+
+### `network.temp_download_limit_kbps` / `network.temp_upload_limit_kbps`
+
+A second, temporary set of bandwidth caps that apply only while the temporary
+limit is **engaged** (toggled from the web panel or API — handy to throttle
+quickly during a call or a game without editing your normal limits). When the
+toggle is off, the regular `download_limit_kbps` / `upload_limit_kbps` apply.
+
+```sh
+rucio config set network.temp_download_limit_kbps 5120   # 5 MB/s while engaged
+rucio config set network.temp_upload_limit_kbps   5120
+```
+
+**Default:** `5120` (5 MB/s) each.
 
 ---
 
@@ -300,6 +360,56 @@ port 4321).
 
 ---
 
+### `node.identity_path`
+
+Path to the Ed25519 keypair that is this node's permanent libp2p identity (its
+PeerId derives from it). Generated on first start if absent; back it up to keep
+the same PeerId across reinstalls. App state, so it lives in the config dir.
+
+```sh
+rucio config set node.identity_path /mnt/data/identity.key
+rucio config unset node.identity_path
+```
+
+**Default:**
+
+| Platform | Default path |
+|---|---|
+| Linux | `~/.config/rucio/identity.key` |
+| macOS | `~/Library/Application Support/rucio/identity.key` |
+
+---
+
+### `api.listen`
+
+Address the HTTP API and web panel listen on (`host:port`). Keep it on
+`127.0.0.1` unless you front it with a reverse proxy; bind `0.0.0.0` only behind
+one. In a container, set it to `0.0.0.0:3003` and publish the port.
+
+```sh
+rucio config set api.listen 0.0.0.0:3003
+```
+
+**Default:** `127.0.0.1:3003`
+
+---
+
+### `api.token`
+
+Optional bearer token for the API. When set, requests must send
+`Authorization: Bearer <token>`. When unset (the default), the API has **no
+authentication** — Rucio expects access control to be handled by a reverse proxy
+(e.g. nginx `auth_basic`) when exposed beyond localhost.
+
+```sh
+rucio config set api.token "a-long-random-secret"
+rucio config unset api.token            # disable token auth
+```
+
+**Default:** unset (no token).
+
+---
+
 ### `emule.enabled`
 
 Enable or disable the eMule / Kad2 subsystem at runtime.
@@ -349,6 +459,42 @@ rucio config set emule.udp_port 4672
 ```
 
 **Default:** `4672` (eMule standard)
+
+---
+
+### `emule.temp_dir`
+
+Directory for in-progress eMule (`.part`) downloads. Separate from the libp2p
+`storage.temp_dir` so the eMule subsystem stays self-contained. Completed eMule
+files are moved into `storage.download_dir` like any other download.
+
+```sh
+rucio config set emule.temp_dir /mnt/data/emule-tmp
+rucio config unset emule.temp_dir
+```
+
+**Default:**
+
+| Platform | Default path |
+|---|---|
+| Linux | `~/.cache/rucio/emule-tmp` |
+| macOS | `~/Library/Caches/rucio/emule-tmp` |
+
+---
+
+### `emule.external_ip`
+
+The node's public IPv4 address, used in eMule/Kad messages and to determine
+High-ID. Normally **auto-detected** (via UPnP or from peer responses); set it
+manually only when auto-detection can't work — e.g. on a VPS with a known static
+IP and UPnP disabled.
+
+```sh
+rucio config set emule.external_ip 203.0.113.7
+rucio config unset emule.external_ip       # back to auto-detection
+```
+
+**Default:** unset (auto-detected).
 
 ---
 
@@ -441,6 +587,18 @@ rucio config set emule.min_source_speed_kib_s 2
 
 ---
 
+### `[notifications]`
+
+The in-app notification centre and outbound webhooks are configured under the
+`[notifications]` table (`enabled`, `downloads`, `system`) and
+`[[notifications.webhooks]]` entries. These have their own guide —
+see [Notifications](08-notifications.md), which covers the keys, the webhook
+formats (generic / Discord / Slack / custom) and HMAC signing.
+
+**Defaults:** `enabled = true`, `downloads = true`, `system = true`, no webhooks.
+
+---
+
 ## Configuration file
 
 The configuration is stored as TOML and is loaded at daemon startup.
@@ -519,6 +677,7 @@ the file value untouched.
 |---|---|---|---|
 | `RUCIOD_API_LISTEN` | `api.listen` | `127.0.0.1:3003` | `host:port` |
 | `RUCIOD_P2P_LISTEN` | `node.listen_addrs` | `/ip4/0.0.0.0/tcp/4321,/ip6/::/tcp/4321` | comma-separated multiaddrs |
+| `RUCIOD_BASE_DIR` | *(portable mode)* | *(unset)* | absolute path — roots identity, DB, downloads, temp, pins and nodes.dat under one dir |
 | `RUCIOD_DOWNLOAD_DIR` | `storage.download_dir` | platform default | path |
 | `RUCIOD_TEMP_DIR` | `storage.temp_dir` | platform default | path |
 | `RUCIOD_PIN_DIR` | `storage.pin_dir` | platform default | path |
@@ -536,6 +695,7 @@ the file value untouched.
 | `RUCIOD_EMULE_TEMP_DIR` | `emule.temp_dir` | platform default | path |
 | `RUCIOD_EMULE_TCP_PORT` | `emule.tcp_port` | `4662` | integer 1–65535 |
 | `RUCIOD_EMULE_UDP_PORT` | `emule.udp_port` | `4672` | integer 1–65535 |
+| `RUCIOD_EMULE_NICK` | `emule.nick` | `rucio` | string |
 | `RUCIOD_EXTERNAL_IP` | `emule.external_ip` | *(auto)* | IPv4 address |
 | `RUCIOD_EMULE_DOWNLOAD_SLOTS_PER_FILE` | `emule.download_slots_per_file` | `5` | integer 1–50 |
 | `RUCIOD_EMULE_MAX_UPLOAD_SLOTS` | `emule.max_upload_slots` | `4` | integer 1–50 |
