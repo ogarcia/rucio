@@ -10,7 +10,7 @@
 -- removed by the user.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS shared_dirs (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    id          INTEGER PRIMARY KEY,
     path        TEXT    NOT NULL UNIQUE,  -- absolute path, no trailing slash
     protected   INTEGER NOT NULL DEFAULT 0,  -- 1 = cannot be removed by user
     added_at    INTEGER NOT NULL
@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS shared_dirs (
 -- Files that this node is actively sharing.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS shared_files (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    id          INTEGER PRIMARY KEY,
     root_hash   BLOB    NOT NULL UNIQUE,   -- 32 bytes, canonical file id
     name        TEXT    NOT NULL,
     size        INTEGER NOT NULL,          -- bytes
@@ -157,7 +157,7 @@ CREATE TABLE IF NOT EXISTS mirror_optouts (
 -- and protected exactly like the global download_dir.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS categories (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    id             INTEGER PRIMARY KEY,
     name           TEXT    NOT NULL UNIQUE,
     download_dir   TEXT,                       -- absolute path, no trailing slash; NULL = use global
     color          TEXT,                       -- badge colour as a hex string, e.g. #3b82f6; NULL = UI default
@@ -170,7 +170,7 @@ CREATE TABLE IF NOT EXISTS categories (
 -- Files being downloaded (or queued).
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS downloads (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    id              INTEGER PRIMARY KEY,
     root_hash       BLOB    NOT NULL UNIQUE,
     name            TEXT    NOT NULL,
     total_size      INTEGER NOT NULL,
@@ -190,7 +190,7 @@ CREATE TABLE IF NOT EXISTS downloads (
 -- so the eMule subsystem can be removed without touching downloads at all.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS emule_downloads (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    id          INTEGER PRIMARY KEY,
     ed2k_hash   BLOB    NOT NULL UNIQUE,  -- 16 bytes MD4, canonical identifier
     name        TEXT    NOT NULL,
     total_size  INTEGER NOT NULL,
@@ -210,7 +210,7 @@ CREATE TABLE IF NOT EXISTS emule_downloads (
 -- Per-chunk state for an in-progress download.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS download_chunks (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    id              INTEGER PRIMARY KEY,
     download_id     INTEGER NOT NULL REFERENCES downloads(id) ON DELETE CASCADE,
     idx             INTEGER NOT NULL,
     size            INTEGER NOT NULL,
@@ -230,7 +230,7 @@ CREATE INDEX IF NOT EXISTS idx_dl_chunks_status ON download_chunks(download_id, 
 -- detected at startup and via the filesystem watcher.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS emule_shared_files (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    id          INTEGER PRIMARY KEY,
     ed2k_hash   BLOB    NOT NULL UNIQUE,  -- 16 bytes MD4, canonical identifier
     name        TEXT    NOT NULL,
     size        INTEGER NOT NULL,
@@ -262,7 +262,7 @@ INSERT OR IGNORE INTO metrics (id) VALUES (1);
 -- Peers seen on the network, kept as a hint cache (not authoritative).
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS known_peers (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    id          INTEGER PRIMARY KEY,
     peer_id     TEXT    NOT NULL UNIQUE,   -- libp2p PeerId (base58)
     addrs       TEXT    NOT NULL,          -- JSON array of multiaddrs
     first_seen  INTEGER NOT NULL,
@@ -277,7 +277,7 @@ CREATE TABLE IF NOT EXISTS known_peers (
 -- Retention is bounded by the insert path, not the schema.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS notifications (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    id          INTEGER PRIMARY KEY,
     kind        TEXT    NOT NULL,          -- download, system
     title       TEXT    NOT NULL,
     body        TEXT    NOT NULL,
