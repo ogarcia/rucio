@@ -5,12 +5,13 @@ use anyhow::{Result, bail};
 use futures_util::StreamExt as _;
 use rucio_core::api::downloads::{DownloadResponse, DownloadState};
 use rucio_core::api::ws::WsEvent;
-use tabled::{Table, Tabled};
+use rust_i18n::t;
+use tabled::builder::Builder;
 
 use crate::client::ApiClient;
 use crate::color;
 use crate::state::LastSearch;
-use crate::table_util::{fit_column, term_width};
+use crate::table_util::{fit_column, label_width, term_width};
 
 // ANSI escape sequences for terminal control.
 const CLEAR_SCREEN: &str = "\x1b[2J\x1b[H";
@@ -116,7 +117,7 @@ async fn watch_loop(client: &ApiClient, active: bool, done: bool) -> Result<()> 
                     }
                     render(&last_downloads, active, done, ever_active);
                     if ever_active && !any_active {
-                        println!("\n{}", color::success("All downloads finished."));
+                        println!("\n{}", color::success(&t!("download.all_finished")));
                         return Ok(());
                     }
                 }
@@ -124,12 +125,12 @@ async fn watch_loop(client: &ApiClient, active: bool, done: bool) -> Result<()> 
             Some(Ok(_)) => {} // ping/pong/binary — ignore
             Some(Err(e)) => {
                 print!("{CLEAR_SCREEN}");
-                println!("WebSocket error: {e}");
-                println!("\nPress Ctrl-C to exit.");
+                println!("{}", t!("common.ws_error", msg = e));
+                println!("\n{}", t!("common.press_ctrl_c"));
             }
             None => {
                 // Daemon closed the connection.
-                println!("\nDaemon disconnected.");
+                println!("\n{}", t!("common.daemon_disconnected"));
                 return Ok(());
             }
         }
@@ -150,8 +151,8 @@ async fn watch_loop_http(client: &ApiClient, active: bool, done: bool) -> Result
             Ok(r) => r,
             Err(e) => {
                 print!("{CLEAR_SCREEN}");
-                println!("Error contacting daemon: {e}");
-                println!("\nPress Ctrl-C to exit.");
+                println!("{}", t!("common.daemon_contact_error", msg = e));
+                println!("\n{}", t!("common.press_ctrl_c"));
                 continue;
             }
         };
@@ -164,7 +165,7 @@ async fn watch_loop_http(client: &ApiClient, active: bool, done: bool) -> Result
         render(&resp.downloads, active, done, ever_active);
 
         if ever_active && !any_active {
-            println!("\n{}", color::success("All downloads finished."));
+            println!("\n{}", color::success(&t!("download.all_finished")));
             return Ok(());
         }
     }
@@ -175,9 +176,9 @@ fn render(downloads: &[DownloadResponse], active: bool, done: bool, ever_active:
     let filtered = filter_downloads(downloads.to_vec(), active, done);
     print_table(filtered, active, done);
     if !ever_active {
-        println!("\nWaiting for downloads… Press Ctrl-C to exit.");
+        println!("\n{}", t!("download.waiting"));
     } else {
-        println!("\nPress Ctrl-C to exit.");
+        println!("\n{}", t!("common.press_ctrl_c"));
     }
 }
 
@@ -188,53 +189,46 @@ fn print_table(
 ) {
     if downloads.is_empty() {
         if active {
-            println!("No active downloads.");
+            println!("{}", t!("download.none_active"));
         } else if done {
-            println!("No finished downloads.");
+            println!("{}", t!("download.none_done"));
         } else {
-            println!("No downloads.");
+            println!("{}", t!("download.none"));
         }
         return;
     }
 
-    #[derive(Tabled)]
-    struct Row {
-        #[tabled(rename = "#")]
-        idx: usize,
-        #[tabled(rename = "Hash")]
-        hash: String,
-        #[tabled(rename = "Name")]
-        name: String,
-        #[tabled(rename = "Size")]
-        size: String,
-        #[tabled(rename = "Progress")]
-        progress: String,
-        #[tabled(rename = "State")]
-        state: String,
-    }
-
-    let rows: Vec<Row> = downloads
+    let rows: Vec<[String; 6]> = downloads
         .into_iter()
         .enumerate()
         .map(|(i, d)| {
             let total = d.size.unwrap_or(0);
-            Row {
-                idx: i + 1,
-                hash: truncate(&d.root_hash, 16),
-                name: d.name.unwrap_or_else(|| "-".to_string()),
-                size: d.size.map(human_size).unwrap_or_else(|| "-".to_string()),
-                progress: color::progress_bar(d.bytes_done, total),
-                state: color::download_state(&d.state),
-            }
+            [
+                (i + 1).to_string(),
+                truncate(&d.root_hash, 16),
+                d.name.unwrap_or_else(|| "-".to_string()),
+                d.size.map(human_size).unwrap_or_else(|| "-".to_string()),
+                color::progress_bar(d.bytes_done, total),
+                color::download_state(&d.state),
+            ]
         })
         .collect();
 
-    let max_name = rows
-        .iter()
-        .map(|r| r.name.chars().count())
-        .max()
-        .unwrap_or(0);
-    let mut table = Table::new(rows);
+    let max_name = rows.iter().map(|r| r[2].chars().count()).max().unwrap_or(0);
+
+    let mut builder = Builder::new();
+    builder.push_record([
+        t!("download.col.num").to_string(),
+        t!("download.col.hash").to_string(),
+        t!("download.col.name").to_string(),
+        t!("download.col.size").to_string(),
+        t!("download.col.progress").to_string(),
+        t!("download.col.state").to_string(),
+    ]);
+    for r in rows {
+        builder.push_record(r);
+    }
+    let mut table = builder.build();
     fit_column(&mut table, 2, max_name, term_width());
     println!("{table}");
 }
@@ -268,15 +262,18 @@ pub async fn start(
         match start_single(client, link, provider, category_id).await {
             Ok(()) => ok += 1,
             Err(e) => {
-                eprintln!("{}: {e}", color::error("Error"));
+                eprintln!("{}", color::error(&t!("common.error", msg = e)));
                 errors += 1;
             }
         }
     }
     if errors == 0 {
-        println!("{}", color::success(&format!("Queued {ok} download(s).")));
+        println!("{}", color::success(&t!("download.queued_n", n = ok)));
     } else {
-        println!("Queued {ok} download(s), {errors} error(s).");
+        println!(
+            "{}",
+            t!("download.queued_n_errors", ok = ok, errors = errors)
+        );
     }
     Ok(())
 }
@@ -292,15 +289,15 @@ async fn start_single(
         client
             .start_ed2k_download(target.trim(), category_id)
             .await?;
-        println!("{}", color::success("eMule download queued."));
+        println!("{}", color::success(&t!("download.emule_queued")));
         return Ok(());
     }
 
     let (magnet, mut providers) = if let Ok(idx) = target.trim().parse::<usize>() {
         let state = LastSearch::load();
-        let entry = state.get(idx).ok_or_else(|| {
-            anyhow::anyhow!("No result #{idx} in last search. Run `rucio search` first.")
-        })?;
+        let entry = state
+            .get(idx)
+            .ok_or_else(|| anyhow::anyhow!(t!("download.no_result_idx", idx = idx)))?;
         (entry.download_link.clone(), entry.providers.clone())
     } else {
         (target.to_string(), vec![])
@@ -315,7 +312,7 @@ async fn start_single(
     client
         .start_download(&magnet, providers, category_id)
         .await?;
-    println!("{}", color::success("Download queued."));
+    println!("{}", color::success(&t!("download.queued")));
     Ok(())
 }
 
@@ -365,15 +362,12 @@ pub async fn set_category(
     category_id: Option<i64>,
 ) -> Result<()> {
     let Some(dl) = client.find_download_by_idx_or_hash(target).await? else {
-        bail!("No download found for '{target}'");
+        bail!(t!("download.no_download_for", target = target));
     };
     client.set_download_category(dl.id, category_id).await?;
     match category_id {
-        Some(c) => println!(
-            "{}",
-            color::success(&format!("Moved download to category {c}."))
-        ),
-        None => println!("{}", color::success("Cleared the download's category.")),
+        Some(c) => println!("{}", color::success(&t!("download.moved_category", id = c))),
+        None => println!("{}", color::success(&t!("download.cleared_category"))),
     }
     Ok(())
 }
@@ -392,13 +386,62 @@ pub async fn show(client: &ApiClient, target: &str) -> Result<()> {
         0
     };
 
+    let title = d
+        .name
+        .clone()
+        .unwrap_or_else(|| t!("common.unknown").to_string());
+    println!("{}", color::section(&title));
+
+    // Detail labels carry their own colon; align values to the widest one.
+    let l_id = t!("download.show.id");
+    let l_hash = t!("download.show.hash");
+    let l_state = t!("download.show.state");
+    let l_category = t!("download.show.category");
+    let l_size = t!("download.show.size");
+    let l_downloaded = t!("download.show.downloaded");
+    let l_progress = t!("download.show.progress");
+    let l_chunks = t!("download.show.chunks");
+    let l_slices = t!("download.show.slices");
+    let l_sources = t!("download.show.sources");
+    let l_in_flight = t!("download.show.in_flight");
+    let l_queued = t!("download.show.queued");
+    let l_speed = t!("download.show.speed");
+    let l_eta = t!("download.show.eta");
+    let l_saved_to = t!("download.show.saved_to");
+    let l_ed2k = t!("download.show.ed2k_link");
+    let l_magnet = t!("download.show.magnet");
+    let l_added = t!("download.show.added");
+    let l_updated = t!("download.show.updated");
+    let l_error = t!("download.show.error");
+    let w = label_width([
+        l_id.as_ref(),
+        l_hash.as_ref(),
+        l_state.as_ref(),
+        l_category.as_ref(),
+        l_size.as_ref(),
+        l_downloaded.as_ref(),
+        l_progress.as_ref(),
+        l_chunks.as_ref(),
+        l_slices.as_ref(),
+        l_sources.as_ref(),
+        l_in_flight.as_ref(),
+        l_queued.as_ref(),
+        l_speed.as_ref(),
+        l_eta.as_ref(),
+        l_saved_to.as_ref(),
+        l_ed2k.as_ref(),
+        l_magnet.as_ref(),
+        l_added.as_ref(),
+        l_updated.as_ref(),
+        l_error.as_ref(),
+    ]);
+
     println!(
-        "{}",
-        color::section(d.name.as_deref().unwrap_or("(unknown)"))
+        "  {l_id:<w$} {}",
+        t!("download.show.id_val", id = d.id, kind = d.kind)
     );
-    println!("  ID:         {} ({})", d.id, d.kind);
-    println!("  Hash:       {}", color::value(&d.root_hash));
-    println!("  State:      {}", color::download_state(&d.state));
+    println!("  {l_hash:<w$} {}", color::value(&d.root_hash));
+    println!("  {l_state:<w$} {}", color::download_state(&d.state));
     // Resolve the category name (falls back to "#id" if it was since deleted).
     if let Some(cid) = d.category_id {
         let name = client
@@ -408,45 +451,62 @@ pub async fn show(client: &ApiClient, target: &str) -> Result<()> {
             .and_then(|r| r.categories.into_iter().find(|c| c.id == cid))
             .map(|c| c.name)
             .unwrap_or_else(|| format!("#{cid}"));
-        println!("  Category:   {}", color::value(&name));
+        println!("  {l_category:<w$} {}", color::value(&name));
     }
     println!(
-        "  Size:       {}",
+        "  {l_size:<w$} {}",
         d.size.map(human_size).unwrap_or_else(|| "-".to_string())
     );
-    println!("  Downloaded: {} ({pct}%)", human_size(d.bytes_done));
-    println!("  Progress:   {}", color::progress_bar(d.bytes_done, total));
+    println!(
+        "  {l_downloaded:<w$} {}",
+        t!(
+            "download.show.downloaded_val",
+            size = human_size(d.bytes_done),
+            pct = pct
+        )
+    );
+    println!(
+        "  {l_progress:<w$} {}",
+        color::progress_bar(d.bytes_done, total)
+    );
     if let (Some(done), Some(total)) = (d.pieces_done, d.pieces_total) {
         let label = if d.kind == "emule" {
-            "Slices"
+            &l_slices
         } else {
-            "Chunks"
+            &l_chunks
         };
-        println!("  {label}:     {done} / {total}");
+        println!(
+            "  {label:<w$} {}",
+            t!("download.show.pieces_val", done = done, total = total)
+        );
     }
     // Live stats — present only while the download is active.
     if let Some(total) = d.sources_total {
         let active = d.sources_active.unwrap_or(0);
-        println!("  Sources:    {active} active / {total} known");
+        println!(
+            "  {l_sources:<w$} {}",
+            t!("download.show.sources_val", active = active, total = total)
+        );
     }
     if let Some(n) = d.pieces_in_flight {
-        println!("  In flight:  {n}");
+        println!("  {l_in_flight:<w$} {n}");
     }
     if let Some(n) = d.queued_sources {
-        match d.best_queue_rank {
-            Some(r) => println!("  Queued:     {n} source(s), best rank {r}"),
-            None => println!("  Queued:     {n} source(s)"),
-        }
+        let val = match d.best_queue_rank {
+            Some(r) => t!("download.show.queued_val_rank", n = n, rank = r),
+            None => t!("download.show.queued_val", n = n),
+        };
+        println!("  {l_queued:<w$} {val}");
     }
     if let Some(bps) = d.speed_bps.filter(|&b| b > 0) {
-        println!("  Speed:      {}/s", human_size(bps));
+        println!("  {l_speed:<w$} {}/s", human_size(bps));
     }
     if let Some(eta) = d.eta_secs {
-        println!("  ETA:        {}", human_duration(eta));
+        println!("  {l_eta:<w$} {}", human_duration(eta));
     }
     // Per-peer sources (libp2p; empty for eMule for now).
     if !d.peers.is_empty() {
-        println!("  Downloading from:");
+        println!("  {}", t!("download.show.downloading_from"));
         for p in &d.peers {
             let who = p
                 .address
@@ -455,31 +515,34 @@ pub async fn show(client: &ApiClient, target: &str) -> Result<()> {
             let rate = if p.rate_bps > 0 {
                 format!("{}/s", human_size(p.rate_bps))
             } else {
-                "idle".to_string()
+                t!("download.show.idle").to_string()
             };
             println!(
-                "    {:>11}  {}  ({}, {} in flight)",
-                rate,
-                who,
-                human_size(p.bytes_downloaded),
-                p.chunks_in_flight,
+                "    {}",
+                t!(
+                    "download.show.peer_line",
+                    rate = format!("{rate:>11}"),
+                    who = who,
+                    downloaded = human_size(p.bytes_downloaded),
+                    in_flight = p.chunks_in_flight
+                )
             );
         }
     }
     if let Some(path) = &d.dest_path {
-        println!("  Saved to:   {}", color::value(path));
+        println!("  {l_saved_to:<w$} {}", color::value(path));
     }
     if let Some(link) = &d.link {
         if d.kind == "emule" {
-            println!("  ed2k link:  {}", color::value(link));
+            println!("  {l_ed2k:<w$} {}", color::value(link));
         } else {
-            println!("  Magnet:     {}", color::value(link));
+            println!("  {l_magnet:<w$} {}", color::value(link));
         }
     }
-    println!("  Added:      {}", human_time_ago(d.added_at));
-    println!("  Updated:    {}", human_time_ago(d.updated_at));
+    println!("  {l_added:<w$} {}", human_time_ago(d.added_at));
+    println!("  {l_updated:<w$} {}", human_time_ago(d.updated_at));
     if let Some(err) = &d.error {
-        println!("  Error:      {}", color::error(err));
+        println!("  {l_error:<w$} {}", color::error(err));
     }
 
     Ok(())
@@ -488,13 +551,16 @@ pub async fn show(client: &ApiClient, target: &str) -> Result<()> {
 pub async fn cancel(client: &ApiClient, hash: &str) -> Result<()> {
     let dl = client.find_download_by_idx_or_hash(hash).await?;
     match dl {
-        None => bail!("No download found for '{hash}'"),
+        None => bail!(t!("download.no_download_for", target = hash)),
         Some(d) => {
             client.cancel_download(d.id).await?;
             println!(
-                "Cancelled: {} ({})",
-                d.name.unwrap_or_else(|| "-".to_string()),
-                color::value(&d.root_hash)
+                "{}",
+                t!(
+                    "download.cancelled_msg",
+                    name = d.name.unwrap_or_else(|| "-".to_string()),
+                    hash = color::value(&d.root_hash)
+                )
             );
             Ok(())
         }
@@ -504,13 +570,16 @@ pub async fn cancel(client: &ApiClient, hash: &str) -> Result<()> {
 pub async fn pause(client: &ApiClient, hash: &str) -> Result<()> {
     let dl = client.find_download_by_idx_or_hash(hash).await?;
     match dl {
-        None => bail!("No download found for '{hash}'"),
+        None => bail!(t!("download.no_download_for", target = hash)),
         Some(d) => {
             client.pause_download(d.id).await?;
             println!(
-                "Paused: {} ({})",
-                d.name.unwrap_or_else(|| "-".to_string()),
-                color::value(&d.root_hash)
+                "{}",
+                t!(
+                    "download.paused_msg",
+                    name = d.name.unwrap_or_else(|| "-".to_string()),
+                    hash = color::value(&d.root_hash)
+                )
             );
             Ok(())
         }
@@ -520,13 +589,16 @@ pub async fn pause(client: &ApiClient, hash: &str) -> Result<()> {
 pub async fn resume(client: &ApiClient, hash: &str) -> Result<()> {
     let dl = client.find_download_by_idx_or_hash(hash).await?;
     match dl {
-        None => bail!("No download found for '{hash}'"),
+        None => bail!(t!("download.no_download_for", target = hash)),
         Some(d) => {
             client.resume_download(d.id).await?;
             println!(
-                "Resumed: {} ({})",
-                d.name.unwrap_or_else(|| "-".to_string()),
-                color::value(&d.root_hash)
+                "{}",
+                t!(
+                    "download.resumed_msg",
+                    name = d.name.unwrap_or_else(|| "-".to_string()),
+                    hash = color::value(&d.root_hash)
+                )
             );
             Ok(())
         }
@@ -542,19 +614,22 @@ pub async fn clean(client: &ApiClient, hash: Option<&str>) -> Result<()> {
         // Single entry — must be finished (not active).
         let dl = client.find_download_by_idx_or_hash(h).await?;
         match dl {
-            None => bail!("No download found for '{h}'"),
+            None => bail!(t!("download.no_download_for", target = h)),
             Some(d) if !is_finished(&d.state) => {
-                bail!(
-                    "Download '{}' is still active. Use `rucio download cancel` to stop it first.",
-                    d.name.unwrap_or_else(|| d.root_hash.clone())
-                )
+                bail!(t!(
+                    "download.still_active_clean",
+                    name = d.name.unwrap_or_else(|| d.root_hash.clone())
+                ))
             }
             Some(d) => {
                 client.delete_download(d.id).await?;
                 println!(
-                    "Removed: {} ({})",
-                    d.name.unwrap_or_else(|| "-".to_string()),
-                    color::value(&d.root_hash[..16.min(d.root_hash.len())])
+                    "{}",
+                    t!(
+                        "download.removed_msg",
+                        name = d.name.unwrap_or_else(|| "-".to_string()),
+                        hash = color::value(&d.root_hash[..16.min(d.root_hash.len())])
+                    )
                 );
             }
         }
@@ -568,20 +643,20 @@ pub async fn clean(client: &ApiClient, hash: Option<&str>) -> Result<()> {
             .collect();
 
         if finished.is_empty() {
-            println!("Nothing to clean.");
+            println!("{}", t!("download.nothing_to_clean"));
             return Ok(());
         }
 
         let n = finished.len();
         for d in finished {
             if let Err(e) = client.delete_download(d.id).await {
-                eprintln!("Warning: could not remove {}: {e}", d.root_hash);
+                eprintln!(
+                    "{}",
+                    t!("download.remove_warning", hash = d.root_hash, msg = e)
+                );
             }
         }
-        println!(
-            "{}",
-            color::success(&format!("Removed {n} finished download(s)."))
-        );
+        println!("{}", color::success(&t!("download.removed_n", n = n)));
     }
     Ok(())
 }

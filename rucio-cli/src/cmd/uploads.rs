@@ -9,7 +9,8 @@ use anyhow::Result;
 use futures_util::StreamExt as _;
 use rucio_core::api::uploads::{ActiveUpload, UploadNetwork};
 use rucio_core::api::ws::WsEvent;
-use tabled::{Table, Tabled};
+use rust_i18n::t;
+use tabled::builder::Builder;
 
 use crate::client::ApiClient;
 use crate::cmd::downloads::{human_size, truncate};
@@ -66,11 +67,11 @@ async fn watch_loop(client: &ApiClient) -> Result<()> {
             Some(Ok(_)) => {} // ping/pong/binary — ignore
             Some(Err(e)) => {
                 print!("{CLEAR_SCREEN}");
-                println!("WebSocket error: {e}");
-                println!("\nPress Ctrl-C to exit.");
+                println!("{}", t!("common.ws_error", msg = e));
+                println!("\n{}", t!("common.press_ctrl_c"));
             }
             None => {
-                println!("\nDaemon disconnected.");
+                println!("\n{}", t!("common.daemon_disconnected"));
                 return Ok(());
             }
         }
@@ -88,8 +89,8 @@ async fn watch_loop_http(client: &ApiClient) -> Result<()> {
             Ok(r) => render(&r.uploads),
             Err(e) => {
                 print!("{CLEAR_SCREEN}");
-                println!("Error contacting daemon: {e}");
-                println!("\nPress Ctrl-C to exit.");
+                println!("{}", t!("common.daemon_contact_error", msg = e));
+                println!("\n{}", t!("common.press_ctrl_c"));
             }
         }
     }
@@ -98,57 +99,52 @@ async fn watch_loop_http(client: &ApiClient) -> Result<()> {
 fn render(uploads: &[ActiveUpload]) {
     print!("{CLEAR_SCREEN}");
     print_table(uploads.to_vec());
-    println!("\nPress Ctrl-C to exit.");
+    println!("\n{}", t!("common.press_ctrl_c"));
 }
 
 fn print_table(uploads: Vec<ActiveUpload>) {
     if uploads.is_empty() {
-        println!("No active uploads.");
+        println!("{}", t!("upload.none"));
         return;
     }
 
-    #[derive(Tabled)]
-    struct Row {
-        #[tabled(rename = "#")]
-        idx: usize,
-        #[tabled(rename = "Net")]
-        net: String,
-        #[tabled(rename = "Name")]
-        name: String,
-        #[tabled(rename = "Peer")]
-        peer: String,
-        #[tabled(rename = "Sent")]
-        sent: String,
-        #[tabled(rename = "Rate")]
-        rate: String,
-    }
-
-    let rows: Vec<Row> = uploads
+    let rows: Vec<[String; 6]> = uploads
         .into_iter()
         .enumerate()
-        .map(|(i, u)| Row {
-            idx: i + 1,
-            net: match u.network {
-                UploadNetwork::Rucio => "rucio".to_string(),
-                UploadNetwork::Emule => "eMule".to_string(),
-            },
-            name: u.file_name.unwrap_or_else(|| truncate(&u.file_hash, 16)),
-            peer: truncate(&u.peer, 20),
-            sent: human_size(u.bytes_sent),
-            rate: if u.rate_bps == 0 {
-                "-".to_string()
-            } else {
-                format!("{}/s", human_size(u.rate_bps))
-            },
+        .map(|(i, u)| {
+            [
+                (i + 1).to_string(),
+                match u.network {
+                    UploadNetwork::Rucio => "rucio".to_string(),
+                    UploadNetwork::Emule => "eMule".to_string(),
+                },
+                u.file_name.unwrap_or_else(|| truncate(&u.file_hash, 16)),
+                truncate(&u.peer, 20),
+                human_size(u.bytes_sent),
+                if u.rate_bps == 0 {
+                    "-".to_string()
+                } else {
+                    format!("{}/s", human_size(u.rate_bps))
+                },
+            ]
         })
         .collect();
 
-    let max_name = rows
-        .iter()
-        .map(|r| r.name.chars().count())
-        .max()
-        .unwrap_or(0);
-    let mut table = Table::new(rows);
+    let max_name = rows.iter().map(|r| r[2].chars().count()).max().unwrap_or(0);
+
+    let mut builder = Builder::new();
+    builder.push_record([
+        t!("upload.col.num").to_string(),
+        t!("upload.col.net").to_string(),
+        t!("upload.col.name").to_string(),
+        t!("upload.col.peer").to_string(),
+        t!("upload.col.sent").to_string(),
+        t!("upload.col.rate").to_string(),
+    ]);
+    for r in rows {
+        builder.push_record(r);
+    }
+    let mut table = builder.build();
     // Name is the 3rd column (index 2), same as in `download list`.
     fit_column(&mut table, 2, max_name, term_width());
     println!("{table}");

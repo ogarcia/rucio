@@ -1,0 +1,342 @@
+# Spanish translation for the Rucio CLI.
+_version: 1
+
+common:
+  error: "Error: %{msg}"
+  unknown: "(desconocido)"
+  none: "(ninguno)"
+  press_ctrl_c: "Pulsa Ctrl-C para salir."
+  daemon_disconnected: "El daemon se ha desconectado."
+  daemon_contact_error: "Error al contactar con el daemon: %{msg}"
+  ws_error: "Error de WebSocket: %{msg}"
+
+category:
+  none: "No hay categorías."
+  created: "Categoría '%{name}' creada (id %{id})."
+  updated: "Categoría %{id} actualizada."
+  removed: "Categoría %{id} eliminada."
+  global: "(global)"
+  col:
+    id: "ID"
+    name: "Nombre"
+    dir: "Directorio de descarga"
+    color: "Color"
+    match: "Coincidencia"
+
+download:
+  state:
+    finding_providers: "buscando proveedores…"
+    queued: "en cola"
+    downloading: "descargando"
+    stalled: "estancada"
+    paused: "pausada"
+    completed: "completada"
+    failed: "fallida"
+    cancelled: "cancelada"
+  none: "No hay descargas."
+  none_active: "No hay descargas activas."
+  none_done: "No hay descargas finalizadas."
+  queued_n: "%{n} descarga(s) en cola."
+  queued_n_errors: "%{ok} descarga(s) en cola, %{errors} error(es)."
+  emule_queued: "Descarga de eMule en cola."
+  queued: "Descarga en cola."
+  no_result_idx: "No hay ningún resultado #%{idx} en la última búsqueda. Ejecuta `rucio search` primero."
+  no_download_for: "No se ha encontrado ninguna descarga para '%{target}'"
+  moved_category: "Descarga movida a la categoría %{id}."
+  cleared_category: "Categoría de la descarga eliminada."
+  cancelled_msg: "Cancelada: %{name} (%{hash})"
+  paused_msg: "Pausada: %{name} (%{hash})"
+  resumed_msg: "Reanudada: %{name} (%{hash})"
+  still_active_clean: "La descarga '%{name}' sigue activa. Usa `rucio download cancel` para detenerla primero."
+  removed_msg: "Eliminada: %{name} (%{hash})"
+  nothing_to_clean: "Nada que limpiar."
+  remove_warning: "Aviso: no se pudo eliminar %{hash}: %{msg}"
+  removed_n: "%{n} descarga(s) finalizada(s) eliminada(s)."
+  all_finished: "Todas las descargas han finalizado."
+  waiting: "Esperando descargas… Pulsa Ctrl-C para salir."
+  col:
+    num: "#"
+    hash: "Hash"
+    name: "Nombre"
+    size: "Tamaño"
+    progress: "Progreso"
+    state: "Estado"
+  show:
+    id: "ID:"
+    hash: "Hash:"
+    state: "Estado:"
+    category: "Categoría:"
+    size: "Tamaño:"
+    downloaded: "Descargado:"
+    progress: "Progreso:"
+    chunks: "Bloques:"
+    slices: "Fragmentos:"
+    sources: "Fuentes:"
+    in_flight: "En vuelo:"
+    queued: "En cola:"
+    speed: "Velocidad:"
+    eta: "ETA:"
+    downloading_from: "Descargando de:"
+    saved_to: "Guardado en:"
+    ed2k_link: "Enlace ed2k:"
+    magnet: "Magnet:"
+    added: "Añadida:"
+    updated: "Actualizada:"
+    error: "Error:"
+    id_val: "%{id} (%{kind})"
+    downloaded_val: "%{size} (%{pct}%)"
+    pieces_val: "%{done} / %{total}"
+    sources_val: "%{active} activas / %{total} conocidas"
+    queued_val: "%{n} fuente(s)"
+    queued_val_rank: "%{n} fuente(s), mejor posición %{rank}"
+    peer_line: "%{rate}  %{who}  (%{downloaded}, %{in_flight} en vuelo)"
+    idle: "inactiva"
+
+node:
+  class:
+    high_id: "HighID (accesible públicamente, puede servir archivos)"
+    low_id: "LowID  (tras NAT, modo solo descarga)"
+    unknown: "Desconocido (aún determinando…)"
+  status:
+    peer_id: "ID de par"
+    class: "Clase"
+    peers: "Pares"
+    uptime: "Tiempo activo"
+    version: "Versión"
+    listening: "Escuchando"
+    none_paren: "(ninguna)"
+    observed: "Externas (observadas por los pares):"
+    connectivity: "Conectividad:"
+    bootstrap_public: "Multiaddrs de bootstrap (pégalas en el config.toml de otro nodo):"
+    bootstrap_local: "Multiaddrs de bootstrap locales (solo LAN / misma máquina):"
+    note_no_public: "Nota: no se ha detectado ninguna dirección pública. Los pares de la LAN descubren este nodo automáticamente vía mDNS."
+    session_transfer: "Transferencia de la sesión:"
+    up_line: "↑ %{speed}/s  total %{total}  (%{chunks} bloques servidos)"
+    down_line: "↓ %{speed}/s  total %{total}  (%{chunks} bloques, %{rejected} rechazados)"
+  conn:
+    offline_no_peers: "desconectado — aún no hay pares conectados"
+    limited: "limitado — %{peers} par(es) conectado(s), esperando el handshake de Identify"
+    offline_nat: "desconectado — tras NAT, sin pares conectados"
+    online_lowid: "en línea (LowID) — %{peers} par(es), conexiones entrantes no accesibles"
+    online_highid: "en línea (HighID) — %{peers} par(es)%{addr_hint}"
+    external_hint: ", externa: %{addr}"
+  scope:
+    local: "solo red local"
+    link_local: "solo enlace local"
+  peers:
+    none: "No se conocen pares."
+    col_peer_id: "ID de par"
+    col_class: "Clase"
+    col_addresses: "Direcciones"
+  metrics:
+    session_header: "Sesión (desde el último arranque)"
+    lifetime_header: "Totales históricos"
+    upload: "Subida"
+    download: "Descarga"
+    speed_up: "Velocidad ↑"
+    speed_down: "Velocidad ↓"
+    upload_val: "%{bytes} (%{chunks} bloques servidos)"
+    download_val: "%{bytes} (%{chunks} bloques, %{rejected} rechazados)"
+    speed_val: "%{speed}/s"
+
+emule:
+  compat: "Compatibilidad eMule: %{state}"
+  state_enabled: "activada"
+  state_disabled: "desactivada"
+  hint_word: "pista:"
+  hint_rebuild: "Recompila el daemon con `--features emule-compat` para habilitar el soporte de eMule."
+  hint_enable: "Pon `emule.enabled = true` en config.toml o `RUCIOD_EMULE_ENABLED=true`."
+  lbl_external_ip: "IP externa:"
+  lbl_tcp_port: "Puerto TCP de eMule:"
+  lbl_udp_port: "Puerto UDP de Kad:"
+  lbl_connectivity: "Conectividad:"
+  lbl_nodes_path: "Ruta de nodes.dat:"
+  lbl_nodes_status: "Estado de nodes.dat:"
+  lbl_kad_table: "Tabla de enrutado Kad:"
+  lbl_active_downloads: "Descargas activas:"
+  lbl_upload_slots: "Ranuras de subida:"
+  lbl_inbound: "Conexiones entrantes:"
+  src_upnp: "vía UPnP"
+  src_config: "configurada"
+  src_peers: "vía pares"
+  conn_open: "abierta"
+  conn_firewalled: "tras cortafuegos"
+  conn_unknown: "desconocida"
+  conn_val: "%{state} (%{reason})"
+  nodes_present: "presente"
+  nodes_missing: "ausente"
+  nodes_present_val: "%{state} (%{contacts} contactos)"
+  nodes_missing_val: "%{state} — ejecuta `rucio node emule bootstrap` para descargarlo"
+  contacts_one: "1 contacto"
+  contacts_many: "%{n} contactos"
+  kad_connected: "conectada"
+  kad_connecting: "conectando…"
+  kad_empty: "vacía"
+  kad_val: "%{contacts} (%{state})"
+  kad_empty_val: "%{state} — aún sin contactos, espera un momento o revisa tus pares de bootstrap"
+  upload_slots_val: "%{in_use} / %{total} en uso"
+  downloading: "Descargando nodes.dat desde %{url}…"
+  done_word: "Hecho."
+  saved: "%{contacts} contactos Kad2 guardados en %{path}"
+  ready: "Ya puedes usar `rucio download add ed2k://…` para descargar archivos de eMule."
+
+pin:
+  none: "No hay pines."
+  added: "Fijado '%{name}' (%{state})."
+  removed: "Pin de %{hash} eliminado."
+  err_positive_id: "pin solo funciona con descargas de Rucio (usa un id de descarga positivo)"
+  err_no_download: "no hay ninguna descarga de Rucio con id %{id}"
+  err_bad_target: "'%{target}' no es un magnet rucio:, un id de descarga ni un hash raíz de 64 caracteres"
+  state:
+    available: "disponible"
+    fetching: "obteniendo"
+    missing: "ausente"
+  col:
+    hash: "Hash raíz"
+    name: "Nombre"
+    size: "Tamaño"
+    state: "Estado"
+    collection: "Colección"
+
+upload:
+  none: "No hay subidas activas."
+  col:
+    num: "#"
+    net: "Red"
+    name: "Nombre"
+    peer: "Par"
+    sent: "Enviado"
+    rate: "Velocidad"
+
+size:
+  empty: "tamaño vacío"
+  unknown_suffix: "sufijo de tamaño desconocido '%{suffix}' (usa K, M, G o T)"
+  invalid: "tamaño no válido '%{input}'"
+  not_positive: "el tamaño debe ser mayor que cero"
+
+subscription:
+  none: "No hay suscripciones."
+  added: "Suscrito a %{peer} (cuota %{quota})."
+  removed_kept: "Suscripción a %{peer} cancelada. El contenido replicado se conserva como tus propios compartidos."
+  removed_freed: "Suscripción a %{peer} cancelada. Contenido de solo réplica liberado."
+  files_over_quota: "%{wanted} (+%{skipped} sobre la cuota)"
+  synced_never: "nunca"
+  synced_yes: "sí"
+  col:
+    peer: "Par"
+    mirrored: "Replicado"
+    files: "Archivos"
+    synced: "Sincronizado"
+
+search:
+  no_keyword: "Indica al menos una palabra clave."
+  searching_for: "Buscando: %{keywords}"
+  none_memory: "No hay búsquedas en memoria."
+  not_found: "Búsqueda #%{id} no encontrada."
+  still_running: "La búsqueda #%{id} sigue en curso — ejecuta `rucio search show %{id}` de nuevo para actualizar."
+  cancelled: "Búsqueda #%{id} cancelada."
+  still_running_clean: "La búsqueda #%{id} sigue en curso. Usa `rucio search cancel %{id}` para detenerla primero."
+  removed: "Búsqueda #%{id} eliminada."
+  nothing_to_clean: "Nada que limpiar."
+  removed_n: "%{n} búsqueda(s) eliminada(s)."
+  relaunched: "Búsqueda #%{id} relanzada. Usa `rucio search show %{id}` para seguir los resultados."
+  poll_error: "Error de sondeo: %{msg}"
+  still_searching: "Buscando aún… (%{attempt}/%{max}s, %{count} resultado(s) hasta ahora)"
+  no_results: "No se han encontrado resultados."
+  timed_out: "La búsqueda agotó el tiempo sin resultados."
+  save_warning: "Aviso: no se pudo guardar el estado de la búsqueda: %{msg}"
+  use_download_add: "Usa `rucio download add <#>` para descargar."
+  state:
+    running: "en curso"
+    done: "hecha"
+    cancelled: "cancelada"
+  col:
+    id: "ID"
+    keywords: "Palabras clave"
+    state: "Estado"
+    results: "Resultados"
+    num: "#"
+    name: "Nombre"
+    size: "Tamaño"
+    source: "Origen"
+    providers: "Proveedores"
+
+share:
+  none_filter: "No hay compartidos que coincidan con ese filtro."
+  none: "No hay archivos compartidos."
+  none_page: "No hay archivos en esta página (%{total} en total) — prueba con un --page menor."
+  matching: "%{total} archivo(s) que coinciden con '%{filter}'"
+  total_shared: "%{total} archivo(s) compartido(s)"
+  showing: "Mostrando %{from}–%{to} de %{total}"
+  showing_more: " · usa --page N o --all"
+  showing_filter: " · filtro '%{filter}'"
+  no_dirs: "No hay directorios compartidos."
+  dirs_footer_one: "1 directorio · elimina uno con `rucio share remove <#>` · protegido = no se puede eliminar (directorio de descarga/pin/categoría/config)"
+  dirs_footer_many: "%{n} directorios · elimina uno con `rucio share remove <#>` · protegido = no se puede eliminar (directorio de descarga/pin/categoría/config)"
+  queued_indexing: "%{n} archivo(s) en cola para indexar."
+  read_errors: "%{n} archivo(s) no se pudieron leer:"
+  no_dir_n: "no existe el directorio #%{n}. Ejecuta `rucio share dirs` para ver la lista."
+  protected_n: "el directorio #%{n} (%{path}) está protegido y no se puede eliminar (directorio de descarga/pin/categoría/config)"
+  stopped_dir: "Se dejó de compartir %{path} (%{removed} archivo(s))."
+  no_dir_at: "No hay ningún directorio compartido en: %{path}"
+  stopped_one: "Se dejó de compartir (1 archivo)."
+  stopped_many: "Se dejó de compartir (%{n} archivos)."
+  no_share_row: "No hay ningún compartido en la fila %{n}. Ejecuta `rucio share list` para ver la lista."
+  magnet_need_target: "Indica un objetivo (número de fila, nombre o hash) o usa --file <ruta>"
+  hash_failed: "No se pudo calcular el hash de '%{path}': %{msg}"
+  ambiguous: "Ambiguo: %{n} compartidos llamados '%{target}'. Usa un prefijo de hash en su lugar:"
+  no_indexing: "No hay archivos indexándose."
+  indexing_n: "%{n} archivo(s) indexándose…"
+  indexing_complete: "Indexación completada."
+  indexing_line: "Indexando: %{n} archivo(s) pendiente(s)…"
+  yes: "sí"
+  col:
+    num: "#"
+    hash: "Hash"
+    name: "Nombre"
+    size: "Tamaño"
+    chunks: "Bloques"
+    path: "Ruta"
+    directory: "Directorio"
+    files: "Archivos"
+    protected: "Protegido"
+
+config:
+  bool_invalid: "'%{value}' no es un booleano válido (usa true/false)"
+  port_invalid: "'%{value}' no es un puerto válido (1-65535)"
+  slots_range: "'%{value}' está fuera de rango (1-50)"
+  not_integer: "'%{value}' no es un entero válido"
+  ipv4_invalid: "'%{value}' no es una dirección IPv4 válida"
+  max_upload_min: "network.max_upload_tasks debe ser al menos 1"
+  ok_bandwidth: "ok — límite de ancho de banda aplicado inmediatamente"
+  ok_restart: "ok — reinicia el daemon para que los cambios surtan efecto"
+  requires_value: "la clave '%{key}' requiere un valor para eliminar"
+  not_found_in: "El valor '%{value}' no se encontró en %{key}"
+  restart_required: "(requiere reinicio)"
+  unlimited: "sin límite"
+  auto: "(automático)"
+  unknown_key: |-
+    Clave desconocida o de solo lectura '%{key}'.
+    Claves configurables:
+      storage.download_dir
+      storage.temp_dir
+      storage.outboard_dir
+      network.bootstrap_peers         (añade)
+      node.listen_addrs               (añade)
+      network.upload_limit_kbps       (KB/s, 0 = sin límite, aplicado inmediatamente)
+      network.download_limit_kbps     (KB/s, 0 = sin límite, aplicado inmediatamente)
+      network.max_upload_tasks        (entero ≥1, requiere reinicio)
+      emule.enabled                   (true/false)
+      emule.temp_dir
+      emule.udp_port                  (1-65535)
+      emule.tcp_port                  (1-65535)
+      emule.external_ip               (IPv4; quítalo para autodetectar)
+      emule.download_slots_per_file   (1-50)
+      emule.max_upload_slots          (1-50)
+      emule.max_concurrent_downloads  (1-50)
+  unset_unknown: |-
+    '%{key}' no es una clave de lista o no admite unset.
+    Claves que admiten unset:
+      network.bootstrap_peers   (elimina una entrada)
+      node.listen_addrs         (elimina una entrada)
+      emule.external_ip         (vuelve a autodetectar)

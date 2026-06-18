@@ -1,0 +1,352 @@
+# English — source locale and fallback for the Rucio CLI.
+# Keys are grouped by command. Interpolation uses %{name} placeholders.
+# Format: rust-i18n _version 1 (one file per language); Weblate-compatible
+# monolingual YAML with the base file at locales/en.yml.
+_version: 1
+
+common:
+  error: "Error: %{msg}"
+  unknown: "(unknown)"
+  none: "(none)"
+  press_ctrl_c: "Press Ctrl-C to exit."
+  daemon_disconnected: "Daemon disconnected."
+  daemon_contact_error: "Error contacting daemon: %{msg}"
+  ws_error: "WebSocket error: %{msg}"
+
+category:
+  none: "No categories."
+  created: "Created category '%{name}' (id %{id})."
+  updated: "Updated category %{id}."
+  removed: "Removed category %{id}."
+  global: "(global)"
+  col:
+    id: "ID"
+    name: "Name"
+    dir: "Download dir"
+    color: "Color"
+    match: "Match"
+
+# Download states (shared by `download list`, `upload`, status views).
+download:
+  state:
+    finding_providers: "finding providers…"
+    queued: "queued"
+    downloading: "downloading"
+    stalled: "stalled"
+    paused: "paused"
+    completed: "completed"
+    failed: "failed"
+    cancelled: "cancelled"
+  none: "No downloads."
+  none_active: "No active downloads."
+  none_done: "No finished downloads."
+  queued_n: "Queued %{n} download(s)."
+  queued_n_errors: "Queued %{ok} download(s), %{errors} error(s)."
+  emule_queued: "eMule download queued."
+  queued: "Download queued."
+  no_result_idx: "No result #%{idx} in last search. Run `rucio search` first."
+  no_download_for: "No download found for '%{target}'"
+  moved_category: "Moved download to category %{id}."
+  cleared_category: "Cleared the download's category."
+  cancelled_msg: "Cancelled: %{name} (%{hash})"
+  paused_msg: "Paused: %{name} (%{hash})"
+  resumed_msg: "Resumed: %{name} (%{hash})"
+  still_active_clean: "Download '%{name}' is still active. Use `rucio download cancel` to stop it first."
+  removed_msg: "Removed: %{name} (%{hash})"
+  nothing_to_clean: "Nothing to clean."
+  remove_warning: "Warning: could not remove %{hash}: %{msg}"
+  removed_n: "Removed %{n} finished download(s)."
+  all_finished: "All downloads finished."
+  waiting: "Waiting for downloads… Press Ctrl-C to exit."
+  col:
+    num: "#"
+    hash: "Hash"
+    name: "Name"
+    size: "Size"
+    progress: "Progress"
+    state: "State"
+  show:
+    id: "ID:"
+    hash: "Hash:"
+    state: "State:"
+    category: "Category:"
+    size: "Size:"
+    downloaded: "Downloaded:"
+    progress: "Progress:"
+    chunks: "Chunks:"
+    slices: "Slices:"
+    sources: "Sources:"
+    in_flight: "In flight:"
+    queued: "Queued:"
+    speed: "Speed:"
+    eta: "ETA:"
+    downloading_from: "Downloading from:"
+    saved_to: "Saved to:"
+    ed2k_link: "ed2k link:"
+    magnet: "Magnet:"
+    added: "Added:"
+    updated: "Updated:"
+    error: "Error:"
+    id_val: "%{id} (%{kind})"
+    downloaded_val: "%{size} (%{pct}%)"
+    pieces_val: "%{done} / %{total}"
+    sources_val: "%{active} active / %{total} known"
+    queued_val: "%{n} source(s)"
+    queued_val_rank: "%{n} source(s), best rank %{rank}"
+    peer_line: "%{rate}  %{who}  (%{downloaded}, %{in_flight} in flight)"
+    idle: "idle"
+
+# Node class labels (the parenthetical describes the term; the term itself —
+# HighID/LowID — is eMule jargon and stays untranslated).
+node:
+  class:
+    high_id: "HighID (publicly reachable, can serve files)"
+    low_id: "LowID  (behind NAT, download-only mode)"
+    unknown: "Unknown (still determining…)"
+  status:
+    peer_id: "Peer ID"
+    class: "Class"
+    peers: "Peers"
+    uptime: "Uptime"
+    version: "Version"
+    listening: "Listening"
+    none_paren: "(none)"
+    observed: "External (observed by peers):"
+    connectivity: "Connectivity:"
+    bootstrap_public: "Bootstrap multiaddrs (paste into another node's config.toml):"
+    bootstrap_local: "Local bootstrap multiaddrs (LAN / same-machine only):"
+    note_no_public: "Note: no public address detected. LAN peers discover this node automatically via mDNS."
+    session_transfer: "Session transfer:"
+    up_line: "↑ %{speed}/s  total %{total}  (%{chunks} chunks served)"
+    down_line: "↓ %{speed}/s  total %{total}  (%{chunks} chunks, %{rejected} rejected)"
+  conn:
+    offline_no_peers: "offline — no peers connected yet"
+    limited: "limited — %{peers} peer(s) connected, waiting for Identify handshake"
+    offline_nat: "offline — behind NAT, no peers connected"
+    online_lowid: "online (LowID) — %{peers} peer(s), inbound connections not reachable"
+    online_highid: "online (HighID) — %{peers} peer(s)%{addr_hint}"
+    external_hint: ", external: %{addr}"
+  scope:
+    local: "local network only"
+    link_local: "link-local only"
+  peers:
+    none: "No peers known."
+    col_peer_id: "Peer ID"
+    col_class: "Class"
+    col_addresses: "Addresses"
+  metrics:
+    session_header: "Session (since last start)"
+    lifetime_header: "Lifetime totals"
+    upload: "Upload"
+    download: "Download"
+    speed_up: "Speed ↑"
+    speed_down: "Speed ↓"
+    upload_val: "%{bytes} (%{chunks} chunks served)"
+    download_val: "%{bytes} (%{chunks} chunks, %{rejected} rejected)"
+    speed_val: "%{speed}/s"
+
+emule:
+  compat: "eMule compatibility: %{state}"
+  state_enabled: "enabled"
+  state_disabled: "disabled"
+  hint_word: "hint:"
+  hint_rebuild: "Rebuild the daemon with `--features emule-compat` to enable eMule support."
+  hint_enable: "Set `emule.enabled = true` in config.toml or `RUCIOD_EMULE_ENABLED=true`."
+  lbl_external_ip: "External IP:"
+  lbl_tcp_port: "eMule TCP port:"
+  lbl_udp_port: "Kad UDP port:"
+  lbl_connectivity: "Connectivity:"
+  lbl_nodes_path: "nodes.dat path:"
+  lbl_nodes_status: "nodes.dat status:"
+  lbl_kad_table: "Kad routing table:"
+  lbl_active_downloads: "Active downloads:"
+  lbl_upload_slots: "Upload slots:"
+  lbl_inbound: "Inbound connections:"
+  src_upnp: "via UPnP"
+  src_config: "configured"
+  src_peers: "via peers"
+  conn_open: "open"
+  conn_firewalled: "firewalled"
+  conn_unknown: "unknown"
+  conn_val: "%{state} (%{reason})"
+  nodes_present: "present"
+  nodes_missing: "missing"
+  nodes_present_val: "%{state} (%{contacts} contacts)"
+  nodes_missing_val: "%{state} — run `rucio node emule bootstrap` to download it"
+  contacts_one: "1 contact"
+  contacts_many: "%{n} contacts"
+  kad_connected: "connected"
+  kad_connecting: "connecting…"
+  kad_empty: "empty"
+  kad_val: "%{contacts} (%{state})"
+  kad_empty_val: "%{state} — no contacts yet, wait a moment or check your bootstrap peers"
+  upload_slots_val: "%{in_use} / %{total} in use"
+  downloading: "Downloading nodes.dat from %{url}…"
+  done_word: "Done."
+  saved: "%{contacts} Kad2 contacts saved to %{path}"
+  ready: "You can now use `rucio download add ed2k://…` to download eMule files."
+
+pin:
+  none: "No pins."
+  added: "Pinned '%{name}' (%{state})."
+  removed: "Unpinned %{hash}."
+  err_positive_id: "pin works on Rucio downloads only (use a positive download id)"
+  err_no_download: "no Rucio download with id %{id}"
+  err_bad_target: "'%{target}' is not a rucio: magnet, a download id, or a 64-char root hash"
+  state:
+    available: "available"
+    fetching: "fetching"
+    missing: "missing"
+  col:
+    hash: "Root hash"
+    name: "Name"
+    size: "Size"
+    state: "State"
+    collection: "Collection"
+
+upload:
+  none: "No active uploads."
+  col:
+    num: "#"
+    net: "Net"
+    name: "Name"
+    peer: "Peer"
+    sent: "Sent"
+    rate: "Rate"
+
+# Human disk-size parsing (shared by `subscription add --quota`).
+size:
+  empty: "empty size"
+  unknown_suffix: "unknown size suffix '%{suffix}' (use K, M, G or T)"
+  invalid: "invalid size '%{input}'"
+  not_positive: "size must be greater than zero"
+
+subscription:
+  none: "No subscriptions."
+  added: "Subscribed to %{peer} (quota %{quota})."
+  removed_kept: "Unsubscribed from %{peer}. Mirrored content kept as your own shares."
+  removed_freed: "Unsubscribed from %{peer}. Mirror-only content freed."
+  files_over_quota: "%{wanted} (+%{skipped} over quota)"
+  synced_never: "never"
+  synced_yes: "yes"
+  col:
+    peer: "Peer"
+    mirrored: "Mirrored"
+    files: "Files"
+    synced: "Synced"
+
+search:
+  no_keyword: "Provide at least one keyword."
+  searching_for: "Searching for: %{keywords}"
+  none_memory: "No searches in memory."
+  not_found: "Search #%{id} not found."
+  still_running: "Search #%{id} still running — run `rucio search show %{id}` again to refresh."
+  cancelled: "Search #%{id} cancelled."
+  still_running_clean: "Search #%{id} is still running. Use `rucio search cancel %{id}` to stop it first."
+  removed: "Search #%{id} removed."
+  nothing_to_clean: "Nothing to clean."
+  removed_n: "Removed %{n} search(es)."
+  relaunched: "Search #%{id} relaunched. Use `rucio search show %{id}` to follow results."
+  poll_error: "Poll error: %{msg}"
+  still_searching: "Still searching… (%{attempt}/%{max}s, %{count} result(s) so far)"
+  no_results: "No results found."
+  timed_out: "Search timed out with no results."
+  save_warning: "Warning: could not save search state: %{msg}"
+  use_download_add: "Use `rucio download add <#>` to download."
+  state:
+    running: "running"
+    done: "done"
+    cancelled: "cancelled"
+  col:
+    id: "ID"
+    keywords: "Keywords"
+    state: "State"
+    results: "Results"
+    num: "#"
+    name: "Name"
+    size: "Size"
+    source: "Source"
+    providers: "Providers"
+
+share:
+  none_filter: "No shares matching that filter."
+  none: "No files shared."
+  none_page: "No files on this page (%{total} total) — try a lower --page."
+  matching: "%{total} file(s) matching '%{filter}'"
+  total_shared: "%{total} file(s) shared"
+  showing: "Showing %{from}–%{to} of %{total}"
+  showing_more: " · use --page N or --all"
+  showing_filter: " · filter '%{filter}'"
+  no_dirs: "No directories shared."
+  dirs_footer_one: "1 directory · remove one with `rucio share remove <#>` · protected = cannot be removed (download/pin/category/config dir)"
+  dirs_footer_many: "%{n} directories · remove one with `rucio share remove <#>` · protected = cannot be removed (download/pin/category/config dir)"
+  queued_indexing: "Queued %{n} file(s) for indexing."
+  read_errors: "%{n} file(s) could not be read:"
+  no_dir_n: "no directory #%{n}. Run `rucio share dirs` to see the list."
+  protected_n: "directory #%{n} (%{path}) is protected and cannot be removed (download/pin/category/config dir)"
+  stopped_dir: "Stopped sharing %{path} (%{removed} file(s))."
+  no_dir_at: "No shared directory at: %{path}"
+  stopped_one: "Stopped sharing (1 file)."
+  stopped_many: "Stopped sharing (%{n} files)."
+  no_share_row: "No share at row %{n}. Run `rucio share list` to see the list."
+  magnet_need_target: "Provide a target (row number, name, or hash) or use --file <path>"
+  hash_failed: "Failed to hash '%{path}': %{msg}"
+  ambiguous: "Ambiguous: %{n} shares named '%{target}'. Use a hash prefix instead:"
+  no_indexing: "No files being indexed."
+  indexing_n: "%{n} file(s) being indexed…"
+  indexing_complete: "Indexing complete."
+  indexing_line: "Indexing: %{n} file(s) pending…"
+  yes: "yes"
+  col:
+    num: "#"
+    hash: "Hash"
+    name: "Name"
+    size: "Size"
+    chunks: "Chunks"
+    path: "Path"
+    directory: "Directory"
+    files: "Files"
+    protected: "Protected"
+
+# Config field names ([node], identity_path, listen…) are literal config.toml
+# identifiers and are NOT translated. Only states, messages and the settable-key
+# help text below are.
+config:
+  bool_invalid: "'%{value}' is not a valid boolean (use true/false)"
+  port_invalid: "'%{value}' is not a valid port (1-65535)"
+  slots_range: "'%{value}' is out of range (1-50)"
+  not_integer: "'%{value}' is not a valid integer"
+  ipv4_invalid: "'%{value}' is not a valid IPv4 address"
+  max_upload_min: "network.max_upload_tasks must be at least 1"
+  ok_bandwidth: "ok — bandwidth limit applied immediately"
+  ok_restart: "ok — restart the daemon for changes to take effect"
+  requires_value: "key '%{key}' requires a value to remove"
+  not_found_in: "Value '%{value}' not found in %{key}"
+  restart_required: "(restart required)"
+  unlimited: "unlimited"
+  auto: "(auto)"
+  unknown_key: |-
+    Unknown or read-only key '%{key}'.
+    Settable keys:
+      storage.download_dir
+      storage.temp_dir
+      storage.outboard_dir
+      network.bootstrap_peers         (appends)
+      node.listen_addrs               (appends)
+      network.upload_limit_kbps       (KB/s, 0 = unlimited, applied immediately)
+      network.download_limit_kbps     (KB/s, 0 = unlimited, applied immediately)
+      network.max_upload_tasks        (integer ≥1, requires restart)
+      emule.enabled                   (true/false)
+      emule.temp_dir
+      emule.udp_port                  (1-65535)
+      emule.tcp_port                  (1-65535)
+      emule.external_ip               (IPv4; unset to auto-detect)
+      emule.download_slots_per_file   (1-50)
+      emule.max_upload_slots          (1-50)
+      emule.max_concurrent_downloads  (1-50)
+  unset_unknown: |-
+    '%{key}' is not a list key or does not support unset.
+    Keys that support unset:
+      network.bootstrap_peers   (removes one entry)
+      node.listen_addrs         (removes one entry)
+      emule.external_ip         (reverts to auto-detect)

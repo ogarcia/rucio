@@ -6,7 +6,8 @@ use anyhow::{Result, bail};
 use futures_util::StreamExt as _;
 use rucio_core::api::shares::ShareResponse;
 use rucio_core::api::ws::WsEvent;
-use tabled::{Table, Tabled};
+use rust_i18n::t;
+use tabled::builder::Builder;
 
 use crate::client::ApiClient;
 use crate::color;
@@ -46,56 +47,47 @@ pub async fn list(
     if shares.is_empty() {
         if total == 0 {
             match filter {
-                Some(_) => println!("No shares matching that filter."),
-                None => println!("No files shared."),
+                Some(_) => println!("{}", t!("share.none_filter")),
+                None => println!("{}", t!("share.none")),
             }
         } else {
-            println!("No files on this page ({total} total) — try a lower --page.");
+            println!("{}", t!("share.none_page", total = total));
         }
         return Ok(());
     }
 
-    #[derive(Tabled)]
-    struct Row {
-        #[tabled(rename = "#")]
-        idx: u64,
-        #[tabled(rename = "Hash")]
-        hash: String,
-        #[tabled(rename = "Name")]
-        name: String,
-        #[tabled(rename = "Size")]
-        size: String,
-        #[tabled(rename = "Chunks")]
-        chunks: usize,
-        #[tabled(rename = "Path")]
-        path: String,
-    }
-
-    let rows: Vec<Row> = shares
+    let rows: Vec<[String; 6]> = shares
         .iter()
         .enumerate()
-        .map(|(i, s)| Row {
-            idx: start as u64 + i as u64 + 1,
-            hash: color::value(&s.root_hash[..8]),
-            name: s.name.clone(),
-            size: human_size(s.size),
-            chunks: s.chunk_count,
-            path: color::value(&s.path),
+        .map(|(i, s)| {
+            [
+                (start as u64 + i as u64 + 1).to_string(),
+                color::value(&s.root_hash[..8]),
+                s.name.clone(),
+                human_size(s.size),
+                s.chunk_count.to_string(),
+                color::value(&s.path),
+            ]
         })
         .collect();
 
     let tw = term_width();
-    let max_name = rows
-        .iter()
-        .map(|r| r.name.chars().count())
-        .max()
-        .unwrap_or(0);
-    let max_path = rows
-        .iter()
-        .map(|r| r.path.chars().count())
-        .max()
-        .unwrap_or(0);
-    let mut table = Table::new(rows);
+    let max_name = rows.iter().map(|r| r[2].chars().count()).max().unwrap_or(0);
+    let max_path = rows.iter().map(|r| r[5].chars().count()).max().unwrap_or(0);
+
+    let mut builder = Builder::new();
+    builder.push_record([
+        t!("share.col.num").to_string(),
+        t!("share.col.hash").to_string(),
+        t!("share.col.name").to_string(),
+        t!("share.col.size").to_string(),
+        t!("share.col.chunks").to_string(),
+        t!("share.col.path").to_string(),
+    ]);
+    for r in rows {
+        builder.push_record(r);
+    }
+    let mut table = builder.build();
     fit_column(&mut table, 2, max_name, tw);
     fit_column(&mut table, 5, max_path, tw);
     println!("{table}");
@@ -106,16 +98,22 @@ pub async fn list(
     let shown_to = start as u64 + shown;
     if all || shown == total {
         match filter {
-            Some(f) => println!("{total} file(s) matching '{f}'"),
-            None => println!("{total} file(s) shared"),
+            Some(f) => println!("{}", t!("share.matching", total = total, filter = f)),
+            None => println!("{}", t!("share.total_shared", total = total)),
         }
     } else {
-        let mut footer = format!("Showing {}–{} of {}", start as u64 + 1, shown_to, total);
+        let mut footer = t!(
+            "share.showing",
+            from = start as u64 + 1,
+            to = shown_to,
+            total = total
+        )
+        .to_string();
         if shown_to < total {
-            footer.push_str(" · use --page N or --all");
+            footer.push_str(&t!("share.showing_more"));
         }
         if let Some(f) = filter {
-            footer.push_str(&format!(" · filter '{f}'"));
+            footer.push_str(&t!("share.showing_filter", filter = f));
         }
         println!("{footer}");
     }
@@ -129,52 +127,52 @@ pub async fn list(
 pub async fn dirs(client: &ApiClient) -> Result<()> {
     let resp = client.list_shared_dirs().await?;
     if resp.dirs.is_empty() {
-        println!("No directories shared.");
+        println!("{}", t!("share.no_dirs"));
         return Ok(());
     }
 
-    #[derive(Tabled)]
-    struct Row {
-        #[tabled(rename = "#")]
-        idx: usize,
-        #[tabled(rename = "Directory")]
-        path: String,
-        #[tabled(rename = "Files")]
-        files: u64,
-        #[tabled(rename = "Size")]
-        size: String,
-        #[tabled(rename = "Protected")]
-        protected: String,
-    }
-
-    let rows: Vec<Row> = resp
+    let rows: Vec<[String; 5]> = resp
         .dirs
         .iter()
         .enumerate()
-        .map(|(i, d)| Row {
-            idx: i + 1,
-            path: color::value(&d.path),
-            files: d.file_count,
-            size: human_size(d.total_size),
-            protected: if d.protected { "yes" } else { "-" }.to_string(),
+        .map(|(i, d)| {
+            [
+                (i + 1).to_string(),
+                color::value(&d.path),
+                d.file_count.to_string(),
+                human_size(d.total_size),
+                if d.protected {
+                    t!("share.yes").to_string()
+                } else {
+                    "-".to_string()
+                },
+            ]
         })
         .collect();
 
     let tw = term_width();
-    let max_path = rows
-        .iter()
-        .map(|r| r.path.chars().count())
-        .max()
-        .unwrap_or(0);
-    let mut table = Table::new(rows);
+    let max_path = rows.iter().map(|r| r[1].chars().count()).max().unwrap_or(0);
+
+    let mut builder = Builder::new();
+    builder.push_record([
+        t!("share.col.num").to_string(),
+        t!("share.col.directory").to_string(),
+        t!("share.col.files").to_string(),
+        t!("share.col.size").to_string(),
+        t!("share.col.protected").to_string(),
+    ]);
+    for r in rows {
+        builder.push_record(r);
+    }
+    let mut table = builder.build();
     fit_column(&mut table, 1, max_path, tw);
     println!("{table}");
-    println!(
-        "{} director{} · remove one with `rucio share remove <#>` · protected = \
-         cannot be removed (download/pin/category/config dir)",
-        resp.dirs.len(),
-        if resp.dirs.len() == 1 { "y" } else { "ies" }
-    );
+    let footer = if resp.dirs.len() == 1 {
+        t!("share.dirs_footer_one")
+    } else {
+        t!("share.dirs_footer_many", n = resp.dirs.len())
+    };
+    println!("{footer}");
     Ok(())
 }
 
@@ -183,17 +181,17 @@ pub async fn add(client: &ApiClient, path: &str) -> Result<()> {
         Ok(resp) => {
             println!(
                 "{}",
-                color::success(&format!("Queued {} file(s) for indexing.", resp.queued))
+                color::success(&t!("share.queued_indexing", n = resp.queued))
             );
             if !resp.errors.is_empty() {
-                println!("{} file(s) could not be read:", resp.errors.len());
+                println!("{}", t!("share.read_errors", n = resp.errors.len()));
                 for e in &resp.errors {
                     println!("  {e}");
                 }
             }
         }
         Err(e) => {
-            eprintln!("{}", color::error(&format!("Error: {e}")));
+            eprintln!("{}", color::error(&t!("common.error", msg = e)));
             std::process::exit(1);
         }
     }
@@ -208,22 +206,16 @@ pub async fn remove(client: &ApiClient, target: &str) -> Result<()> {
     // directory's path (and refuse a protected one before bothering the daemon).
     if let Ok(n) = target.parse::<usize>() {
         let dirs = client.list_shared_dirs().await?.dirs;
-        let dir = dirs.get(n.wrapping_sub(1)).ok_or_else(|| {
-            anyhow::anyhow!("no directory #{n}. Run `rucio share dirs` to see the list.")
-        })?;
+        let dir = dirs
+            .get(n.wrapping_sub(1))
+            .ok_or_else(|| anyhow::anyhow!(t!("share.no_dir_n", n = n)))?;
         if dir.protected {
-            bail!(
-                "directory #{n} ({}) is protected and cannot be removed (download/pin/category/config dir)",
-                dir.path
-            );
+            bail!(t!("share.protected_n", n = n, path = dir.path));
         }
         let removed = client.remove_shares_by_path(&dir.path).await?;
         println!(
             "{}",
-            color::success(&format!(
-                "Stopped sharing {} ({removed} file(s)).",
-                dir.path
-            ))
+            color::success(&t!("share.stopped_dir", path = dir.path, removed = removed))
         );
         return Ok(());
     }
@@ -233,12 +225,9 @@ pub async fn remove(client: &ApiClient, target: &str) -> Result<()> {
     // so only whole directories can be un-shared.
     let n = client.remove_shares_by_path(target).await?;
     match n {
-        0 => println!("No shared directory at: {}", color::value(target)),
-        1 => println!("{}", color::success("Stopped sharing (1 file).")),
-        n => println!(
-            "{}",
-            color::success(&format!("Stopped sharing ({n} files)."))
-        ),
+        0 => println!("{}", t!("share.no_dir_at", path = color::value(target))),
+        1 => println!("{}", color::success(&t!("share.stopped_one"))),
+        n => println!("{}", color::success(&t!("share.stopped_many", n = n))),
     }
     Ok(())
 }
@@ -267,8 +256,9 @@ pub async fn magnet(client: &ApiClient, target: Option<&str>, file: Option<&str>
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| path_str.to_string());
 
-        let fh = hash_file(path)
-            .map_err(|e| anyhow::anyhow!("Failed to hash '{}': {e}", path.display()))?;
+        let fh = hash_file(path).map_err(|e| {
+            anyhow::anyhow!(t!("share.hash_failed", path = path.display(), msg = e))
+        })?;
 
         let link = MagnetLink {
             root_hash: Hash(fh.root_hash),
@@ -280,9 +270,7 @@ pub async fn magnet(client: &ApiClient, target: Option<&str>, file: Option<&str>
         return Ok(());
     }
 
-    let target = target.ok_or_else(|| {
-        anyhow::anyhow!("Provide a target (row number, name, or hash) or use --file <path>")
-    })?;
+    let target = target.ok_or_else(|| anyhow::anyhow!(t!("share.magnet_need_target")))?;
 
     // Full list so row numbers and name/hash lookups match `share list`
     // regardless of library size (the endpoint pages at 1000 rows).
@@ -295,7 +283,7 @@ pub async fn magnet(client: &ApiClient, target: Option<&str>, file: Option<&str>
                 println!("{}", color::value(&s.magnet));
                 return Ok(());
             }
-            None => bail!("No share at row {n}. Run `rucio share list` to see the list."),
+            None => bail!(t!("share.no_share_row", n = n)),
         }
     }
 
@@ -311,7 +299,7 @@ pub async fn magnet(client: &ApiClient, target: Option<&str>, file: Option<&str>
             return Ok(());
         }
         n if n > 1 => {
-            eprintln!("Ambiguous: {n} shares named '{target}'. Use a hash prefix instead:");
+            eprintln!("{}", t!("share.ambiguous", n = n, target = target));
             for s in &by_name {
                 eprintln!("  {}  {}", color::value(&s.root_hash[..8]), s.name);
             }
@@ -331,11 +319,11 @@ pub async fn indexing(client: &ApiClient, watch: bool) -> Result<()> {
 
     if !watch {
         if pending == 0 {
-            println!("No files being indexed.");
+            println!("{}", t!("share.no_indexing"));
         } else {
             println!(
-                "{} file(s) being indexed…",
-                color::value(&pending.to_string())
+                "{}",
+                t!("share.indexing_n", n = color::value(&pending.to_string()))
             );
         }
         return Ok(());
@@ -343,7 +331,7 @@ pub async fn indexing(client: &ApiClient, watch: bool) -> Result<()> {
 
     // --watch mode ----------------------------------------------------------
     if pending == 0 {
-        println!("No files being indexed.");
+        println!("{}", t!("share.no_indexing"));
         return Ok(());
     }
 
@@ -386,18 +374,18 @@ async fn indexing_watch_ws(mut stream: crate::client::WsStream, initial: usize) 
                     pending = p;
                     print_indexing_line(pending);
                     if pending == 0 {
-                        println!("\n{}", color::success("Indexing complete."));
+                        println!("\n{}", color::success(&t!("share.indexing_complete")));
                         return Ok(());
                     }
                 }
             }
             Some(Ok(_)) => {}
             Some(Err(e)) => {
-                println!("\nWebSocket error: {e}");
+                println!("\n{}", t!("common.ws_error", msg = e));
                 return Ok(());
             }
             None => {
-                println!("\nDaemon disconnected.");
+                println!("\n{}", t!("common.daemon_disconnected"));
                 return Ok(());
             }
         }
@@ -417,13 +405,13 @@ async fn indexing_watch_http(client: &ApiClient, initial: usize) -> Result<()> {
         pending = match client.indexing_pending().await {
             Ok(n) => n,
             Err(e) => {
-                println!("\nError contacting daemon: {e}");
+                println!("\n{}", t!("common.daemon_contact_error", msg = e));
                 return Ok(());
             }
         };
         print_indexing_line(pending);
         if pending == 0 {
-            println!("\n{}", color::success("Indexing complete."));
+            println!("\n{}", color::success(&t!("share.indexing_complete")));
             return Ok(());
         }
     }
@@ -436,8 +424,11 @@ fn print_indexing_line(pending: usize) {
         print!("{CLEAR_LINE}");
     } else {
         print!(
-            "{CLEAR_LINE}Indexing: {} file(s) pending…",
-            color::value(&pending.to_string())
+            "{CLEAR_LINE}{}",
+            t!(
+                "share.indexing_line",
+                n = color::value(&pending.to_string())
+            )
         );
     }
     // Flush stdout so the partial line is visible immediately.

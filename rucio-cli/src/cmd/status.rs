@@ -2,32 +2,48 @@
 
 use anyhow::Result;
 use rucio_core::protocol::node::NodeClass;
-use tabled::{Table, Tabled};
+use rust_i18n::t;
+use tabled::builder::Builder;
 
 use crate::client::ApiClient;
 use crate::color;
-use crate::table_util::{fit_column, term_width};
+use crate::table_util::{fit_column, label_width, term_width};
 
 pub async fn status(client: &ApiClient) -> Result<()> {
     let s = client.status().await?;
 
-    println!("Peer ID  : {}", color::value(&s.peer_id));
-    println!("Class    : {}", color::node_class(&s.class));
-    println!("Peers    : {}", s.connected_peers);
-    println!("Uptime   : {}", format_uptime(s.uptime_secs));
-    println!("Version  : {}", s.version);
+    let l_peer = t!("node.status.peer_id");
+    let l_class = t!("node.status.class");
+    let l_peers = t!("node.status.peers");
+    let l_uptime = t!("node.status.uptime");
+    let l_version = t!("node.status.version");
+    let l_listening = t!("node.status.listening");
+    let w = label_width([
+        l_peer.as_ref(),
+        l_class.as_ref(),
+        l_peers.as_ref(),
+        l_uptime.as_ref(),
+        l_version.as_ref(),
+        l_listening.as_ref(),
+    ]);
+
+    println!("{l_peer:<w$} : {}", color::value(&s.peer_id));
+    println!("{l_class:<w$} : {}", color::node_class(&s.class));
+    println!("{l_peers:<w$} : {}", s.connected_peers);
+    println!("{l_uptime:<w$} : {}", format_uptime(s.uptime_secs));
+    println!("{l_version:<w$} : {}", s.version);
 
     if s.listen_addrs.is_empty() {
-        println!("Listening: (none)");
+        println!("{l_listening:<w$} : {}", t!("node.status.none_paren"));
     } else {
-        println!("Listening:");
+        println!("{l_listening}:");
         for addr in &s.listen_addrs {
             println!("  {}", color::value(addr));
         }
     }
 
     if !s.observed_addrs.is_empty() {
-        println!("External (observed by peers):");
+        println!("{}", t!("node.status.observed"));
         for addr in &s.observed_addrs {
             println!("  {}", color::value(addr));
         }
@@ -36,7 +52,8 @@ pub async fn status(client: &ApiClient) -> Result<()> {
     // Connectivity summary line
     println!();
     println!(
-        "Connectivity: {}",
+        "{} {}",
+        t!("node.status.connectivity"),
         connectivity_summary(&s.class, s.connected_peers, &s.observed_addrs)
     );
 
@@ -74,7 +91,7 @@ pub async fn status(client: &ApiClient) -> Result<()> {
 
         if !public.is_empty() {
             println!();
-            println!("Bootstrap multiaddrs (paste into another node's config.toml):");
+            println!("{}", t!("node.status.bootstrap_public"));
             for addr in &public {
                 println!("  {}/p2p/{}", color::value(addr), color::value(&s.peer_id));
             }
@@ -82,23 +99,20 @@ pub async fn status(client: &ApiClient) -> Result<()> {
 
         if !local.is_empty() {
             println!();
-            println!("Local bootstrap multiaddrs (LAN / same-machine only):");
+            println!("{}", t!("node.status.bootstrap_local"));
             for addr in &local {
                 println!(
                     "  {}/p2p/{}  [{}]",
                     color::value(addr),
                     color::value(&s.peer_id),
-                    addr_scope_hint(addr)
+                    scope_label(addr_scope_hint(addr))
                 );
             }
         }
 
         if public.is_empty() && !local.is_empty() {
             println!();
-            println!(
-                "Note: no public address detected. \
-                 LAN peers discover this node automatically via mDNS."
-            );
+            println!("{}", t!("node.status.note_no_public"));
         }
     }
 
@@ -106,19 +120,25 @@ pub async fn status(client: &ApiClient) -> Result<()> {
     if let Ok(m) = client.metrics().await {
         let sess = &m.session;
         println!();
-        println!("Session transfer:");
+        println!("{}", t!("node.status.session_transfer"));
         println!(
-            "  ↑ {}/s  total {}  ({} chunks served)",
-            format_bytes(sess.upload_speed),
-            format_bytes(sess.uploaded_bytes),
-            sess.chunks_served,
+            "  {}",
+            t!(
+                "node.status.up_line",
+                speed = format_bytes(sess.upload_speed),
+                total = format_bytes(sess.uploaded_bytes),
+                chunks = sess.chunks_served
+            )
         );
         println!(
-            "  ↓ {}/s  total {}  ({} chunks, {} rejected)",
-            format_bytes(sess.download_speed),
-            format_bytes(sess.downloaded_bytes),
-            sess.chunks_received,
-            sess.chunks_rejected,
+            "  {}",
+            t!(
+                "node.status.down_line",
+                speed = format_bytes(sess.download_speed),
+                total = format_bytes(sess.downloaded_bytes),
+                chunks = sess.chunks_received,
+                rejected = sess.chunks_rejected
+            )
         );
     }
 
@@ -138,24 +158,32 @@ fn _format_class(class: &NodeClass) -> &'static str {
 /// One-line connectivity summary combining class, peers and observed addrs.
 fn connectivity_summary(class: &NodeClass, peers: usize, observed: &[String]) -> String {
     match class {
-        NodeClass::Unknown if peers == 0 => color::offline("offline — no peers connected yet"),
-        NodeClass::Unknown => color::limited(&format!(
-            "limited — {peers} peer(s) connected, waiting for Identify handshake"
-        )),
-        NodeClass::LowId if peers == 0 => {
-            color::offline("offline — behind NAT, no peers connected")
-        }
-        NodeClass::LowId => color::limited(&format!(
-            "online (LowID) — {peers} peer(s), inbound connections not reachable"
-        )),
+        NodeClass::Unknown if peers == 0 => color::offline(&t!("node.conn.offline_no_peers")),
+        NodeClass::Unknown => color::limited(&t!("node.conn.limited", peers = peers)),
+        NodeClass::LowId if peers == 0 => color::offline(&t!("node.conn.offline_nat")),
+        NodeClass::LowId => color::limited(&t!("node.conn.online_lowid", peers = peers)),
         NodeClass::HighId => {
             let addr_hint = if observed.is_empty() {
                 String::new()
             } else {
-                format!(", external: {}", color::value(&observed[0]))
+                t!("node.conn.external_hint", addr = color::value(&observed[0])).to_string()
             };
-            color::online(&format!("online (HighID) — {peers} peer(s){addr_hint}"))
+            color::online(&t!(
+                "node.conn.online_highid",
+                peers = peers,
+                addr_hint = addr_hint
+            ))
         }
+    }
+}
+
+/// Translate an `addr_scope_hint` sentinel for display. The sentinel stays in
+/// English internally so the filter/sort logic is locale-independent.
+fn scope_label(hint: &str) -> String {
+    match hint {
+        "local network only" => t!("node.scope.local").to_string(),
+        "link-local only" => t!("node.scope.link_local").to_string(),
+        other => other.to_string(),
     }
 }
 
@@ -163,21 +191,11 @@ pub async fn peers(client: &ApiClient) -> Result<()> {
     let resp = client.peers().await?;
 
     if resp.peers.is_empty() {
-        println!("No peers known.");
+        println!("{}", t!("node.peers.none"));
         return Ok(());
     }
 
-    #[derive(Tabled)]
-    struct Row {
-        #[tabled(rename = "Peer ID")]
-        peer_id: String,
-        #[tabled(rename = "Class")]
-        class: String,
-        #[tabled(rename = "Addresses")]
-        addresses: String,
-    }
-
-    let rows: Vec<Row> = resp
+    let rows: Vec<[String; 3]> = resp
         .peers
         .into_iter()
         .map(|p| {
@@ -187,24 +205,30 @@ pub async fn peers(client: &ApiClient) -> Result<()> {
                 .map(String::as_str)
                 .filter(|a| !is_loopback_or_unspecified(a))
                 .collect();
-            Row {
-                peer_id: p.peer_id,
-                class: format!("{:?}", p.class),
-                addresses: if public_addrs.is_empty() {
+            [
+                p.peer_id,
+                format!("{:?}", p.class),
+                if public_addrs.is_empty() {
                     "-".to_string()
                 } else {
                     public_addrs.join(", ")
                 },
-            }
+            ]
         })
         .collect();
 
-    let max_addr = rows
-        .iter()
-        .map(|r| r.addresses.chars().count())
-        .max()
-        .unwrap_or(0);
-    let mut table = Table::new(rows);
+    let max_addr = rows.iter().map(|r| r[2].chars().count()).max().unwrap_or(0);
+
+    let mut builder = Builder::new();
+    builder.push_record([
+        t!("node.peers.col_peer_id").to_string(),
+        t!("node.peers.col_class").to_string(),
+        t!("node.peers.col_addresses").to_string(),
+    ]);
+    for r in rows {
+        builder.push_record(r);
+    }
+    let mut table = builder.build();
     fit_column(&mut table, 2, max_addr, term_width());
     println!("{table}");
     Ok(())
@@ -246,39 +270,68 @@ pub async fn metrics_cmd(client: &ApiClient) -> Result<()> {
     let sess = &m.session;
     let total = &m.total;
 
-    println!("Session (since last start)");
+    let l_up = t!("node.metrics.upload");
+    let l_down = t!("node.metrics.download");
+    let l_sup = t!("node.metrics.speed_up");
+    let l_sdown = t!("node.metrics.speed_down");
+    let w = label_width([
+        l_up.as_ref(),
+        l_down.as_ref(),
+        l_sup.as_ref(),
+        l_sdown.as_ref(),
+    ]);
+
+    println!("{}", t!("node.metrics.session_header"));
     println!(
-        "  Upload   : {} ({} chunks served)",
-        color::value(&format_bytes(sess.uploaded_bytes)),
-        sess.chunks_served
+        "  {l_up:<w$} : {}",
+        t!(
+            "node.metrics.upload_val",
+            bytes = color::value(&format_bytes(sess.uploaded_bytes)),
+            chunks = sess.chunks_served
+        )
     );
     println!(
-        "  Download : {} ({} chunks, {} rejected)",
-        color::value(&format_bytes(sess.downloaded_bytes)),
-        sess.chunks_received,
-        sess.chunks_rejected
+        "  {l_down:<w$} : {}",
+        t!(
+            "node.metrics.download_val",
+            bytes = color::value(&format_bytes(sess.downloaded_bytes)),
+            chunks = sess.chunks_received,
+            rejected = sess.chunks_rejected
+        )
     );
     println!(
-        "  Speed ↑  : {}/s",
-        color::value(&format_bytes(sess.upload_speed))
+        "  {l_sup:<w$} : {}",
+        t!(
+            "node.metrics.speed_val",
+            speed = color::value(&format_bytes(sess.upload_speed))
+        )
     );
     println!(
-        "  Speed ↓  : {}/s",
-        color::value(&format_bytes(sess.download_speed))
+        "  {l_sdown:<w$} : {}",
+        t!(
+            "node.metrics.speed_val",
+            speed = color::value(&format_bytes(sess.download_speed))
+        )
     );
 
     println!();
-    println!("Lifetime totals");
+    println!("{}", t!("node.metrics.lifetime_header"));
     println!(
-        "  Upload   : {} ({} chunks served)",
-        color::value(&format_bytes(total.uploaded_bytes)),
-        total.chunks_served
+        "  {l_up:<w$} : {}",
+        t!(
+            "node.metrics.upload_val",
+            bytes = color::value(&format_bytes(total.uploaded_bytes)),
+            chunks = total.chunks_served
+        )
     );
     println!(
-        "  Download : {} ({} chunks, {} rejected)",
-        color::value(&format_bytes(total.downloaded_bytes)),
-        total.chunks_received,
-        total.chunks_rejected
+        "  {l_down:<w$} : {}",
+        t!(
+            "node.metrics.download_val",
+            bytes = color::value(&format_bytes(total.downloaded_bytes)),
+            chunks = total.chunks_received,
+            rejected = total.chunks_rejected
+        )
     );
 
     Ok(())

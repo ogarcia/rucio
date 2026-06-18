@@ -1,7 +1,8 @@
 //! `rucio pin list`, `rucio pin add <magnet>`, `rucio pin remove <hash>`.
 
 use anyhow::{Context, Result, bail};
-use tabled::{Table, Tabled};
+use rust_i18n::t;
+use tabled::builder::Builder;
 
 use rucio_core::api::pins::PinState;
 
@@ -9,49 +10,42 @@ use crate::client::ApiClient;
 use crate::cmd::downloads::human_size;
 use crate::color;
 
-fn state_label(state: PinState) -> &'static str {
+fn state_label(state: PinState) -> String {
     match state {
-        PinState::Available => "available",
-        PinState::Fetching => "fetching",
-        PinState::Missing => "missing",
+        PinState::Available => t!("pin.state.available"),
+        PinState::Fetching => t!("pin.state.fetching"),
+        PinState::Missing => t!("pin.state.missing"),
     }
+    .to_string()
 }
 
 pub async fn list(client: &ApiClient) -> Result<()> {
     let resp = client.list_pins().await?;
     if resp.pins.is_empty() {
-        println!("No pins.");
+        println!("{}", t!("pin.none"));
         return Ok(());
     }
 
-    #[derive(Tabled)]
-    struct Row {
-        #[tabled(rename = "Root hash")]
-        hash: String,
-        #[tabled(rename = "Name")]
-        name: String,
-        #[tabled(rename = "Size")]
-        size: String,
-        #[tabled(rename = "State")]
-        state: String,
-        #[tabled(rename = "Collection")]
-        collection: String,
+    let mut table = Builder::new();
+    table.push_record([
+        t!("pin.col.hash").to_string(),
+        t!("pin.col.name").to_string(),
+        t!("pin.col.size").to_string(),
+        t!("pin.col.state").to_string(),
+        t!("pin.col.collection").to_string(),
+    ]);
+    for p in &resp.pins {
+        table.push_record([
+            // Short hash prefix is enough to identify a pin (and to `pin remove`).
+            p.root_hash.chars().take(16).collect(),
+            p.name.clone().unwrap_or_else(|| "-".to_string()),
+            p.size.map(human_size).unwrap_or_else(|| "-".to_string()),
+            state_label(p.state),
+            p.collection.clone().unwrap_or_else(|| "-".to_string()),
+        ]);
     }
 
-    let rows: Vec<Row> = resp
-        .pins
-        .iter()
-        .map(|p| Row {
-            // Short hash prefix is enough to identify a pin (and to `pin remove`).
-            hash: p.root_hash.chars().take(16).collect(),
-            name: p.name.clone().unwrap_or_else(|| "-".to_string()),
-            size: p.size.map(human_size).unwrap_or_else(|| "-".to_string()),
-            state: state_label(p.state).to_string(),
-            collection: p.collection.clone().unwrap_or_else(|| "-".to_string()),
-        })
-        .collect();
-
-    println!("{}", Table::new(rows));
+    println!("{}", table.build());
     Ok(())
 }
 
@@ -70,15 +64,15 @@ async fn resolve_to_magnet(client: &ApiClient, target: &str) -> Result<String> {
     }
     if let Ok(id) = t.parse::<i64>() {
         if id <= 0 {
-            bail!("pin works on Rucio downloads only (use a positive download id)");
+            bail!(t!("pin.err_positive_id"));
         }
         let dl = client
             .get_download(id)
             .await
-            .with_context(|| format!("no Rucio download with id {id}"))?;
+            .with_context(|| t!("pin.err_no_download", id = id).to_string())?;
         return Ok(format!("rucio:{}", dl.root_hash));
     }
-    bail!("'{target}' is not a rucio: magnet, a download id, or a 64-char root hash");
+    bail!(t!("pin.err_bad_target", target = target));
 }
 
 pub async fn add(
@@ -90,7 +84,7 @@ pub async fn add(
     let magnet = match resolve_to_magnet(client, target).await {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("{}", color::error(&format!("Error: {e}")));
+            eprintln!("{}", color::error(&t!("common.error", msg = e)));
             std::process::exit(1);
         }
     };
@@ -99,14 +93,17 @@ pub async fn add(
         .filter(|c| !c.is_empty());
     match client.create_pin(&magnet, providers, collection).await {
         Ok(p) => {
-            let name = p.name.as_deref().unwrap_or("(unknown)");
+            let name = p
+                .name
+                .clone()
+                .unwrap_or_else(|| t!("common.unknown").to_string());
             println!(
                 "{}",
-                color::success(&format!("Pinned '{name}' ({}).", state_label(p.state)))
+                color::success(&t!("pin.added", name = name, state = state_label(p.state)))
             );
         }
         Err(e) => {
-            eprintln!("{}", color::error(&format!("Error: {e}")));
+            eprintln!("{}", color::error(&t!("common.error", msg = e)));
             std::process::exit(1);
         }
     }
@@ -115,9 +112,9 @@ pub async fn add(
 
 pub async fn remove(client: &ApiClient, hash: &str) -> Result<()> {
     match client.delete_pin(hash).await {
-        Ok(()) => println!("{}", color::success(&format!("Unpinned {hash}."))),
+        Ok(()) => println!("{}", color::success(&t!("pin.removed", hash = hash))),
         Err(e) => {
-            eprintln!("{}", color::error(&format!("Error: {e}")));
+            eprintln!("{}", color::error(&t!("common.error", msg = e)));
             std::process::exit(1);
         }
     }

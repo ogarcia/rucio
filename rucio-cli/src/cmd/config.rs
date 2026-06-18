@@ -1,6 +1,7 @@
 //! `rucio config show / set / unset`
 
 use anyhow::{Result, bail};
+use rust_i18n::t;
 
 use crate::client::ApiClient;
 use crate::color;
@@ -10,7 +11,7 @@ fn parse_bool(value: &str) -> Result<bool> {
     match value.to_lowercase().as_str() {
         "true" | "1" | "yes" | "on" => Ok(true),
         "false" | "0" | "no" | "off" => Ok(false),
-        _ => bail!("'{value}' is not a valid boolean (use true/false)"),
+        _ => bail!(t!("config.bool_invalid", value = value)),
     }
 }
 
@@ -18,7 +19,7 @@ fn parse_bool(value: &str) -> Result<bool> {
 fn parse_port(value: &str) -> Result<u16> {
     match value.parse::<u16>() {
         Ok(n) if n > 0 => Ok(n),
-        _ => bail!("'{value}' is not a valid port (1-65535)"),
+        _ => bail!(t!("config.port_invalid", value = value)),
     }
 }
 
@@ -26,8 +27,8 @@ fn parse_port(value: &str) -> Result<u16> {
 fn parse_slots(value: &str) -> Result<usize> {
     match value.parse::<usize>() {
         Ok(n) if (1..=50).contains(&n) => Ok(n),
-        Ok(_) => bail!("'{value}' is out of range (1-50)"),
-        Err(_) => bail!("'{value}' is not a valid integer"),
+        Ok(_) => bail!(t!("config.slots_range", value = value)),
+        Err(_) => bail!(t!("config.not_integer", value = value)),
     }
 }
 
@@ -39,7 +40,7 @@ fn pending_scalar(current: &str, pending: Option<&str>) -> String {
             "{}  →  {}  {}",
             color::value(current),
             color::limited(p),
-            color::limited("(restart required)"),
+            color::limited(&t!("config.restart_required")),
         ),
         _ => color::value(current),
     }
@@ -49,7 +50,8 @@ fn pending_scalar(current: &str, pending: Option<&str>) -> String {
 /// pending list differs, appends an annotation line below the last entry.
 fn print_list_field(label: &str, pad: usize, current: &[String], pending: Option<&[String]>) {
     if current.is_empty() {
-        let base = format!("  {label:pad$} = (none)");
+        let none = t!("common.none");
+        let base = format!("  {label:pad$} = {none}");
         if let Some(pl) = pending
             && !pl.is_empty()
         {
@@ -57,7 +59,7 @@ fn print_list_field(label: &str, pad: usize, current: &[String], pending: Option
                 "{}  →  {}  {}",
                 base,
                 color::limited(&pl.join(", ")),
-                color::limited("(restart required)"),
+                color::limited(&t!("config.restart_required")),
             );
             return;
         }
@@ -77,7 +79,7 @@ fn print_list_field(label: &str, pad: usize, current: &[String], pending: Option
                 "  {:pad$}   →  {}  {}",
                 "",
                 color::limited(&pl.join(", ")),
-                color::limited("(restart required)"),
+                color::limited(&t!("config.restart_required")),
             );
         }
     }
@@ -115,7 +117,7 @@ pub async fn show(client: &ApiClient) -> Result<()> {
     println!(
         "  upload_limit_kbps    = {}",
         color::value(&if ul == 0 {
-            "unlimited".to_string()
+            t!("config.unlimited").to_string()
         } else {
             format!("{ul}")
         })
@@ -123,7 +125,7 @@ pub async fn show(client: &ApiClient) -> Result<()> {
     println!(
         "  download_limit_kbps  = {}",
         color::value(&if dl == 0 {
-            "unlimited".to_string()
+            t!("config.unlimited").to_string()
         } else {
             format!("{dl}")
         })
@@ -198,11 +200,12 @@ pub async fn show(client: &ApiClient) -> Result<()> {
             pe.map(|pe| pe.tcp_port.to_string()).as_deref(),
         )
     );
+    let auto = t!("config.auto");
     println!(
         "  external_ip              = {}",
         pending_scalar(
-            e.external_ip.as_deref().unwrap_or("(auto)"),
-            pe.map(|pe| { pe.external_ip.as_deref().unwrap_or("(auto)").to_string() })
+            e.external_ip.as_deref().unwrap_or(&auto),
+            pe.map(|pe| { pe.external_ip.as_deref().unwrap_or(&auto).to_string() })
                 .as_deref(),
         )
     );
@@ -257,19 +260,19 @@ pub async fn set(client: &ApiClient, key: &str, value: &str) -> Result<()> {
         "network.upload_limit_kbps" => {
             c.network.upload_limit_kbps = value
                 .parse::<u64>()
-                .map_err(|_| anyhow::anyhow!("'{value}' is not a valid integer"))?;
+                .map_err(|_| anyhow::anyhow!(t!("config.not_integer", value = value)))?;
         }
         "network.download_limit_kbps" => {
             c.network.download_limit_kbps = value
                 .parse::<u64>()
-                .map_err(|_| anyhow::anyhow!("'{value}' is not a valid integer"))?;
+                .map_err(|_| anyhow::anyhow!(t!("config.not_integer", value = value)))?;
         }
         "network.max_upload_tasks" => {
             let n = value
                 .parse::<usize>()
-                .map_err(|_| anyhow::anyhow!("'{value}' is not a valid integer"))?;
+                .map_err(|_| anyhow::anyhow!(t!("config.not_integer", value = value)))?;
             if n < 1 {
-                anyhow::bail!("network.max_upload_tasks must be at least 1");
+                anyhow::bail!(t!("config.max_upload_min"));
             }
             c.network.max_upload_tasks = n;
         }
@@ -280,7 +283,7 @@ pub async fn set(client: &ApiClient, key: &str, value: &str) -> Result<()> {
         "emule.external_ip" => {
             value
                 .parse::<std::net::Ipv4Addr>()
-                .map_err(|_| anyhow::anyhow!("'{value}' is not a valid IPv4 address"))?;
+                .map_err(|_| anyhow::anyhow!(t!("config.ipv4_invalid", value = value)))?;
             c.emule.external_ip = Some(value.to_string());
         }
         "emule.download_slots_per_file" => {
@@ -290,36 +293,15 @@ pub async fn set(client: &ApiClient, key: &str, value: &str) -> Result<()> {
         "emule.max_concurrent_downloads" => {
             c.emule.max_concurrent_downloads = parse_slots(value)?;
         }
-        other => bail!(
-            "Unknown or read-only key '{other}'.\n\
-             Settable keys:\n\
-               storage.download_dir\n\
-               storage.temp_dir\n\
-               storage.outboard_dir\n\
-               network.bootstrap_peers         (appends)\n\
-               node.listen_addrs               (appends)\n\
-               network.upload_limit_kbps       (KB/s, 0 = unlimited, applied immediately)\n\
-               network.download_limit_kbps     (KB/s, 0 = unlimited, applied immediately)\n\
-               network.max_upload_tasks        (integer ≥1, requires restart)\n\
-               emule.enabled                   (true/false)\n\
-               emule.temp_dir\n\
-               emule.udp_port                  (1-65535)\n\
-               emule.tcp_port                  (1-65535)\n\
-               emule.external_ip               (IPv4; unset to auto-detect)\n\
-               emule.download_slots_per_file   (1-50)\n\
-               emule.max_upload_slots          (1-50)\n\
-               emule.max_concurrent_downloads  (1-50)"
-        ),
+        other => bail!(t!("config.unknown_key", key = other)),
     }
 
     client.put_config(&cfg).await?;
     let msg = match key {
-        "network.upload_limit_kbps" | "network.download_limit_kbps" => {
-            "ok — bandwidth limit applied immediately"
-        }
-        _ => "ok — restart the daemon for changes to take effect",
+        "network.upload_limit_kbps" | "network.download_limit_kbps" => t!("config.ok_bandwidth"),
+        _ => t!("config.ok_restart"),
     };
-    println!("{}", color::success(msg));
+    println!("{}", color::success(&msg));
     Ok(())
 }
 
@@ -332,7 +314,7 @@ pub async fn unset(client: &ApiClient, key: &str, value: Option<&str>) -> Result
 
     // List keys require a value to identify the entry to remove.
     let require_value = || -> Result<&str> {
-        value.ok_or_else(|| anyhow::anyhow!("key '{key}' requires a value to remove"))
+        value.ok_or_else(|| anyhow::anyhow!(t!("config.requires_value", key = key)))
     };
 
     match key {
@@ -341,7 +323,11 @@ pub async fn unset(client: &ApiClient, key: &str, value: Option<&str>) -> Result
             let before = c.network.bootstrap_peers.len();
             c.network.bootstrap_peers.retain(|v| v != value);
             if c.network.bootstrap_peers.len() == before {
-                bail!("Value '{value}' not found in network.bootstrap_peers");
+                bail!(t!(
+                    "config.not_found_in",
+                    value = value,
+                    key = "network.bootstrap_peers"
+                ));
             }
         }
         "node.listen_addrs" => {
@@ -349,26 +335,21 @@ pub async fn unset(client: &ApiClient, key: &str, value: Option<&str>) -> Result
             let before = c.node.listen_addrs.len();
             c.node.listen_addrs.retain(|v| v != value);
             if c.node.listen_addrs.len() == before {
-                bail!("Value '{value}' not found in node.listen_addrs");
+                bail!(t!(
+                    "config.not_found_in",
+                    value = value,
+                    key = "node.listen_addrs"
+                ));
             }
         }
         "emule.external_ip" => {
             // Clears the manual override so the daemon auto-detects again.
             c.emule.external_ip = None;
         }
-        other => bail!(
-            "'{other}' is not a list key or does not support unset.\n\
-             Keys that support unset:\n\
-               network.bootstrap_peers   (removes one entry)\n\
-               node.listen_addrs         (removes one entry)\n\
-               emule.external_ip         (reverts to auto-detect)"
-        ),
+        other => bail!(t!("config.unset_unknown", key = other)),
     }
 
     client.put_config(&cfg).await?;
-    println!(
-        "{}",
-        color::success("ok — restart the daemon for changes to take effect")
-    );
+    println!("{}", color::success(&t!("config.ok_restart")));
     Ok(())
 }

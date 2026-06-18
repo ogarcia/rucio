@@ -2,7 +2,8 @@
 //! `rucio category set <id> <name> [--dir]`, `rucio category remove <id>`
 
 use anyhow::Result;
-use tabled::{Table, Tabled};
+use rust_i18n::t;
+use tabled::builder::Builder;
 
 use crate::client::ApiClient;
 use crate::color;
@@ -10,41 +11,33 @@ use crate::color;
 pub async fn list(client: &ApiClient) -> Result<()> {
     let resp = client.list_categories().await?;
     if resp.categories.is_empty() {
-        println!("No categories.");
+        println!("{}", t!("category.none"));
         return Ok(());
     }
 
-    #[derive(Tabled)]
-    struct Row {
-        #[tabled(rename = "ID")]
-        id: i64,
-        #[tabled(rename = "Name")]
-        name: String,
-        #[tabled(rename = "Download dir")]
-        dir: String,
-        #[tabled(rename = "Color")]
-        color: String,
-        #[tabled(rename = "Match")]
-        keywords: String,
+    let mut table = Builder::new();
+    table.push_record([
+        t!("category.col.id").to_string(),
+        t!("category.col.name").to_string(),
+        t!("category.col.dir").to_string(),
+        t!("category.col.color").to_string(),
+        t!("category.col.match").to_string(),
+    ]);
+    for c in &resp.categories {
+        table.push_record([
+            c.id.to_string(),
+            c.name.clone(),
+            // No pinned dir → downloads go to the global download directory.
+            match &c.download_dir {
+                Some(d) => color::value(d),
+                None => t!("category.global").to_string(),
+            },
+            c.color.clone().unwrap_or_else(|| "-".to_string()),
+            c.match_keywords.clone().unwrap_or_else(|| "-".to_string()),
+        ]);
     }
 
-    let rows: Vec<Row> = resp
-        .categories
-        .iter()
-        .map(|c| Row {
-            id: c.id,
-            name: c.name.clone(),
-            // No pinned dir → downloads go to the global download directory.
-            dir: match &c.download_dir {
-                Some(d) => color::value(d),
-                None => "(global)".to_string(),
-            },
-            color: c.color.clone().unwrap_or_else(|| "-".to_string()),
-            keywords: c.match_keywords.clone().unwrap_or_else(|| "-".to_string()),
-        })
-        .collect();
-
-    println!("{}", Table::new(rows));
+    println!("{}", table.build());
     Ok(())
 }
 
@@ -58,10 +51,10 @@ pub async fn add(
     match client.create_category(name, dir, color, keywords).await {
         Ok(c) => println!(
             "{}",
-            color::success(&format!("Created category '{}' (id {}).", c.name, c.id))
+            color::success(&t!("category.created", name = c.name, id = c.id))
         ),
         Err(e) => {
-            eprintln!("{}", color::error(&format!("Error: {e}")));
+            eprintln!("{}", color::error(&t!("common.error", msg = e)));
             std::process::exit(1);
         }
     }
@@ -77,9 +70,9 @@ pub async fn set(
     keywords: Option<&str>,
 ) -> Result<()> {
     match client.update_category(id, name, dir, color, keywords).await {
-        Ok(()) => println!("{}", color::success(&format!("Updated category {id}."))),
+        Ok(()) => println!("{}", color::success(&t!("category.updated", id = id))),
         Err(e) => {
-            eprintln!("{}", color::error(&format!("Error: {e}")));
+            eprintln!("{}", color::error(&t!("common.error", msg = e)));
             std::process::exit(1);
         }
     }
@@ -88,9 +81,9 @@ pub async fn set(
 
 pub async fn remove(client: &ApiClient, id: i64) -> Result<()> {
     match client.delete_category(id).await {
-        Ok(()) => println!("{}", color::success(&format!("Removed category {id}."))),
+        Ok(()) => println!("{}", color::success(&t!("category.removed", id = id))),
         Err(e) => {
-            eprintln!("{}", color::error(&format!("Error: {e}")));
+            eprintln!("{}", color::error(&t!("common.error", msg = e)));
             std::process::exit(1);
         }
     }

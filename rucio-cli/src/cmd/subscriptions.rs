@@ -1,7 +1,8 @@
 //! `rucio subscription list/add/remove/link` — mirror other nodes' pin-sets.
 
 use anyhow::{Result, bail};
-use tabled::{Table, Tabled};
+use rust_i18n::t;
+use tabled::builder::Builder;
 
 use rucio_core::api::subscriptions::peer_link;
 
@@ -14,7 +15,7 @@ use crate::color;
 pub fn parse_size(input: &str) -> Result<u64> {
     let s = input.trim();
     if s.is_empty() {
-        bail!("empty size");
+        bail!(t!("size.empty"));
     }
     let s = s.strip_suffix(['b', 'B']).unwrap_or(s);
     let (num, mult): (&str, u64) = match s.chars().last() {
@@ -24,7 +25,7 @@ pub fn parse_size(input: &str) -> Result<u64> {
                 'M' => 1024 * 1024,
                 'G' => 1024 * 1024 * 1024,
                 'T' => 1024u64 * 1024 * 1024 * 1024,
-                other => bail!("unknown size suffix '{other}' (use K, M, G or T)"),
+                other => bail!(t!("size.unknown_suffix", suffix = other)),
             };
             (&s[..s.len() - 1], mult)
         }
@@ -33,9 +34,9 @@ pub fn parse_size(input: &str) -> Result<u64> {
     let value: f64 = num
         .trim()
         .parse()
-        .map_err(|_| anyhow::anyhow!("invalid size '{input}'"))?;
+        .map_err(|_| anyhow::anyhow!(t!("size.invalid", input = input)))?;
     if value <= 0.0 {
-        bail!("size must be greater than zero");
+        bail!(t!("size.not_positive"));
     }
     Ok((value * mult as f64) as u64)
 }
@@ -43,50 +44,46 @@ pub fn parse_size(input: &str) -> Result<u64> {
 pub async fn list(client: &ApiClient) -> Result<()> {
     let resp = client.list_subscriptions().await?;
     if resp.subscriptions.is_empty() {
-        println!("No subscriptions.");
+        println!("{}", t!("subscription.none"));
         return Ok(());
     }
 
-    #[derive(Tabled)]
-    struct Row {
-        #[tabled(rename = "Peer")]
-        peer: String,
-        #[tabled(rename = "Mirrored")]
-        mirrored: String,
-        #[tabled(rename = "Files")]
-        files: String,
-        #[tabled(rename = "Synced")]
-        synced: String,
+    let mut table = Builder::new();
+    table.push_record([
+        t!("subscription.col.peer").to_string(),
+        t!("subscription.col.mirrored").to_string(),
+        t!("subscription.col.files").to_string(),
+        t!("subscription.col.synced").to_string(),
+    ]);
+    for s in &resp.subscriptions {
+        let files = if s.skipped_count > 0 {
+            t!(
+                "subscription.files_over_quota",
+                wanted = s.wanted_count,
+                skipped = s.skipped_count
+            )
+            .to_string()
+        } else {
+            s.wanted_count.to_string()
+        };
+        table.push_record([
+            // A short prefix is enough to identify it (and to `remove`).
+            s.peer_id.chars().take(16).collect::<String>() + "…",
+            format!(
+                "{} / {}",
+                human_size(s.used_bytes),
+                human_size(s.quota_bytes)
+            ),
+            files,
+            if s.last_synced_at == 0 {
+                t!("subscription.synced_never").to_string()
+            } else {
+                t!("subscription.synced_yes").to_string()
+            },
+        ]);
     }
 
-    let rows: Vec<Row> = resp
-        .subscriptions
-        .iter()
-        .map(|s| {
-            let files = if s.skipped_count > 0 {
-                format!("{} (+{} over quota)", s.wanted_count, s.skipped_count)
-            } else {
-                s.wanted_count.to_string()
-            };
-            Row {
-                // A short prefix is enough to identify it (and to `remove`).
-                peer: s.peer_id.chars().take(16).collect::<String>() + "…",
-                mirrored: format!(
-                    "{} / {}",
-                    human_size(s.used_bytes),
-                    human_size(s.quota_bytes)
-                ),
-                files,
-                synced: if s.last_synced_at == 0 {
-                    "never".to_string()
-                } else {
-                    "yes".to_string()
-                },
-            }
-        })
-        .collect();
-
-    println!("{}", Table::new(rows));
+    println!("{}", table.build());
     Ok(())
 }
 
@@ -94,7 +91,7 @@ pub async fn add(client: &ApiClient, peer: &str, quota: &str) -> Result<()> {
     let quota_bytes = match parse_size(quota) {
         Ok(q) => q,
         Err(e) => {
-            eprintln!("{}", color::error(&format!("Error: {e}")));
+            eprintln!("{}", color::error(&t!("common.error", msg = e)));
             std::process::exit(1);
         }
     };
@@ -102,15 +99,15 @@ pub async fn add(client: &ApiClient, peer: &str, quota: &str) -> Result<()> {
         Ok(s) => {
             println!(
                 "{}",
-                color::success(&format!(
-                    "Subscribed to {} (quota {}).",
-                    s.peer_id,
-                    human_size(s.quota_bytes)
+                color::success(&t!(
+                    "subscription.added",
+                    peer = s.peer_id,
+                    quota = human_size(s.quota_bytes)
                 ))
             );
         }
         Err(e) => {
-            eprintln!("{}", color::error(&format!("Error: {e}")));
+            eprintln!("{}", color::error(&t!("common.error", msg = e)));
             std::process::exit(1);
         }
     }
@@ -120,18 +117,15 @@ pub async fn add(client: &ApiClient, peer: &str, quota: &str) -> Result<()> {
 pub async fn remove(client: &ApiClient, peer_id: &str, keep: bool) -> Result<()> {
     match client.delete_subscription(peer_id, keep).await {
         Ok(()) => {
-            let tail = if keep {
-                " Mirrored content kept as your own shares."
+            let msg = if keep {
+                t!("subscription.removed_kept", peer = peer_id)
             } else {
-                " Mirror-only content freed."
+                t!("subscription.removed_freed", peer = peer_id)
             };
-            println!(
-                "{}",
-                color::success(&format!("Unsubscribed from {peer_id}.{tail}"))
-            )
+            println!("{}", color::success(&msg))
         }
         Err(e) => {
-            eprintln!("{}", color::error(&format!("Error: {e}")));
+            eprintln!("{}", color::error(&t!("common.error", msg = e)));
             std::process::exit(1);
         }
     }

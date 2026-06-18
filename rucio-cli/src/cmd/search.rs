@@ -11,7 +11,8 @@ use std::collections::HashMap;
 
 use anyhow::Result;
 use rucio_core::api::searches::{ResultSource, SearchNetwork, SearchResult, SearchState};
-use tabled::{Table, Tabled};
+use rust_i18n::t;
+use tabled::builder::Builder;
 use tokio::time::{Duration, sleep};
 
 use crate::client::ApiClient;
@@ -33,7 +34,7 @@ pub async fn add(
     network: SearchNetwork,
 ) -> Result<()> {
     if keywords.is_empty() {
-        anyhow::bail!("Provide at least one keyword.");
+        anyhow::bail!(t!("search.no_keyword"));
     }
 
     let started = client.start_search(keywords.clone(), network).await?;
@@ -41,7 +42,13 @@ pub async fn add(
     println!("{id}");
 
     if wait {
-        println!("Searching for: {}", color::value(&keywords.join(" ")));
+        println!(
+            "{}",
+            t!(
+                "search.searching_for",
+                keywords = color::value(&keywords.join(" "))
+            )
+        );
         poll_until_done(client, id, Vec::new()).await
     } else {
         Ok(())
@@ -56,39 +63,36 @@ pub async fn list(client: &ApiClient) -> Result<()> {
     let resp = client.list_searches().await?;
 
     if resp.searches.is_empty() {
-        println!("No searches in memory.");
+        println!("{}", t!("search.none_memory"));
         return Ok(());
     }
 
-    #[derive(Tabled)]
-    struct Row {
-        #[tabled(rename = "ID")]
-        id: u64,
-        #[tabled(rename = "Keywords")]
-        keywords: String,
-        #[tabled(rename = "State")]
-        state: String,
-        #[tabled(rename = "Results")]
-        results: usize,
-    }
-
-    let rows: Vec<Row> = resp
+    let rows: Vec<[String; 4]> = resp
         .searches
         .iter()
-        .map(|s| Row {
-            id: s.id,
-            keywords: s.keywords.join(" "),
-            state: state_label(s.state.clone()),
-            results: s.result_count,
+        .map(|s| {
+            [
+                s.id.to_string(),
+                s.keywords.join(" "),
+                state_label(s.state.clone()),
+                s.result_count.to_string(),
+            ]
         })
         .collect();
 
-    let max_kw = rows
-        .iter()
-        .map(|r| r.keywords.chars().count())
-        .max()
-        .unwrap_or(0);
-    let mut table = Table::new(rows);
+    let max_kw = rows.iter().map(|r| r[1].chars().count()).max().unwrap_or(0);
+
+    let mut builder = Builder::new();
+    builder.push_record([
+        t!("search.col.id").to_string(),
+        t!("search.col.keywords").to_string(),
+        t!("search.col.state").to_string(),
+        t!("search.col.results").to_string(),
+    ]);
+    for r in rows {
+        builder.push_record(r);
+    }
+    let mut table = builder.build();
     fit_column(&mut table, 1, max_kw, term_width());
     println!("{table}");
     Ok(())
@@ -101,7 +105,7 @@ pub async fn list(client: &ApiClient) -> Result<()> {
 pub async fn show(client: &ApiClient, id: u64) -> Result<()> {
     let resp = client.get_search(id).await.map_err(|e| {
         if e.to_string().contains("404") {
-            anyhow::anyhow!("Search #{id} not found.")
+            anyhow::anyhow!(t!("search.not_found", id = id))
         } else {
             e
         }
@@ -113,12 +117,7 @@ pub async fn show(client: &ApiClient, id: u64) -> Result<()> {
             poll_until_done(client, id, Vec::new()).await
         } else {
             save_and_print(&initial);
-            println!(
-                "{}",
-                color::limited(&format!(
-                    "Search #{id} still running — run `rucio search show {id}` again to refresh."
-                ))
-            );
+            println!("{}", color::limited(&t!("search.still_running", id = id)));
             Ok(())
         }
     } else {
@@ -135,12 +134,12 @@ pub async fn show(client: &ApiClient, id: u64) -> Result<()> {
 pub async fn cancel(client: &ApiClient, id: u64) -> Result<()> {
     client.delete_search(id).await.map_err(|e| {
         if e.to_string().contains("404") {
-            anyhow::anyhow!("Search #{id} not found.")
+            anyhow::anyhow!(t!("search.not_found", id = id))
         } else {
             e
         }
     })?;
-    println!("Search #{id} cancelled.");
+    println!("{}", t!("search.cancelled", id = id));
     Ok(())
 }
 
@@ -152,19 +151,16 @@ pub async fn clean(client: &ApiClient, id: Option<u64>) -> Result<()> {
     if let Some(id) = id {
         let resp = client.get_search(id).await.map_err(|e| {
             if e.to_string().contains("404") {
-                anyhow::anyhow!("Search #{id} not found.")
+                anyhow::anyhow!(t!("search.not_found", id = id))
             } else {
                 e
             }
         })?;
         if matches!(resp.state, SearchState::Running) {
-            anyhow::bail!(
-                "Search #{id} is still running. \
-                 Use `rucio search cancel {id}` to stop it first."
-            );
+            anyhow::bail!(t!("search.still_running_clean", id = id));
         }
         client.delete_search(id).await?;
-        println!("Search #{id} removed.");
+        println!("{}", t!("search.removed", id = id));
     } else {
         let resp = client.list_searches().await?;
         let removable: Vec<u64> = resp
@@ -175,14 +171,14 @@ pub async fn clean(client: &ApiClient, id: Option<u64>) -> Result<()> {
             .collect();
 
         if removable.is_empty() {
-            println!("Nothing to clean.");
+            println!("{}", t!("search.nothing_to_clean"));
             return Ok(());
         }
 
         for id in &removable {
             client.delete_search(*id).await?;
         }
-        println!("Removed {} search(es).", removable.len());
+        println!("{}", t!("search.removed_n", n = removable.len()));
     }
     Ok(())
 }
@@ -194,15 +190,12 @@ pub async fn clean(client: &ApiClient, id: Option<u64>) -> Result<()> {
 pub async fn relaunch(client: &ApiClient, id: u64) -> Result<()> {
     client.relaunch_search(id).await.map_err(|e| {
         if e.to_string().contains("404") {
-            anyhow::anyhow!("Search #{id} not found.")
+            anyhow::anyhow!(t!("search.not_found", id = id))
         } else {
             e
         }
     })?;
-    println!(
-        "Search #{id} relaunched. \
-         Use `rucio search show {id}` to follow results."
-    );
+    println!("{}", t!("search.relaunched", id = id));
     Ok(())
 }
 
@@ -224,7 +217,7 @@ async fn poll_until_done(client: &ApiClient, id: u64, initial: Vec<CachedResult>
         let resp = match client.get_search(id).await {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("Poll error: {e}");
+                eprintln!("{}", t!("search.poll_error", msg = e));
                 continue;
             }
         };
@@ -233,16 +226,19 @@ async fn poll_until_done(client: &ApiClient, id: u64, initial: Vec<CachedResult>
 
         if attempt % 5 == 4 && matches!(resp.state, SearchState::Running) {
             println!(
-                "Still searching… ({}/{}s, {} result(s) so far)",
-                attempt + 1,
-                MAX_POLLS,
-                cached.len()
+                "{}",
+                t!(
+                    "search.still_searching",
+                    attempt = attempt + 1,
+                    max = MAX_POLLS,
+                    count = cached.len()
+                )
             );
         }
 
         if !matches!(resp.state, SearchState::Running) {
             if cached.is_empty() {
-                println!("No results found.");
+                println!("{}", t!("search.no_results"));
             } else {
                 save_and_print(&cached);
             }
@@ -251,7 +247,7 @@ async fn poll_until_done(client: &ApiClient, id: u64, initial: Vec<CachedResult>
     }
 
     if cached.is_empty() {
-        println!("Search timed out with no results.");
+        println!("{}", t!("search.timed_out"));
     } else {
         save_and_print(&cached);
     }
@@ -304,10 +300,11 @@ fn merge_results(
 
 fn state_label(state: SearchState) -> String {
     match state {
-        SearchState::Running => "running".to_string(),
-        SearchState::Done => "done".to_string(),
-        SearchState::Cancelled => "cancelled".to_string(),
+        SearchState::Running => t!("search.state.running"),
+        SearchState::Done => t!("search.state.done"),
+        SearchState::Cancelled => t!("search.state.cancelled"),
     }
+    .to_string()
 }
 
 fn save_and_print(results: &[CachedResult]) {
@@ -316,56 +313,52 @@ fn save_and_print(results: &[CachedResult]) {
     })
     .save()
     {
-        eprintln!("Warning: could not save search state: {e}");
+        eprintln!("{}", t!("search.save_warning", msg = e));
     }
     print_results(results);
 }
 
 fn print_results(results: &[CachedResult]) {
     if results.is_empty() {
-        println!("No results found.");
+        println!("{}", t!("search.no_results"));
         return;
     }
 
-    #[derive(Tabled)]
-    struct Row {
-        #[tabled(rename = "#")]
-        idx: usize,
-        #[tabled(rename = "Name")]
-        name: String,
-        #[tabled(rename = "Size")]
-        size: String,
-        #[tabled(rename = "Source")]
-        source: String,
-        #[tabled(rename = "Providers")]
-        providers: String,
-    }
-
-    let rows: Vec<Row> = results
+    let rows: Vec<[String; 5]> = results
         .iter()
         .enumerate()
-        .map(|(i, r)| Row {
-            idx: i + 1,
-            name: r.name.clone(),
-            size: human_size(r.size),
-            source: r.source.clone(),
-            providers: if r.providers.is_empty() {
-                "-".to_string()
-            } else {
-                color::sources(r.providers.len())
-            },
+        .map(|(i, r)| {
+            [
+                (i + 1).to_string(),
+                r.name.clone(),
+                human_size(r.size),
+                r.source.clone(),
+                if r.providers.is_empty() {
+                    "-".to_string()
+                } else {
+                    color::sources(r.providers.len())
+                },
+            ]
         })
         .collect();
 
-    let max_name = rows
-        .iter()
-        .map(|r| r.name.chars().count())
-        .max()
-        .unwrap_or(0);
-    let mut table = Table::new(rows);
+    let max_name = rows.iter().map(|r| r[1].chars().count()).max().unwrap_or(0);
+
+    let mut builder = Builder::new();
+    builder.push_record([
+        t!("search.col.num").to_string(),
+        t!("search.col.name").to_string(),
+        t!("search.col.size").to_string(),
+        t!("search.col.source").to_string(),
+        t!("search.col.providers").to_string(),
+    ]);
+    for r in rows {
+        builder.push_record(r);
+    }
+    let mut table = builder.build();
     fit_column(&mut table, 1, max_name, term_width());
     println!("{table}");
-    println!("Use `rucio download add <#>` to download.");
+    println!("{}", t!("search.use_download_add"));
 }
 
 fn human_size(bytes: u64) -> String {

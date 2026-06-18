@@ -125,5 +125,9 @@ igd-next    = { version = "0.17", features = ["aio_tokio"] }
 # web UI embedding
 rust-embed  = "8"
 
+# i18n
+rust-i18n   = "4.1"
+sys-locale  = "0.3"
+
 # test utilities
 tempfile = "3"

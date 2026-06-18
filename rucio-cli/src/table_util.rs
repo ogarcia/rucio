@@ -2,6 +2,17 @@ use tabled::Table;
 use tabled::settings::object::Column;
 use tabled::settings::{Modify, Width};
 
+/// Width (in characters) of the longest label, used to align `label : value`
+/// blocks. Computed at runtime so the columns line up whatever the active
+/// language makes the labels.
+pub fn label_width<'a>(labels: impl IntoIterator<Item = &'a str>) -> usize {
+    labels
+        .into_iter()
+        .map(|l| l.chars().count())
+        .max()
+        .unwrap_or(0)
+}
+
 /// Returns the current terminal width, or 120 if not a TTY / undetectable.
 pub fn term_width() -> usize {
     terminal_size::terminal_size()

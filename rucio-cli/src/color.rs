@@ -8,6 +8,7 @@ use owo_colors::Stream::Stdout;
 use owo_colors::{OwoColorize as _, Style};
 use rucio_core::api::downloads::DownloadState;
 use rucio_core::protocol::node::NodeClass;
+use rust_i18n::t;
 
 // ---------------------------------------------------------------------------
 // Node class
@@ -15,13 +16,13 @@ use rucio_core::protocol::node::NodeClass;
 
 pub fn node_class(class: &NodeClass) -> String {
     match class {
-        NodeClass::HighId => "HighID (publicly reachable, can serve files)"
+        NodeClass::HighId => t!("node.class.high_id")
             .if_supports_color(Stdout, |t| t.style(Style::new().bold().green()))
             .to_string(),
-        NodeClass::LowId => "LowID  (behind NAT, download-only mode)"
+        NodeClass::LowId => t!("node.class.low_id")
             .if_supports_color(Stdout, |t| t.style(Style::new().bold().yellow()))
             .to_string(),
-        NodeClass::Unknown => "Unknown (still determining…)"
+        NodeClass::Unknown => t!("node.class.unknown")
             .if_supports_color(Stdout, |t| t.dimmed())
             .to_string(),
     }
@@ -49,24 +50,28 @@ pub fn limited(s: &str) -> String {
 
 pub fn download_state(state: &DownloadState) -> String {
     match state {
-        DownloadState::FindingProviders => "finding providers…"
+        DownloadState::FindingProviders => t!("download.state.finding_providers")
             .if_supports_color(Stdout, |t| t.yellow())
             .to_string(),
-        DownloadState::Queued => "queued"
+        DownloadState::Queued => t!("download.state.queued")
             .if_supports_color(Stdout, |t| t.yellow())
             .to_string(),
-        DownloadState::Downloading => "downloading"
+        DownloadState::Downloading => t!("download.state.downloading")
             .if_supports_color(Stdout, |t| t.cyan())
             .to_string(),
-        DownloadState::Stalled => "stalled".if_supports_color(Stdout, |t| t.red()).to_string(),
-        DownloadState::Paused => "paused"
+        DownloadState::Stalled => t!("download.state.stalled")
+            .if_supports_color(Stdout, |t| t.red())
+            .to_string(),
+        DownloadState::Paused => t!("download.state.paused")
             .if_supports_color(Stdout, |t| t.magenta())
             .to_string(),
-        DownloadState::Completed => "completed"
+        DownloadState::Completed => t!("download.state.completed")
             .if_supports_color(Stdout, |t| t.green())
             .to_string(),
-        DownloadState::Failed => "failed".if_supports_color(Stdout, |t| t.red()).to_string(),
-        DownloadState::Cancelled => "cancelled"
+        DownloadState::Failed => t!("download.state.failed")
+            .if_supports_color(Stdout, |t| t.red())
+            .to_string(),
+        DownloadState::Cancelled => t!("download.state.cancelled")
             .if_supports_color(Stdout, |t| t.dimmed())
             .to_string(),
     }

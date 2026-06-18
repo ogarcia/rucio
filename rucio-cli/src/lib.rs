@@ -9,6 +9,10 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 use client::ApiClient;
 
+// Load the translation catalogues under `locales/`. English is the source
+// locale and the fallback when a key is missing in the active language.
+rust_i18n::i18n!("locales", fallback = "en");
+
 #[derive(Parser, Debug)]
 #[command(name = "rucio", about = "Rucio P2P file sharing client", version)]
 pub struct Cli {
@@ -16,8 +20,26 @@ pub struct Cli {
     #[arg(long, default_value = "http://127.0.0.1:3003", env = "RUCIO_API")]
     pub api: String,
 
+    /// Interface language (e.g. en, es). Defaults to the system locale.
+    #[arg(long, env = "RUCIO_LANG", global = true)]
+    pub lang: Option<String>,
+
     #[command(subcommand)]
     pub command: Commands,
+}
+
+/// Pick the UI language: the `--lang`/`RUCIO_LANG` override if given, otherwise
+/// the system locale, falling back to English. A locale tag such as
+/// `es_ES.UTF-8` or `en-US` is reduced to its base language (`es`, `en`).
+fn resolve_locale(flag: Option<&str>) -> String {
+    let raw = flag
+        .map(str::to_string)
+        .or_else(sys_locale::get_locale)
+        .unwrap_or_else(|| "en".to_string());
+    raw.split(['-', '_', '.'])
+        .next()
+        .unwrap_or("en")
+        .to_lowercase()
 }
 
 #[derive(Subcommand, Debug)]
@@ -410,6 +432,7 @@ pub enum ConfigAction {
 pub async fn run() -> Result<()> {
     rucio_core::logging::init("RUCIO", "off");
     let cli = Cli::parse();
+    rust_i18n::set_locale(&resolve_locale(cli.lang.as_deref()));
     let client = ApiClient::new(&cli.api);
 
     match cli.command {
@@ -531,5 +554,44 @@ pub async fn run() -> Result<()> {
                 cmd::config::unset(&client, &key, value.as_deref()).await
             }
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_locale;
+    use rust_i18n::t;
+
+    #[test]
+    fn resolve_locale_prefers_flag_over_system() {
+        assert_eq!(resolve_locale(Some("es")), "es");
+    }
+
+    #[test]
+    fn resolve_locale_strips_region_and_encoding() {
+        assert_eq!(resolve_locale(Some("es_ES.UTF-8")), "es");
+        assert_eq!(resolve_locale(Some("en-US")), "en");
+        assert_eq!(resolve_locale(Some("PT-BR")), "pt");
+    }
+
+    #[test]
+    fn catalogues_load_for_both_languages() {
+        // English source and Spanish translation both resolve and differ.
+        assert_eq!(t!("category.none", locale = "en"), "No categories.");
+        assert_eq!(t!("category.none", locale = "es"), "No hay categorías.");
+    }
+
+    #[test]
+    fn missing_translation_falls_back_to_english() {
+        // An unknown locale falls back to the English source string.
+        assert_eq!(t!("category.none", locale = "xx"), "No categories.");
+    }
+
+    #[test]
+    fn interpolation_fills_placeholders() {
+        assert_eq!(
+            t!("category.updated", locale = "es", id = 7),
+            "Categoría 7 actualizada."
+        );
     }
 }
