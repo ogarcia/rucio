@@ -1,28 +1,28 @@
 <!doctype html>
-<html lang="en">
+<html lang="es">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Rucio — decentralized P2P file sharing</title>
+    <title>Rucio — compartición de archivos P2P descentralizada</title>
     <meta
       name="description"
-      content="Rucio is decentralized peer-to-peer file sharing in Rust over libp2p, with eMule/Kad2 compatibility. No trackers, no central servers, no relays — files move directly between peers."
+      content="Rucio es compartición de archivos entre pares descentralizada, en Rust sobre libp2p, con compatibilidad eMule/Kad2. Sin trackers, sin servidores centrales, sin relays: los archivos se mueven directamente entre pares."
     />
     <meta name="theme-color" content="#4f6ef7" />
-    <link rel="icon" href="favicon.svg" />
+    <link rel="icon" href="../favicon.svg" />
 
-    <!-- Language alternates (English here, Spanish under /es/). -->
+    <!-- Alternativas de idioma (español aquí, inglés en la raíz). -->
     <link rel="alternate" hreflang="en" href="https://rucio.ogarcia.me/" />
     <link rel="alternate" hreflang="es" href="https://rucio.ogarcia.me/es/" />
     <link rel="alternate" hreflang="x-default" href="https://rucio.ogarcia.me/" />
 
-    <!-- Open Graph / social preview -->
+    <!-- Open Graph / vista previa social -->
     <meta property="og:type" content="website" />
-    <meta property="og:url" content="https://rucio.ogarcia.me/" />
-    <meta property="og:title" content="Rucio — decentralized P2P file sharing" />
+    <meta property="og:url" content="https://rucio.ogarcia.me/es/" />
+    <meta property="og:title" content="Rucio — compartición de archivos P2P descentralizada" />
     <meta
       property="og:description"
-      content="Peer-to-peer file sharing in Rust over libp2p, with eMule/Kad2 compatibility. No trackers, no central servers."
+      content="Compartición de archivos entre pares en Rust sobre libp2p, con compatibilidad eMule/Kad2. Sin trackers, sin servidores centrales."
     />
     <meta property="og:image" content="https://rucio.ogarcia.me/og-image.png" />
     <meta property="og:image:width" content="1200" />
@@ -88,7 +88,7 @@
         padding: 0 1.25rem;
       }
 
-      /* ── Header ─────────────────────────────────────────────── */
+      /* ── Cabecera ───────────────────────────────────────────── */
       header.site {
         position: sticky;
         top: 0;
@@ -129,9 +129,9 @@
       .site nav a {
         color: var(--text-2);
       }
-      /* Language menu: a no-JS <details> dropdown. The summary shows the tabler
-         "language" icon plus the current language; the panel lists all of them
-         as links, so adding a third language is just one more <li>. */
+      /* Menú de idioma: un desplegable <details> sin JS. El summary muestra el
+         icono "language" de tabler y el idioma actual; el panel lista todos como
+         enlaces, así que añadir un tercer idioma es solo un <li> más. */
       .lang-menu {
         position: relative;
       }
@@ -186,7 +186,7 @@
         color: var(--accent);
       }
 
-      /* ── Buttons ────────────────────────────────────────────── */
+      /* ── Botones ────────────────────────────────────────────── */
       .btn {
         display: inline-flex;
         align-items: center;
@@ -252,7 +252,7 @@
         font-size: 0.7em;
       }
 
-      /* ── Screenshots ────────────────────────────────────────── */
+      /* ── Capturas ───────────────────────────────────────────── */
       .shots {
         display: grid;
         gap: 1.25rem;
@@ -276,7 +276,7 @@
         color: var(--text-3);
       }
 
-      /* Secondary screenshots: two rows of three thumbnails. */
+      /* Capturas secundarias: dos filas de tres miniaturas. */
       .gallery {
         display: grid;
         grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -315,9 +315,9 @@
         color: var(--text-3);
       }
 
-      /* Pure-CSS lightbox driven by :target — no JavaScript. A thumbnail links
-         to #lb-<name>; the matching overlay below becomes visible, and clicking
-         the backdrop (a link to #screenshots) closes it. */
+      /* Lightbox solo con CSS mediante :target — sin JavaScript. Una miniatura
+         enlaza a #lb-<nombre>; la superposición correspondiente se muestra, y al
+         hacer clic en el fondo (un enlace a #screenshots) se cierra. */
       .lightbox {
         position: fixed;
         inset: 0;
@@ -346,7 +346,7 @@
         box-shadow: var(--shadow);
       }
 
-      /* ── Sections ───────────────────────────────────────────── */
+      /* ── Secciones ──────────────────────────────────────────── */
       section.block {
         padding: 2.5rem 0;
         border-top: 1px solid var(--border);
@@ -358,14 +358,9 @@
       }
       .grid {
         display: grid;
-        /* minmax(0, 1fr) — not plain 1fr — so a column can shrink below its
-           content's min-content width. Otherwise a wide child (the docker/build
-           <pre>, a long <code>) forces the track wider than the container and
-           the cards overflow to the right before the single-column breakpoint. */
         grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 1rem;
       }
-      /* Break to a single column on narrow screens. */
       @media (max-width: 640px) {
         .grid {
           grid-template-columns: 1fr;
@@ -376,8 +371,6 @@
         border: 1px solid var(--border);
         border-radius: 0.75rem;
         padding: 1.25rem;
-        /* Let long inline tokens (URLs, filenames in <code>) wrap instead of
-           pushing the card wider. */
         overflow-wrap: break-word;
       }
       .card h3 {
@@ -413,7 +406,7 @@
         font-size: 0.9rem;
       }
 
-      /* ── Footer ─────────────────────────────────────────────── */
+      /* ── Pie ────────────────────────────────────────────────── */
       footer.site {
         border-top: 1px solid var(--border);
         padding: 2rem 0;
@@ -430,7 +423,6 @@
       footer.site a {
         color: var(--text-2);
       }
-      /* Stack and centre on narrow screens. */
       @media (max-width: 640px) {
         footer.site .wrap {
           flex-direction: column;
@@ -440,7 +432,7 @@
     </style>
   </head>
   <body>
-    <!-- The mark is the app's favicon, recoloured to the accent. -->
+    <!-- La marca es el favicon de la app, recoloreado al color de acento. -->
     <header class="site">
       <div class="wrap">
         <a class="brand" href="#top">
@@ -460,11 +452,11 @@
           <span>Rucio</span>
         </a>
         <nav>
-          <a href="#features">Features</a>
-          <a href="#download">Download</a>
+          <a href="#features">Características</a>
+          <a href="#download">Descargar</a>
           <a href="https://github.com/ogarcia/rucio">GitHub</a>
           <details class="lang-menu">
-            <summary aria-label="Language">
+            <summary aria-label="Idioma">
               <svg
                 viewBox="0 0 24 24"
                 fill="none"
@@ -484,8 +476,8 @@
               </svg>
             </summary>
             <ul>
-              <li><a href="/" hreflang="en" aria-current="true">English</a></li>
-              <li><a href="/es/" hreflang="es">Español</a></li>
+              <li><a href="/" hreflang="en">English</a></li>
+              <li><a href="/es/" hreflang="es" aria-current="true">Español</a></li>
             </ul>
           </details>
         </nav>
@@ -494,179 +486,183 @@
 
     <main class="wrap" id="top">
       <section class="hero">
-        <h1>Decentralized peer-to-peer file sharing</h1>
+        <h1>Compartición de archivos P2P descentralizada</h1>
         <p class="lede">
-          Rucio is a file-sharing application written in Rust over libp2p, with
-          eMule/Kad2 compatibility. No trackers, no central servers, no relays —
-          files are found through a distributed hash table and keyword search,
-          and transferred directly between peers.
+          Rucio es una aplicación de compartición de archivos escrita en Rust
+          sobre libp2p, con compatibilidad eMule/Kad2. Sin trackers, sin
+          servidores centrales, sin relays: los archivos se localizan mediante
+          una tabla hash distribuida y búsqueda por palabras clave, y se
+          transfieren directamente entre pares.
         </p>
         <div class="cta">
-          <a class="btn btn-primary" href="#download">Download</a>
-          <a class="btn" href="https://github.com/ogarcia/rucio">View on GitHub</a>
+          <a class="btn btn-primary" href="#download">Descargar</a>
+          <a class="btn" href="https://github.com/ogarcia/rucio">Ver en GitHub</a>
         </div>
         <ul class="tags">
-          <li>No trackers</li>
-          <li>No central servers</li>
-          <li>eMule / Kad2 compatible</li>
-          <li>Web control panel</li>
+          <li>Sin trackers</li>
+          <li>Sin servidores centrales</li>
+          <li>Compatible con eMule / Kad2</li>
+          <li>Panel de control web</li>
           <li>GPLv3</li>
         </ul>
       </section>
 
       <div class="shots" id="screenshots">
         <figure>
-          <img src="panel.png" alt="Rucio web panel showing active transfers" />
-          <figcaption>The built-in web control panel — transfers, shares and node status.</figcaption>
+          <img src="../panel.png" alt="Panel web de Rucio mostrando transferencias activas" />
+          <figcaption>El panel de control web integrado: transferencias, compartidos y estado del nodo.</figcaption>
         </figure>
       </div>
 
-      <!-- Secondary screenshots: click a thumbnail to view it full size. -->
+      <!-- Capturas secundarias: haz clic en una miniatura para verla a tamaño completo. -->
       <div class="gallery">
         <figure id="shot-searches">
           <a class="shot-link" href="#lb-searches">
-            <img src="searches.png" alt="Unified search across the rucio and eMule networks" />
+            <img src="../searches.png" alt="Búsqueda unificada en las redes rucio y eMule" />
           </a>
-          <figcaption>Unified search across the rucio and eMule networks.</figcaption>
+          <figcaption>Búsqueda unificada en las redes rucio y eMule.</figcaption>
         </figure>
         <figure id="shot-downloading">
           <a class="shot-link" href="#lb-downloading">
-            <img src="downloading.png" alt="Downloads in progress with live speed and ETA" />
+            <img src="../downloading.png" alt="Descargas en curso con velocidad y ETA en vivo" />
           </a>
-          <figcaption>Downloads with live speed, ETA and per-peer sources.</figcaption>
+          <figcaption>Descargas con velocidad en vivo, ETA y fuentes por par.</figcaption>
         </figure>
         <figure id="shot-shares">
           <a class="shot-link" href="#lb-shares">
-            <img src="shares.png" alt="Shared folders indexed and announced to the network" />
+            <img src="../shares.png" alt="Carpetas compartidas indexadas y anunciadas a la red" />
           </a>
-          <figcaption>Share folders — every file inside is hashed and announced.</figcaption>
+          <figcaption>Comparte carpetas: cada archivo se hashea y se anuncia.</figcaption>
         </figure>
         <figure id="shot-subscriptions">
           <a class="shot-link" href="#lb-subscriptions">
-            <img src="subscriptions.png" alt="Subscriptions following a peer's published collections" />
+            <img src="../subscriptions.png" alt="Suscripciones siguiendo las colecciones publicadas de un par" />
           </a>
-          <figcaption>Subscribe to a peer's collections and sync their files.</figcaption>
+          <figcaption>Suscríbete a las colecciones de un par y sincroniza sus archivos.</figcaption>
         </figure>
         <figure id="shot-pins">
           <a class="shot-link" href="#lb-pins">
-            <img src="pins.png" alt="Pinned content kept available on the node" />
+            <img src="../pins.png" alt="Contenido fijado mantenido disponible en el nodo" />
           </a>
-          <figcaption>Pin content by magnet or hash to keep it available.</figcaption>
+          <figcaption>Fija contenido por magnet o hash para mantenerlo disponible.</figcaption>
         </figure>
         <figure id="shot-notifications">
           <a class="shot-link" href="#lb-notifications">
-            <img src="notifications.png" alt="Notifications for completed transfers and node events" />
+            <img src="../notifications.png" alt="Notificaciones de transferencias completadas y eventos del nodo" />
           </a>
-          <figcaption>Notifications for completed transfers and node events.</figcaption>
+          <figcaption>Notificaciones de transferencias completadas y eventos del nodo.</figcaption>
         </figure>
       </div>
 
-      <!-- Pure-CSS lightbox overlays (one per thumbnail above). -->
+      <!-- Superposiciones de lightbox solo-CSS (una por miniatura de arriba). -->
       <div class="lightbox" id="lb-searches">
-        <a class="lightbox-bg" href="#shot-searches" aria-label="Close"></a>
-        <img src="searches.png" alt="Unified search across the rucio and eMule networks" />
+        <a class="lightbox-bg" href="#shot-searches" aria-label="Cerrar"></a>
+        <img src="../searches.png" alt="Búsqueda unificada en las redes rucio y eMule" />
       </div>
       <div class="lightbox" id="lb-downloading">
-        <a class="lightbox-bg" href="#shot-downloading" aria-label="Close"></a>
-        <img src="downloading.png" alt="Downloads in progress with live speed and ETA" />
+        <a class="lightbox-bg" href="#shot-downloading" aria-label="Cerrar"></a>
+        <img src="../downloading.png" alt="Descargas en curso con velocidad y ETA en vivo" />
       </div>
       <div class="lightbox" id="lb-shares">
-        <a class="lightbox-bg" href="#shot-shares" aria-label="Close"></a>
-        <img src="shares.png" alt="Shared folders indexed and announced to the network" />
+        <a class="lightbox-bg" href="#shot-shares" aria-label="Cerrar"></a>
+        <img src="../shares.png" alt="Carpetas compartidas indexadas y anunciadas a la red" />
       </div>
       <div class="lightbox" id="lb-subscriptions">
-        <a class="lightbox-bg" href="#shot-subscriptions" aria-label="Close"></a>
-        <img src="subscriptions.png" alt="Subscriptions following a peer's published collections" />
+        <a class="lightbox-bg" href="#shot-subscriptions" aria-label="Cerrar"></a>
+        <img src="../subscriptions.png" alt="Suscripciones siguiendo las colecciones publicadas de un par" />
       </div>
       <div class="lightbox" id="lb-pins">
-        <a class="lightbox-bg" href="#shot-pins" aria-label="Close"></a>
-        <img src="pins.png" alt="Pinned content kept available on the node" />
+        <a class="lightbox-bg" href="#shot-pins" aria-label="Cerrar"></a>
+        <img src="../pins.png" alt="Contenido fijado mantenido disponible en el nodo" />
       </div>
       <div class="lightbox" id="lb-notifications">
-        <a class="lightbox-bg" href="#shot-notifications" aria-label="Close"></a>
-        <img src="notifications.png" alt="Notifications for completed transfers and node events" />
+        <a class="lightbox-bg" href="#shot-notifications" aria-label="Cerrar"></a>
+        <img src="../notifications.png" alt="Notificaciones de transferencias completadas y eventos del nodo" />
       </div>
 
       <section class="block" id="features">
-        <h2>What it does</h2>
+        <h2>Qué hace</h2>
         <div class="grid">
           <div class="card">
-            <h3>Fully decentralized</h3>
+            <h3>Totalmente descentralizado</h3>
             <p>
-              Peers find each other over mDNS on the local network and a
-              Kademlia DHT on the internet, and search by keyword over
-              Gossipsub. Files then move directly between peers — there are no
-              trackers, no central servers, and no relay nodes carrying your
-              data.
+              Los pares se encuentran por mDNS en la red local y por una DHT
+              Kademlia en internet, y buscan por palabra clave mediante
+              Gossipsub. Los archivos se mueven después directamente entre
+              pares: sin trackers, sin servidores centrales y sin nodos relay
+              transportando tus datos.
             </p>
           </div>
           <div class="card">
-            <h3>eMule / Kad2 compatible</h3>
+            <h3>Compatible con eMule / Kad2</h3>
             <p>
-              Rucio bridges to the existing eMule Kad network: keyword search,
-              source lookup and downloads of <code>ed2k://</code> links,
-              including obfuscated connections — all from the same client, side
-              by side with native Rucio transfers.
+              Rucio se conecta con la red Kad de eMule existente: búsqueda por
+              palabras clave, localización de fuentes y descargas de enlaces
+              <code>ed2k://</code>, incluidas las conexiones ofuscadas, todo
+              desde el mismo cliente y junto a las transferencias nativas de
+              Rucio.
             </p>
           </div>
           <div class="card">
-            <h3>Web control panel</h3>
+            <h3>Panel de control web</h3>
             <p>
-              Drive searches, downloads, uploads and shares from a clean web UI
-              served by the daemon itself — no extra process, no separate
-              install. Add a folder and every file inside is hashed and
-              announced to the network automatically.
+              Gestiona búsquedas, descargas, subidas y compartidos desde una
+              interfaz web limpia servida por el propio demonio: sin procesos
+              extra, sin instalación aparte. Añade una carpeta y cada archivo
+              que contiene se hashea y se anuncia a la red automáticamente.
             </p>
           </div>
           <div class="card">
-            <h3>Runs anywhere</h3>
+            <h3>Funciona en cualquier sitio</h3>
             <p>
-              One codebase, many shapes: a daemon and CLI for Linux and macOS, a
-              container image for servers, and a portable Windows desktop app
-              you just unzip and run. Interrupted transfers resume where they
-              left off after a restart.
+              Un solo código base, muchas formas: un demonio y una CLI para
+              Linux y macOS, una imagen de contenedor para servidores, y una
+              aplicación de escritorio portable para Windows que solo tienes que
+              descomprimir y ejecutar. Las transferencias interrumpidas se
+              reanudan donde se quedaron tras un reinicio.
             </p>
           </div>
         </div>
       </section>
 
       <section class="block" id="download">
-        <h2>Download</h2>
+        <h2>Descargar</h2>
         <div class="grid">
           <div class="card">
             <span class="tag">Windows</span>
-            <h3>Portable desktop app</h3>
+            <h3>Aplicación de escritorio portable</h3>
             <p>
-              No installer and no dependencies — not even the Visual C++
-              runtime. Unzip and run: config, database and downloads all live
-              next to the executable, so deleting the folder removes every
-              trace. Grab the <code>…-windows-x86_64-portable.zip</code> from
-              the latest release.
+              Sin instalador y sin dependencias, ni siquiera el runtime de
+              Visual C++. Descomprime y ejecuta: la configuración, la base de
+              datos y las descargas viven junto al ejecutable, así que borrar la
+              carpeta elimina cualquier rastro. Descarga el
+              <code>…-windows-x86_64-portable.zip</code> de la última versión.
             </p>
             <p style="margin-top: 0.75rem">
-              <a class="btn btn-primary" href="https://github.com/ogarcia/rucio/releases/latest">Latest release</a>
+              <a class="btn btn-primary" href="https://github.com/ogarcia/rucio/releases/latest">Última versión</a>
             </p>
           </div>
           <div class="card">
             <span class="tag">Linux / macOS</span>
-            <h3>Daemon + CLI</h3>
+            <h3>Demonio + CLI</h3>
             <p>
-              A single static binary — <code>rucio</code> for the CLI,
-              <code>ruciod</code> for the daemon — with the web panel built in
-              and eMule support included. Prebuilt for x86_64 and ARM64; drop it
-              on your <code>PATH</code> and you're ready.
+              Un único binario estático — <code>rucio</code> para la CLI,
+              <code>ruciod</code> para el demonio — con el panel web integrado y
+              soporte de eMule incluido. Precompilado para x86_64 y ARM64; ponlo
+              en tu <code>PATH</code> y listo.
             </p>
             <p style="margin-top: 0.75rem">
-              <a class="btn" href="https://github.com/ogarcia/rucio/releases/latest">Latest release</a>
+              <a class="btn" href="https://github.com/ogarcia/rucio/releases/latest">Última versión</a>
             </p>
           </div>
           <div class="card">
             <span class="tag">Docker</span>
-            <h3>Container image</h3>
+            <h3>Imagen de contenedor</h3>
             <p>
-              Run the daemon anywhere with the published image. Map port
-              <code>3003</code> for the web panel, the P2P and eMule ports so
-              peers can reach you, and mount a volume to keep your data:
+              Ejecuta el demonio donde sea con la imagen publicada. Mapea el
+              puerto <code>3003</code> para el panel web, los puertos P2P y de
+              eMule para que los pares puedan alcanzarte, y monta un volumen
+              para conservar tus datos:
             </p>
             <pre><code>docker run -d --name rucio \
   -v rucio-data:/var/lib/rucio \
@@ -675,30 +671,31 @@
   -p 4662:4662 -p 4672:4672/udp \
   ghcr.io/ogarcia/rucio:latest</code></pre>
             <p class="muted" style="margin-top: 0.75rem">
-              Then open <code>http://localhost:3003/</code> for the panel.
+              Después abre <code>http://localhost:3003/</code> para el panel.
             </p>
           </div>
           <div class="card">
-            <span class="tag">Source</span>
-            <h3>Build it yourself</h3>
+            <span class="tag">Código fuente</span>
+            <h3>Compílalo tú mismo</h3>
             <p>
-              Rucio is Rust with a Leptos/WASM frontend. Clone the repo and
-              build the daemon and CLI:
+              Rucio es Rust con un frontend Leptos/WASM. Clona el repositorio y
+              compila el demonio y la CLI:
             </p>
             <pre><code>git clone https://github.com/ogarcia/rucio
 cd rucio
 cargo build --release</code></pre>
             <p class="muted" style="margin-top: 0.75rem">
-              Add <code>--features emule-compat,web-ui</code> for eMule and the
-              embedded panel. Full build, config and protocol notes live in the
-              <a href="https://github.com/ogarcia/rucio">docs</a>.
+              Añade <code>--features emule-compat,web-ui</code> para eMule y el
+              panel integrado. Las notas completas de compilación, configuración
+              y protocolo están en la
+              <a href="https://github.com/ogarcia/rucio">documentación</a>.
             </p>
           </div>
         </div>
         <p class="muted" style="margin-top: 1.5rem">
-          On Windows the app is a single self-contained executable. On first run
-          Windows Firewall asks to allow network access; click Allow for full
-          connectivity.
+          En Windows la aplicación es un único ejecutable autónomo. En el primer
+          arranque, el Firewall de Windows pide permiso para acceder a la red;
+          haz clic en Permitir para tener conectividad completa.
         </p>
       </section>
     </main>
@@ -706,7 +703,7 @@ cargo build --release</code></pre>
     <footer class="site">
       <div class="wrap">
         <span>
-          Rucio is free software under the
+          Rucio es software libre bajo la
           <a href="https://github.com/ogarcia/rucio/blob/master/LICENSE">GPLv3</a>.
         </span>
         <a href="https://github.com/ogarcia/rucio">github.com/ogarcia/rucio</a>
