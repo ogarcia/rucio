@@ -12,6 +12,7 @@ use std::time::Duration;
 use gloo_timers::future::sleep;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
+use rust_i18n::t;
 
 use crate::icons::{self, Icon};
 use crate::statusbar::StatusBar;
@@ -43,11 +44,7 @@ async fn api_add(peer: String, quota_bytes: u64) -> Result<(), String> {
     if resp.ok() {
         Ok(())
     } else if resp.status() == 400 {
-        Err(
-            "Invalid peer id or quota — check the link, and note you can't \
-             subscribe to your own node."
-                .to_string(),
-        )
+        Err(t!("sub.err_invalid_peer").to_string())
     } else {
         Err(format!("HTTP {}", resp.status()))
     }
@@ -212,20 +209,20 @@ pub fn SubscriptionsTab(
                 <div class="dl-toolbar">
                     <button
                         class="toolbar-btn"
-                        title="Subscribe to a peer's pinned content (mirror it within a quota)"
+                        title=t!("sub.add_title")
                         on:click=move |_| add_open.set(true)
                     >
                         <Icon paths=icons::PLUS/>
-                        <span class="btn-label">"Subscribe"</span>
+                        <span class="btn-label">{t!("sub.subscribe")}</span>
                     </button>
                     <button
                         class="toolbar-btn"
-                        title="Copy this node's link so others can mirror your pinned content"
+                        title=t!("sub.copy_link_title")
                         on:click=copy_link
                     >
                         <Icon paths=icons::COPY/>
                         <span class="btn-label">
-                            {move || if copied.get() { "Copied!" } else { "Copy my link" }}
+                            {move || if copied.get() { t!("sub.copied") } else { t!("sub.copy_link") }}
                         </span>
                     </button>
                 </div>
@@ -236,10 +233,9 @@ pub fn SubscriptionsTab(
                     when=move || !subs.get().is_empty()
                     fallback=|| view! {
                         <div class="empty-state empty-state-sm">
-                            <p>"No subscriptions"</p>
+                            <p>{t!("sub.none")}</p>
                             <p class="empty-hint">
-                                "Subscribe to a peer to mirror its pinned content within a disk
-                                 quota, helping keep that content available."
+                                {t!("sub.empty_hint")}
                             </p>
                         </div>
                     }
@@ -291,17 +287,17 @@ pub fn SubscriptionsTab(
                                 );
                                 // Genuinely mirrored vs still fetching — don't conflate them.
                                 let fetching = s.wanted_count.saturating_sub(s.present_count);
-                                let mut parts = vec![format!("{} mirrored", s.present_count)];
+                                let mut parts = vec![t!("sub.mirrored", n = s.present_count).to_string()];
                                 if fetching > 0 {
-                                    parts.push(format!("{fetching} fetching"));
+                                    parts.push(t!("sub.fetching", n = fetching).to_string());
                                 }
                                 if s.skipped_count > 0 {
-                                    parts.push(format!("+{} over quota", s.skipped_count));
+                                    parts.push(t!("sub.over_quota", n = s.skipped_count).to_string());
                                 }
                                 // Only the positive "synced" marker, never "not synced yet"
                                 // (which reads like a failure when it's just pending).
                                 if s.last_synced_at != 0 {
-                                    parts.push("synced".to_string());
+                                    parts.push(t!("sub.synced").to_string());
                                 }
                                 let meta = format!("{meter_text} · {}", parts.join(" · "));
                                 view! {
@@ -323,14 +319,14 @@ pub fn SubscriptionsTab(
                                         </div>
                                         <button
                                             class="icon-btn"
-                                            title="Details and mirrored files"
+                                            title=t!("sub.details_title")
                                             on:click=move |_| info_for.set(Some(sub_info.clone()))
                                         >
                                             <Icon paths=icons::INFO_CIRCLE/>
                                         </button>
                                         <button
                                             class="icon-btn icon-btn-danger"
-                                            title="Unsubscribe"
+                                            title=t!("sub.unsub_title")
                                             on:click=move |_| {
                                                 let p = peer_rm.clone();
                                                 spawn_local(async move {
@@ -362,10 +358,10 @@ pub fn SubscriptionsTab(
                 {move || {
                     let n = subs.get().len();
                     if n == 0 {
-                        view! { <span class="dl-active-count dl-active-none">"No subscriptions"</span> }
+                        view! { <span class="dl-active-count dl-active-none">{t!("sub.none")}</span> }
                             .into_any()
                     } else {
-                        view! { <span class="dl-active-count">{format!("{n} subscribed")}</span> }
+                        view! { <span class="dl-active-count">{t!("sub.count", n = n)}</span> }
                             .into_any()
                     }
                 }}
@@ -424,45 +420,41 @@ fn UnsubscribeModal(
         <div class="modal-backdrop" on:click=move |_| on_close()>
             <div class="modal" on:click=move |e| e.stop_propagation()>
                 <div class="modal-header">
-                    <span class="modal-title">"Unsubscribe"</span>
+                    <span class="modal-title">{t!("sub.unsub_title")}</span>
                     <button class="overlay-close" on:click=move |_| on_close()>
                         <Icon paths=icons::X/>
                     </button>
                 </div>
                 <div class="modal-body">
                     <p class="modal-hint">
-                        "Stop mirroring this peer. What should happen to the content you've
-                         already mirrored from them?"
+                        {t!("sub.unsub_hint")}
                     </p>
                     <ul class="unsub-choices">
                         <li>
-                            <strong>"Keep it"</strong>
-                            " — the files become permanent shares you own and stay on disk.
-                             Content another subscription still wants keeps being mirrored."
+                            <strong>{t!("sub.keep")}</strong>
+                            {t!("sub.keep_desc")}
                         </li>
                         <li>
-                            <strong>"Free the space"</strong>
-                            " — delete the content that existed only to mirror this peer and
-                             that no other subscription wants (your own downloads and pins are
-                             never touched)."
+                            <strong>{t!("sub.free")}</strong>
+                            {t!("sub.free_desc")}
                         </li>
                     </ul>
                 </div>
                 <div class="modal-footer">
-                    <button class="btn-sm" on:click=move |_| on_close()>"Cancel"</button>
+                    <button class="btn-sm" on:click=move |_| on_close()>{t!("common.cancel")}</button>
                     <button
                         class="btn-sm btn-danger"
                         disabled=move || busy.get()
                         on:click=move |_| go(false)
                     >
-                        "Free the space"
+                        {t!("sub.free")}
                     </button>
                     <button
                         class="btn-sm btn-primary"
                         disabled=move || busy.get()
                         on:click=move |_| go(true)
                     >
-                        "Keep it"
+                        {t!("sub.keep")}
                     </button>
                 </div>
             </div>
@@ -487,7 +479,7 @@ fn AddSubscriptionModal(
         let p = peer.get().trim().to_string();
         let q: f64 = quota.get().trim().parse().unwrap_or(0.0);
         if p.is_empty() || q <= 0.0 {
-            error.set(Some("Enter a peer link and a positive quota.".to_string()));
+            error.set(Some(t!("sub.err_need_peer_quota").to_string()));
             return;
         }
         let quota_bytes = quota_to_bytes(q, &unit.get());
@@ -511,15 +503,14 @@ fn AddSubscriptionModal(
         <div class="modal-backdrop" on:click=move |_| on_close()>
             <div class="modal" on:click=move |e| e.stop_propagation()>
                 <div class="modal-header">
-                    <span class="modal-title">"Subscribe to a peer"</span>
+                    <span class="modal-title">{t!("sub.add_modal_title")}</span>
                     <button class="overlay-close" on:click=move |_| on_close()>
                         <Icon paths=icons::X/>
                     </button>
                 </div>
                 <div class="modal-body">
                     <p class="modal-hint">
-                        "Paste a peer's link (or PeerId). Its pinned content is mirrored on
-                         this node, smallest files first, up to the quota you set."
+                        {t!("sub.add_hint")}
                     </p>
                     <input
                         class="search-input"
@@ -534,7 +525,7 @@ fn AddSubscriptionModal(
                             type="number"
                             min="0"
                             step="any"
-                            placeholder="Quota"
+                            placeholder=t!("sub.quota_placeholder")
                             prop:value=move || quota.get()
                             on:input=move |e| quota.set(event_target_value(&e))
                             on:keydown=move |e| { if e.key() == "Enter" { submit(); } }
@@ -551,13 +542,13 @@ fn AddSubscriptionModal(
                     {move || error.get().map(|e| view! { <p class="error-msg">{e}</p> })}
                 </div>
                 <div class="modal-footer">
-                    <button class="btn-sm" on:click=move |_| on_close()>"Cancel"</button>
+                    <button class="btn-sm" on:click=move |_| on_close()>{t!("common.cancel")}</button>
                     <button
                         class="btn-sm btn-primary"
                         disabled=move || busy.get() || peer.get().trim().is_empty()
                         on:click=move |_| submit()
                     >
-                        {move || if busy.get() { "Subscribing…" } else { "Subscribe" }}
+                        {move || if busy.get() { t!("sub.subscribing") } else { t!("sub.subscribe") }}
                     </button>
                 </div>
             </div>
@@ -609,20 +600,24 @@ fn SubscriptionInfoModal(
     let refreshing = RwSignal::new(false);
     let usage = move || {
         let s = info.get();
-        format!(
-            "{} on disk · {} committed of {} quota",
-            format_size(s.present_bytes),
-            format_size(s.used_bytes),
-            format_size(s.quota_bytes)
+        t!(
+            "sub.usage",
+            disk = format_size(s.present_bytes),
+            committed = format_size(s.used_bytes),
+            quota = format_size(s.quota_bytes)
         )
+        .to_string()
     };
     let summary = move || {
         let s = info.get();
         let fetching = s.wanted_count.saturating_sub(s.present_count);
-        format!(
-            "{} mirrored · {} fetching · {} over quota",
-            s.present_count, fetching, s.skipped_count
+        t!(
+            "sub.summary",
+            mirrored = s.present_count,
+            fetching = fetching,
+            over = s.skipped_count
         )
+        .to_string()
     };
     let peer_refresh = StoredValue::new(sub.peer_id.clone());
     let do_refresh = move || {
@@ -718,7 +713,7 @@ fn SubscriptionInfoModal(
             files.set(api_files(&peer).await);
             scope_saving.set(false);
             narrow_confirm.set(false);
-            scope_msg.set(Some("Collections updated".into()));
+            scope_msg.set(Some(t!("sub.collections_updated").to_string()));
         });
     };
     let save_scope = move || {
@@ -752,7 +747,7 @@ fn SubscriptionInfoModal(
     let save = move || {
         let q: f64 = quota.get().trim().parse().unwrap_or(0.0);
         if q <= 0.0 {
-            error.set(Some("Enter a positive quota.".to_string()));
+            error.set(Some(t!("sub.err_positive_quota").to_string()));
             return;
         }
         let quota_bytes = quota_to_bytes(q, &unit.get());
@@ -769,7 +764,7 @@ fn SubscriptionInfoModal(
                         info.set(s);
                     }
                     saving.set(false);
-                    quota_msg.set(Some("Quota updated".into()));
+                    quota_msg.set(Some(t!("sub.quota_updated").to_string()));
                 }
                 Err(msg) => {
                     error.set(Some(msg));
@@ -783,7 +778,7 @@ fn SubscriptionInfoModal(
         <div class="modal-backdrop" on:click=move |_| on_close()>
             <div class="modal modal-wide" on:click=move |e| e.stop_propagation()>
                 <div class="modal-header">
-                    <span class="modal-title">"Subscription"</span>
+                    <span class="modal-title">{t!("sub.info_title")}</span>
                     <button class="overlay-close" on:click=move |_| on_close()>
                         <Icon paths=icons::X/>
                     </button>
@@ -815,7 +810,7 @@ fn SubscriptionInfoModal(
                             disabled=move || saving.get()
                             on:click=move |_| save()
                         >
-                            {move || if saving.get() { "Saving…" } else { "Update quota" }}
+                            {move || if saving.get() { t!("common.saving") } else { t!("sub.update_quota") }}
                         </button>
                     </div>
                     {move || error.get().map(|e| view! { <p class="error-msg">{e}</p> })}
@@ -831,12 +826,12 @@ fn SubscriptionInfoModal(
                                     prop:checked=move || follow_all.get()
                                     on:change=move |e| { follow_all.set(event_target_checked(&e)); scope_msg.set(None); }
                                 />
-                                <span>"Mirror everything this peer pins"</span>
+                                <span>{t!("sub.mirror_all")}</span>
                             </label>
                             <button
                                 class="icon-btn sub-refresh"
                                 class:is-refreshing=move || refreshing.get()
-                                title="Pull this peer's pin-set now (discover collections, update stats)"
+                                title=t!("sub.refresh_title")
                                 disabled=move || refreshing.get()
                                 on:click=move |_| do_refresh()
                             >
@@ -849,8 +844,7 @@ fn SubscriptionInfoModal(
                                 if avail.is_empty() {
                                     view! {
                                         <p class="empty-hint">
-                                            "No collections seen yet — they appear after the first \
-                                             sync. Mirror everything for now, then narrow."
+                                            {t!("sub.no_collections")}
                                         </p>
                                     }.into_any()
                                 } else {
@@ -861,7 +855,7 @@ fn SubscriptionInfoModal(
                                                 key=|c| c.clone()
                                                 children=move |c| {
                                                     let label = if c.is_empty() {
-                                                        "(no collection)".to_string()
+                                                        t!("sub.no_collection").to_string()
                                                     } else {
                                                         c.clone()
                                                     };
@@ -898,8 +892,7 @@ fn SubscriptionInfoModal(
                                 && !info.get().available_collections.is_empty()
                         }>
                             <p class="empty-hint">
-                                "No collections selected — you stay subscribed to this peer, but \
-                                 nothing is mirrored."
+                                {t!("sub.no_selected")}
                             </p>
                         </Show>
                         <Show
@@ -907,24 +900,23 @@ fn SubscriptionInfoModal(
                             fallback=move || view! {
                                 <div class="sub-scope-confirm">
                                     <p class="modal-hint">
-                                        "This drops collections you were following. What about the
-                                         content you already mirrored from them?"
+                                        {t!("sub.narrow_hint")}
                                     </p>
                                     <div class="sub-scope-confirm-btns">
                                         <button
                                             class="btn-sm"
                                             on:click=move |_| narrow_confirm.set(false)
-                                        >"Back"</button>
+                                        >{t!("sub.back")}</button>
                                         <button
                                             class="btn-sm btn-danger"
                                             disabled=move || scope_saving.get()
                                             on:click=move |_| do_save_scope(false)
-                                        >"Free the space"</button>
+                                        >{t!("sub.free")}</button>
                                         <button
                                             class="btn-sm btn-primary"
                                             disabled=move || scope_saving.get()
                                             on:click=move |_| do_save_scope(true)
-                                        >"Keep it"</button>
+                                        >{t!("sub.keep")}</button>
                                     </div>
                                 </div>
                             }
@@ -936,7 +928,7 @@ fn SubscriptionInfoModal(
                                     disabled=move || scope_saving.get()
                                     on:click=move |_| save_scope()
                                 >
-                                    {move || if scope_saving.get() { "Saving…" } else { "Update collections" }}
+                                    {move || if scope_saving.get() { t!("common.saving") } else { t!("sub.update_collections") }}
                                 </button>
                             </div>
                         </Show>
@@ -945,12 +937,12 @@ fn SubscriptionInfoModal(
                     <div class="sub-file-list">
                         <Show
                             when=move || loaded.get()
-                            fallback=|| view! { <p class="empty-hint">"Loading…"</p> }
+                            fallback=|| view! { <p class="empty-hint">{t!("sub.loading")}</p> }
                         >
                             <Show
                                 when=move || !files.get().is_empty()
                                 fallback=|| view! {
-                                    <p class="empty-hint">"No files mirrored for this peer yet."</p>
+                                    <p class="empty-hint">{t!("sub.no_files")}</p>
                                 }
                             >
                                 <ul class="share-file-list">
@@ -960,14 +952,13 @@ fn SubscriptionInfoModal(
                                         children=move |f| {
                                             let st = f.state.clone();
                                             let label = match st.as_str() {
-                                                "present" => "mirrored",
-                                                "fetching" => "fetching",
-                                                "missing" => "pending",
-                                                "skipped" => "over quota",
-                                                "cancelled" => "cancelled",
-                                                other => other,
-                                            }
-                                            .to_string();
+                                                "present" => t!("sub.state.present"),
+                                                "fetching" => t!("sub.state.fetching"),
+                                                "missing" => t!("sub.state.pending"),
+                                                "skipped" => t!("sub.state.over_quota"),
+                                                "cancelled" => t!("sub.state.cancelled"),
+                                                other => std::borrow::Cow::Owned(other.to_string()),
+                                            };
                                             let pill_class = format!("mirror-state mirror-state-{st}");
                                             let name = f
                                                 .name
@@ -988,7 +979,7 @@ fn SubscriptionInfoModal(
                                                             view! {
                                                                 <button
                                                                     class="icon-btn"
-                                                                    title="Re-request this file"
+                                                                    title=t!("sub.refetch_title")
                                                                     on:click=move |_| {
                                                                         let h = hash.clone();
                                                                         let peer = peer_refresh.get_value();
@@ -1012,7 +1003,7 @@ fn SubscriptionInfoModal(
                     </div>
                 </div>
                 <div class="modal-footer">
-                    <button class="btn-sm" on:click=move |_| on_close()>"Close"</button>
+                    <button class="btn-sm" on:click=move |_| on_close()>{t!("sub.close")}</button>
                 </div>
             </div>
         </div>
