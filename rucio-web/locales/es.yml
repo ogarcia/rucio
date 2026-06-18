@@ -134,7 +134,7 @@ overlay:
     known: "%{n} pares conocidos"
   about:
     title: "Acerca de"
-    tagline: "Compartición de archivos entre pares sobre libp2p, con compatibilidad eMule/Kad2."
+    tagline: "Intercambio de archivos entre pares sobre libp2p, con compatibilidad eMule/Kad2."
     source: "Código fuente en GitHub"
     report: "Informar de un problema"
 
