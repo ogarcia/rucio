@@ -1,0 +1,76 @@
+# Spanish translation for the Rucio web UI.
+_version: 1
+
+statusbar:
+  idle: "Inactivo"
+  temp_limit_on: "Límite de velocidad temporal: activado"
+  temp_limit_off: "Límite de velocidad temporal: desactivado"
+
+tab:
+  downloads: "Descargas"
+  uploads: "Subidas"
+  searches: "Búsquedas"
+  shares: "Compartidos"
+  pins: "Pines"
+  subscriptions: "Suscripciones"
+
+nav:
+  sections: "Secciones"
+  connected: "Conectado"
+  disconnected: "Desconectado"
+  notifications: "Notificaciones"
+
+config:
+  tab:
+    interface: "Interfaz"
+    network: "Red"
+    storage: "Almacenamiento"
+    categories: "Categorías"
+    notifications: "Notificaciones"
+  interface:
+    hint: "El tema y el idioma se guardan en este navegador, no en el daemon."
+    theme: "Tema"
+    theme_auto: "Automático (según el sistema)"
+    theme_light: "Claro"
+    theme_dark: "Oscuro"
+    language: "Idioma"
+    lang_auto: "Automático (idioma del navegador)"
+    lang_hint: "Al cambiar el idioma se recarga la página."
+
+download:
+  none: "No hay descargas"
+  already_have: "Ya tienes esto."
+  state:
+    finding_providers: "Buscando pares"
+    queued: "En cola"
+    downloading: "Descargando"
+    stalled: "Estancada"
+    paused: "Pausada"
+    completed: "Completada"
+    failed: "Fallida"
+    cancelled: "Cancelada"
+  toolbar:
+    add: "Añadir"
+    add_title: "Añadir descargas"
+    info: "Info"
+    info_title: "Ver detalles de la descarga"
+    resume: "Reanudar"
+    resume_title: "Reanudar descargas"
+    pause: "Pausar"
+    pause_title: "Pausar descargas"
+    cancel: "Cancelar"
+    cancel_title: "Cancelar descargas"
+    remove: "Eliminar"
+    remove_title: "Eliminar del historial"
+  filter:
+    all: "Todas"
+    active: "Activas"
+    downloading: "Descargando"
+    paused: "Pausadas"
+    completed: "Completadas"
+    history: "Historial"
+    all_categories: "Todas las categorías"
+    uncategorized: "Sin categoría"
+    placeholder: "Filtrar…"
+    active_count: "%{n} activas"
+    none_active: "No hay descargas activas"

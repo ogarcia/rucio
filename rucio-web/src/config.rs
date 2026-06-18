@@ -1,5 +1,6 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
+use rust_i18n::t;
 
 use crate::categories::{
     CategoriesEditor, Row as CatRow, mint_row as mint_cat, persist as persist_cats,
@@ -12,6 +13,7 @@ use crate::webhooks::{Row, WebhooksEditor, collect_defs, mint_row};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ConfigTab {
+    Interface,
     Network,
     Storage,
     Emule,
@@ -92,6 +94,9 @@ pub fn ConfigModal(
     temp_down: RwSignal<u64>,
     notif_enabled: RwSignal<bool>,
     categories: RwSignal<Vec<Category>>,
+    // Local presentation prefs (theme + language) live on the Interface tab.
+    theme: RwSignal<crate::Theme>,
+    lang: RwSignal<crate::Language>,
     on_close: impl Fn() + Copy + 'static,
 ) -> impl IntoView {
     let tab = RwSignal::new(ConfigTab::Network);
@@ -339,19 +344,21 @@ pub fn ConfigModal(
 
                 <div class="config-tabs">
                     <button class=move || tab_class(ConfigTab::Network)
-                        on:click=move |_| tab.set(ConfigTab::Network)>"Network"</button>
+                        on:click=move |_| tab.set(ConfigTab::Network)>{t!("config.tab.network")}</button>
                     <button class=move || tab_class(ConfigTab::Storage)
-                        on:click=move |_| tab.set(ConfigTab::Storage)>"Storage"</button>
+                        on:click=move |_| tab.set(ConfigTab::Storage)>{t!("config.tab.storage")}</button>
                     <button class=move || tab_class(ConfigTab::Categories)
-                        on:click=move |_| tab.set(ConfigTab::Categories)>"Categories"</button>
+                        on:click=move |_| tab.set(ConfigTab::Categories)>{t!("config.tab.categories")}</button>
                     <button class=move || tab_class(ConfigTab::Notifications)
-                        on:click=move |_| tab.set(ConfigTab::Notifications)>"Notifications"</button>
-                    // eMule sits last: when the daemon lacks eMule support the
-                    // tab is hidden, and being last means its absence shifts nothing.
+                        on:click=move |_| tab.set(ConfigTab::Notifications)>{t!("config.tab.notifications")}</button>
+                    // eMule is shown only when the daemon supports it.
                     <Show when=move || emule_available.get() fallback=|| ()>
                         <button class=move || tab_class(ConfigTab::Emule)
                             on:click=move |_| tab.set(ConfigTab::Emule)>"eMule"</button>
                     </Show>
+                    // Interface (local presentation prefs) sits last.
+                    <button class=move || tab_class(ConfigTab::Interface)
+                        on:click=move |_| tab.set(ConfigTab::Interface)>{t!("config.tab.interface")}</button>
                 </div>
 
                 <div class="modal-body">
@@ -366,6 +373,55 @@ pub fn ConfigModal(
                         view! { <p class="loading">"Loading…"</p> }.into_any()
                     } else {
                         match tab.get() {
+                            ConfigTab::Interface => view! {
+                                <div class="config-section">
+                                    <p class="config-hint">{t!("config.interface.hint")}</p>
+                                    <div class="config-field">
+                                        <label class="config-label">{t!("config.interface.theme")}</label>
+                                        <select class="config-input config-select-wide"
+                                            prop:value=move || match theme.get() {
+                                                crate::Theme::Auto => "auto",
+                                                crate::Theme::Light => "light",
+                                                crate::Theme::Dark => "dark",
+                                            }
+                                            on:change=move |e| {
+                                                let t = match event_target_value(&e).as_str() {
+                                                    "light" => crate::Theme::Light,
+                                                    "dark" => crate::Theme::Dark,
+                                                    _ => crate::Theme::Auto,
+                                                };
+                                                crate::apply_theme(t);
+                                                theme.set(t);
+                                            }
+                                        >
+                                            <option value="auto">{t!("config.interface.theme_auto")}</option>
+                                            <option value="light">{t!("config.interface.theme_light")}</option>
+                                            <option value="dark">{t!("config.interface.theme_dark")}</option>
+                                        </select>
+                                    </div>
+                                    <div class="config-field">
+                                        <label class="config-label">{t!("config.interface.language")}</label>
+                                        <select class="config-input config-select-wide"
+                                            prop:value=move || match lang.get() {
+                                                crate::Language::Auto => "auto",
+                                                crate::Language::En => "en",
+                                                crate::Language::Es => "es",
+                                            }
+                                            on:change=move |e| match event_target_value(&e).as_str() {
+                                                "en" => crate::set_language(crate::Language::En),
+                                                "es" => crate::set_language(crate::Language::Es),
+                                                _ => crate::set_language(crate::Language::Auto),
+                                            }
+                                        >
+                                            <option value="auto">{t!("config.interface.lang_auto")}</option>
+                                            // Endonyms: a language is named in its own language.
+                                            <option value="en">"English"</option>
+                                            <option value="es">"Español"</option>
+                                        </select>
+                                    </div>
+                                    <p class="config-hint">{t!("config.interface.lang_hint")}</p>
+                                </div>
+                            }.into_any(),
                             ConfigTab::Network => view! {
                                 <div class="config-section">
                                     <p class="config-hint">"Speed limits in KB/s (0 = unlimited); applied immediately."</p>

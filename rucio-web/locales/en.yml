@@ -1,0 +1,78 @@
+# English — source locale and fallback for the Rucio web UI.
+# Keys are grouped by component/tab. Interpolation uses %{name} placeholders.
+# Format: rust-i18n _version 1 (one file per language), Weblate-compatible.
+_version: 1
+
+statusbar:
+  idle: "Idle"
+  temp_limit_on: "Temporary speed limit: on"
+  temp_limit_off: "Temporary speed limit: off"
+
+tab:
+  downloads: "Downloads"
+  uploads: "Uploads"
+  searches: "Searches"
+  shares: "Shares"
+  pins: "Pins"
+  subscriptions: "Subscriptions"
+
+nav:
+  sections: "Sections"
+  connected: "Connected"
+  disconnected: "Disconnected"
+  notifications: "Notifications"
+
+config:
+  tab:
+    interface: "Interface"
+    network: "Network"
+    storage: "Storage"
+    categories: "Categories"
+    notifications: "Notifications"
+  interface:
+    hint: "Theme and language are stored in this browser, not on the daemon."
+    theme: "Theme"
+    theme_auto: "Automatic (follow system)"
+    theme_light: "Light"
+    theme_dark: "Dark"
+    language: "Language"
+    lang_auto: "Automatic (browser language)"
+    lang_hint: "Changing the language reloads the page."
+
+download:
+  none: "No downloads"
+  already_have: "You already have this."
+  state:
+    finding_providers: "Finding peers"
+    queued: "Queued"
+    downloading: "Downloading"
+    stalled: "Stalled"
+    paused: "Paused"
+    completed: "Completed"
+    failed: "Failed"
+    cancelled: "Cancelled"
+  toolbar:
+    add: "Add"
+    add_title: "Add downloads"
+    info: "Info"
+    info_title: "Show download details"
+    resume: "Resume"
+    resume_title: "Resume downloads"
+    pause: "Pause"
+    pause_title: "Pause downloads"
+    cancel: "Cancel"
+    cancel_title: "Cancel downloads"
+    remove: "Remove"
+    remove_title: "Remove from history"
+  filter:
+    all: "All"
+    active: "Active"
+    downloading: "Downloading"
+    paused: "Paused"
+    completed: "Completed"
+    history: "History"
+    all_categories: "All categories"
+    uncategorized: "Uncategorized"
+    placeholder: "Filter…"
+    active_count: "%{n} active"
+    none_active: "No active downloads"

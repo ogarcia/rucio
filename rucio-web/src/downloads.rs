@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
+use rust_i18n::t;
 
 use gloo_timers::future::sleep;
 
@@ -75,16 +76,16 @@ impl CatFilter {
 
 // ── State helpers ─────────────────────────────────────────────────────────────
 
-fn state_label(s: &DownloadState) -> &'static str {
+fn state_label(s: &DownloadState) -> std::borrow::Cow<'static, str> {
     match s {
-        DownloadState::FindingProviders => "Finding peers",
-        DownloadState::Queued => "Queued",
-        DownloadState::Downloading => "Downloading",
-        DownloadState::Stalled => "Stalled",
-        DownloadState::Paused => "Paused",
-        DownloadState::Completed => "Completed",
-        DownloadState::Failed => "Failed",
-        DownloadState::Cancelled => "Cancelled",
+        DownloadState::FindingProviders => t!("download.state.finding_providers"),
+        DownloadState::Queued => t!("download.state.queued"),
+        DownloadState::Downloading => t!("download.state.downloading"),
+        DownloadState::Stalled => t!("download.state.stalled"),
+        DownloadState::Paused => t!("download.state.paused"),
+        DownloadState::Completed => t!("download.state.completed"),
+        DownloadState::Failed => t!("download.state.failed"),
+        DownloadState::Cancelled => t!("download.state.cancelled"),
     }
 }
 
@@ -324,7 +325,7 @@ async fn post_link(url: &str, body: &serde_json::Value) -> LinkOutcome {
                 .await
                 .ok()
                 .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(String::from))
-                .unwrap_or_else(|| "You already have this.".to_string());
+                .unwrap_or_else(|| t!("download.already_have").to_string());
             LinkOutcome::Duplicate(msg)
         }
         _ => LinkOutcome::Rejected,
@@ -433,15 +434,15 @@ pub fn DownloadsTab(
             <div class="dl-toolbar">
                 <button
                     class="toolbar-btn"
-                    title="Add downloads"
+                    title=t!("download.toolbar.add_title")
                     on:click=move |_| add_open.set(true)
                 >
                     <Icon paths=icons::PLUS/>
-                    <span class="btn-label">"Add"</span>
+                    <span class="btn-label">{t!("download.toolbar.add")}</span>
                 </button>
                 <button
                     class="toolbar-btn"
-                    title="Show download details"
+                    title=t!("download.toolbar.info_title")
                     disabled=move || !can_info()
                     on:click=move |_| {
                         let ids: Vec<i64> = selected_ids.with(|s| s.iter().copied().collect());
@@ -455,11 +456,11 @@ pub fn DownloadsTab(
                     }
                 >
                     <Icon paths=icons::INFO_CIRCLE/>
-                    <span class="btn-label">"Info"</span>
+                    <span class="btn-label">{t!("download.toolbar.info")}</span>
                 </button>
                 <button
                     class="toolbar-btn"
-                    title=move || if show_resume() { "Resume downloads" } else { "Pause downloads" }
+                    title=move || if show_resume() { t!("download.toolbar.resume_title").to_string() } else { t!("download.toolbar.pause_title").to_string() }
                     disabled=move || !can_pause_toggle()
                     on:click=move |_| {
                         let resume = show_resume();
@@ -490,12 +491,12 @@ pub fn DownloadsTab(
                         <Icon paths=icons::PLAYER_PLAY/>
                     </Show>
                     <span class="btn-label">
-                        {move || if show_resume() { "Resume" } else { "Pause" }}
+                        {move || if show_resume() { t!("download.toolbar.resume").to_string() } else { t!("download.toolbar.pause").to_string() }}
                     </span>
                 </button>
                 <button
                     class="toolbar-btn toolbar-btn-danger"
-                    title="Cancel downloads"
+                    title=t!("download.toolbar.cancel_title")
                     disabled=move || !can_cancel()
                     on:click=move |_| {
                         let targets: Vec<i64> = selected_dls()
@@ -513,11 +514,11 @@ pub fn DownloadsTab(
                     }
                 >
                     <Icon paths=icons::CIRCLE_X/>
-                    <span class="btn-label">"Cancel"</span>
+                    <span class="btn-label">{t!("download.toolbar.cancel")}</span>
                 </button>
                 <button
                     class="toolbar-btn"
-                    title="Remove from history"
+                    title=t!("download.toolbar.remove_title")
                     disabled=move || !can_remove()
                     on:click=move |_| {
                         let targets: Vec<i64> = selected_dls()
@@ -535,7 +536,7 @@ pub fn DownloadsTab(
                     }
                 >
                     <Icon paths=icons::TRASH/>
-                    <span class="btn-label">"Remove"</span>
+                    <span class="btn-label">{t!("download.toolbar.remove")}</span>
                 </button>
             </div>
             </div>
@@ -544,7 +545,7 @@ pub fn DownloadsTab(
             <div class="tab-scroll">
                 <Show
                     when=move || !downloads.get().is_empty()
-                    fallback=|| view! { <div class="empty-state"><p>"No downloads"</p></div> }
+                    fallback=|| view! { <div class="empty-state"><p>{t!("download.none")}</p></div> }
                 >
                     <ul class="dl-list">
                         <For
@@ -598,20 +599,20 @@ pub fn DownloadsTab(
                         });
                     }
                 >
-                    <option value="all">"All"</option>
-                    <option value="active">"Active"</option>
-                    <option value="downloading">"Downloading"</option>
-                    <option value="paused">"Paused"</option>
-                    <option value="completed">"Completed"</option>
-                    <option value="history">"History"</option>
+                    <option value="all">{t!("download.filter.all")}</option>
+                    <option value="active">{t!("download.filter.active")}</option>
+                    <option value="downloading">{t!("download.filter.downloading")}</option>
+                    <option value="paused">{t!("download.filter.paused")}</option>
+                    <option value="completed">{t!("download.filter.completed")}</option>
+                    <option value="history">{t!("download.filter.history")}</option>
                 </select>
                 <Show when=move || !categories.get().is_empty()>
                     <select
                         class="dl-filter-select"
                         on:change=move |e| filter_cat.set(CatFilter::from_value(&event_target_value(&e)))
                     >
-                        <option value="">"All categories"</option>
-                        <option value="none">"Uncategorized"</option>
+                        <option value="">{t!("download.filter.all_categories")}</option>
+                        <option value="none">{t!("download.filter.uncategorized")}</option>
                         <For each=move || categories.get() key=|c| c.id let:c>
                             <option value=c.id.to_string()>{c.name.clone()}</option>
                         </For>
@@ -620,7 +621,7 @@ pub fn DownloadsTab(
                 <input
                     type="text"
                     class="dl-filter-input"
-                    placeholder="Filter…"
+                    placeholder=t!("download.filter.placeholder")
                     prop:value=move || filter_name.get()
                     on:input=move |e| filter_name.set(event_target_value(&e))
                 />
@@ -629,13 +630,13 @@ pub fn DownloadsTab(
                     if n > 0 {
                         view! {
                             <span class="dl-active-count">
-                                {format!("{n} active")}
+                                {t!("download.filter.active_count", n = n)}
                             </span>
                         }.into_any()
                     } else {
                         view! {
                             <span class="dl-active-count dl-active-none">
-                                "No active downloads"
+                                {t!("download.filter.none_active")}
                             </span>
                         }.into_any()
                     }
@@ -749,7 +750,7 @@ fn DownloadRow(
             v.iter()
                 .find(|d| d.id == id)
                 .map(|d| state_label(&d.state))
-                .unwrap_or("")
+                .unwrap_or_default()
         })
     };
     let has_error = move || {

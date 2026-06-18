@@ -8,6 +8,7 @@
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
+use rust_i18n::t;
 
 use crate::icons::{self, Icon};
 use crate::types::{TempLimitRequest, TempLimitStatus, format_speed};
@@ -54,7 +55,8 @@ pub fn StatusBar(
                                 </span>
                             }.into_any()
                         } else {
-                            view! { <span class="dl-speed-idle">"Idle"</span> }.into_any()
+                            view! { <span class="dl-speed-idle">{t!("statusbar.idle")}</span> }
+                                .into_any()
                         }
                     }}
                 </div>
@@ -67,9 +69,9 @@ pub fn StatusBar(
                         "dl-limit-btn"
                     }
                     title=move || if temp_limit.get() {
-                        "Temporary speed limit: on"
+                        t!("statusbar.temp_limit_on").to_string()
                     } else {
-                        "Temporary speed limit: off"
+                        t!("statusbar.temp_limit_off").to_string()
                     }
                     on:click=move |_| {
                         let next = !temp_limit.get_untracked();

@@ -13,10 +13,86 @@ mod types;
 mod uploads;
 mod webhooks;
 
+// Load the translation catalogues under `locales/`. English is the source
+// locale and the fallback when a key is missing in the active language.
+rust_i18n::i18n!("locales", fallback = "en");
+
+use rust_i18n::t;
+
+// ── Language ─────────────────────────────────────────────────────────────────
+
+/// Resolve the UI language once at startup: a stored `rucio-lang` preference if
+/// present, otherwise the browser's `navigator.language`, falling back to
+/// English. A tag such as `es-ES` is reduced to its base language (`es`).
+fn resolve_locale() -> String {
+    let win = web_sys::window();
+    let stored = win
+        .as_ref()
+        .and_then(|w| w.local_storage().ok().flatten())
+        .and_then(|ls| ls.get_item("rucio-lang").ok().flatten());
+    let raw = stored
+        .or_else(|| win.as_ref().and_then(|w| w.navigator().language()))
+        .unwrap_or_else(|| "en".to_string());
+    raw.split(['-', '_']).next().unwrap_or("en").to_lowercase()
+}
+
+/// The user's explicit language choice, mirroring the theme picker: `Auto`
+/// follows the browser, the rest force a language.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Language {
+    Auto,
+    En,
+    Es,
+}
+
+fn load_language() -> Language {
+    let stored = web_sys::window()
+        .and_then(|w| w.local_storage().ok().flatten())
+        .and_then(|ls| ls.get_item("rucio-lang").ok().flatten());
+    match stored.as_deref() {
+        Some("en") => Language::En,
+        Some("es") => Language::Es,
+        _ => Language::Auto,
+    }
+}
+
+/// Persist the language choice and reload, so the whole UI re-renders in the
+/// new language. `Auto` clears the override and falls back to the browser.
+pub(crate) fn set_language(l: Language) {
+    if let Some(ls) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
+        match l {
+            Language::Auto => {
+                let _ = ls.remove_item("rucio-lang");
+            }
+            Language::En => {
+                let _ = ls.set_item("rucio-lang", "en");
+            }
+            Language::Es => {
+                let _ = ls.set_item("rucio-lang", "es");
+            }
+        }
+    }
+    if let Some(w) = web_sys::window() {
+        let _ = w.location().reload();
+    }
+}
+
+/// Display label for a navigation tab, localized.
+fn tab_label(tab: Tab) -> std::borrow::Cow<'static, str> {
+    match tab {
+        Tab::Downloads => t!("tab.downloads"),
+        Tab::Uploads => t!("tab.uploads"),
+        Tab::Searches => t!("tab.searches"),
+        Tab::Shares => t!("tab.shares"),
+        Tab::Pins => t!("tab.pins"),
+        Tab::Subscriptions => t!("tab.subscriptions"),
+    }
+}
+
 // ── Theme ──────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Theme {
+pub(crate) enum Theme {
     Auto,
     Light,
     Dark,
@@ -35,7 +111,7 @@ fn load_theme() -> Theme {
 
 /// Apply a theme to the <html> element and persist it to localStorage.
 /// Auto = remove the data-theme attribute so the CSS media query takes over.
-fn apply_theme(t: Theme) {
+pub(crate) fn apply_theme(t: Theme) {
     if let Some(el) = web_sys::window()
         .and_then(|w| w.document())
         .and_then(|d| d.document_element())
@@ -188,13 +264,13 @@ fn save_tab(t: Tab) {
 
 /// The navigation sections, shown as top-bar tabs (wide) or sidebar items
 /// (narrow). One source so both stay in sync.
-const TABS: [(Tab, &str); 6] = [
-    (Tab::Downloads, "Downloads"),
-    (Tab::Uploads, "Uploads"),
-    (Tab::Searches, "Searches"),
-    (Tab::Shares, "Shares"),
-    (Tab::Pins, "Pins"),
-    (Tab::Subscriptions, "Subscriptions"),
+const TABS: [Tab; 6] = [
+    Tab::Downloads,
+    Tab::Uploads,
+    Tab::Searches,
+    Tab::Shares,
+    Tab::Pins,
+    Tab::Subscriptions,
 ];
 
 #[derive(Clone, Copy, PartialEq)]
@@ -534,6 +610,8 @@ fn App() -> impl IntoView {
     let initial_theme = load_theme();
     apply_theme(initial_theme);
     let theme: RwSignal<Theme> = RwSignal::new(initial_theme);
+    // Reflects the stored language choice; changing it persists and reloads.
+    let lang: RwSignal<Language> = RwSignal::new(load_language());
 
     let ws_connected: RwSignal<bool> = RwSignal::new(false);
     let status: RwSignal<Option<StatusResponse>> = RwSignal::new(None);
@@ -669,7 +747,7 @@ fn App() -> impl IntoView {
                 // Navigation hamburger — only shown on narrow screens (CSS).
                 <button
                     class="nav-toggle"
-                    title="Sections"
+                    title=t!("nav.sections")
                     on:click=move |_| nav_open.set(true)
                 >
                     <icons::Icon paths=icons::MENU/>
@@ -677,11 +755,11 @@ fn App() -> impl IntoView {
                 <span class="brand">"Rucio"</span>
 
                 <nav class="tabs">
-                    {TABS.iter().map(|&(tab, label)| view! {
+                    {TABS.iter().map(|&tab| view! {
                         <button
                             class=move || if active_tab.get() == tab { "tab active" } else { "tab" }
                             on:click=move |_| active_tab.set(tab)
-                        >{label}</button>
+                        >{tab_label(tab)}</button>
                     }).collect_view()}
                 </nav>
 
@@ -694,7 +772,7 @@ fn App() -> impl IntoView {
                                 class=if connected { "icon ws-icon ws-icon-on" } else { "icon ws-icon ws-icon-off" }
                                 viewBox="0 0 24 24" stroke="currentColor" fill="none"
                                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
-                                title=if connected { "Connected" } else { "Disconnected" }
+                                title=if connected { t!("nav.connected").to_string() } else { t!("nav.disconnected").to_string() }
                                 inner_html=if connected { icons::NETWORK } else { icons::NETWORK_OFF }
                             ></svg>
                         }
@@ -705,7 +783,7 @@ fn App() -> impl IntoView {
                     <Show when=move || notif_enabled.get()>
                         <button
                             class="bell-btn"
-                            title="Notifications"
+                            title=t!("nav.notifications")
                             on:click=move |_| {
                                 active_panel.set(Some(Panel::Notifications));
                                 // Opening the centre marks everything read.
@@ -747,52 +825,6 @@ fn App() -> impl IntoView {
 
                     <Show when=move || menu_open.get()>
                         <div class="dropdown">
-                            // ── Theme picker ──────────────────────────────
-                            <div class="theme-picker">
-                                <button
-                                    class=move || if theme.get() == Theme::Auto {
-                                        "theme-btn theme-active"
-                                    } else {
-                                        "theme-btn"
-                                    }
-                                    title="Auto (follow system)"
-                                    on:click=move |_| {
-                                        apply_theme(Theme::Auto);
-                                        theme.set(Theme::Auto);
-                                    }
-                                >
-                                    <icons::Icon paths=icons::DEVICE_DESKTOP/>
-                                </button>
-                                <button
-                                    class=move || if theme.get() == Theme::Light {
-                                        "theme-btn theme-active"
-                                    } else {
-                                        "theme-btn"
-                                    }
-                                    title="Light"
-                                    on:click=move |_| {
-                                        apply_theme(Theme::Light);
-                                        theme.set(Theme::Light);
-                                    }
-                                >
-                                    <icons::Icon paths=icons::SUN/>
-                                </button>
-                                <button
-                                    class=move || if theme.get() == Theme::Dark {
-                                        "theme-btn theme-active"
-                                    } else {
-                                        "theme-btn"
-                                    }
-                                    title="Dark"
-                                    on:click=move |_| {
-                                        apply_theme(Theme::Dark);
-                                        theme.set(Theme::Dark);
-                                    }
-                                >
-                                    <icons::Icon paths=icons::MOON/>
-                                </button>
-                            </div>
-                            <div class="dropdown-sep"/>
                             // ── Speed limits ──────────────────────────────
                             <div class="menu-section">
                                 <div class="menu-section-title">"Speed limits"</div>
@@ -1003,7 +1035,7 @@ fn App() -> impl IntoView {
                 <nav class="sidebar" on:click=move |e| e.stop_propagation()>
                     <div class="sidebar-logo">"Rucio"</div>
                     <div class="sidebar-sep"/>
-                    {TABS.iter().map(|&(tab, label)| view! {
+                    {TABS.iter().map(|&tab| view! {
                         <button
                             class=move || if active_tab.get() == tab {
                                 "sidebar-item active"
@@ -1014,7 +1046,7 @@ fn App() -> impl IntoView {
                                 active_tab.set(tab);
                                 nav_open.set(false);
                             }
-                        >{label}</button>
+                        >{tab_label(tab)}</button>
                     }).collect_view()}
                 </nav>
             </div>
@@ -1053,6 +1085,8 @@ fn App() -> impl IntoView {
                 temp_down=temp_down
                 notif_enabled=notif_enabled
                 categories=categories
+                theme=theme
+                lang=lang
                 on_close=move || config_open.set(false)
             />
         </Show>
@@ -1060,5 +1094,6 @@ fn App() -> impl IntoView {
 }
 
 fn main() {
+    rust_i18n::set_locale(&resolve_locale());
     mount_to_body(App);
 }
