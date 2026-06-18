@@ -6,6 +6,7 @@ use std::time::Duration;
 use gloo_timers::future::sleep;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
+use rust_i18n::t;
 
 use crate::icons::{self, Icon};
 use crate::statusbar::StatusBar;
@@ -338,18 +339,18 @@ pub fn SharesTab(
                 <div class="dl-toolbar">
                     <button
                         class="toolbar-btn"
-                        title="Share a directory"
+                        title=t!("share.add_title")
                         on:click=move |_| add_open.set(true)
                     >
                         <Icon paths=icons::PLUS/>
-                        <span class="btn-label">"Add directory"</span>
+                        <span class="btn-label">{t!("share.add")}</span>
                     </button>
                     {move || {
                         let n = indexing.get();
                         (n > 0).then(|| view! {
                             <span class="share-indexing">
                                 <span class="spinner"></span>
-                                {format!("{n} indexing…")}
+                                {t!("share.indexing", n = n)}
                             </span>
                         })
                     }}
@@ -358,10 +359,10 @@ pub fn SharesTab(
 
             <div class="tab-scroll">
                 // ── Watched directories ───────────────────────────────────
-                <div class="share-section-label">"Folders"</div>
+                <div class="share-section-label">{t!("share.folders")}</div>
                 <Show
                     when=move || !dirs.get().is_empty()
-                    fallback=|| view! { <div class="empty-state empty-state-sm"><p>"No shared folders"</p></div> }
+                    fallback=|| view! { <div class="empty-state empty-state-sm"><p>{t!("share.no_folders")}</p></div> }
                 >
                     <ul class="share-dir-list">
                         <For
@@ -379,7 +380,7 @@ pub fn SharesTab(
                                         } else {
                                             "share-dir-row"
                                         }
-                                        title="Click to show only this folder's files"
+                                        title=t!("share.dir_click_title")
                                         on:click=move |_| {
                                             selected_dir.update(|cur| {
                                                 if cur.as_deref() == Some(path_click.as_str()) {
@@ -394,21 +395,19 @@ pub fn SharesTab(
                                         <div class="share-dir-main">
                                             <span class="share-dir-path">{d.path.clone()}</span>
                                             <span class="share-dir-meta">
-                                                {format!("{} file(s) · {}", d.file_count, format_size(d.total_size))}
+                                                {t!("share.dir_meta", count = d.file_count, size = format_size(d.total_size))}
                                             </span>
                                         </div>
                                         {if kind == SharedDirKind::User {
                                             view! {
                                                 <button
                                                     class="icon-btn icon-btn-danger"
-                                                    title="Stop sharing this folder (files stay on disk)"
+                                                    title=t!("share.unshare_title")
                                                     on:click=move |ev| {
                                                         // Don't let the row's select toggle fire too.
                                                         ev.stop_propagation();
                                                         let p = path_rm.clone();
-                                                        if confirm(&format!(
-                                                            "Stop sharing this folder?\n{p}\n\nFiles stay on disk; re-adding will re-index them."
-                                                        )) {
+                                                        if confirm(&t!("share.unshare_confirm", path = p.clone())) {
                                                             spawn_local(async move {
                                                                 api_remove_dir(&p).await;
                                                                 // Clear the filter if it pointed here.
@@ -425,27 +424,27 @@ pub fn SharesTab(
                                                 </button>
                                             }.into_any()
                                         } else {
-                                            let (label, badge_class, title) = match kind {
+                                            let (label, badge_class, title): (_, &str, _) = match kind {
                                                 SharedDirKind::Pins => (
-                                                    "Pins",
+                                                    t!("share.kind.pins"),
                                                     "share-badge share-badge-pins",
-                                                    "The pin directory is always shared",
+                                                    t!("share.kind.pins_title"),
                                                 ),
                                                 SharedDirKind::Category => (
-                                                    "Category",
+                                                    t!("share.kind.category"),
                                                     "share-badge share-badge-category",
-                                                    "A category destination directory; always shared",
+                                                    t!("share.kind.category_title"),
                                                 ),
                                                 SharedDirKind::Config => (
-                                                    "Config",
+                                                    t!("share.kind.config"),
                                                     "share-badge share-badge-config",
-                                                    "Declared in [storage].shared_dirs; managed from the config file, not removable here",
+                                                    t!("share.kind.config_title"),
                                                 ),
                                                 // Downloads (and the User case, unreachable here).
                                                 _ => (
-                                                    "Downloads",
+                                                    t!("share.kind.downloads"),
                                                     "share-badge share-badge-downloads",
-                                                    "The download directory is always shared",
+                                                    t!("share.kind.downloads_title"),
                                                 ),
                                             };
                                             view! {
@@ -465,24 +464,24 @@ pub fn SharesTab(
                 <div class="share-files-header">
                     <span class="share-section-label">
                         {move || match selected_dir.get() {
-                            Some(d) => format!("Files in {}", basename(&d)),
-                            None => "Shared files".to_string(),
+                            Some(d) => t!("share.files_in", name = basename(&d)).to_string(),
+                            None => t!("share.shared_files").to_string(),
                         }}
                     </span>
                     {move || selected_dir.get().map(|_| view! {
                         <button
                             class="share-clear-filter"
-                            title="Show files from all folders"
+                            title=t!("share.clear_title")
                             on:click=move |_| selected_dir.set(None)
                         >
                             <Icon paths=icons::X/>
-                            "Clear"
+                            {t!("share.clear")}
                         </button>
                     })}
                     <input
                         type="text"
                         class="dl-filter-input"
-                        placeholder="Filter…"
+                        placeholder=t!("share.filter_placeholder")
                         prop:value=move || filter.get()
                         on:input=move |e| filter.set(event_target_value(&e))
                     />
@@ -492,11 +491,11 @@ pub fn SharesTab(
                     fallback=move || view! {
                         <div class="empty-state empty-state-sm">
                             <p>{move || if loading.get() {
-                                "Loading…"
+                                t!("share.loading")
                             } else if !filter.get().is_empty() {
-                                "No files match"
+                                t!("share.no_match")
                             } else {
-                                "No shared files yet"
+                                t!("share.no_files")
                             }}</p>
                         </div>
                     }
@@ -525,9 +524,9 @@ pub fn SharesTab(
                                         <button
                                             class="btn-sm share-copy-btn share-pin-btn"
                                             title=move || if pinned_set.get().contains(&h_title) {
-                                                "Unpin this file (stops keeping it on purpose; the file stays shared)"
+                                                t!("share.unpin_title").to_string()
                                             } else {
-                                                "Pin this file (keep it available on purpose; publishes it in your pin-set)"
+                                                t!("share.pin_title").to_string()
                                             }
                                             on:click=move |_| {
                                                 if pinned_set.get_untracked().contains(&hash_btn) {
@@ -549,21 +548,21 @@ pub fn SharesTab(
                                             {move || {
                                                 let just = pinned.get().as_deref() == Some(h_label.as_str());
                                                 if just {
-                                                    "Pinned!"
+                                                    t!("share.pinned_hint")
                                                 } else if pinned_set.get().contains(&h_label) {
-                                                    "Unpin"
+                                                    t!("share.unpin")
                                                 } else {
-                                                    "Pin"
+                                                    t!("share.pin")
                                                 }
                                             }}
                                         </button>
                                         <button
                                             class="btn-sm share-copy-btn"
-                                            title="Copy magnet link"
+                                            title=t!("share.copy_title")
                                             on:click=move |_| on_copy.run((hash_copy.clone(), magnet_copy.clone()))
                                         >
                                             <Icon paths=icons::COPY/>
-                                            {move || if is_copied() { "Copied!" } else { "Magnet" }}
+                                            {move || if is_copied() { t!("share.copied") } else { t!("share.magnet") }}
                                         </button>
                                     </li>
                                 }
@@ -578,9 +577,9 @@ pub fn SharesTab(
                             on:click=move |_| load_files.run(false)
                         >
                             {move || if loading.get() {
-                                "Loading…".to_string()
+                                t!("share.loading").to_string()
                             } else {
-                                format!("Load more ({} of {})", files.get().len(), total.get())
+                                t!("share.load_more", shown = files.get().len(), total = total.get()).to_string()
                             }}
                         </button>
                     </Show>
@@ -593,14 +592,14 @@ pub fn SharesTab(
                     let tot = total.get();
                     if tot == 0 {
                         return view! {
-                            <span class="dl-active-count dl-active-none">"No shared files"</span>
+                            <span class="dl-active-count dl-active-none">{t!("share.none")}</span>
                         }.into_any();
                     }
                     let shown = files.get().len() as u64;
                     let label = if shown >= tot {
-                        format!("{tot} file(s)")
+                        t!("share.count", n = tot).to_string()
                     } else {
-                        format!("{shown} of {tot} file(s)")
+                        t!("share.count_partial", shown = shown, total = tot).to_string()
                     };
                     view! { <span class="dl-active-count">{label}</span> }.into_any()
                 }}
@@ -659,22 +658,20 @@ fn PinCollectionModal(
         <div class="modal-backdrop" on:click=move |_| on_close()>
             <div class="modal" on:click=move |e| e.stop_propagation()>
                 <div class="modal-header">
-                    <span class="modal-title">"Pin to a collection"</span>
+                    <span class="modal-title">{t!("share.pin_modal_title")}</span>
                     <button class="overlay-close" on:click=move |_| on_close()>
                         <Icon paths=icons::X/>
                     </button>
                 </div>
                 <div class="modal-body">
                     <p class="modal-hint">
-                        "File a pin under a collection so subscribers can follow just the
-                         collections of yours they care about. Leave it blank to pin it
-                         uncollected."
+                        {t!("share.pin_modal_hint")}
                     </p>
                     <input
                         class="search-input"
                         type="text"
                         list="share-pin-collections"
-                        placeholder="Collection (optional) — e.g. Manuals, Series"
+                        placeholder=t!("share.pin_collection_placeholder")
                         prop:value=move || collection.get()
                         on:input=move |e| collection.set(event_target_value(&e))
                         on:keydown=move |e| { if e.key() == "Enter" { confirm(); } }
@@ -688,8 +685,8 @@ fn PinCollectionModal(
                     </datalist>
                 </div>
                 <div class="modal-footer">
-                    <button class="btn-sm" on:click=move |_| on_close()>"Cancel"</button>
-                    <button class="btn-sm btn-primary" on:click=move |_| confirm()>"Pin"</button>
+                    <button class="btn-sm" on:click=move |_| on_close()>{t!("common.cancel")}</button>
+                    <button class="btn-sm btn-primary" on:click=move |_| confirm()>{t!("share.pin")}</button>
                 </div>
             </div>
         </div>
@@ -723,12 +720,15 @@ fn AddDirModal(
                     } else {
                         // Some files were queued but a few paths couldn't be
                         // read — keep the modal open and report them.
-                        error.set(Some(format!(
-                            "Shared {} file(s); {} path(s) could not be read:\n{}",
-                            resp.queued,
-                            resp.errors.len(),
-                            resp.errors.join("\n"),
-                        )));
+                        error.set(Some(
+                            t!(
+                                "share.add_partial",
+                                queued = resp.queued,
+                                count = resp.errors.len(),
+                                list = resp.errors.join("\n")
+                            )
+                            .to_string(),
+                        ));
                         busy.set(false);
                     }
                 }
@@ -744,15 +744,14 @@ fn AddDirModal(
         <div class="modal-backdrop" on:click=move |_| on_close()>
             <div class="modal" on:click=move |e| e.stop_propagation()>
                 <div class="modal-header">
-                    <span class="modal-title">"Share a directory"</span>
+                    <span class="modal-title">{t!("share.add_title")}</span>
                     <button class="overlay-close" on:click=move |_| on_close()>
                         <Icon paths=icons::X/>
                     </button>
                 </div>
                 <div class="modal-body">
                     <p class="modal-hint">
-                        "Enter the absolute path of a directory on the daemon host. All files
-                         under it are indexed and shared. Individual files aren't accepted."
+                        {t!("share.add_dir_hint")}
                     </p>
                     <input
                         class="search-input"
@@ -765,13 +764,13 @@ fn AddDirModal(
                     {move || error.get().map(|e| view! { <p class="error-msg">{e}</p> })}
                 </div>
                 <div class="modal-footer">
-                    <button class="btn-sm" on:click=move |_| on_close()>"Cancel"</button>
+                    <button class="btn-sm" on:click=move |_| on_close()>{t!("common.cancel")}</button>
                     <button
                         class="btn-sm btn-primary"
                         disabled=move || busy.get() || path.get().trim().is_empty()
                         on:click=move |_| submit()
                     >
-                        {move || if busy.get() { "Adding…" } else { "Share" }}
+                        {move || if busy.get() { t!("share.adding") } else { t!("share.share_btn") }}
                     </button>
                 </div>
             </div>
