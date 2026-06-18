@@ -5,6 +5,7 @@ use std::time::Duration;
 use gloo_timers::future::sleep;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
+use rust_i18n::t;
 
 use crate::icons::{self, Icon};
 use crate::types::{
@@ -23,11 +24,17 @@ async fn api_fetch_emule_status() -> Option<EmuleStatusResponse> {
 }
 
 /// (label, css class) for the eMule connectivity badge, reusing node-class styles.
-fn emule_conn_badge(c: EmuleConnectivity) -> (&'static str, &'static str) {
+fn emule_conn_badge(c: EmuleConnectivity) -> (String, &'static str) {
     match c {
-        EmuleConnectivity::Open => ("Open", "badge badge-high"),
-        EmuleConnectivity::Firewalled => ("Firewalled", "badge badge-low"),
-        EmuleConnectivity::Unknown => ("Unknown", "badge badge-unknown"),
+        EmuleConnectivity::Open => (t!("overlay.emule.open").to_string(), "badge badge-high"),
+        EmuleConnectivity::Firewalled => (
+            t!("overlay.emule.firewalled").to_string(),
+            "badge badge-low",
+        ),
+        EmuleConnectivity::Unknown => (
+            t!("overlay.emule.unknown").to_string(),
+            "badge badge-unknown",
+        ),
     }
 }
 
@@ -57,14 +64,14 @@ pub fn NodeStatusPanel(
         <div class="overlay-backdrop" on:click=move |_| close()>
             <div class="overlay" on:click=move |e| e.stop_propagation()>
                 <div class="overlay-header">
-                    <span class="overlay-title">"Node status"</span>
+                    <span class="overlay-title">{t!("overlay.node.title")}</span>
                     <button class="overlay-close" on:click=move |_| close()>
                         <Icon paths=icons::X/>
                     </button>
                 </div>
                 <div class="overlay-body">
                     {move || match status.get() {
-                        None => view! { <p class="loading">"Loading..."</p> }.into_any(),
+                        None => view! { <p class="loading">{t!("overlay.loading")}</p> }.into_any(),
                         Some(s) => {
                             let (label, css) = class_badge(&s.class);
                             let uptime = format_uptime(s.uptime_secs);
@@ -78,22 +85,22 @@ pub fn NodeStatusPanel(
                                         <p class="section-label">"Rucio / libp2p"</p>
                                     })}
                                 <dl class="panel-dl">
-                                    <dt>"Version"</dt>
+                                    <dt>{t!("overlay.node.version")}</dt>
                                     <dd>{s.version}</dd>
-                                    <dt>"Class"</dt>
+                                    <dt>{t!("overlay.node.class")}</dt>
                                     <dd><span class=css>{label}</span></dd>
-                                    <dt>"Peer ID"</dt>
+                                    <dt>{t!("overlay.node.peer_id")}</dt>
                                     <dd class="mono">{s.peer_id}</dd>
-                                    <dt>"Peers"</dt>
+                                    <dt>{t!("overlay.node.peers")}</dt>
                                     <dd>{s.connected_peers.to_string()}</dd>
-                                    <dt>"Active downloads"</dt>
+                                    <dt>{t!("overlay.node.active_downloads")}</dt>
                                     <dd>{s.active_downloads.to_string()}</dd>
-                                    <dt>"Active uploads"</dt>
+                                    <dt>{t!("overlay.node.active_uploads")}</dt>
                                     <dd>{s.active_uploads.to_string()}</dd>
-                                    <dt>"Uptime"</dt>
+                                    <dt>{t!("overlay.node.uptime")}</dt>
                                     <dd>{uptime}</dd>
                                     {s.external_ip.map(|ip| view! {
-                                        <dt>"External IP"</dt>
+                                        <dt>{t!("overlay.node.external_ip")}</dt>
                                         <dd class="mono">{ip}</dd>
                                     })}
                                 </dl>
@@ -108,34 +115,34 @@ pub fn NodeStatusPanel(
                             view! {
                                 <p class="section-label">"eMule / Kad2"</p>
                                 <dl class="panel-dl">
-                                    <dt>"Connectivity"</dt>
+                                    <dt>{t!("overlay.emule.connectivity")}</dt>
                                     <dd><span class=ccss>{clabel}</span></dd>
-                                    <dt>"Kad contacts"</dt>
+                                    <dt>{t!("overlay.emule.kad_contacts")}</dt>
                                     <dd>{e.connected_peers.to_string()}</dd>
                                     <dt>"nodes.dat"</dt>
                                     <dd>{
                                         if e.nodes_dat_present {
-                                            format!("{} contacts", e.contacts)
+                                            t!("overlay.emule.contacts", n = e.contacts).to_string()
                                         } else {
-                                            "missing".to_string()
+                                            t!("overlay.emule.missing").to_string()
                                         }
                                     }</dd>
                                     {e.tcp_port.map(|p| view! {
-                                        <dt>"TCP port"</dt>
+                                        <dt>{t!("overlay.emule.tcp_port")}</dt>
                                         <dd>{p.to_string()}</dd>
                                     })}
                                     {e.udp_port.map(|p| view! {
-                                        <dt>"UDP port"</dt>
+                                        <dt>{t!("overlay.emule.udp_port")}</dt>
                                         <dd>{p.to_string()}</dd>
                                     })}
-                                    <dt>"Active downloads"</dt>
+                                    <dt>{t!("overlay.emule.active_downloads")}</dt>
                                     <dd>{e.active_downloads.to_string()}</dd>
-                                    <dt>"Upload slots"</dt>
+                                    <dt>{t!("overlay.emule.upload_slots")}</dt>
                                     <dd>{format!("{} / {}", e.upload_slots_in_use, e.upload_slots_total)}</dd>
-                                    <dt>"Inbound conns"</dt>
+                                    <dt>{t!("overlay.emule.inbound_conns")}</dt>
                                     <dd>{e.inbound_connections.to_string()}</dd>
                                     {e.external_ip.map(|ip| view! {
-                                        <dt>"External IP"</dt>
+                                        <dt>{t!("overlay.emule.external_ip")}</dt>
                                         <dd class="mono">{ip}</dd>
                                     })}
                                 </dl>
@@ -178,52 +185,52 @@ pub fn StatsPanel(active_panel: RwSignal<Option<super::Panel>>) -> impl IntoView
         <div class="overlay-backdrop" on:click=move |_| close()>
             <div class="overlay" on:click=move |e| e.stop_propagation()>
                 <div class="overlay-header">
-                    <span class="overlay-title">"Statistics"</span>
+                    <span class="overlay-title">{t!("overlay.stats.title")}</span>
                     <button class="overlay-close" on:click=move |_| close()>
                         <Icon paths=icons::X/>
                     </button>
                 </div>
                 <div class="overlay-body">
                     {move || match metrics.get() {
-                        None => view! { <p class="loading">"Loading…"</p> }.into_any(),
+                        None => view! { <p class="loading">{t!("overlay.loading")}</p> }.into_any(),
                         Some(m) => {
                             let s = &m.session;
                             let t = &m.total;
                             view! {
-                                <p class="section-label">"This session"</p>
+                                <p class="section-label">{t!("overlay.stats.session")}</p>
                                 <dl class="panel-dl">
-                                    <dt>"Uptime"</dt>
+                                    <dt>{t!("overlay.stats.uptime")}</dt>
                                     <dd>{format_uptime(s.uptime_secs())}</dd>
-                                    <dt>"↓ speed"</dt>
+                                    <dt>{t!("overlay.stats.speed_down")}</dt>
                                     <dd>{format_speed_full(s.download_speed)}</dd>
-                                    <dt>"↑ speed"</dt>
+                                    <dt>{t!("overlay.stats.speed_up")}</dt>
                                     <dd>{format_speed_full(s.upload_speed)}</dd>
-                                    <dt>"↓ downloaded"</dt>
+                                    <dt>{t!("overlay.stats.downloaded")}</dt>
                                     <dd>{format_size(s.downloaded_bytes)}</dd>
-                                    <dt>"↑ uploaded"</dt>
+                                    <dt>{t!("overlay.stats.uploaded")}</dt>
                                     <dd>{format_size(s.uploaded_bytes)}</dd>
-                                    <dt>"Chunks received"</dt>
+                                    <dt>{t!("overlay.stats.chunks_received")}</dt>
                                     <dd>{s.chunks_received.to_string()}</dd>
-                                    <dt>"Chunks served"</dt>
+                                    <dt>{t!("overlay.stats.chunks_served")}</dt>
                                     <dd>{s.chunks_served.to_string()}</dd>
                                     {(s.chunks_rejected > 0).then(|| view! {
-                                        <dt>"Chunks rejected"</dt>
+                                        <dt>{t!("overlay.stats.chunks_rejected")}</dt>
                                         <dd class="dl-error">{s.chunks_rejected.to_string()}</dd>
                                     })}
                                 </dl>
 
-                                <p class="section-label">"All-time total"</p>
+                                <p class="section-label">{t!("overlay.stats.total")}</p>
                                 <dl class="panel-dl">
-                                    <dt>"↓ downloaded"</dt>
+                                    <dt>{t!("overlay.stats.downloaded")}</dt>
                                     <dd>{format_size(t.downloaded_bytes)}</dd>
-                                    <dt>"↑ uploaded"</dt>
+                                    <dt>{t!("overlay.stats.uploaded")}</dt>
                                     <dd>{format_size(t.uploaded_bytes)}</dd>
-                                    <dt>"Chunks received"</dt>
+                                    <dt>{t!("overlay.stats.chunks_received")}</dt>
                                     <dd>{t.chunks_received.to_string()}</dd>
-                                    <dt>"Chunks served"</dt>
+                                    <dt>{t!("overlay.stats.chunks_served")}</dt>
                                     <dd>{t.chunks_served.to_string()}</dd>
                                     {(t.chunks_rejected > 0).then(|| view! {
-                                        <dt>"Chunks rejected"</dt>
+                                        <dt>{t!("overlay.stats.chunks_rejected")}</dt>
                                         <dd class="dl-error">{t.chunks_rejected.to_string()}</dd>
                                     })}
                                 </dl>
@@ -246,25 +253,25 @@ pub fn AddressesPanel(
         <div class="overlay-backdrop" on:click=move |_| close()>
             <div class="overlay" on:click=move |e| e.stop_propagation()>
                 <div class="overlay-header">
-                    <span class="overlay-title">"Addresses"</span>
+                    <span class="overlay-title">{t!("overlay.addr.title")}</span>
                     <button class="overlay-close" on:click=move |_| close()>
                         <Icon paths=icons::X/>
                     </button>
                 </div>
                 <div class="overlay-body">
                     {move || match status.get() {
-                        None => view! { <p class="loading">"Loading..."</p> }.into_any(),
+                        None => view! { <p class="loading">{t!("overlay.loading")}</p> }.into_any(),
                         Some(s) => view! {
-                            <p class="section-label">"Listen"</p>
+                            <p class="section-label">{t!("overlay.addr.listen")}</p>
                             <ul class="addr-list">
                                 {s.listen_addrs.into_iter()
                                     .map(|a| view! { <li>{a}</li> })
                                     .collect_view()}
                             </ul>
-                            <p class="section-label">"Observed"</p>
+                            <p class="section-label">{t!("overlay.addr.observed")}</p>
                             <ul class="addr-list">
                                 {if s.observed_addrs.is_empty() {
-                                    view! { <li class="muted">"None yet"</li> }.into_any()
+                                    view! { <li class="muted">{t!("overlay.addr.none_yet")}</li> }.into_any()
                                 } else {
                                     s.observed_addrs.into_iter()
                                         .map(|a| view! { <li>{a}</li> })
@@ -313,20 +320,19 @@ pub fn PeersPanel(active_panel: RwSignal<Option<super::Panel>>) -> impl IntoView
         <div class="overlay-backdrop" on:click=move |_| close()>
             <div class="overlay" on:click=move |e| e.stop_propagation()>
                 <div class="overlay-header">
-                    <span class="overlay-title">"Peers"</span>
+                    <span class="overlay-title">{t!("overlay.peers.title")}</span>
                     <button class="overlay-close" on:click=move |_| close()>
                         <Icon paths=icons::X/>
                     </button>
                 </div>
                 <div class="overlay-body">
                     <p class="panel-note">
-                        "Peers seen recently — may include some no longer connected. \
-                         The live connected count is in Node status."
+                        {t!("overlay.peers.note")}
                     </p>
                     {move || match peers.get() {
-                        None => view! { <p class="loading">"Loading..."</p> }.into_any(),
+                        None => view! { <p class="loading">{t!("overlay.loading")}</p> }.into_any(),
                         Some(list) if list.is_empty() => {
-                            view! { <p class="muted">"No peers seen yet."</p> }.into_any()
+                            view! { <p class="muted">{t!("overlay.peers.none")}</p> }.into_any()
                         }
                         Some(list) => {
                             let count = list.len();
@@ -340,7 +346,7 @@ pub fn PeersPanel(active_panel: RwSignal<Option<super::Panel>>) -> impl IntoView
                                         } else if p.addresses.len() == 1 {
                                             p.addresses[0].clone()
                                         } else {
-                                            format!("{} addresses", p.addresses.len())
+                                            t!("overlay.peers.addresses", n = p.addresses.len()).to_string()
                                         };
                                         view! {
                                             <li class="peer-item">
@@ -356,7 +362,7 @@ pub fn PeersPanel(active_panel: RwSignal<Option<super::Panel>>) -> impl IntoView
                                     }).collect_view()}
                                 </ul>
                                 <p class="section-label">
-                                    {format!("{count} known peer{}", if count == 1 { "" } else { "s" })}
+                                    {t!("overlay.peers.known", n = count)}
                                 </p>
                             }.into_any()
                         }
@@ -377,7 +383,7 @@ pub fn AboutPanel(active_panel: RwSignal<Option<super::Panel>>) -> impl IntoView
         <div class="overlay-backdrop" on:click=move |_| close()>
             <div class="overlay" on:click=move |e| e.stop_propagation()>
                 <div class="overlay-header">
-                    <span class="overlay-title">"About"</span>
+                    <span class="overlay-title">{t!("overlay.about.title")}</span>
                     <button class="overlay-close" on:click=move |_| close()>
                         <Icon paths=icons::X/>
                     </button>
@@ -396,18 +402,18 @@ pub fn AboutPanel(active_panel: RwSignal<Option<super::Panel>>) -> impl IntoView
                         {format!("v{}", env!("CARGO_PKG_VERSION"))}
                     </div>
                     <p style="color: var(--text-2); margin: 0.9rem 0 1.1rem;">
-                        "Peer-to-peer file sharing over libp2p, with eMule/Kad2 compatibility."
+                        {t!("overlay.about.tagline")}
                     </p>
                     <div style="display: flex; flex-direction: column; gap: 0.6rem;">
                         <a
                             href=REPO target="_blank" rel="noopener noreferrer"
                             style="color: var(--accent);"
-                        >"Source code on GitHub"</a>
+                        >{t!("overlay.about.source")}</a>
                         <a
                             href=format!("{REPO}/issues/new")
                             target="_blank" rel="noopener noreferrer"
                             style="color: var(--accent);"
-                        >"Report an issue"</a>
+                        >{t!("overlay.about.report")}</a>
                     </div>
                 </div>
             </div>

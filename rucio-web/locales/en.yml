@@ -22,6 +22,92 @@ nav:
   disconnected: "Disconnected"
   notifications: "Notifications"
 
+upload:
+  none_downloading: "No one is downloading from you right now"
+  count: "%{n} uploading"
+  none_active: "No active uploads"
+  peer_title: "Remote peer"
+  sent_title: "Sent this session"
+
+notif:
+  just_now: "just now"
+  minutes_ago: "%{n}m ago"
+  hours_ago: "%{n}h ago"
+  days_ago: "%{n}d ago"
+  clear_all: "Clear all"
+  empty: "No notifications"
+  dismiss: "Dismiss"
+
+overlay:
+  loading: "Loading…"
+  node:
+    title: "Node status"
+    version: "Version"
+    class: "Class"
+    peer_id: "Peer ID"
+    peers: "Peers"
+    active_downloads: "Active downloads"
+    active_uploads: "Active uploads"
+    uptime: "Uptime"
+    external_ip: "External IP"
+  emule:
+    open: "Open"
+    firewalled: "Firewalled"
+    unknown: "Unknown"
+    connectivity: "Connectivity"
+    kad_contacts: "Kad contacts"
+    contacts: "%{n} contacts"
+    missing: "missing"
+    tcp_port: "TCP port"
+    udp_port: "UDP port"
+    active_downloads: "Active downloads"
+    upload_slots: "Upload slots"
+    inbound_conns: "Inbound conns"
+    external_ip: "External IP"
+  stats:
+    title: "Statistics"
+    session: "This session"
+    total: "All-time total"
+    uptime: "Uptime"
+    speed_down: "↓ speed"
+    speed_up: "↑ speed"
+    downloaded: "↓ downloaded"
+    uploaded: "↑ uploaded"
+    chunks_received: "Chunks received"
+    chunks_served: "Chunks served"
+    chunks_rejected: "Chunks rejected"
+  addr:
+    title: "Addresses"
+    listen: "Listen"
+    observed: "Observed"
+    none_yet: "None yet"
+  peers:
+    title: "Peers"
+    note: "Peers seen recently — may include some no longer connected. The live connected count is in Node status."
+    none: "No peers seen yet."
+    addresses: "%{n} addresses"
+    known: "%{n} known peers"
+  about:
+    title: "About"
+    tagline: "Peer-to-peer file sharing over libp2p, with eMule/Kad2 compatibility."
+    source: "Source code on GitHub"
+    report: "Report an issue"
+
+cat:
+  hint: "Categories route downloads to their own folder and tag them with a coloured badge. A download with no explicit category is auto-filed by the match keywords (the first matching category wins)."
+  color_title: "Badge colour"
+  name_placeholder: "Category name"
+  delete_title: "Delete category"
+  dir_placeholder: "download directory (absolute path; empty = global)"
+  keywords_placeholder: "auto-match keywords, | separated, e.g. 1080p|bluray (empty = none)"
+  add: "Add category"
+  err_name_required: "name required"
+  err_name_exists: "name already exists"
+  err_check_dir: "check the directory / colour"
+  err_save_failed: "save failed"
+  err_request_failed: "request failed"
+  err_invalid_request: "invalid request"
+
 config:
   tab:
     interface: "Interface"

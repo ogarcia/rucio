@@ -8,6 +8,7 @@
 //! that row's status, and returns whether everything succeeded.
 
 use leptos::prelude::*;
+use rust_i18n::t;
 
 use crate::icons::{self, Icon};
 use crate::types::{CategoriesResponse, Category, NEUTRAL_CATEGORY_COLOR};
@@ -112,7 +113,7 @@ pub async fn persist(
 
     for row in rows.get_untracked() {
         if row.name.get_untracked().trim().is_empty() {
-            row.status.set("✗ name required".to_string());
+            row.status.set(format!("✗ {}", t!("cat.err_name_required")));
             all_ok = false;
             continue;
         }
@@ -133,20 +134,22 @@ pub async fn persist(
                 }
                 Ok(resp) => {
                     let hint = match resp.status() {
-                        409 => "name already exists",
-                        400 => "check the directory / colour",
-                        _ => "save failed",
+                        409 => t!("cat.err_name_exists"),
+                        400 => t!("cat.err_check_dir"),
+                        _ => t!("cat.err_save_failed"),
                     };
                     row.status.set(format!("✗ {hint}"));
                     all_ok = false;
                 }
                 Err(_) => {
-                    row.status.set("✗ request failed".to_string());
+                    row.status
+                        .set(format!("✗ {}", t!("cat.err_request_failed")));
                     all_ok = false;
                 }
             },
             Err(_) => {
-                row.status.set("✗ invalid request".to_string());
+                row.status
+                    .set(format!("✗ {}", t!("cat.err_invalid_request")));
                 all_ok = false;
             }
         }
@@ -195,9 +198,7 @@ pub fn CategoriesEditor(
     view! {
         <div class="config-section">
             <p class="config-hint">
-                "Categories route downloads to their own folder and tag them with a "
-                "coloured badge. A download with no explicit category is auto-filed by "
-                "the match keywords (the first matching category wins)."
+                {t!("cat.hint")}
             </p>
 
             <For each=move || rows.get() key=|r| r.id let:row>
@@ -206,33 +207,33 @@ pub fn CategoriesEditor(
                         <input
                             type="color"
                             class="cat-color"
-                            title="Badge colour"
+                            title=t!("cat.color_title")
                             prop:value=move || row.color.get()
                             on:input=move |e| row.color.set(event_target_value(&e))
                         />
                         <input
                             class="config-input cat-name"
                             type="text"
-                            placeholder="Category name"
+                            placeholder=t!("cat.name_placeholder")
                             prop:value=move || row.name.get()
                             on:input=move |e| row.name.set(event_target_value(&e))
                         />
                         <span class="cat-status cat-status-err">{move || row.status.get()}</span>
-                        <button class="webhook-del" title="Delete category" on:click=move |_| remove(row)>
+                        <button class="webhook-del" title=t!("cat.delete_title") on:click=move |_| remove(row)>
                             <Icon paths=icons::TRASH/>
                         </button>
                     </div>
                     <input
                         class="config-input"
                         type="text"
-                        placeholder="download directory (absolute path; empty = global)"
+                        placeholder=t!("cat.dir_placeholder")
                         prop:value=move || row.dir.get()
                         on:input=move |e| row.dir.set(event_target_value(&e))
                     />
                     <input
                         class="config-input"
                         type="text"
-                        placeholder="auto-match keywords, | separated, e.g. 1080p|bluray (empty = none)"
+                        placeholder=t!("cat.keywords_placeholder")
                         prop:value=move || row.keywords.get()
                         on:input=move |e| row.keywords.set(event_target_value(&e))
                     />
@@ -240,7 +241,7 @@ pub fn CategoriesEditor(
             </For>
 
             <div class="webhook-actions">
-                <button class="btn-sm" on:click=add>"Add category"</button>
+                <button class="btn-sm" on:click=add>{t!("cat.add")}</button>
             </div>
         </div>
     }

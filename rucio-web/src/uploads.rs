@@ -8,6 +8,7 @@
 //! list is re-rendered each update rather than keyed/diffed.
 
 use leptos::prelude::*;
+use rust_i18n::t;
 
 use crate::statusbar::StatusBar;
 use crate::types::{ActiveUpload, UploadNetwork, format_size, format_speed};
@@ -26,7 +27,7 @@ pub fn UploadsTab(
                     when=move || !uploads.get().is_empty()
                     fallback=|| view! {
                         <div class="empty-state">
-                            <p>"No one is downloading from you right now"</p>
+                            <p>{t!("upload.none_downloading")}</p>
                         </div>
                     }
                 >
@@ -50,9 +51,9 @@ pub fn UploadsTab(
                         "dl-active-count dl-active-none"
                     };
                     let count_label = if n > 0 {
-                        format!("{n} uploading")
+                        t!("upload.count", n = n).to_string()
                     } else {
-                        "No active uploads".to_string()
+                        t!("upload.none_active").to_string()
                     };
                     view! { <span class=count_class>{count_label}</span> }
                 }}
@@ -82,9 +83,9 @@ fn UploadRow(upload: ActiveUpload) -> impl IntoView {
             <span class=format!("ul-badge {net_class}")>{net_label}</span>
             <div class="ul-main">
                 <span class="ul-name" title=title_attr>{title}</span>
-                <span class="ul-peer" title="Remote peer">{upload.peer}</span>
+                <span class="ul-peer" title=t!("upload.peer_title")>{upload.peer}</span>
             </div>
-            <span class="ul-sent" title="Sent this session">{sent}</span>
+            <span class="ul-sent" title=t!("upload.sent_title")>{sent}</span>
             <span class="ul-rate">{if rate.is_empty() { "—".to_string() } else { rate }}</span>
         </li>
     }

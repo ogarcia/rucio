@@ -4,6 +4,7 @@
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
+use rust_i18n::t;
 
 use crate::icons::{self, Icon};
 use crate::types::{Notification, NotificationKind};
@@ -13,13 +14,13 @@ fn seen_ago(created_at: i64) -> String {
     let now = (js_sys::Date::now() / 1000.0) as i64;
     let d = (now - created_at).max(0);
     if d < 60 {
-        "just now".to_string()
+        t!("notif.just_now").to_string()
     } else if d < 3_600 {
-        format!("{}m ago", d / 60)
+        t!("notif.minutes_ago", n = d / 60).to_string()
     } else if d < 86_400 {
-        format!("{}h ago", d / 3_600)
+        t!("notif.hours_ago", n = d / 3_600).to_string()
     } else {
-        format!("{}d ago", d / 86_400)
+        t!("notif.days_ago", n = d / 86_400).to_string()
     }
 }
 
@@ -60,9 +61,9 @@ pub fn NotificationsPanel(
         <div class="notif-drawer-backdrop" on:click=move |_| close()>
             <div class="notif-drawer" on:click=move |e| e.stop_propagation()>
                 <div class="overlay-header">
-                    <span class="overlay-title">"Notifications"</span>
+                    <span class="overlay-title">{t!("nav.notifications")}</span>
                     <Show when=move || !notifications.with(|l| l.is_empty())>
-                        <button class="notif-clear" on:click=clear_all>"Clear all"</button>
+                        <button class="notif-clear" on:click=clear_all>{t!("notif.clear_all")}</button>
                     </Show>
                     <button class="overlay-close" on:click=move |_| close()>
                         <Icon paths=icons::X/>
@@ -72,7 +73,7 @@ pub fn NotificationsPanel(
                     <Show
                         when=move || !notifications.with(|l| l.is_empty())
                         fallback=|| view! {
-                            <p class="notif-empty">"No notifications"</p>
+                            <p class="notif-empty">{t!("notif.empty")}</p>
                         }
                     >
                         <ul class="notif-list">
@@ -93,7 +94,7 @@ pub fn NotificationsPanel(
                                             </div>
                                             <button
                                                 class="notif-del"
-                                                title="Dismiss"
+                                                title=t!("notif.dismiss")
                                                 on:click=move |_| delete_one(id)
                                             >
                                                 <Icon paths=icons::TRASH/>

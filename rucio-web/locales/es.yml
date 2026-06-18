@@ -20,6 +20,92 @@ nav:
   disconnected: "Desconectado"
   notifications: "Notificaciones"
 
+upload:
+  none_downloading: "Nadie está descargando de ti ahora mismo"
+  count: "%{n} subiendo"
+  none_active: "No hay subidas activas"
+  peer_title: "Par remoto"
+  sent_title: "Enviado en esta sesión"
+
+notif:
+  just_now: "ahora mismo"
+  minutes_ago: "hace %{n} min"
+  hours_ago: "hace %{n} h"
+  days_ago: "hace %{n} d"
+  clear_all: "Borrar todo"
+  empty: "No hay notificaciones"
+  dismiss: "Descartar"
+
+overlay:
+  loading: "Cargando…"
+  node:
+    title: "Estado del nodo"
+    version: "Versión"
+    class: "Clase"
+    peer_id: "ID de par"
+    peers: "Pares"
+    active_downloads: "Descargas activas"
+    active_uploads: "Subidas activas"
+    uptime: "Tiempo activo"
+    external_ip: "IP externa"
+  emule:
+    open: "Abierta"
+    firewalled: "Tras cortafuegos"
+    unknown: "Desconocida"
+    connectivity: "Conectividad"
+    kad_contacts: "Contactos Kad"
+    contacts: "%{n} contactos"
+    missing: "ausente"
+    tcp_port: "Puerto TCP"
+    udp_port: "Puerto UDP"
+    active_downloads: "Descargas activas"
+    upload_slots: "Ranuras de subida"
+    inbound_conns: "Conexiones entrantes"
+    external_ip: "IP externa"
+  stats:
+    title: "Estadísticas"
+    session: "Esta sesión"
+    total: "Total histórico"
+    uptime: "Tiempo activo"
+    speed_down: "↓ velocidad"
+    speed_up: "↑ velocidad"
+    downloaded: "↓ descargado"
+    uploaded: "↑ subido"
+    chunks_received: "Bloques recibidos"
+    chunks_served: "Bloques servidos"
+    chunks_rejected: "Bloques rechazados"
+  addr:
+    title: "Direcciones"
+    listen: "Escucha"
+    observed: "Observadas"
+    none_yet: "Ninguna aún"
+  peers:
+    title: "Pares"
+    note: "Pares vistos recientemente — puede incluir algunos ya no conectados. El recuento de conexiones en vivo está en Estado del nodo."
+    none: "Aún no se ha visto ningún par."
+    addresses: "%{n} direcciones"
+    known: "%{n} pares conocidos"
+  about:
+    title: "Acerca de"
+    tagline: "Compartición de archivos entre pares sobre libp2p, con compatibilidad eMule/Kad2."
+    source: "Código fuente en GitHub"
+    report: "Informar de un problema"
+
+cat:
+  hint: "Las categorías encaminan las descargas a su propia carpeta y las etiquetan con una insignia de color. Una descarga sin categoría explícita se clasifica automáticamente por las palabras clave de coincidencia (gana la primera categoría que coincida)."
+  color_title: "Color de la insignia"
+  name_placeholder: "Nombre de la categoría"
+  delete_title: "Eliminar categoría"
+  dir_placeholder: "directorio de descarga (ruta absoluta; vacío = global)"
+  keywords_placeholder: "palabras de coincidencia automática, separadas por |, p. ej. 1080p|bluray (vacío = ninguna)"
+  add: "Añadir categoría"
+  err_name_required: "nombre obligatorio"
+  err_name_exists: "el nombre ya existe"
+  err_check_dir: "revisa el directorio / color"
+  err_save_failed: "fallo al guardar"
+  err_request_failed: "fallo en la petición"
+  err_invalid_request: "petición no válida"
+
 config:
   tab:
     interface: "Interfaz"
