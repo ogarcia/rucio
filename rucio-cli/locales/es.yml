@@ -6,8 +6,8 @@ common:
   unknown: "(desconocido)"
   none: "(ninguno)"
   press_ctrl_c: "Pulsa Ctrl-C para salir."
-  daemon_disconnected: "El daemon se ha desconectado."
-  daemon_contact_error: "Error al contactar con el daemon: %{msg}"
+  daemon_disconnected: "El demonio se ha desconectado."
+  daemon_contact_error: "Error al contactar con el demonio: %{msg}"
   ws_error: "Error de WebSocket: %{msg}"
 
 category:
@@ -144,7 +144,7 @@ emule:
   state_enabled: "activada"
   state_disabled: "desactivada"
   hint_word: "pista:"
-  hint_rebuild: "Recompila el daemon con `--features emule-compat` para habilitar el soporte de eMule."
+  hint_rebuild: "Recompila el demonio con `--features emule-compat` para habilitar el soporte de eMule."
   hint_enable: "Pon `emule.enabled = true` en config.toml o `RUCIOD_EMULE_ENABLED=true`."
   lbl_external_ip: "IP externa:"
   lbl_tcp_port: "Puerto TCP de eMule:"
@@ -309,7 +309,7 @@ config:
   ipv4_invalid: "'%{value}' no es una dirección IPv4 válida"
   max_upload_min: "network.max_upload_tasks debe ser al menos 1"
   ok_bandwidth: "ok — límite de ancho de banda aplicado inmediatamente"
-  ok_restart: "ok — reinicia el daemon para que los cambios surtan efecto"
+  ok_restart: "ok — reinicia el demonio para que los cambios surtan efecto"
   requires_value: "la clave '%{key}' requiere un valor para eliminar"
   not_found_in: "El valor '%{value}' no se encontró en %{key}"
   restart_required: "(requiere reinicio)"
@@ -344,7 +344,7 @@ config:
 help:
   about: "Rucio, cliente de intercambio de archivos P2P"
   arg:
-    api: "Dirección de la API del daemon"
+    api: "Dirección de la API del demonio"
     lang: "Idioma de la interfaz (p. ej. en, es). Por defecto, el locale del sistema"
   download:
     about: "Gestionar descargas"
@@ -447,7 +447,7 @@ help:
   search:
     about: "Buscar archivos en la red"
     list:
-      about: "Listar todas las búsquedas en la memoria del daemon"
+      about: "Listar todas las búsquedas en la memoria del demonio"
     show:
       about: "Mostrar los resultados de una búsqueda, esperando si sigue en curso"
       arg:
@@ -467,7 +467,7 @@ help:
       arg:
         id: "ID de búsqueda"
     clean:
-      about: "Eliminar de la memoria del daemon las búsquedas hechas o canceladas"
+      about: "Eliminar de la memoria del demonio las búsquedas hechas o canceladas"
       arg:
         id: "ID de búsqueda a eliminar (omítelo para eliminar todas las hechas/canceladas)"
   share:
@@ -497,11 +497,11 @@ help:
       about: "Obtener el enlace magnet de un archivo — compartido o no"
       arg:
         target: "Número de fila de `rucio share list`, nombre de archivo (único) o hash (completo o prefijo). Omítelo al usar --file"
-        file: "Calcular el enlace magnet de un archivo local sin compartirlo ni contactar con el daemon"
+        file: "Calcular el enlace magnet de un archivo local sin compartirlo ni contactar con el demonio"
   node:
-    about: "Información del nodo y del daemon"
+    about: "Información del nodo y del demonio"
     status:
-      about: "Mostrar el estado del daemon"
+      about: "Mostrar el estado del demonio"
     peers:
       about: "Listar los pares conectados"
     metrics:

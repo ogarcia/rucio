@@ -154,7 +154,7 @@ cat:
   err_invalid_request: "petición no válida"
 
 wh:
-  hint: "Webhooks salientes: cada notificación que recibes también se envía (POST) a estos. La entrega es de mejor esfuerzo."
+  hint: "Webhooks salientes: cada notificación que recibes se reenvía también (mediante POST) a estas URL. La entrega no está garantizada."
   test: "Probar"
   test_title: "Enviar una notificación de prueba a este webhook"
   remove_title: "Eliminar webhook"
@@ -256,7 +256,7 @@ share:
   pin_modal_title: "Fijar en una colección"
   pin_modal_hint: "Clasifica un pin en una colección para que los suscriptores puedan seguir solo las colecciones tuyas que les interesen. Déjalo en blanco para fijarlo sin colección."
   pin_collection_placeholder: "Colección (opcional) — p. ej. Manuales, Series"
-  add_dir_hint: "Introduce la ruta absoluta de un directorio en el host del daemon. Todos los archivos que contenga se indexan y se comparten. No se aceptan archivos individuales."
+  add_dir_hint: "Introduce la ruta absoluta de un directorio en el host del demonio. Todos los archivos que contenga se indexan y se comparten. No se aceptan archivos individuales."
   add_partial: "Se compartieron %{queued} archivo(s); %{count} ruta(s) no se pudieron leer:\n%{list}"
   adding: "Añadiendo…"
   share_btn: "Compartir"
@@ -322,9 +322,9 @@ config:
     notifications: "Notificaciones"
   title: "Configuración"
   loading: "Cargando…"
-  pending: "Hay cambios guardados a la espera de reiniciar el daemon."
+  pending: "Hay cambios guardados a la espera de reiniciar el demonio."
   interface:
-    hint: "El tema y el idioma se guardan en este navegador, no en el daemon."
+    hint: "El tema y el idioma se guardan en este navegador, no en el demonio."
     theme: "Tema"
     theme_auto: "Automático (según el sistema)"
     theme_light: "Claro"
@@ -338,13 +338,13 @@ config:
     upload_limit: "Límite de subida"
     temp_download: "Límite temporal de descarga"
     temp_upload: "Límite temporal de subida"
-    hint_restart: "Los campos de abajo se aplican tras reiniciar el daemon."
+    hint_restart: "Los campos de abajo se aplican tras reiniciar el demonio."
     bootstrap: "Pares de bootstrap (uno por línea)"
     excl_boot: "Usar solo mis pares de bootstrap"
     listen: "Direcciones de escucha (una por línea)"
     max_tasks: "Tareas máximas de subida"
   storage:
-    hint: "Los directorios se aplican tras reiniciar el daemon."
+    hint: "Los directorios se aplican tras reiniciar el demonio."
     download_dir: "Directorio de descarga"
     pin_dir: "Directorio de pines"
     temp_dir: "Directorio temporal"
@@ -352,7 +352,7 @@ config:
     database: "Ruta de la base de datos (solo lectura)"
   emule:
     enabled: "eMule activado"
-    hint: "Los cambios se aplican tras reiniciar el daemon. Los campos de abajo son de solo lectura hasta que se active eMule."
+    hint: "Los cambios se aplican tras reiniciar el demonio. Los campos de abajo son de solo lectura hasta que se active eMule."
     nickname: "Apodo"
     temp_dir: "Directorio temporal"
     external_ip: "IP externa (en blanco = automática)"
@@ -363,7 +363,7 @@ config:
     max_concurrent: "Descargas concurrentes máximas"
     min_speed: "Velocidad mínima por fuente (KiB/s, 0 = desactivado)"
   notif:
-    hint: "Los cambios se aplican inmediatamente. Los interruptores por tipo solo importan mientras las notificaciones estén activadas."
+    hint: "Los cambios se aplican inmediatamente. Las opciones de cada tipo solo tienen efecto mientras las notificaciones estén activadas."
     enable: "Activar notificaciones"
     downloads: "Notificaciones de descargas"
     system: "Notificaciones del sistema"
