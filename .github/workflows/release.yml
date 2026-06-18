@@ -53,7 +53,7 @@ jobs:
             use_cross: false
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Load build versions
         shell: bash
@@ -128,7 +128,7 @@ jobs:
     name: Build static web panel
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Load build versions
         shell: bash
@@ -174,7 +174,7 @@ jobs:
     name: Build Windows desktop (portable)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Load build versions
         shell: bash

@@ -25,7 +25,7 @@ jobs:
     name: Deploy landing page
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Publish website/ to gh-pages
         uses: peaceiris/actions-gh-pages@v4
         with:

@@ -22,7 +22,7 @@ jobs:
     name: Format / Clippy / Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -41,7 +41,7 @@ jobs:
     name: Desktop shell (Linux build check)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Load build versions
         shell: bash
         run: grep -E '^[A-Za-z_]+=' versions.env >> "$GITHUB_ENV"
