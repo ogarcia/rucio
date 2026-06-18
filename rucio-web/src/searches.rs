@@ -1,5 +1,6 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
+use rust_i18n::t;
 
 use crate::SearchStore;
 use crate::downloads::refresh_downloads;
@@ -98,11 +99,11 @@ async fn api_start_download(link: String, providers: Vec<String>) -> DlOutcome {
     }
 }
 
-fn state_label(s: &SearchState) -> &'static str {
+fn state_label(s: &SearchState) -> std::borrow::Cow<'static, str> {
     match s {
-        SearchState::Running => "running",
-        SearchState::Done => "done",
-        SearchState::Cancelled => "cancelled",
+        SearchState::Running => t!("search.state.running"),
+        SearchState::Done => t!("search.state.done"),
+        SearchState::Cancelled => t!("search.state.cancelled"),
     }
 }
 
@@ -225,7 +226,7 @@ pub fn SearchesTab(
                     })
                 })
             })
-            .unwrap_or_else(|| "Recent searches…".to_string())
+            .unwrap_or_else(|| t!("search.recent_placeholder").to_string())
     };
 
     // Raw (unfiltered) result count of the selected search; drives whether the
@@ -308,7 +309,7 @@ pub fn SearchesTab(
                 <input
                     class="search-input"
                     type="text"
-                    placeholder="Search for files…"
+                    placeholder=t!("search.placeholder")
                     prop:value=move || query.get()
                     on:input=move |e| query.set(event_target_value(&e))
                     on:keydown=move |e| {
@@ -316,7 +317,7 @@ pub fn SearchesTab(
                     }
                 />
                 <button class="search-btn" on:click=move |_| do_search()>
-                    "Search"
+                    {t!("search.search_btn")}
                 </button>
             </div>
             </div>
@@ -364,7 +365,7 @@ pub fn SearchesTab(
                     </div>
                     <button
                         class="icon-btn"
-                        title="Relaunch search"
+                        title=t!("search.relaunch_title")
                         disabled=move || search.selected.get().is_none()
                         on:click=move |_| {
                             if let Some(old) = search.selected.get_untracked() {
@@ -384,7 +385,7 @@ pub fn SearchesTab(
                     </button>
                     <button
                         class="icon-btn icon-btn-danger"
-                        title="Delete search"
+                        title=t!("search.delete_title")
                         disabled=move || search.selected.get().is_none()
                         on:click=move |_| {
                             if let Some(id) = search.selected.get_untracked() {
@@ -417,7 +418,7 @@ pub fn SearchesTab(
                             });
                         }
                     >
-                        <option value="all">"All sources"</option>
+                        <option value="all">{t!("search.filter.all_sources")}</option>
                         <option value="rucio">"Rucio"</option>
                         <option value="emule">"eMule"</option>
                     </select>
@@ -434,16 +435,16 @@ pub fn SearchesTab(
                             });
                         }
                     >
-                        <option value="sources">"Most sources"</option>
-                        <option value="size-desc">"Largest first"</option>
-                        <option value="size-asc">"Smallest first"</option>
-                        <option value="name-asc">"Name (A→Z)"</option>
-                        <option value="name-desc">"Name (Z→A)"</option>
+                        <option value="sources">{t!("search.sort.sources")}</option>
+                        <option value="size-desc">{t!("search.sort.size_desc")}</option>
+                        <option value="size-asc">{t!("search.sort.size_asc")}</option>
+                        <option value="name-asc">{t!("search.sort.name_asc")}</option>
+                        <option value="name-desc">{t!("search.sort.name_desc")}</option>
                     </select>
                     <input
                         type="text"
                         class="dl-filter-input"
-                        placeholder="Filter results…"
+                        placeholder=t!("search.filter_placeholder")
                         prop:value=move || filter_text.get()
                         on:input=move |e| filter_text.set(event_target_value(&e))
                     />
@@ -455,7 +456,7 @@ pub fn SearchesTab(
                 let sel = search.selected.get();
                 if sel.is_none() {
                     return view! {
-                        <div class="empty-state"><p>"Search for files, or pick a recent search"</p></div>
+                        <div class="empty-state"><p>{t!("search.empty_initial")}</p></div>
                     }.into_any();
                 }
                 let raw = raw_count();
@@ -471,20 +472,20 @@ pub fn SearchesTab(
                             <div class="empty-state empty-searching">
                                 <span class="spinner spinner-lg"></span>
                                 <p class="searching-indicator">
-                                    {if emule_queued { "Waiting for an eMule search turn…" } else { "Searching…" }}
+                                    {if emule_queued { t!("search.waiting_emule") } else { t!("search.searching") }}
                                 </p>
                             </div>
                         }.into_any()
                     } else {
-                        view! { <div class="empty-state"><p>"No results"</p></div> }.into_any()
+                        view! { <div class="empty-state"><p>{t!("search.no_results")}</p></div> }.into_any()
                     };
                 }
                 let results = view_results();
                 let shown = results.len();
                 let count_text = if shown == raw {
-                    format!("{raw} result(s)")
+                    t!("search.count", n = raw).to_string()
                 } else {
-                    format!("{shown} of {raw} result(s)")
+                    t!("search.count_partial", shown = shown, total = raw).to_string()
                 };
                 view! {
                     <div class="results-header">
@@ -492,12 +493,12 @@ pub fn SearchesTab(
                         {running.then(|| view! {
                             <span class="results-searching">
                                 <span class="spinner"></span>
-                                {if emule_queued { "eMule queued…" } else { "searching…" }}
+                                {if emule_queued { t!("search.emule_queued") } else { t!("search.searching_inline") }}
                             </span>
                         })}
                     </div>
                     {if results.is_empty() {
-                        view! { <div class="empty-state"><p>"No results match the filter"</p></div> }.into_any()
+                        view! { <div class="empty-state"><p>{t!("search.no_match")}</p></div> }.into_any()
                     } else {
                         view! {
                             <ul class="results-list">
@@ -518,20 +519,20 @@ pub fn SearchesTab(
                 {move || {
                     if search.selected.get().is_none() {
                         return view! {
-                            <span class="dl-active-count dl-active-none">"No search selected"</span>
+                            <span class="dl-active-count dl-active-none">{t!("search.none_selected")}</span>
                         }.into_any();
                     }
                     let raw = raw_count();
                     if raw == 0 {
                         return view! {
-                            <span class="dl-active-count dl-active-none">"No results"</span>
+                            <span class="dl-active-count dl-active-none">{t!("search.no_results")}</span>
                         }.into_any();
                     }
                     let shown = view_results().len();
                     let label = if shown == raw {
-                        format!("{raw} result(s)")
+                        t!("search.count", n = raw).to_string()
                     } else {
-                        format!("{shown} of {raw} result(s)")
+                        t!("search.count_partial", shown = shown, total = raw).to_string()
                     };
                     view! { <span class="dl-active-count">{label}</span> }.into_any()
                 }}
@@ -630,7 +631,7 @@ fn ResultRow(result: SearchResult, downloads: RwSignal<Vec<DownloadResponse>>) -
             <span class="result-name">{result.name}</span>
             <span class="result-size">{format_size(result.size)}</span>
             <span class=source_css>{source_label}</span>
-            <span class="result-peers" title="Sources that have this file">
+            <span class="result-peers" title=t!("search.sources_title")>
             {result.peer_count.to_string()}
             </span>
             <span class="result-action">
@@ -647,7 +648,7 @@ fn ResultRow(result: SearchResult, downloads: RwSignal<Vec<DownloadResponse>>) -
                 if show_button {
                     return match local.get() {
                         LocalState::Sending => view! {
-                            <span class="result-dl-status">"Adding…"</span>
+                            <span class="result-dl-status">{t!("search.adding")}</span>
                         }.into_any(),
                         other => {
                             let retry = other == LocalState::Error;
@@ -656,7 +657,7 @@ fn ResultRow(result: SearchResult, downloads: RwSignal<Vec<DownloadResponse>>) -
                                     class="btn-sm btn-primary"
                                     on:click=move |_| trigger.run(())
                                 >
-                                    {if retry { "Retry" } else { "Download" }}
+                                    {if retry { t!("search.retry") } else { t!("search.download") }}
                                 </button>
                             }.into_any()
                         }
@@ -664,13 +665,13 @@ fn ResultRow(result: SearchResult, downloads: RwSignal<Vec<DownloadResponse>>) -
                 }
                 match derived {
                     Some(DownloadState::Completed) => view! {
-                        <span class="result-dl-status result-dl-ok">"Downloaded"</span>
+                        <span class="result-dl-status result-dl-ok">{t!("search.downloaded")}</span>
                     }.into_any(),
                     Some(DownloadState::Paused) => view! {
-                        <span class="result-dl-status result-dl-have">"Paused"</span>
+                        <span class="result-dl-status result-dl-have">{t!("search.paused")}</span>
                     }.into_any(),
                     _ => view! {
-                        <span class="result-dl-status result-dl-have">"In downloads"</span>
+                        <span class="result-dl-status result-dl-have">{t!("search.in_downloads")}</span>
                     }.into_any(),
                 }
             }}

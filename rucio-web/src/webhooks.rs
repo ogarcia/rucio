@@ -10,6 +10,7 @@
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
+use rust_i18n::t;
 
 use crate::icons::{self, Icon};
 use crate::types::{NotificationKind, WebhookDef, WebhookTestResult};
@@ -97,23 +98,26 @@ pub fn collect_defs(rows: &[Row]) -> Vec<WebhookDef> {
 fn test_webhook(row: Row) {
     let def = row.to_def();
     if def.url.is_empty() {
-        row.test.set("✗ enter a URL first".to_string());
+        row.test.set(format!("✗ {}", t!("wh.test_need_url")));
         return;
     }
-    row.test.set("Testing…".to_string());
+    row.test.set(t!("wh.testing").to_string());
     spawn_local(async move {
         let msg = match gloo_net::http::Request::post("/api/v1/config/notifications/webhooks/test")
             .json(&def)
         {
             Ok(req) => match req.send().await {
                 Ok(resp) => match resp.json::<WebhookTestResult>().await {
-                    Ok(r) if r.ok => "✓ Delivered".to_string(),
-                    Ok(r) => format!("✗ {}", r.error.unwrap_or_else(|| "failed".to_string())),
-                    Err(_) => "✗ bad response".to_string(),
+                    Ok(r) if r.ok => format!("✓ {}", t!("wh.test_ok")),
+                    Ok(r) => format!(
+                        "✗ {}",
+                        r.error.unwrap_or_else(|| t!("wh.test_failed").to_string())
+                    ),
+                    Err(_) => format!("✗ {}", t!("wh.test_bad_response")),
                 },
-                Err(_) => "✗ request failed".to_string(),
+                Err(_) => format!("✗ {}", t!("wh.test_request_failed")),
             },
-            Err(_) => "✗ invalid request".to_string(),
+            Err(_) => format!("✗ {}", t!("wh.test_invalid_request")),
         };
         row.test.set(msg);
     });
@@ -122,14 +126,15 @@ fn test_webhook(row: Row) {
 const FORMATS: [&str; 6] = ["generic", "discord", "slack", "telegram", "ntfy", "custom"];
 
 /// Display label for a format value (the value stays lowercase on the wire).
-fn format_label(f: &str) -> &'static str {
+/// Brand names are kept verbatim; only Generic/Custom are translated.
+fn format_label(f: &str) -> std::borrow::Cow<'static, str> {
     match f {
-        "discord" => "Discord",
-        "slack" => "Slack",
-        "telegram" => "Telegram",
-        "ntfy" => "ntfy",
-        "custom" => "Custom",
-        _ => "Generic",
+        "discord" => "Discord".into(),
+        "slack" => "Slack".into(),
+        "telegram" => "Telegram".into(),
+        "ntfy" => "ntfy".into(),
+        "custom" => t!("wh.format_custom"),
+        _ => t!("wh.format_generic"),
     }
 }
 
@@ -165,8 +170,7 @@ pub fn WebhooksEditor(
     view! {
         <div class="config-section">
             <p class="config-hint">
-                "Outbound webhooks: every notification you receive is also POSTed to these. "
-                "Delivery is best-effort."
+                {t!("wh.hint")}
             </p>
 
             <For each=move || rows.get() key=|r| r.id let:row>
@@ -183,9 +187,9 @@ pub fn WebhooksEditor(
                         </select>
                         <button
                             class="btn-sm"
-                            title="Send a test notification to this webhook"
+                            title=t!("wh.test_title")
                             on:click=move |_| test_webhook(row)
-                        >"Test"</button>
+                        >{t!("wh.test")}</button>
                         <span class=move || {
                             let t = row.test.get();
                             if t.starts_with('\u{2713}') { "webhook-test webhook-test-ok" }
@@ -194,7 +198,7 @@ pub fn WebhooksEditor(
                         }>{move || row.test.get()}</span>
                         <button
                             class="webhook-del"
-                            title="Remove webhook"
+                            title=t!("wh.remove_title")
                             on:click=move |_| rows.update(|r| r.retain(|x| x.id != row.id))
                         >
                             <Icon paths=icons::TRASH/>
@@ -204,20 +208,20 @@ pub fn WebhooksEditor(
                     <input
                         class="config-input"
                         type="text"
-                        placeholder="https://… (URL to POST to)"
+                        placeholder=t!("wh.url_placeholder")
                         prop:value=move || row.url.get()
                         on:input=move |e| row.url.set(event_target_value(&e))
                     />
 
                     <div class="webhook-kinds">
-                        <span class="config-label">"Kinds:"</span>
+                        <span class="config-label">{t!("wh.kinds")}</span>
                         <label class="webhook-check">
                             <input
                                 type="checkbox"
                                 prop:checked=move || row.on_download.get()
                                 on:change=move |e| row.on_download.set(event_target_checked(&e))
                             />
-                            "downloads"
+                            {t!("wh.kind_downloads")}
                         </label>
                         <label class="webhook-check">
                             <input
@@ -225,15 +229,15 @@ pub fn WebhooksEditor(
                                 prop:checked=move || row.on_system.get()
                                 on:change=move |e| row.on_system.set(event_target_checked(&e))
                             />
-                            "system"
+                            {t!("wh.kind_system")}
                         </label>
-                        <span class="webhook-hint">"(none = all)"</span>
+                        <span class="webhook-hint">{t!("wh.kinds_hint")}</span>
                     </div>
 
                     <input
                         class="config-input"
                         type="text"
-                        placeholder="secret (optional, signs body as X-Rucio-Signature)"
+                        placeholder=t!("wh.secret_placeholder")
                         prop:value=move || row.secret.get()
                         on:input=move |e| row.secret.set(event_target_value(&e))
                     />
@@ -242,14 +246,14 @@ pub fn WebhooksEditor(
                         <textarea
                             class="config-textarea"
                             rows="2"
-                            placeholder=r#"body template, e.g. {"text":"{title} — {body}"}"#
+                            placeholder=t!("wh.template_placeholder")
                             prop:value=move || row.template.get()
                             on:input=move |e| row.template.set(event_target_value(&e))
                         />
                         <input
                             class="config-input"
                             type="text"
-                            placeholder="content-type (default application/json)"
+                            placeholder=t!("wh.content_type_placeholder")
                             prop:value=move || row.content_type.get()
                             on:input=move |e| row.content_type.set(event_target_value(&e))
                         />
@@ -258,7 +262,7 @@ pub fn WebhooksEditor(
             </For>
 
             <div class="webhook-actions">
-                <button class="btn-sm" on:click=add>"Add webhook"</button>
+                <button class="btn-sm" on:click=add>{t!("wh.add")}</button>
             </div>
         </div>
     }
