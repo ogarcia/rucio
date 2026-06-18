@@ -1,11 +1,12 @@
 pub mod client;
 pub mod cmd;
 pub mod color;
+pub mod help;
 pub mod state;
 pub mod table_util;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 
 use client::ApiClient;
 
@@ -40,6 +41,22 @@ fn resolve_locale(flag: Option<&str>) -> String {
         .next()
         .unwrap_or("en")
         .to_lowercase()
+}
+
+/// Read `--lang`/`RUCIO_LANG` straight from the environment, before clap parses.
+/// The active locale must be known *before* we build the (localized) `Command`,
+/// so we can't wait for clap to populate `Cli.lang`.
+fn preparse_lang() -> Option<String> {
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--lang" {
+            return args.next();
+        }
+        if let Some(value) = arg.strip_prefix("--lang=") {
+            return Some(value.to_string());
+        }
+    }
+    std::env::var("RUCIO_LANG").ok()
 }
 
 #[derive(Subcommand, Debug)]
@@ -431,8 +448,10 @@ pub enum ConfigAction {
 /// Called both from the CLI's own `main.rs` and from the fat binary.
 pub async fn run() -> Result<()> {
     rucio_core::logging::init("RUCIO", "off");
-    let cli = Cli::parse();
-    rust_i18n::set_locale(&resolve_locale(cli.lang.as_deref()));
+    // Resolve the locale before building the command so `--help` is localized.
+    rust_i18n::set_locale(&resolve_locale(preparse_lang().as_deref()));
+    let cmd = help::localize(Cli::command(), "help");
+    let cli = Cli::from_arg_matches(&cmd.get_matches())?;
     let client = ApiClient::new(&cli.api);
 
     match cli.command {
@@ -593,5 +612,39 @@ mod tests {
             t!("category.updated", locale = "es", id = 7),
             "Categoría 7 actualizada."
         );
+    }
+
+    #[test]
+    fn t_accepts_a_runtime_key() {
+        // SPIKE: clap-help localization needs keys built at runtime.
+        let key = format!("category.{}", "none");
+        assert_eq!(t!(key, locale = "en"), "No categories.");
+        // A missing key returns the key itself — lets us detect "not translated".
+        let missing = "help.does.not.exist".to_string();
+        assert_eq!(t!(&missing, locale = "en"), missing);
+    }
+
+    #[test]
+    fn clap_help_is_localized() {
+        // The root command's `about` and a nested subcommand's `about` come from
+        // the catalogue once the command tree is localized.
+        use super::Cli;
+        use clap::CommandFactory;
+
+        rust_i18n::set_locale("es");
+        let cmd = super::help::localize(Cli::command(), "help");
+        assert_eq!(
+            cmd.get_about().map(|s| s.to_string()),
+            Some(t!("help.about", locale = "es").to_string())
+        );
+        let download = cmd
+            .get_subcommands()
+            .find(|s| s.get_name() == "download")
+            .expect("download subcommand exists");
+        assert_eq!(
+            download.get_about().map(|s| s.to_string()),
+            Some(t!("help.download.about", locale = "es").to_string())
+        );
+        rust_i18n::set_locale("en");
     }
 }

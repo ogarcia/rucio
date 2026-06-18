@@ -350,3 +350,193 @@ config:
       network.bootstrap_peers   (removes one entry)
       node.listen_addrs         (removes one entry)
       emule.external_ip         (reverts to auto-detect)
+
+# clap --help text, keyed by command path (see src/help.rs). A missing key
+# falls back to clap's compiled-in English, so this tree can grow gradually.
+help:
+  about: "Rucio P2P file sharing client"
+  arg:
+    api: "Daemon API address"
+    lang: "Interface language (e.g. en, es). Defaults to the system locale"
+  download:
+    about: "Manage downloads"
+    list:
+      about: "List active and completed downloads"
+      arg:
+        watch: "Refresh the table every second until all downloads finish"
+        active: "Show only in-progress downloads"
+        done: "Show only completed, failed, and cancelled downloads"
+    show:
+      about: "Show full details for a single download"
+      arg:
+        target: "Row number from `rucio download list` (e.g. 1) or root hash (full or prefix)"
+    add:
+      about: "Queue a download (by search result index, magnet link, or ed2k link)"
+      arg:
+        target: "Search result index (e.g. 1), a full magnet link (rucio:<hash>…), or an ed2k link (ed2k://|file|…|…|…|/) to download from the eMule network"
+        provider: "PeerId of the provider — only needed when target is a rucio: magnet link"
+        category: "Category id to file the download under (see `rucio category list`). Its directory becomes the destination; omit for the global download dir"
+    category:
+      about: "Move a download to a category (or clear it)"
+      arg:
+        target: "Row number from `rucio download list` (e.g. 1) or root hash (full or prefix)"
+        category: "Category id (from `rucio category list`); omit to clear the category"
+    cancel:
+      about: "Cancel an in-progress download"
+      arg:
+        hash: "Row number from `rucio download list` (e.g. 1) or root hash (full or prefix)"
+    pause:
+      about: "Pause an in-progress download (keeps progress; resume later)"
+      arg:
+        hash: "Row number from `rucio download list` (e.g. 1) or root hash (full or prefix)"
+    resume:
+      about: "Resume a paused download"
+      arg:
+        hash: "Row number from `rucio download list` (e.g. 1) or root hash (full or prefix)"
+    clean:
+      about: "Remove completed/failed/cancelled downloads from the history"
+      arg:
+        hash: "Row number from `rucio download list` (e.g. 1) or root hash prefix (omit to remove all finished downloads)"
+  category:
+    about: "Manage download categories"
+    list:
+      about: "List categories"
+    add:
+      about: "Create a category"
+      arg:
+        name: "Unique category name"
+        dir: "Directory where this category's downloads are saved (absolute path). Omit to use the global download directory"
+        color: "Badge colour as a hex string, e.g. #3b82f6"
+        match: "Auto-assign new downloads whose name contains one of these '|'-separated substrings, e.g. \"1080p|bluray\""
+    set:
+      about: "Update a category's name, directory, colour and match keywords"
+      arg:
+        id: "Category id (from `rucio category list`)"
+        name: "New name"
+        dir: "New directory (absolute path); omit to use the global download directory"
+        color: "Badge colour as a hex string, e.g. #3b82f6 (omit to clear)"
+        match: "'|'-separated auto-assign substrings (omit to clear)"
+    remove:
+      about: "Delete a category (its downloads fall back to the global download dir)"
+      arg:
+        id: "Category id (from `rucio category list`)"
+  pin:
+    about: "Keep content available on this node (pin: fetch-and-retain)"
+    list:
+      about: "List pinned content"
+    add:
+      about: "Pin content: a magnet (fetched if missing), or a numeric download id / 64-char root hash for something you already have"
+      arg:
+        target: "A `rucio:` magnet, a download id (from `rucio download list`), or a full root hash (hex)"
+        provider: "Provider PeerId hint to seed the fetch (repeatable)"
+        collection: "Publishing collection to file this pin under (subscribers can follow specific collections of yours)"
+    remove:
+      about: "Unpin a root hash (removes the intent; content stays on disk)"
+      arg:
+        hash: "Root hash (hex), from `rucio pin list`"
+  subscription:
+    about: "Mirror other nodes' pinned content (cooperative pinning)"
+    list:
+      about: "List subscriptions and their mirror progress"
+    add:
+      about: "Subscribe to a peer's pin-set, mirroring it within a disk quota"
+      arg:
+        peer: "The peer to mirror: a PeerId or a `rucio-peer:` link (from the peer's `rucio subscription link`)"
+        quota: "Disk quota to devote to this peer, e.g. 10G, 500M, 1.5T"
+    remove:
+      about: "Unsubscribe from a peer. By default frees the space by evicting mirror-only content; --keep retains it as permanent shares you own"
+      arg:
+        peer_id: "The peer's PeerId, from `rucio subscription list`"
+        keep: "Keep the content mirrored from this peer instead of evicting it"
+    link:
+      about: "Print this node's shareable link, so others can mirror you"
+  upload:
+    about: "Inspect active uploads (peers downloading from us)"
+    list:
+      about: "List peers currently downloading a file from us"
+      arg:
+        watch: "Refresh the table live until interrupted with Ctrl-C"
+  search:
+    about: "Search for files on the network"
+    list:
+      about: "List all searches currently held in daemon memory"
+    show:
+      about: "Show results for a search, waiting if it is still running"
+      arg:
+        id: "Search ID returned by `rucio search add`"
+    add:
+      about: "Start a new search (prints search ID and returns immediately)"
+      arg:
+        keywords: "Keywords to search for"
+        wait: "Poll until the search finishes and print results"
+        network: "Which network(s) to query (default: both)"
+    relaunch:
+      about: "Relaunch a search, keeping the same ID and preserving existing results"
+      arg:
+        id: "Search ID"
+    cancel:
+      about: "Cancel a running search"
+      arg:
+        id: "Search ID"
+    clean:
+      about: "Remove done or cancelled searches from daemon memory"
+      arg:
+        id: "Search ID to remove (omit to remove all done/cancelled searches)"
+  share:
+    about: "Manage shared files"
+    list:
+      about: "List shared files (first page by default; see --page/--all)"
+      arg:
+        filter: "Optional name filter: only files whose name contains this string (case-insensitive). Omit to list everything"
+        all: "Fetch every file, no paging (can be a lot on a large library)"
+        page: "Page number, 1-based (ignored with --all)"
+        limit: "Page size (default 50, max 1000; ignored with --all)"
+    dirs:
+      about: "List the directories being shared (with file count and size)"
+    add:
+      about: "Share a directory"
+      arg:
+        path: "Path to the directory to share"
+    remove:
+      about: "Stop sharing a directory"
+      arg:
+        target: "A directory number from `rucio share dirs`, or its filesystem path"
+    indexing:
+      about: "Show how many files are currently being indexed"
+      arg:
+        watch: "Keep watching until indexing finishes"
+    magnet:
+      about: "Get the magnet link for a file — shared or not"
+      arg:
+        target: "Row number from `rucio share list`, file name (unique), or hash (full or prefix). Omit when using --file"
+        file: "Compute the magnet link for a local file without sharing it or contacting the daemon"
+  node:
+    about: "Node and daemon information"
+    status:
+      about: "Show daemon status"
+    peers:
+      about: "List connected peers"
+    metrics:
+      about: "Show transfer metrics (session and lifetime totals)"
+    emule:
+      about: "eMule / Kad2 compatibility subsystem"
+      status:
+        about: "Show eMule compatibility status and nodes.dat info"
+      bootstrap:
+        about: "Download and install a fresh nodes.dat from the eMule Kad network"
+        arg:
+          url: "URL to download nodes.dat from"
+  config:
+    about: "Show or update configuration"
+    show:
+      about: "Show current configuration"
+    set:
+      about: "Set a configuration value (restarts may be required for some changes)"
+      arg:
+        key: "Configuration key (e.g. storage.download_dir)"
+        value: "New value"
+    unset:
+      about: "Remove a value from a configuration key"
+      arg:
+        key: "Configuration key"
+        value: "Value to remove (required for list keys, ignored for scalar keys)"

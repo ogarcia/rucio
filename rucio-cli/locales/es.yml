@@ -340,3 +340,191 @@ config:
       network.bootstrap_peers   (elimina una entrada)
       node.listen_addrs         (elimina una entrada)
       emule.external_ip         (vuelve a autodetectar)
+
+help:
+  about: "Cliente de compartición de archivos P2P de Rucio"
+  arg:
+    api: "Dirección de la API del daemon"
+    lang: "Idioma de la interfaz (p. ej. en, es). Por defecto, el locale del sistema"
+  download:
+    about: "Gestionar descargas"
+    list:
+      about: "Listar descargas activas y completadas"
+      arg:
+        watch: "Refrescar la tabla cada segundo hasta que terminen todas las descargas"
+        active: "Mostrar solo las descargas en curso"
+        done: "Mostrar solo las descargas completadas, fallidas y canceladas"
+    show:
+      about: "Mostrar los detalles completos de una descarga"
+      arg:
+        target: "Número de fila de `rucio download list` (p. ej. 1) o hash raíz (completo o prefijo)"
+    add:
+      about: "Encolar una descarga (por índice de resultado de búsqueda, enlace magnet o enlace ed2k)"
+      arg:
+        target: "Índice de resultado de búsqueda (p. ej. 1), un enlace magnet completo (rucio:<hash>…) o un enlace ed2k (ed2k://|file|…|…|…|/) para descargar de la red eMule"
+        provider: "PeerId del proveedor — solo necesario cuando el objetivo es un enlace magnet rucio:"
+        category: "Id de categoría para clasificar la descarga (ver `rucio category list`). Su directorio pasa a ser el destino; omítelo para el directorio de descarga global"
+    category:
+      about: "Mover una descarga a una categoría (o quitársela)"
+      arg:
+        target: "Número de fila de `rucio download list` (p. ej. 1) o hash raíz (completo o prefijo)"
+        category: "Id de categoría (de `rucio category list`); omítelo para quitar la categoría"
+    cancel:
+      about: "Cancelar una descarga en curso"
+      arg:
+        hash: "Número de fila de `rucio download list` (p. ej. 1) o hash raíz (completo o prefijo)"
+    pause:
+      about: "Pausar una descarga en curso (conserva el progreso; reanúdala después)"
+      arg:
+        hash: "Número de fila de `rucio download list` (p. ej. 1) o hash raíz (completo o prefijo)"
+    resume:
+      about: "Reanudar una descarga pausada"
+      arg:
+        hash: "Número de fila de `rucio download list` (p. ej. 1) o hash raíz (completo o prefijo)"
+    clean:
+      about: "Eliminar del historial las descargas completadas/fallidas/canceladas"
+      arg:
+        hash: "Número de fila de `rucio download list` (p. ej. 1) o prefijo de hash raíz (omítelo para eliminar todas las descargas finalizadas)"
+  category:
+    about: "Gestionar categorías de descarga"
+    list:
+      about: "Listar categorías"
+    add:
+      about: "Crear una categoría"
+      arg:
+        name: "Nombre único de categoría"
+        dir: "Directorio donde se guardan las descargas de esta categoría (ruta absoluta). Omítelo para usar el directorio de descarga global"
+        color: "Color de la etiqueta como cadena hexadecimal, p. ej. #3b82f6"
+        match: "Asignar automáticamente las descargas nuevas cuyo nombre contenga una de estas subcadenas separadas por '|', p. ej. \"1080p|bluray\""
+    set:
+      about: "Actualizar el nombre, el directorio, el color y las palabras clave de una categoría"
+      arg:
+        id: "Id de categoría (de `rucio category list`)"
+        name: "Nombre nuevo"
+        dir: "Directorio nuevo (ruta absoluta); omítelo para usar el directorio de descarga global"
+        color: "Color de la etiqueta como cadena hexadecimal, p. ej. #3b82f6 (omítelo para borrarlo)"
+        match: "Subcadenas de autoasignación separadas por '|' (omítelo para borrarlas)"
+    remove:
+      about: "Eliminar una categoría (sus descargas vuelven al directorio de descarga global)"
+      arg:
+        id: "Id de categoría (de `rucio category list`)"
+  pin:
+    about: "Mantener contenido disponible en este nodo (pin: obtener y retener)"
+    list:
+      about: "Listar el contenido fijado"
+    add:
+      about: "Fijar contenido: un magnet (se obtiene si falta) o un id de descarga numérico / hash raíz de 64 caracteres de algo que ya tienes"
+      arg:
+        target: "Un magnet `rucio:`, un id de descarga (de `rucio download list`) o un hash raíz completo (hex)"
+        provider: "Pista de PeerId del proveedor para sembrar la obtención (repetible)"
+        collection: "Colección de publicación bajo la que clasificar este pin (los suscriptores pueden seguir colecciones concretas tuyas)"
+    remove:
+      about: "Quitar el pin de un hash raíz (elimina la intención; el contenido permanece en disco)"
+      arg:
+        hash: "Hash raíz (hex), de `rucio pin list`"
+  subscription:
+    about: "Replicar el contenido fijado de otros nodos (pinning cooperativo)"
+    list:
+      about: "Listar las suscripciones y su progreso de réplica"
+    add:
+      about: "Suscribirse al conjunto de pines de un par, replicándolo dentro de una cuota de disco"
+      arg:
+        peer: "El par a replicar: un PeerId o un enlace `rucio-peer:` (de `rucio subscription link` del par)"
+        quota: "Cuota de disco a dedicar a este par, p. ej. 10G, 500M, 1.5T"
+    remove:
+      about: "Cancelar la suscripción a un par. Por defecto libera el espacio expulsando el contenido de solo réplica; --keep lo conserva como compartidos permanentes tuyos"
+      arg:
+        peer_id: "El PeerId del par, de `rucio subscription list`"
+        keep: "Conservar el contenido replicado de este par en lugar de expulsarlo"
+    link:
+      about: "Imprimir el enlace compartible de este nodo para que otros te repliquen"
+  upload:
+    about: "Inspeccionar las subidas activas (pares que descargan de nosotros)"
+    list:
+      about: "Listar los pares que están descargando un archivo de nosotros"
+      arg:
+        watch: "Refrescar la tabla en vivo hasta interrumpir con Ctrl-C"
+  search:
+    about: "Buscar archivos en la red"
+    list:
+      about: "Listar todas las búsquedas en la memoria del daemon"
+    show:
+      about: "Mostrar los resultados de una búsqueda, esperando si sigue en curso"
+      arg:
+        id: "ID de búsqueda devuelto por `rucio search add`"
+    add:
+      about: "Iniciar una búsqueda nueva (imprime el ID de búsqueda y vuelve de inmediato)"
+      arg:
+        keywords: "Palabras clave a buscar"
+        wait: "Sondear hasta que la búsqueda termine e imprimir los resultados"
+        network: "Qué red(es) consultar (por defecto: ambas)"
+    relaunch:
+      about: "Relanzar una búsqueda, manteniendo el mismo ID y conservando los resultados existentes"
+      arg:
+        id: "ID de búsqueda"
+    cancel:
+      about: "Cancelar una búsqueda en curso"
+      arg:
+        id: "ID de búsqueda"
+    clean:
+      about: "Eliminar de la memoria del daemon las búsquedas hechas o canceladas"
+      arg:
+        id: "ID de búsqueda a eliminar (omítelo para eliminar todas las hechas/canceladas)"
+  share:
+    about: "Gestionar archivos compartidos"
+    list:
+      about: "Listar los archivos compartidos (primera página por defecto; ver --page/--all)"
+      arg:
+        filter: "Filtro opcional por nombre: solo los archivos cuyo nombre contenga esta cadena (sin distinguir mayúsculas). Omítelo para listar todo"
+        all: "Obtener todos los archivos, sin paginar (puede ser mucho en una biblioteca grande)"
+        page: "Número de página, empezando en 1 (se ignora con --all)"
+        limit: "Tamaño de página (por defecto 50, máx. 1000; se ignora con --all)"
+    dirs:
+      about: "Listar los directorios compartidos (con número de archivos y tamaño)"
+    add:
+      about: "Compartir un directorio"
+      arg:
+        path: "Ruta del directorio a compartir"
+    remove:
+      about: "Dejar de compartir un directorio"
+      arg:
+        target: "Un número de directorio de `rucio share dirs`, o su ruta en el sistema de archivos"
+    indexing:
+      about: "Mostrar cuántos archivos se están indexando ahora mismo"
+      arg:
+        watch: "Seguir observando hasta que termine la indexación"
+    magnet:
+      about: "Obtener el enlace magnet de un archivo — compartido o no"
+      arg:
+        target: "Número de fila de `rucio share list`, nombre de archivo (único) o hash (completo o prefijo). Omítelo al usar --file"
+        file: "Calcular el enlace magnet de un archivo local sin compartirlo ni contactar con el daemon"
+  node:
+    about: "Información del nodo y del daemon"
+    status:
+      about: "Mostrar el estado del daemon"
+    peers:
+      about: "Listar los pares conectados"
+    metrics:
+      about: "Mostrar métricas de transferencia (totales de la sesión e históricos)"
+    emule:
+      about: "Subsistema de compatibilidad con eMule / Kad2"
+      status:
+        about: "Mostrar el estado de compatibilidad con eMule e información de nodes.dat"
+      bootstrap:
+        about: "Descargar e instalar un nodes.dat nuevo de la red Kad de eMule"
+        arg:
+          url: "URL desde la que descargar nodes.dat"
+  config:
+    about: "Mostrar o actualizar la configuración"
+    show:
+      about: "Mostrar la configuración actual"
+    set:
+      about: "Establecer un valor de configuración (algunos cambios pueden requerir reinicio)"
+      arg:
+        key: "Clave de configuración (p. ej. storage.download_dir)"
+        value: "Valor nuevo"
+    unset:
+      about: "Quitar un valor de una clave de configuración"
+      arg:
+        key: "Clave de configuración"
+        value: "Valor a quitar (obligatorio para claves de lista, ignorado para claves escalares)"
