@@ -827,9 +827,9 @@ fn App() -> impl IntoView {
                         <div class="dropdown">
                             // ── Speed limits ──────────────────────────────
                             <div class="menu-section">
-                                <div class="menu-section-title">"Speed limits"</div>
+                                <div class="menu-section-title">{t!("menu.speed_limits")}</div>
                                 <div class="menu-limit-row">
-                                    <span class="menu-limit-label">"Download"</span>
+                                    <span class="menu-limit-label">{t!("menu.download")}</span>
                                     <select
                                         class="menu-select"
                                         prop:value=move || base_down.get().to_string()
@@ -850,7 +850,7 @@ fn App() -> impl IntoView {
                                     </select>
                                 </div>
                                 <div class="menu-limit-row">
-                                    <span class="menu-limit-label">"Upload"</span>
+                                    <span class="menu-limit-label">{t!("menu.upload")}</span>
                                     <select
                                         class="menu-select"
                                         prop:value=move || base_up.get().to_string()
@@ -884,30 +884,30 @@ fn App() -> impl IntoView {
                                         }
                                     });
                                 }>
-                                    <span>"Use temp limits"</span>
+                                    <span>{t!("menu.use_temp")}</span>
                                     <span class=move || if temp_limit.get() {
                                         "toggle-pill toggle-on"
                                     } else {
                                         "toggle-pill"
                                     }>
-                                        {move || if temp_limit.get() { "On" } else { "Off" }}
+                                        {move || if temp_limit.get() { t!("common.on") } else { t!("common.off") }}
                                     </span>
                                 </button>
                                 <div class="menu-temp-info">
                                     <icons::Icon paths=icons::HOURGLASS/>
                                     <span>
-                                        {move || format!(
-                                            "{} down, {} up",
-                                            format_rate_kbps(temp_down.get()),
-                                            format_rate_kbps(temp_up.get()),
-                                        )}
+                                        {move || t!(
+                                            "menu.temp_info",
+                                            down = format_rate_kbps(temp_down.get()),
+                                            up = format_rate_kbps(temp_up.get())
+                                        ).to_string()}
                                     </span>
                                 </div>
                             </div>
                             <div class="dropdown-sep"/>
                             // ── Actions (bulk operations on all downloads) ─
                             <div class="menu-section">
-                                <div class="menu-section-title">"Actions"</div>
+                                <div class="menu-section-title">{t!("menu.actions")}</div>
                                 <button
                                     class="dropdown-item"
                                     disabled=move || !downloads.with(|v| any_pausable(v))
@@ -915,7 +915,7 @@ fn App() -> impl IntoView {
                                         menu_open.set(false);
                                         spawn_local(pause_all(downloads));
                                     }
-                                >"Pause all"</button>
+                                >{t!("menu.pause_all")}</button>
                                 <button
                                     class="dropdown-item"
                                     disabled=move || !downloads.with(|v| any_paused(v))
@@ -923,7 +923,7 @@ fn App() -> impl IntoView {
                                         menu_open.set(false);
                                         spawn_local(resume_all(downloads));
                                     }
-                                >"Resume all"</button>
+                                >{t!("menu.resume_all")}</button>
                                 <button
                                     class="dropdown-item"
                                     disabled=move || !downloads.with(|v| any_terminal(v))
@@ -931,45 +931,45 @@ fn App() -> impl IntoView {
                                     // Destructive (removes finished rows): confirm first.
                                     let ok = web_sys::window()
                                         .and_then(|w| w.confirm_with_message(
-                                            "Clear all finished downloads from the history? Files on disk are kept.",
+                                            &t!("menu.clear_confirm"),
                                         ).ok())
                                         .unwrap_or(false);
                                     if ok {
                                         menu_open.set(false);
                                         spawn_local(clear_history(downloads));
                                     }
-                                }>"Clear history"</button>
+                                }>{t!("menu.clear_history")}</button>
                             </div>
                             <div class="dropdown-sep"/>
                             // ── Node (read-only info panels) ──────────────
                             <div class="menu-section">
-                                <div class="menu-section-title">"Node"</div>
+                                <div class="menu-section-title">{t!("menu.node")}</div>
                                 <button class="dropdown-item" on:click=move |_| {
                                     active_panel.set(Some(Panel::NodeStatus));
                                     menu_open.set(false);
-                                }>"Node status"</button>
+                                }>{t!("overlay.node.title")}</button>
                                 <button class="dropdown-item" on:click=move |_| {
                                     active_panel.set(Some(Panel::Addresses));
                                     menu_open.set(false);
-                                }>"Addresses"</button>
+                                }>{t!("overlay.addr.title")}</button>
                                 <button class="dropdown-item" on:click=move |_| {
                                     active_panel.set(Some(Panel::Peers));
                                     menu_open.set(false);
-                                }>"Peers"</button>
+                                }>{t!("overlay.peers.title")}</button>
                                 <button class="dropdown-item" on:click=move |_| {
                                     active_panel.set(Some(Panel::Stats));
                                     menu_open.set(false);
-                                }>"Statistics"</button>
+                                }>{t!("overlay.stats.title")}</button>
                             </div>
                             <div class="dropdown-sep"/>
                             <button class="dropdown-item" on:click=move |_| {
                                 config_open.set(true);
                                 menu_open.set(false);
-                            }>"Settings"</button>
+                            }>{t!("menu.settings")}</button>
                             <button class="dropdown-item" on:click=move |_| {
                                 active_panel.set(Some(Panel::About));
                                 menu_open.set(false);
-                            }>"About"</button>
+                            }>{t!("overlay.about.title")}</button>
                         </div>
                     </Show>
                 </div>

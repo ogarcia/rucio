@@ -1,3 +1,4 @@
+use rust_i18n::t;
 use serde::{Deserialize, Serialize};
 
 // ── Status ───────────────────────────────────────────────────────────────────
@@ -495,7 +496,7 @@ pub struct SpeedLimits {
 /// 1 MB/s, `MB/s` above (whole when round, else one decimal).
 pub fn format_rate_kbps(kbps: u64) -> String {
     if kbps == 0 {
-        "Unlimited".to_string()
+        t!("common.unlimited").to_string()
     } else if kbps >= 1024 {
         let mb = kbps as f64 / 1024.0;
         if mb.fract().abs() < 0.05 {
@@ -855,10 +856,11 @@ pub fn format_uptime(secs: u64) -> String {
     format!("{h:02}:{m:02}:{s:02}")
 }
 
-pub fn class_badge(class: &str) -> (&'static str, &'static str) {
+pub fn class_badge(class: &str) -> (std::borrow::Cow<'static, str>, &'static str) {
     match class {
-        "HighId" => ("HighID", "badge badge-high"),
-        "LowId" => ("LowID", "badge badge-low"),
-        _ => ("Unknown", "badge badge-unknown"),
+        // HighID/LowID are eMule jargon, kept verbatim; only Unknown is translated.
+        "HighId" => ("HighID".into(), "badge badge-high"),
+        "LowId" => ("LowID".into(), "badge badge-low"),
+        _ => (t!("common.class_unknown"), "badge badge-unknown"),
     }
 }

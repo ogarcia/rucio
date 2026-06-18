@@ -789,10 +789,10 @@ fn DownloadRow(
                 }
                 DownloadState::Queued => {
                     if let Some(rank) = d.best_queue_rank {
-                        return format!("Queue #{rank}");
+                        return t!("download.queue_rank", rank = rank).to_string();
                     }
                     if let Some(n) = d.sources_total.filter(|&n| n > 0) {
-                        return format!("{n} source{}", if n == 1 { "" } else { "s" });
+                        return t!("download.sources_count", n = n).to_string();
                     }
                     String::new()
                 }
@@ -905,15 +905,14 @@ fn AddModal(
         <div class="modal-backdrop" on:click=move |_| on_close()>
             <div class="modal" on:click=move |e| e.stop_propagation()>
                 <div class="modal-header">
-                    <span class="modal-title">"Add downloads"</span>
+                    <span class="modal-title">{t!("download.add_modal.title")}</span>
                     <button class="overlay-close" on:click=move |_| on_close()>
                         <Icon paths=icons::X/>
                     </button>
                 </div>
                 <div class="modal-body">
                     <p class="modal-hint">
-                        "Paste one link per line. Supported: "
-                        <code>"rucio:"</code>" magnets and "<code>"ed2k://"</code>" links."
+                        {t!("download.add_modal.hint")}
                     </p>
                     <textarea
                         class="link-textarea"
@@ -940,11 +939,7 @@ fn AddModal(
                         let r = rejected.get();
                         (!r.is_empty()).then(|| view! {
                             <p class="error-msg">
-                                {format!(
-                                    "Couldn't add {} link(s) — not a valid rucio: or ed2k:// link. \
-                                     The rest were added; fix these and try again.",
-                                    r.len(),
-                                )}
+                                {t!("download.add_modal.rejected", n = r.len())}
                             </p>
                         })
                     }}
@@ -962,7 +957,7 @@ fn AddModal(
                     }}
                     <Show when=move || !categories.get().is_empty()>
                         <div class="add-cat-row">
-                            <label class="config-label">"Category"</label>
+                            <label class="config-label">{t!("download.add_modal.category")}</label>
                             <select
                                 class="dl-filter-select"
                                 on:change=move |e| {
@@ -970,7 +965,7 @@ fn AddModal(
                                     selected_cat.set(v.parse::<i64>().ok());
                                 }
                             >
-                                <option value="" selected=true>"Auto / none"</option>
+                                <option value="" selected=true>{t!("download.add_modal.auto_none")}</option>
                                 <For each=move || categories.get() key=|c| c.id let:c>
                                     <option value=c.id.to_string()>{c.name.clone()}</option>
                                 </For>
@@ -979,13 +974,13 @@ fn AddModal(
                     </Show>
                 </div>
                 <div class="modal-footer">
-                    <button class="btn-sm" on:click=move |_| on_close()>"Cancel"</button>
+                    <button class="btn-sm" on:click=move |_| on_close()>{t!("common.cancel")}</button>
                     <button
                         class="btn-sm btn-primary"
                         disabled=move || busy.get() || text.get().trim().is_empty()
                         on:click=move |_| submit()
                     >
-                        {move || if busy.get() { "Adding…" } else { "Add" }}
+                        {move || if busy.get() { t!("download.add_modal.adding") } else { t!("download.add_modal.add_btn") }}
                     </button>
                 </div>
             </div>
@@ -1043,17 +1038,17 @@ fn DownloadInfoOverlay(
                 </div>
                 <div class="overlay-body">
                     <dl class="panel-dl">
-                        <dt>"State"</dt>
+                        <dt>{t!("download.detail.state")}</dt>
                         <dd>
                             <span class=state_css(&detail.state)>
                                 {state_label(&detail.state)}
                             </span>
                         </dd>
 
-                        <dt>"Kind"</dt>
+                        <dt>{t!("download.detail.kind")}</dt>
                         <dd>{detail.kind}</dd>
 
-                        <dt>"Category"</dt>
+                        <dt>{t!("download.detail.category")}</dt>
                         <dd>
                             <select
                                 class="dl-filter-select"
@@ -1074,7 +1069,7 @@ fn DownloadInfoOverlay(
                                     });
                                 }
                             >
-                                <option value="">"None"</option>
+                                <option value="">{t!("download.detail.category_none")}</option>
                                 <For each=move || categories.get() key=|c| c.id let:c>
                                     <option value=c.id.to_string()>{c.name.clone()}</option>
                                 </For>
@@ -1082,76 +1077,76 @@ fn DownloadInfoOverlay(
                         </dd>
 
                         {pct.map(|p| view! {
-                            <dt>"Progress"</dt>
+                            <dt>{t!("download.detail.progress")}</dt>
                             <dd>{format!("{p:.1}%")}</dd>
                         })}
 
                         {detail.size.map(|s| view! {
-                            <dt>"Size"</dt>
+                            <dt>{t!("download.detail.size")}</dt>
                             <dd>{format_size(s)}</dd>
                         })}
 
                         {detail.speed_bps.filter(|&s| s > 0).map(|s| view! {
-                            <dt>"Speed"</dt>
+                            <dt>{t!("download.detail.speed")}</dt>
                             <dd>{format_speed(s)}</dd>
                         })}
 
                         {detail.eta_secs.map(|e| view! {
-                            <dt>"ETA"</dt>
+                            <dt>{t!("download.detail.eta")}</dt>
                             <dd>{format_eta(e)}</dd>
                         })}
 
                         {detail.sources_active.zip(detail.sources_total).map(|(a, t)| view! {
-                            <dt>"Sources"</dt>
-                            <dd>{format!("{a} active / {t} known")}</dd>
+                            <dt>{t!("download.detail.sources")}</dt>
+                            <dd>{t!("download.detail.sources_val", active = a, known = t)}</dd>
                         })}
 
                         {queued_sources.map(|n| {
                             let label = match best_queue_rank {
-                                Some(r) => format!("{n} source(s), best rank {r}"),
-                                None => format!("{n} source(s)"),
+                                Some(r) => t!("download.detail.queued_rank", n = n, rank = r).to_string(),
+                                None => t!("download.detail.queued_n", n = n).to_string(),
                             };
                             view! {
-                                <dt>"Queued"</dt>
+                                <dt>{t!("download.detail.queued")}</dt>
                                 <dd>{label}</dd>
                             }
                         })}
 
                         {detail.dest_path.map(|p| view! {
-                            <dt>"Saved to"</dt>
+                            <dt>{t!("download.detail.saved_to")}</dt>
                             <dd class="mono">{p}</dd>
                         })}
 
                         {detail.error.map(|e| view! {
-                            <dt>"Error"</dt>
+                            <dt>{t!("download.detail.error")}</dt>
                             <dd class="dl-error">{e}</dd>
                         })}
 
-                        <dt>"Hash"</dt>
+                        <dt>{t!("download.detail.hash")}</dt>
                         <dd class="mono">{detail.root_hash}</dd>
 
                         {detail.link.map(|l| view! {
-                            <dt>"Link"</dt>
+                            <dt>{t!("download.detail.link")}</dt>
                             <dd class="mono">{l}</dd>
                         })}
                     </dl>
 
                     {(!peers.is_empty()).then(|| view! {
-                        <p class="section-label">"Downloading from"</p>
+                        <p class="section-label">{t!("download.detail.downloading_from")}</p>
                         <ul class="peer-list">
                             {peers.into_iter().map(|p| {
                                 let who = p.address.clone().unwrap_or_else(|| p.peer_id.clone());
                                 let rate = format_speed(p.rate_bps);
-                                let meta = format!(
-                                    "{} · {} in flight",
-                                    format_size(p.bytes_downloaded),
-                                    p.chunks_in_flight,
-                                );
+                                let meta = t!(
+                                    "download.detail.peer_meta",
+                                    bytes = format_size(p.bytes_downloaded),
+                                    n = p.chunks_in_flight
+                                ).to_string();
                                 view! {
                                     <li class="peer-item">
                                         <div class="peer-head">
                                             <span class="dl-peer-rate">
-                                                {if rate.is_empty() { "idle".to_string() } else { rate }}
+                                                {if rate.is_empty() { t!("download.detail.idle").to_string() } else { rate }}
                                             </span>
                                             <span class="mono peer-id" title=p.peer_id>{who}</span>
                                         </div>
@@ -1168,7 +1163,7 @@ fn DownloadInfoOverlay(
                                 class="config-input"
                                 style="flex:1;"
                                 type="text"
-                                placeholder="File name"
+                                placeholder=t!("download.detail.rename_placeholder")
                                 prop:value=move || name_input.get()
                                 on:input=move |e| name_input.set(event_target_value(&e))
                             />
@@ -1204,13 +1199,13 @@ fn DownloadInfoOverlay(
                                     });
                                 }
                             >
-                                {move || if saving.get() { "Renaming…" } else { "Rename" }}
+                                {move || if saving.get() { t!("download.detail.renaming") } else { t!("download.detail.rename_btn") }}
                             </button>
                         </div>
                     })}
 
                     <div class="piece-map-wrap">
-                        <span class="section-label">"Pieces"</span>
+                        <span class="section-label">{t!("download.detail.pieces")}</span>
                         <PieceMap id=id/>
                     </div>
                 </div>
@@ -1301,7 +1296,7 @@ fn PieceMap(id: i64) -> impl IntoView {
     view! {
         <Show
             when=move || !states.get().is_empty()
-            fallback=|| view! { <div class="piece-map-empty">"No piece data"</div> }
+            fallback=|| view! { <div class="piece-map-empty">{t!("download.piece.none")}</div> }
         >
             <div class="piece-map">
                 {move || {
@@ -1321,9 +1316,9 @@ fn PieceMap(id: i64) -> impl IntoView {
             {move || availability.get().map(|frac| {
                 let pct = (frac * 100.0).floor() as u32;
                 let (cls, text) = if frac >= 0.999 {
-                    ("piece-avail piece-avail-full", "Fully available across the swarm".to_string())
+                    ("piece-avail piece-avail-full", t!("download.piece.full").to_string())
                 } else {
-                    ("piece-avail piece-avail-partial", format!("{pct}% available — {}% shared by no peer right now", 100 - pct))
+                    ("piece-avail piece-avail-partial", t!("download.piece.partial", pct = pct, missing = 100 - pct).to_string())
                 };
                 view! { <div class=cls>{text}</div> }
             })}

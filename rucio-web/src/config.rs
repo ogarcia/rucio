@@ -336,7 +336,7 @@ pub fn ConfigModal(
         <div class="modal-backdrop" on:click=move |_| on_close()>
             <div class="modal modal-config" on:click=move |e| e.stop_propagation()>
                 <div class="modal-header">
-                    <span class="modal-title">"Configuration"</span>
+                    <span class="modal-title">{t!("config.title")}</span>
                     <button class="overlay-close" on:click=move |_| on_close()>
                         <Icon paths=icons::X/>
                     </button>
@@ -365,12 +365,12 @@ pub fn ConfigModal(
                     <Show when=move || has_pending.get() fallback=|| ()>
                         <div class="config-pending">
                             <Icon paths=icons::HOURGLASS/>
-                            <span>"There are saved changes waiting for a daemon restart."</span>
+                            <span>{t!("config.pending")}</span>
                         </div>
                     </Show>
 
                     {move || if !loaded.get() {
-                        view! { <p class="loading">"Loading…"</p> }.into_any()
+                        view! { <p class="loading">{t!("config.loading")}</p> }.into_any()
                     } else {
                         match tab.get() {
                             ConfigTab::Interface => view! {
@@ -424,41 +424,41 @@ pub fn ConfigModal(
                             }.into_any(),
                             ConfigTab::Network => view! {
                                 <div class="config-section">
-                                    <p class="config-hint">"Speed limits in KB/s (0 = unlimited); applied immediately."</p>
+                                    <p class="config-hint">{t!("config.network.hint_limits")}</p>
                                     <div class="config-field">
-                                        <label class="config-label">"Download limit"</label>
+                                        <label class="config-label">{t!("config.network.download_limit")}</label>
                                         <input class="config-input" type="text"
                                             prop:value=move || f_dl.get()
                                             on:input=move |e| f_dl.set(event_target_value(&e))/>
                                     </div>
                                     <div class="config-field">
-                                        <label class="config-label">"Upload limit"</label>
+                                        <label class="config-label">{t!("config.network.upload_limit")}</label>
                                         <input class="config-input" type="text"
                                             prop:value=move || f_ul.get()
                                             on:input=move |e| f_ul.set(event_target_value(&e))/>
                                     </div>
                                     <div class="config-field">
-                                        <label class="config-label">"Temp download limit"</label>
+                                        <label class="config-label">{t!("config.network.temp_download")}</label>
                                         <input class="config-input" type="text"
                                             prop:value=move || f_tdl.get()
                                             on:input=move |e| f_tdl.set(event_target_value(&e))/>
                                     </div>
                                     <div class="config-field">
-                                        <label class="config-label">"Temp upload limit"</label>
+                                        <label class="config-label">{t!("config.network.temp_upload")}</label>
                                         <input class="config-input" type="text"
                                             prop:value=move || f_tul.get()
                                             on:input=move |e| f_tul.set(event_target_value(&e))/>
                                     </div>
 
-                                    <p class="config-hint">"The fields below apply after a daemon restart."</p>
+                                    <p class="config-hint">{t!("config.network.hint_restart")}</p>
                                     <div class="config-field config-field-col">
-                                        <label class="config-label">"Bootstrap peers (one per line)"</label>
+                                        <label class="config-label">{t!("config.network.bootstrap")}</label>
                                         <textarea class="config-textarea" rows="3"
                                             prop:value=move || f_boot.get()
                                             on:input=move |e| f_boot.set(event_target_value(&e))/>
                                     </div>
                                     <div class="config-field config-field-keep">
-                                        <label class="config-label">"Use only my bootstrap peers"</label>
+                                        <label class="config-label">{t!("config.network.excl_boot")}</label>
                                         <span
                                             class=move || if f_excl_boot.get() {
                                                 "toggle-pill toggle-on toggle-clickable"
@@ -467,17 +467,17 @@ pub fn ConfigModal(
                                             }
                                             on:click=move |_| f_excl_boot.update(|v| *v = !*v)
                                         >
-                                            {move || if f_excl_boot.get() { "On" } else { "Off" }}
+                                            {move || if f_excl_boot.get() { t!("common.on") } else { t!("common.off") }}
                                         </span>
                                     </div>
                                     <div class="config-field config-field-col">
-                                        <label class="config-label">"Listen addresses (one per line)"</label>
+                                        <label class="config-label">{t!("config.network.listen")}</label>
                                         <textarea class="config-textarea" rows="2"
                                             prop:value=move || f_listen.get()
                                             on:input=move |e| f_listen.set(event_target_value(&e))/>
                                     </div>
                                     <div class="config-field">
-                                        <label class="config-label">"Max upload tasks"</label>
+                                        <label class="config-label">{t!("config.network.max_tasks")}</label>
                                         <input class="config-input config-input-sm" type="text"
                                             prop:value=move || f_tasks.get()
                                             on:input=move |e| f_tasks.set(event_target_value(&e))/>
@@ -486,33 +486,33 @@ pub fn ConfigModal(
                             }.into_any(),
                             ConfigTab::Storage => view! {
                                 <div class="config-section">
-                                    <p class="config-hint">"Directories apply after a daemon restart."</p>
+                                    <p class="config-hint">{t!("config.storage.hint")}</p>
                                     <div class="config-field">
-                                        <label class="config-label">"Download directory"</label>
+                                        <label class="config-label">{t!("config.storage.download_dir")}</label>
                                         <input class="config-input" type="text"
                                             prop:value=move || f_st_dl.get()
                                             on:input=move |e| f_st_dl.set(event_target_value(&e))/>
                                     </div>
                                     <div class="config-field">
-                                        <label class="config-label">"Pin directory"</label>
+                                        <label class="config-label">{t!("config.storage.pin_dir")}</label>
                                         <input class="config-input" type="text"
                                             prop:value=move || f_st_pin.get()
                                             on:input=move |e| f_st_pin.set(event_target_value(&e))/>
                                     </div>
                                     <div class="config-field">
-                                        <label class="config-label">"Temp directory"</label>
+                                        <label class="config-label">{t!("config.storage.temp_dir")}</label>
                                         <input class="config-input" type="text"
                                             prop:value=move || f_st_tmp.get()
                                             on:input=move |e| f_st_tmp.set(event_target_value(&e))/>
                                     </div>
                                     <div class="config-field">
-                                        <label class="config-label">"Outboard directory"</label>
+                                        <label class="config-label">{t!("config.storage.outboard_dir")}</label>
                                         <input class="config-input" type="text"
                                             prop:value=move || f_st_outboard.get()
                                             on:input=move |e| f_st_outboard.set(event_target_value(&e))/>
                                     </div>
                                     <div class="config-field">
-                                        <label class="config-label">"Database path (read-only)"</label>
+                                        <label class="config-label">{t!("config.storage.database")}</label>
                                         <input class="config-input" type="text" disabled=true
                                             prop:value=move || f_st_db.get()/>
                                     </div>
@@ -521,7 +521,7 @@ pub fn ConfigModal(
                             ConfigTab::Emule => view! {
                                 <div class="config-section">
                                     <div class="config-field config-field-keep">
-                                        <label class="config-label">"eMule enabled"</label>
+                                        <label class="config-label">{t!("config.emule.enabled")}</label>
                                         <span
                                             class=move || if f_em_enabled.get() {
                                                 "toggle-pill toggle-on toggle-clickable"
@@ -530,70 +530,70 @@ pub fn ConfigModal(
                                             }
                                             on:click=move |_| f_em_enabled.update(|v| *v = !*v)
                                         >
-                                            {move || if f_em_enabled.get() { "On" } else { "Off" }}
+                                            {move || if f_em_enabled.get() { t!("common.on") } else { t!("common.off") }}
                                         </span>
                                     </div>
                                     <p class="config-hint">
-                                        "Changes apply after a daemon restart. The fields below are read-only until eMule is enabled."
+                                        {t!("config.emule.hint")}
                                     </p>
                                     <div class="config-field">
-                                        <label class="config-label">"Nickname"</label>
+                                        <label class="config-label">{t!("config.emule.nickname")}</label>
                                         <input class="config-input" type="text"
                                             disabled=em_locked
                                             prop:value=move || f_em_nick.get()
                                             on:input=move |e| f_em_nick.set(event_target_value(&e))/>
                                     </div>
                                     <div class="config-field">
-                                        <label class="config-label">"Temp directory"</label>
+                                        <label class="config-label">{t!("config.emule.temp_dir")}</label>
                                         <input class="config-input" type="text"
                                             disabled=em_locked
                                             prop:value=move || f_em_temp.get()
                                             on:input=move |e| f_em_temp.set(event_target_value(&e))/>
                                     </div>
                                     <div class="config-field">
-                                        <label class="config-label">"External IP (blank = auto)"</label>
+                                        <label class="config-label">{t!("config.emule.external_ip")}</label>
                                         <input class="config-input" type="text"
                                             disabled=em_locked
                                             prop:value=move || f_em_extip.get()
                                             on:input=move |e| f_em_extip.set(event_target_value(&e))/>
                                     </div>
                                     <div class="config-field">
-                                        <label class="config-label">"TCP port"</label>
+                                        <label class="config-label">{t!("config.emule.tcp_port")}</label>
                                         <input class="config-input config-input-sm" type="text"
                                             disabled=em_locked
                                             prop:value=move || f_em_tcp.get()
                                             on:input=move |e| f_em_tcp.set(event_target_value(&e))/>
                                     </div>
                                     <div class="config-field">
-                                        <label class="config-label">"UDP port (Kad2)"</label>
+                                        <label class="config-label">{t!("config.emule.udp_port")}</label>
                                         <input class="config-input config-input-sm" type="text"
                                             disabled=em_locked
                                             prop:value=move || f_em_udp.get()
                                             on:input=move |e| f_em_udp.set(event_target_value(&e))/>
                                     </div>
                                     <div class="config-field">
-                                        <label class="config-label">"Download slots per file"</label>
+                                        <label class="config-label">{t!("config.emule.slots_per_file")}</label>
                                         <input class="config-input config-input-sm" type="text"
                                             disabled=em_locked
                                             prop:value=move || f_em_slots.get()
                                             on:input=move |e| f_em_slots.set(event_target_value(&e))/>
                                     </div>
                                     <div class="config-field">
-                                        <label class="config-label">"Max upload slots"</label>
+                                        <label class="config-label">{t!("config.emule.max_upload_slots")}</label>
                                         <input class="config-input config-input-sm" type="text"
                                             disabled=em_locked
                                             prop:value=move || f_em_upslots.get()
                                             on:input=move |e| f_em_upslots.set(event_target_value(&e))/>
                                     </div>
                                     <div class="config-field">
-                                        <label class="config-label">"Max concurrent downloads"</label>
+                                        <label class="config-label">{t!("config.emule.max_concurrent")}</label>
                                         <input class="config-input config-input-sm" type="text"
                                             disabled=em_locked
                                             prop:value=move || f_em_maxconc.get()
                                             on:input=move |e| f_em_maxconc.set(event_target_value(&e))/>
                                     </div>
                                     <div class="config-field">
-                                        <label class="config-label">"Min source speed (KiB/s, 0 = off)"</label>
+                                        <label class="config-label">{t!("config.emule.min_speed")}</label>
                                         <input class="config-input config-input-sm" type="text"
                                             disabled=em_locked
                                             prop:value=move || f_em_minspeed.get()
@@ -603,9 +603,9 @@ pub fn ConfigModal(
                             }.into_any(),
                             ConfigTab::Notifications => view! {
                                 <div class="config-section">
-                                    <p class="config-hint">"Changes apply immediately. The per-type switches only matter while notifications are enabled."</p>
+                                    <p class="config-hint">{t!("config.notif.hint")}</p>
                                     <div class="config-field config-field-keep">
-                                        <label class="config-label">"Enable notifications"</label>
+                                        <label class="config-label">{t!("config.notif.enable")}</label>
                                         <span
                                             class=move || if n_enabled.get() {
                                                 "toggle-pill toggle-on toggle-clickable"
@@ -617,11 +617,11 @@ pub fn ConfigModal(
                                                 save_notif();
                                             }
                                         >
-                                            {move || if n_enabled.get() { "On" } else { "Off" }}
+                                            {move || if n_enabled.get() { t!("common.on") } else { t!("common.off") }}
                                         </span>
                                     </div>
                                     <div class="config-field config-field-keep">
-                                        <label class="config-label">"Download notifications"</label>
+                                        <label class="config-label">{t!("config.notif.downloads")}</label>
                                         <span
                                             class=move || notif_pill_class(n_downloads.get(), n_enabled.get())
                                             on:click=move |_| {
@@ -629,11 +629,11 @@ pub fn ConfigModal(
                                                 save_notif();
                                             }
                                         >
-                                            {move || if n_downloads.get() { "On" } else { "Off" }}
+                                            {move || if n_downloads.get() { t!("common.on") } else { t!("common.off") }}
                                         </span>
                                     </div>
                                     <div class="config-field config-field-keep">
-                                        <label class="config-label">"System notifications"</label>
+                                        <label class="config-label">{t!("config.notif.system")}</label>
                                         <span
                                             class=move || notif_pill_class(n_system.get(), n_enabled.get())
                                             on:click=move |_| {
@@ -641,7 +641,7 @@ pub fn ConfigModal(
                                                 save_notif();
                                             }
                                         >
-                                            {move || if n_system.get() { "On" } else { "Off" }}
+                                            {move || if n_system.get() { t!("common.on") } else { t!("common.off") }}
                                         </span>
                                     </div>
                                 </div>
@@ -655,13 +655,13 @@ pub fn ConfigModal(
                 </div>
 
                 <div class="modal-footer">
-                    <button class="btn-sm" on:click=move |_| on_close()>"Cancel"</button>
+                    <button class="btn-sm" on:click=move |_| on_close()>{t!("common.cancel")}</button>
                     <button
                         class="btn-sm btn-primary"
                         disabled=move || saving.get() || !loaded.get()
                         on:click=move |_| save()
                     >
-                        {move || if saving.get() { "Saving…" } else { "Save" }}
+                        {move || if saving.get() { t!("common.saving") } else { t!("common.save") }}
                     </button>
                 </div>
             </div>
