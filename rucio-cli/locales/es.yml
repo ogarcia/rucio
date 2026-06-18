@@ -342,7 +342,7 @@ config:
       emule.external_ip         (vuelve a autodetectar)
 
 help:
-  about: "Cliente de compartición de archivos P2P de Rucio"
+  about: "Rucio, cliente de intercambio de archivos P2P"
   arg:
     api: "Dirección de la API del daemon"
     lang: "Idioma de la interfaz (p. ej. en, es). Por defecto, el locale del sistema"
