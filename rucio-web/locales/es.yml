@@ -1,6 +1,35 @@
 # Spanish translation for the Rucio web UI.
 _version: 1
 
+common:
+  cancel: "Cancelar"
+  save: "Guardar"
+  saving: "Guardando…"
+
+pin:
+  add: "Fijar contenido"
+  add_title: "Fijar contenido por magnet o hash raíz (se obtiene si falta y se mantiene disponible)"
+  empty: "Nada fijado"
+  empty_hint: "Fija un magnet para mantener ese contenido disponible en este nodo."
+  unknown_size: "tamaño desconocido"
+  add_collection: "+ colección"
+  collection_title: "Cambiar la colección de publicación — los suscriptores pueden seguir colecciones concretas tuyas"
+  unpin_title: "Quitar el pin (el contenido permanece en disco)"
+  none: "No hay pines"
+  count: "%{n} fijados"
+  state:
+    available: "disponible"
+    fetching: "obteniendo"
+    missing: "ausente"
+  change_collection: "Cambiar colección"
+  collection_hint: "Los suscriptores pueden seguir colecciones concretas tuyas. Déjalo en blanco para que este pin quede sin colección."
+  collection_placeholder: "Colección — p. ej. Manuales, Series"
+  add_hint: "Pega un magnet rucio: o un hash raíz de 64 caracteres. Si ya tienes el contenido, simplemente se marca como conservado; si no, se obtiene de la red y luego se mantiene disponible (se re-sirve) en este nodo."
+  magnet_placeholder: "rucio:<hash>?name=… — o un hash de 64 caracteres"
+  collection_optional_placeholder: "Colección (opcional) — p. ej. Manuales, Series"
+  pinning: "Fijando…"
+  pin_btn: "Fijar"
+
 statusbar:
   idle: "Inactivo"
   temp_limit_on: "Límite de velocidad temporal: activado"

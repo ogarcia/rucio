@@ -3,6 +3,35 @@
 # Format: rust-i18n _version 1 (one file per language), Weblate-compatible.
 _version: 1
 
+common:
+  cancel: "Cancel"
+  save: "Save"
+  saving: "Saving…"
+
+pin:
+  add: "Pin content"
+  add_title: "Pin content by magnet or root hash (fetched if missing, then kept available)"
+  empty: "Nothing pinned"
+  empty_hint: "Pin a magnet to keep that content available on this node."
+  unknown_size: "unknown size"
+  add_collection: "+ collection"
+  collection_title: "Change publishing collection — subscribers can follow specific collections of yours"
+  unpin_title: "Unpin (content stays on disk)"
+  none: "No pins"
+  count: "%{n} pinned"
+  state:
+    available: "available"
+    fetching: "fetching"
+    missing: "missing"
+  change_collection: "Change collection"
+  collection_hint: "Subscribers can follow specific collections of yours. Leave it blank to make this pin uncollected."
+  collection_placeholder: "Collection — e.g. Manuals, Series"
+  add_hint: "Paste a rucio: magnet or a 64-character root hash. If you already have the content it's simply marked as kept; if not, it's fetched from the network and then kept available (re-provided) on this node."
+  magnet_placeholder: "rucio:<hash>?name=… — or a 64-char hash"
+  collection_optional_placeholder: "Collection (optional) — e.g. Manuals, Series"
+  pinning: "Pinning…"
+  pin_btn: "Pin"
+
 statusbar:
   idle: "Idle"
   temp_limit_on: "Temporary speed limit: on"

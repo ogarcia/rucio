@@ -6,6 +6,7 @@
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
+use rust_i18n::t;
 
 use crate::icons::{self, Icon};
 use crate::statusbar::StatusBar;
@@ -102,11 +103,11 @@ pub fn PinsTab(
                 <div class="dl-toolbar">
                     <button
                         class="toolbar-btn"
-                        title="Pin content by magnet or root hash (fetched if missing, then kept available)"
+                        title=t!("pin.add_title")
                         on:click=move |_| add_open.set(true)
                     >
                         <Icon paths=icons::PIN/>
-                        <span class="btn-label">"Pin content"</span>
+                        <span class="btn-label">{t!("pin.add")}</span>
                     </button>
                 </div>
             </div>
@@ -116,9 +117,9 @@ pub fn PinsTab(
                     when=move || !pins.get().is_empty()
                     fallback=|| view! {
                         <div class="empty-state empty-state-sm">
-                            <p>"Nothing pinned"</p>
+                            <p>{t!("pin.empty")}</p>
                             <p class="empty-hint">
-                                "Pin a magnet to keep that content available on this node."
+                                {t!("pin.empty_hint")}
                             </p>
                         </div>
                     }
@@ -141,19 +142,25 @@ pub fn PinsTab(
                                     let size = p
                                         .size
                                         .map(format_size)
-                                        .unwrap_or_else(|| "unknown size".to_string());
+                                        .unwrap_or_else(|| t!("pin.unknown_size").to_string());
                                     // Full hash; the meta line truncates with an
                                     // ellipsis via CSS only when it doesn't fit.
                                     format!("{size} · {}", p.root_hash)
                                 };
                                 let state = p.state.clone();
                                 let state_class = format!("pin-state pin-state-{state}");
+                                let state_label = match state.as_str() {
+                                    "available" => t!("pin.state.available"),
+                                    "fetching" => t!("pin.state.fetching"),
+                                    "missing" => t!("pin.state.missing"),
+                                    _ => std::borrow::Cow::Owned(state.clone()),
+                                };
                                 let (pill_label, pill_class) = match &col_now {
                                     Some(c) if !c.is_empty() => {
                                         (c.clone(), "pin-collection-pill")
                                     }
                                     _ => (
-                                        "+ collection".to_string(),
+                                        t!("pin.add_collection").to_string(),
                                         "pin-collection-pill pin-collection-pill-empty",
                                     ),
                                 };
@@ -167,18 +174,18 @@ pub fn PinsTab(
                                         <div class="pin-side">
                                             <button
                                                 class=pill_class
-                                                title="Change publishing collection — subscribers can follow specific collections of yours"
+                                                title=t!("pin.collection_title")
                                                 on:click=move |_| {
                                                     edit_modal.set(Some((hash_col.clone(), col_now.clone())));
                                                 }
                                             >
                                                 {pill_label}
                                             </button>
-                                            <span class=state_class>{state}</span>
+                                            <span class=state_class>{state_label}</span>
                                         </div>
                                         <button
                                             class="icon-btn icon-btn-danger"
-                                            title="Unpin (content stays on disk)"
+                                            title=t!("pin.unpin_title")
                                             on:click=move |_| {
                                                 // Unpinning is reversible and non-destructive
                                                 // (the file stays on disk and shared), so no
@@ -215,10 +222,10 @@ pub fn PinsTab(
                 {move || {
                     let n = pins.get().len();
                     if n == 0 {
-                        view! { <span class="dl-active-count dl-active-none">"No pins"</span> }
+                        view! { <span class="dl-active-count dl-active-none">{t!("pin.none")}</span> }
                             .into_any()
                     } else {
-                        view! { <span class="dl-active-count">{format!("{n} pinned")}</span> }
+                        view! { <span class="dl-active-count">{t!("pin.count", n = n)}</span> }
                             .into_any()
                     }
                 }}
@@ -282,34 +289,33 @@ fn SetCollectionModal(
         <div class="modal-backdrop" on:click=move |_| on_close()>
             <div class="modal" on:click=move |e| e.stop_propagation()>
                 <div class="modal-header">
-                    <span class="modal-title">"Change collection"</span>
+                    <span class="modal-title">{t!("pin.change_collection")}</span>
                     <button class="overlay-close" on:click=move |_| on_close()>
                         <Icon paths=icons::X/>
                     </button>
                 </div>
                 <div class="modal-body">
                     <p class="modal-hint">
-                        "Subscribers can follow specific collections of yours. Leave it blank to
-                         make this pin uncollected."
+                        {t!("pin.collection_hint")}
                     </p>
                     <input
                         class="search-input"
                         type="text"
                         list="pin-collections"
-                        placeholder="Collection — e.g. Manuals, Series"
+                        placeholder=t!("pin.collection_placeholder")
                         prop:value=move || collection.get()
                         on:input=move |e| collection.set(event_target_value(&e))
                         on:keydown=move |e| { if e.key() == "Enter" { submit(); } }
                     />
                 </div>
                 <div class="modal-footer">
-                    <button class="btn-sm" on:click=move |_| on_close()>"Cancel"</button>
+                    <button class="btn-sm" on:click=move |_| on_close()>{t!("common.cancel")}</button>
                     <button
                         class="btn-sm btn-primary"
                         disabled=move || busy.get()
                         on:click=move |_| submit()
                     >
-                        {move || if busy.get() { "Saving…" } else { "Save" }}
+                        {move || if busy.get() { t!("common.saving") } else { t!("common.save") }}
                     </button>
                 </div>
             </div>
@@ -360,21 +366,19 @@ fn AddPinModal(
         <div class="modal-backdrop" on:click=move |_| on_close()>
             <div class="modal" on:click=move |e| e.stop_propagation()>
                 <div class="modal-header">
-                    <span class="modal-title">"Pin content"</span>
+                    <span class="modal-title">{t!("pin.add")}</span>
                     <button class="overlay-close" on:click=move |_| on_close()>
                         <Icon paths=icons::X/>
                     </button>
                 </div>
                 <div class="modal-body">
                     <p class="modal-hint">
-                        "Paste a rucio: magnet or a 64-character root hash. If you already have
-                         the content it's simply marked as kept; if not, it's fetched from the
-                         network and then kept available (re-provided) on this node."
+                        {t!("pin.add_hint")}
                     </p>
                     <input
                         class="search-input"
                         type="text"
-                        placeholder="rucio:<hash>?name=… — or a 64-char hash"
+                        placeholder=t!("pin.magnet_placeholder")
                         prop:value=move || magnet.get()
                         on:input=move |e| magnet.set(event_target_value(&e))
                         on:keydown=move |e| { if e.key() == "Enter" { submit(); } }
@@ -383,7 +387,7 @@ fn AddPinModal(
                         class="search-input"
                         type="text"
                         list="pin-collections-modal"
-                        placeholder="Collection (optional) — e.g. Manuals, Series"
+                        placeholder=t!("pin.collection_optional_placeholder")
                         prop:value=move || collection.get()
                         on:input=move |e| collection.set(event_target_value(&e))
                         on:keydown=move |e| { if e.key() == "Enter" { submit(); } }
@@ -398,13 +402,13 @@ fn AddPinModal(
                     {move || error.get().map(|e| view! { <p class="error-msg">{e}</p> })}
                 </div>
                 <div class="modal-footer">
-                    <button class="btn-sm" on:click=move |_| on_close()>"Cancel"</button>
+                    <button class="btn-sm" on:click=move |_| on_close()>{t!("common.cancel")}</button>
                     <button
                         class="btn-sm btn-primary"
                         disabled=move || busy.get() || magnet.get().trim().is_empty()
                         on:click=move |_| submit()
                     >
-                        {move || if busy.get() { "Pinning…" } else { "Pin" }}
+                        {move || if busy.get() { t!("pin.pinning") } else { t!("pin.pin_btn") }}
                     </button>
                 </div>
             </div>
