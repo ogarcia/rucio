@@ -81,6 +81,11 @@ pub struct BehaviourConfig {
     /// notes in `rucio-bootstrap`'s `indexer` module before raising it or
     /// reaching for a disk-backed `RecordStore`.
     pub kad_max_records: usize,
+    /// Role token appended to the Identify agent string so infrastructure nodes
+    /// are recognisable on the network, e.g. `Rucio/0.28.0 (Linux x86_64;
+    /// bootstrap) libp2p/0.56.0`. `None` for a plain node (the daemon), which
+    /// keeps the unadorned `(<os> <arch>)` form.
+    pub agent_role: Option<&'static str>,
 }
 
 impl BehaviourConfig {
@@ -100,6 +105,8 @@ impl BehaviourConfig {
             // we hold as a DHT server) modest so a client isn't a big RAM store.
             kad_max_provided_keys: 1_000_000,
             kad_max_records: 100_000,
+            // A plain node advertises no role token.
+            agent_role: None,
         }
     }
 
@@ -121,6 +128,7 @@ impl BehaviourConfig {
             // network, so hold few provided keys and many stored records.
             kad_max_provided_keys: 1024,
             kad_max_records: 1_000_000,
+            agent_role: Some("bootstrap"),
         }
     }
 
@@ -131,6 +139,9 @@ impl BehaviourConfig {
         Self {
             manifest: enrich,
             capture_provider_records: true,
+            // An indexer is a bootstrap that also harvests provider records;
+            // mark it distinctly so it stands out from a plain bootstrap.
+            agent_role: Some("indexer"),
             ..Self::dht_only()
         }
     }
@@ -200,7 +211,7 @@ impl RucioBehaviour {
         // blend into.
         let identify = identify::Behaviour::new(
             identify::Config::new("/rucio/1.0.0".to_string(), keypair.public())
-                .with_agent_version(agent_version()),
+                .with_agent_version(agent_version(cfg.agent_role)),
         );
 
         let mut kademlia_config = kad::Config::new(libp2p::StreamProtocol::new("/rucio/kad/1.0.0"));
@@ -315,10 +326,11 @@ impl RucioBehaviour {
 }
 
 /// HTTP User-Agent-style identifier advertised over Identify, e.g.
-/// `Rucio/0.28.0 (Linux x86_64) libp2p/0.56.0`. The crate version and platform
-/// come from the compiler; the libp2p version is resolved from Cargo.lock by
-/// build.rs (RUCIO_LIBP2P_VERSION).
-fn agent_version() -> String {
+/// `Rucio/0.28.0 (Linux x86_64) libp2p/0.56.0`, or with a role token for
+/// infrastructure nodes: `Rucio/0.28.0 (Linux x86_64; bootstrap) libp2p/0.56.0`.
+/// The crate version and platform come from the compiler; the libp2p version is
+/// resolved from Cargo.lock by build.rs (RUCIO_LIBP2P_VERSION).
+fn agent_version(role: Option<&str>) -> String {
     // std::env::consts::OS is lowercase ("linux"); spell the common ones the way
     // a UA would and leave anything unexpected as-is.
     let os = match std::env::consts::OS {
@@ -330,11 +342,16 @@ fn agent_version() -> String {
         "ios" => "iOS",
         other => other,
     };
+    let arch = std::env::consts::ARCH;
+    // Mirror Firefox's "(platform; detail)" convention: the role is an extra
+    // semicolon-separated token inside the same parenthesised group.
+    let platform = match role {
+        Some(role) => format!("{os} {arch}; {role}"),
+        None => format!("{os} {arch}"),
+    };
     format!(
-        "Rucio/{} ({} {}) libp2p/{}",
+        "Rucio/{} ({platform}) libp2p/{}",
         env!("CARGO_PKG_VERSION"),
-        os,
-        std::env::consts::ARCH,
         env!("RUCIO_LIBP2P_VERSION"),
     )
 }
@@ -371,7 +388,7 @@ mod tests {
 
     #[test]
     fn agent_version_is_well_formed() {
-        let ua = agent_version();
+        let ua = agent_version(None);
         // Shape: Rucio/<ver> (<os> <arch>) libp2p/<ver>
         assert!(ua.starts_with("Rucio/"), "missing product: {ua}");
         assert!(ua.contains(" libp2p/"), "missing engine: {ua}");
@@ -379,6 +396,20 @@ mod tests {
         assert!(
             !ua.ends_with("libp2p/unknown"),
             "libp2p version unresolved: {ua}"
+        );
+        // A plain node carries no role token inside the parentheses.
+        assert!(
+            !ua.contains(';'),
+            "plain node should not carry a role: {ua}"
+        );
+    }
+
+    #[test]
+    fn agent_version_carries_role_token() {
+        let ua = agent_version(Some("bootstrap"));
+        assert!(
+            ua.contains("; bootstrap) libp2p/"),
+            "role token missing or malformed: {ua}"
         );
     }
 }
