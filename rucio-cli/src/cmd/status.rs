@@ -195,7 +195,7 @@ pub async fn peers(client: &ApiClient) -> Result<()> {
         return Ok(());
     }
 
-    let rows: Vec<[String; 3]> = resp
+    let rows: Vec<[String; 4]> = resp
         .peers
         .into_iter()
         .map(|p| {
@@ -208,6 +208,7 @@ pub async fn peers(client: &ApiClient) -> Result<()> {
             [
                 p.peer_id,
                 format!("{:?}", p.class),
+                p.agent_version.unwrap_or_else(|| "-".to_string()),
                 if public_addrs.is_empty() {
                     "-".to_string()
                 } else {
@@ -217,19 +218,20 @@ pub async fn peers(client: &ApiClient) -> Result<()> {
         })
         .collect();
 
-    let max_addr = rows.iter().map(|r| r[2].chars().count()).max().unwrap_or(0);
+    let max_addr = rows.iter().map(|r| r[3].chars().count()).max().unwrap_or(0);
 
     let mut builder = Builder::new();
     builder.push_record([
         t!("node.peers.col_peer_id").to_string(),
         t!("node.peers.col_class").to_string(),
+        t!("node.peers.col_agent").to_string(),
         t!("node.peers.col_addresses").to_string(),
     ]);
     for r in rows {
         builder.push_record(r);
     }
     let mut table = builder.build();
-    fit_column(&mut table, 2, max_addr, term_width());
+    fit_column(&mut table, 3, max_addr, term_width());
     println!("{table}");
     Ok(())
 }

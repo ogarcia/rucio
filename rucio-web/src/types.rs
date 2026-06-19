@@ -26,6 +26,10 @@ pub struct PeerInfo {
     pub peer_id: String,
     pub addresses: Vec<String>,
     pub class: String,
+    /// Identify agent string (e.g. `Rucio/0.28.0 (Linux x86_64) libp2p/0.56.0`).
+    /// Absent until the peer has completed an Identify exchange.
+    #[serde(default)]
+    pub agent_version: Option<String>,
 }
 
 #[derive(Deserialize, Clone, Debug)]

@@ -127,6 +127,7 @@ node:
     none: "No se conocen pares."
     col_peer_id: "ID de par"
     col_class: "Clase"
+    col_agent: "Agente"
     col_addresses: "Direcciones"
   metrics:
     session_header: "Sesión (desde el último arranque)"

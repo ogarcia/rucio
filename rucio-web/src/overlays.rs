@@ -348,6 +348,9 @@ pub fn PeersPanel(active_panel: RwSignal<Option<super::Panel>>) -> impl IntoView
                                         } else {
                                             t!("overlay.peers.addresses", n = p.addresses.len()).to_string()
                                         };
+                                        let agent = p.agent_version.map(|a| view! {
+                                            <span class="peer-agent">{a}</span>
+                                        });
                                         view! {
                                             <li class="peer-item">
                                                 <div class="peer-head">
@@ -356,6 +359,7 @@ pub fn PeersPanel(active_panel: RwSignal<Option<super::Panel>>) -> impl IntoView
                                                         {p.peer_id}
                                                     </span>
                                                 </div>
+                                                {agent}
                                                 <span class="peer-addr">{addr}</span>
                                             </li>
                                         }

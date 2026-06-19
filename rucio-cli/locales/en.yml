@@ -133,6 +133,7 @@ node:
     none: "No peers known."
     col_peer_id: "Peer ID"
     col_class: "Class"
+    col_agent: "Agent"
     col_addresses: "Addresses"
   metrics:
     session_header: "Session (since last start)"
