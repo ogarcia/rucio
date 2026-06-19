@@ -191,10 +191,17 @@ impl RucioBehaviour {
                 .with_max_pending_incoming(Some(128)),
         );
 
-        let identify = identify::Behaviour::new(identify::Config::new(
-            "/rucio/1.0.0".to_string(),
-            keypair.public(),
-        ));
+        // Identify carries two strings: protocol_version gates compatibility
+        // (peers on a different /rucio/<v> won't talk), while agent_version is a
+        // free-form, HTTP User-Agent-style label purely for diagnostics. We model
+        // it on Firefox's UA — product/version, platform in parentheses, then the
+        // underlying "engine" (libp2p plays Gecko's role). Unlike on the eMule
+        // network we identify openly here: this is our own network, not one to
+        // blend into.
+        let identify = identify::Behaviour::new(
+            identify::Config::new("/rucio/1.0.0".to_string(), keypair.public())
+                .with_agent_version(agent_version()),
+        );
 
         let mut kademlia_config = kad::Config::new(libp2p::StreamProtocol::new("/rucio/kad/1.0.0"));
         // Refresh the routing table periodically so it doesn't go stale as peers
@@ -307,6 +314,31 @@ impl RucioBehaviour {
     }
 }
 
+/// HTTP User-Agent-style identifier advertised over Identify, e.g.
+/// `Rucio/0.28.0 (Linux x86_64) libp2p/0.56.0`. The crate version and platform
+/// come from the compiler; the libp2p version is resolved from Cargo.lock by
+/// build.rs (RUCIO_LIBP2P_VERSION).
+fn agent_version() -> String {
+    // std::env::consts::OS is lowercase ("linux"); spell the common ones the way
+    // a UA would and leave anything unexpected as-is.
+    let os = match std::env::consts::OS {
+        "linux" => "Linux",
+        "macos" => "macOS",
+        "windows" => "Windows",
+        "freebsd" => "FreeBSD",
+        "android" => "Android",
+        "ios" => "iOS",
+        other => other,
+    };
+    format!(
+        "Rucio/{} ({} {}) libp2p/{}",
+        env!("CARGO_PKG_VERSION"),
+        os,
+        std::env::consts::ARCH,
+        env!("RUCIO_LIBP2P_VERSION"),
+    )
+}
+
 fn build_gossipsub(keypair: &libp2p::identity::Keypair) -> anyhow::Result<gossipsub::Behaviour> {
     let config = gossipsub::ConfigBuilder::default()
         .heartbeat_interval(Duration::from_secs(10))
@@ -332,3 +364,21 @@ pub type TransferResponse = ChunkResponse;
 pub type ManifestReq = ManifestRequest;
 pub type ManifestResp = ManifestResponse;
 pub use rucio_core::protocol::have::{HaveRequest, HaveResponse};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_version_is_well_formed() {
+        let ua = agent_version();
+        // Shape: Rucio/<ver> (<os> <arch>) libp2p/<ver>
+        assert!(ua.starts_with("Rucio/"), "missing product: {ua}");
+        assert!(ua.contains(" libp2p/"), "missing engine: {ua}");
+        // build.rs must have resolved the real lock version, not the fallback.
+        assert!(
+            !ua.ends_with("libp2p/unknown"),
+            "libp2p version unresolved: {ua}"
+        );
+    }
+}
