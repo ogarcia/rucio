@@ -826,6 +826,9 @@ async fn on_swarm_event(
                                 .emit(NodeEvent::PeerDiscovered {
                                     peer_id: pid,
                                     addrs,
+                                    // mDNS gives no Identify info; the agent
+                                    // string arrives later via the Identify path.
+                                    agent_version: None,
                                 })
                                 .await;
                         }
@@ -1009,6 +1012,7 @@ async fn on_swarm_event(
                             .emit(NodeEvent::PeerDiscovered {
                                 peer_id: pid,
                                 addrs: info.listen_addrs,
+                                agent_version: Some(info.agent_version),
                             })
                             .await;
 

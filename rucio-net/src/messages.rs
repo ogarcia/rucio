@@ -127,6 +127,10 @@ pub enum NodeEvent {
     PeerDiscovered {
         peer_id: PeerId,
         addrs: Vec<Multiaddr>,
+        /// HTTP User-Agent-style identifier the peer reported via Identify
+        /// (e.g. `Rucio/0.28.0 (Linux x86_64) libp2p/0.56.0`). `None` when the
+        /// peer surfaced via mDNS before its Identify exchange completed.
+        agent_version: Option<String>,
     },
     /// A peer is no longer reachable.
     PeerExpired { peer_id: PeerId },

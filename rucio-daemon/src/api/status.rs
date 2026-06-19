@@ -76,7 +76,9 @@ pub async fn get_status(State(state): State<AppState>) -> Json<StatusResponse> {
 /// Returns the list of peers this node has seen recently (up to 200),
 /// as recorded in the local database by the libp2p Identify and Kademlia protocols.
 ///
-/// Each entry includes the peer's ID, its known multiaddrs, and its connectivity class.
+/// Each entry includes the peer's ID, its known multiaddrs, its connectivity class,
+/// and — when the peer has completed an Identify exchange — the software agent
+/// string it advertised (e.g. `Rucio/0.28.0 (Linux x86_64) libp2p/0.56.0`).
 /// The list is a snapshot — peers that have disconnected may still appear here until
 /// the database entry expires.
 #[utoipa::path(
@@ -111,6 +113,7 @@ pub async fn get_peers(State(state): State<AppState>) -> Json<PeersResponse> {
                 } else {
                     NodeClass::LowId
                 },
+                agent_version: r.agent_version,
             }
         })
         .collect();

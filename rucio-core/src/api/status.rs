@@ -39,4 +39,10 @@ pub struct PeerResponse {
     pub peer_id: String,
     pub addresses: Vec<String>,
     pub class: NodeClass,
+    /// HTTP User-Agent-style identifier the peer reported via the Identify
+    /// protocol (e.g. `Rucio/0.28.0 (Linux x86_64) libp2p/0.56.0`). Absent for a
+    /// peer that has not completed an Identify exchange yet (e.g. just seen via
+    /// mDNS), or one running software that advertises no agent string.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_version: Option<String>,
 }

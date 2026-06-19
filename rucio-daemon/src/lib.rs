@@ -1285,7 +1285,11 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                             peer_id: peer_id.to_string(),
                         });
                     }
-                    Some(node::messages::NodeEvent::PeerDiscovered { peer_id, addrs }) => {
+                    Some(node::messages::NodeEvent::PeerDiscovered {
+                        peer_id,
+                        addrs,
+                        agent_version,
+                    }) => {
                         let is_high_id = peer_has_public_addr(&addrs);
                         peer_classes.insert(peer_id, is_high_id);
                         let addrs_json = serde_json::to_string(
@@ -1298,6 +1302,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                             &addrs_json,
                             now_secs(),
                             is_high_id,
+                            agent_version.as_deref(),
                         )
                         .await;
                     }

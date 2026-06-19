@@ -262,12 +262,13 @@ INSERT OR IGNORE INTO metrics (id) VALUES (1);
 -- Peers seen on the network, kept as a hint cache (not authoritative).
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS known_peers (
-    id          INTEGER PRIMARY KEY,
-    peer_id     TEXT    NOT NULL UNIQUE,   -- libp2p PeerId (base58)
-    addrs       TEXT    NOT NULL,          -- JSON array of multiaddrs
-    first_seen  INTEGER NOT NULL,
-    last_seen   INTEGER NOT NULL,
-    high_id     INTEGER NOT NULL DEFAULT 1 -- 1 = HighID, 0 = LowID
+    id            INTEGER PRIMARY KEY,
+    peer_id       TEXT    NOT NULL UNIQUE,    -- libp2p PeerId (base58)
+    addrs         TEXT    NOT NULL,           -- JSON array of multiaddrs
+    first_seen    INTEGER NOT NULL,
+    last_seen     INTEGER NOT NULL,
+    high_id       INTEGER NOT NULL DEFAULT 1, -- 1 = HighID, 0 = LowID
+    agent_version TEXT                        -- Identify agent string; NULL until Identify completes
 );
 
 -- ---------------------------------------------------------------------------
