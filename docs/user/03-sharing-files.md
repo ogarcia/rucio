@@ -85,8 +85,8 @@ FSEvents (macOS). When a file is added or modified, it is re-hashed and
 re-announced within about 500 ms. Deleted files are removed from the index
 immediately.
 
-Provider records in the DHT are kept fresh automatically (libp2p republishes
-them roughly every 12 hours, well before they expire). Separately, once a day
+Provider records in the DHT are kept fresh automatically (they are republished
+roughly every 12 hours, well before they expire). Separately, once a day
 Rucio reconciles the shared library against disk: any file that no longer exists
 is silently removed from the database.
 

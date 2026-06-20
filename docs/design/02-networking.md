@@ -46,25 +46,64 @@ may be literal IPs or `/dns4` / `/dns6` names — the transport is built
 `.with_dns()` so domains resolve, which lets the infrastructure survive IP
 changes. Once connected, it runs a random walk to populate its routing table.
 
-**Re-announcement & republication** — libp2p republishes our provided keys on
-its own (~12 h, before the ~48 h provider-record TTL) and re-replicates them to
-the *current* closest peers, which keeps records fresh and heals DHT churn.
-There is therefore **no periodic re-announce timer**; the daemon only has to
-populate libp2p's in-RAM *provided set*, which it does:
+**Re-announcement & republication** — provider records must be refreshed before
+their ~48 h TTL expires and re-replicated to the *current* closest peers to heal
+DHT churn. We drive this ourselves instead of letting libp2p do it, for a memory
+reason. Both the bulk startup announce and any periodic refresh would otherwise
+fire one Kademlia `start_providing` query per share *at once*; each in-flight
+query carries ~10 KB of state in Kademlia's `QueryPool`, whose backing hash table
+grows to fit the burst and — like any Rust `HashMap` — never shrinks back. On a
+few-thousand-file library that pins tens of MB of RSS for the life of the process
+(measured: ~70 MB on 5 000 shares). So libp2p's internal 12 h re-publication is
+disabled (`set_provider_publication_interval(None)`).
 
-1. from the database **on startup** (registers the keys locally — these queries
-   reach nobody yet because no peer is connected),
-2. once more **~5 s after the first peer connects** (Kad bootstrap has populated
-   the routing table by then, so this is the publication that actually lands),
-3. **per file** as the watcher indexes a new share.
+Instead, every key to announce is pushed onto a queue and drained under a
+**concurrency cap** (`MAX_PROVIDE_INFLIGHT`, 256). A 250 ms tick tops the
+in-flight set back up to the cap; each slot frees when its `StartProviding` query
+completes. The `QueryPool` table then stays at ~cap entries (a couple of MB)
+instead of growing to the full share count. Keys are queued:
 
-After that, libp2p owns freshness. (Earlier versions ran a 22-minute re-announce
-tick; it duplicated libp2p's republication and spiked CPU proportionally to the
-share count, so it was removed.)
+1. from the database **on startup** (these queries reach nobody yet — no peer is
+   connected),
+2. again **~5 s after the first peer connects** (Kad bootstrap has filled the
+   routing table by then, so this is the publication that actually lands),
+3. **per file** as the watcher indexes a new share,
+4. **every 12 h** (our own refresh tick), re-queuing the whole provided set —
+   but only once the previous cycle has fully drained, so a huge library never
+   stacks cycles.
+
+A `Finished announcing N share(s)` log marks a fully drained cycle (N = records
+that actually reached the DHT, not merely queued).
+
+**Announce time** scales linearly: roughly `files × query_latency ÷
+MAX_PROVIDE_INFLIGHT`. A provide query on a live DHT iterates several hops and
+takes tens of seconds (~27 s measured), so with the 256 cap the one-off
+background cost is about:
+
+| Shared files | ~announce time (latency 10 s – 30 s) |
+|--------------|--------------------------------------|
+| 1 000        | ~40 s – 2 min                        |
+| 5 000        | ~3 min – 10 min                      |
+| 10 000       | ~7 min – 20 min                      |
+| 100 000      | ~1 h – 3 h                           |
+| 1 000 000    | ~11 h – 33 h                         |
+
+(Measured: ~9 min for 5 233 shares on a live DHT.) Shares publish progressively
+as the queue drains, so this is not a stall — and at the million-file end the
+announce can outlast the 12 h refresh, which is exactly why a refresh only
+re-queues once the previous cycle has drained. At the top of that table the
+real ceiling is no longer the `QueryPool` (the cap holds it flat) but the
+`MemoryStore`, which keeps every provided key in RAM — ~2 KB each
+(a `SmallVec` sized for `K_VALUE` providers), so ~2 GB for 1 M files. Sharing
+millions of files is better served by the indexer nodes than by a client
+advertising each file itself. Raising `MAX_PROVIDE_INFLIGHT` trades a larger
+`QueryPool` for faster announces; 256 keeps the pool at a couple of MB and is
+ample below ~100k files.
 
 **De-publishing** — to stop providing a removed file it must be `StopProviding`'d
 so libp2p drops it from the in-RAM provided set; **deleting it from the database
-alone is not enough**, because republication reads the provided set, not the DB.
+alone is not enough**, because re-provide works from the in-RAM provided set
+(and our queued wanted set), not the DB.
 Every removal path pairs the DB delete with `StopProviding`: the live watcher
 (inotify), the periodic share rescan, and the `share remove` API.
 
