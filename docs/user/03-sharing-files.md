@@ -85,9 +85,10 @@ FSEvents (macOS). When a file is added or modified, it is re-hashed and
 re-announced within about 500 ms. Deleted files are removed from the index
 immediately.
 
-In addition, Rucio re-announces all shared files to the DHT every 22 minutes
-to keep provider records from expiring. Any file that no longer exists on disk
-at that point is silently removed from the database.
+Provider records in the DHT are kept fresh automatically (libp2p republishes
+them roughly every 12 hours, well before they expire). Separately, once a day
+Rucio reconciles the shared library against disk: any file that no longer exists
+is silently removed from the database.
 
 ## The download directory is protected
 

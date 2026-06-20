@@ -47,7 +47,7 @@ may be literal IPs or `/dns4` / `/dns6` names — the transport is built
 changes. Once connected, it runs a random walk to populate its routing table.
 
 **Re-announcement & republication** — libp2p republishes our provided keys on
-its own (~12 h, before the ~24 h provider-record TTL) and re-replicates them to
+its own (~12 h, before the ~48 h provider-record TTL) and re-replicates them to
 the *current* closest peers, which keeps records fresh and heals DHT churn.
 There is therefore **no periodic re-announce timer**; the daemon only has to
 populate libp2p's in-RAM *provided set*, which it does:

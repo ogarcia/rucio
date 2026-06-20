@@ -780,7 +780,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
     let mut manifest_tick = tokio::time::interval(tokio::time::Duration::from_secs(2));
     let mut provider_refresh_tick = tokio::time::interval(tokio::time::Duration::from_secs(60));
     // No periodic re-announce timer: libp2p republishes our provided keys on its
-    // own (~12h, before the 24h TTL) and re-replicates them to the current
+    // own (~12h, before the 48h TTL) and re-replicates them to the current
     // closest peers, which handles freshness and churn. We only need to populate
     // libp2p's in-RAM provided set, which we do from the DB on startup and once
     // a peer connects (below), plus per-file as the watcher indexes new shares.
@@ -835,7 +835,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
     // provider-publication queries reach nobody. Re-announce once more shortly
     // after the first peer connects (Kad bootstrap has populated the routing
     // table by then) so shares actually land in the DHT without waiting for the
-    // 22-minute reprovide tick.
+    // ~12-hour reprovide tick.
     let mut reannounced_after_connect = false;
     // Whether the last UploadProgress push carried any rows, so we can emit one
     // empty snapshot when uploads drain (clearing the client's Uploads tab)
