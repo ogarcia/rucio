@@ -219,6 +219,12 @@ impl RucioBehaviour {
         // churn. libp2p enables this by default, but pin it explicitly so the
         // behaviour doesn't silently change if that default ever does.
         kademlia_config.set_periodic_bootstrap_interval(Some(Duration::from_secs(5 * 60)));
+        // Disable libp2p's internal provider re-publication: it re-announces every
+        // provided key in a single burst, which balloons the QueryPool on a large
+        // share library (each query carries ~10 KB and the pool's table never
+        // shrinks). We drive re-provide ourselves from the task loop, under the
+        // same in-flight concurrency cap as the initial announce.
+        kademlia_config.set_provider_publication_interval(None);
         if cfg.capture_provider_records {
             // FilterBoth surfaces each received provider record as an event
             // (InboundRequest::AddProvider) instead of storing it silently.

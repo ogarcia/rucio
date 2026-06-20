@@ -18,7 +18,7 @@ use rucio_core::protocol::{
     pinset::{PinsetRequest, PinsetResponse},
     search::{SearchQuery, SearchResult},
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -43,6 +43,22 @@ const EVENT_BUFFER: usize = 1024;
 /// Without a bound, a node that searches before any peer joins would grow this
 /// queue indefinitely; oldest entries are dropped past this many.
 const MAX_PENDING_PUBLISHES: usize = 256;
+
+/// Provider announcements are drained from `announce_queue` under an in-flight
+/// concurrency cap rather than fired all at once. Each Kademlia provide query
+/// carries ~10 KB of state; announcing thousands of shares simultaneously grows
+/// the QueryPool's hash table to tens of MB which — like any Rust HashMap — never
+/// shrinks back, pinning RSS for the life of the process. Capping how many run at
+/// once keeps that table small (256 ≈ a couple of MB; raise only for >100k-file
+/// libraries). The drain refills up to the cap on each tick as queries complete
+/// and free their slots (via the StartProviding result event).
+const MAX_PROVIDE_INFLIGHT: usize = 256;
+const ANNOUNCE_INTERVAL: Duration = Duration::from_millis(250);
+/// How often we re-announce every provided key to refresh its DHT record before
+/// it expires. libp2p's own re-publication is disabled (it bursts every key at
+/// once); we drive it here so it flows through the same concurrency cap. Kept
+/// well under the 48 h provider-record TTL.
+const REPROVIDE_INTERVAL: Duration = Duration::from_secs(12 * 60 * 60);
 
 /// Event sender that never blocks the swarm reactor on a slow consumer.
 ///
@@ -261,6 +277,18 @@ struct LoopState {
     /// HighId reachability so we never advertise content a peer could only pull
     /// through a relay.
     providing: bool,
+    /// Keys waiting to be announced to the DHT, drained under a concurrency cap
+    /// (see [`MAX_PROVIDE_INFLIGHT`]) so we never spawn thousands of provider
+    /// queries at once. Fed by StartProviding, reachability changes and the
+    /// periodic re-provide.
+    announce_queue: VecDeque<Vec<u8>>,
+    /// QueryIds of provider announcements currently in flight, bounding how many
+    /// Kademlia provide queries run concurrently (keeps the QueryPool small).
+    provide_inflight: HashSet<QueryId>,
+    /// Provider announcements actually issued in the current drain cycle. Logged
+    /// and reset once the queue and the in-flight set are both empty, so the log
+    /// reports announcements that completed, not merely got queued.
+    announce_emitted: usize,
 }
 
 impl LoopState {
@@ -284,6 +312,9 @@ impl LoopState {
             provider_store_full_warned: false,
             wanted_providers: HashSet::new(),
             providing: false,
+            announce_queue: VecDeque::new(),
+            provide_inflight: HashSet::new(),
+            announce_emitted: 0,
         }
     }
 
@@ -404,9 +435,57 @@ async fn run_loop(
     let topic_result = IdentTopic::new(TOPIC_SEARCH_RESULT);
     let mut state = LoopState::new();
     let mut dial_retry_tick = tokio::time::interval(tokio::time::Duration::from_millis(500));
+    let mut announce_tick = tokio::time::interval(ANNOUNCE_INTERVAL);
+    // First re-provide one full interval from now — startup already announces.
+    let mut reprovide_tick = tokio::time::interval_at(
+        tokio::time::Instant::now() + REPROVIDE_INTERVAL,
+        REPROVIDE_INTERVAL,
+    );
 
     loop {
         tokio::select! {
+            _ = announce_tick.tick() => {
+                // Refill in-flight provider announcements up to the concurrency
+                // cap. Slots free up as queries finish (StartProviding result
+                // event below). Capping concurrency — not just rate — is what
+                // keeps Kademlia's QueryPool table from ballooning.
+                while state.provide_inflight.len() < MAX_PROVIDE_INFLIGHT {
+                    let Some(key) = state.announce_queue.pop_front() else { break };
+                    // Skip keys un-shared while they sat in the queue, or if we
+                    // dropped out of HighId in the meantime.
+                    if state.providing
+                        && state.wanted_providers.contains(&key)
+                        && let Some(qid) = announce_provider(&mut swarm, &mut state, &key)
+                    {
+                        state.provide_inflight.insert(qid);
+                        state.announce_emitted += 1;
+                    }
+                }
+                // Once a cycle has fully drained (queue empty and every query
+                // finished), log how many records actually reached the DHT — so
+                // the count reflects completion, not just enqueueing.
+                if state.announce_emitted > 0
+                    && state.announce_queue.is_empty()
+                    && state.provide_inflight.is_empty()
+                {
+                    info!(
+                        shares = state.announce_emitted,
+                        "Finished announcing share(s) to the DHT"
+                    );
+                    state.announce_emitted = 0;
+                }
+            }
+            _ = reprovide_tick.tick() => {
+                // Refresh every provider record before its TTL expires (replaces
+                // libp2p's disabled internal re-publication). Only re-queue when
+                // the queue has drained, so a slow large library never stacks a
+                // re-provide on top of an unfinished cycle.
+                if state.providing && state.announce_queue.is_empty() {
+                    state
+                        .announce_queue
+                        .extend(state.wanted_providers.iter().cloned());
+                }
+            }
             _ = dial_retry_tick.tick() => {
                 // Retry dial for peers that had a failed outgoing connection
                 // more than 1 s ago (simultaneous-open recovery).
@@ -454,9 +533,11 @@ async fn run_loop(
                         // Remember it regardless; only announce now if we are a
                         // direct (HighId) provider. Otherwise it's announced once
                         // we reach HighId (see reconcile_provider_announcements).
-                        state.wanted_providers.insert(key.clone());
-                        if state.providing {
-                            announce_provider(&mut swarm, &mut state, &key);
+                        // Announcing is deferred to the capped drain (announce_tick)
+                        // so a bulk re-provide on startup doesn't spawn thousands of
+                        // Kademlia queries at once. Only queue genuinely new keys.
+                        if state.wanted_providers.insert(key.clone()) && state.providing {
+                            state.announce_queue.push_back(key);
                         }
                     }
                     Some(NodeCmd::StopProviding(key)) => {
@@ -870,6 +951,12 @@ async fn on_swarm_event(
                                 kad::PeerRecord { record, .. },
                             ))) => {
                                 add_resolved_peer_addresses(swarm, &record.value);
+                            }
+                            // A provider announcement finished (success or error):
+                            // free its in-flight slot so the drain can launch the
+                            // next queued key.
+                            QueryResult::StartProviding(_) => {
+                                state.provide_inflight.remove(&id);
                             }
                             _ => {}
                         }
@@ -1447,14 +1534,22 @@ async fn on_have_event(
 
 /// Announce a single key to the DHT as a provider, with the warn-once handling
 /// for a full provider store.
-fn announce_provider(swarm: &mut libp2p::Swarm<RucioBehaviour>, state: &mut LoopState, key: &[u8]) {
+fn announce_provider(
+    swarm: &mut libp2p::Swarm<RucioBehaviour>,
+    state: &mut LoopState,
+    key: &[u8],
+) -> Option<QueryId> {
     let record_key = kad::RecordKey::new(&key);
-    if let Err(e) = swarm.behaviour_mut().kademlia.start_providing(record_key) {
-        if !state.provider_store_full_warned {
-            warn!("start_providing error: {e} — further occurrences suppressed");
-            state.provider_store_full_warned = true;
-        } else {
-            debug!("start_providing error: {e}");
+    match swarm.behaviour_mut().kademlia.start_providing(record_key) {
+        Ok(qid) => Some(qid),
+        Err(e) => {
+            if !state.provider_store_full_warned {
+                warn!("start_providing error: {e} — further occurrences suppressed");
+                state.provider_store_full_warned = true;
+            } else {
+                debug!("start_providing error: {e}");
+            }
+            None
         }
     }
 }
@@ -1480,10 +1575,16 @@ fn reconcile_provider_announcements(
     if keys.is_empty() {
         return;
     }
-    for key in &keys {
-        if want {
-            announce_provider(swarm, state, key);
-        } else {
+    if want {
+        // Queue every wanted key for the capped drain (announce_tick) rather than
+        // announcing them all here — that would spawn one Kademlia query per share
+        // at once, ballooning the QueryPool and flooding the DHT.
+        state.announce_queue.extend(keys.iter().cloned());
+    } else {
+        // Dropping out of HighId: stop providing and discard any still-pending
+        // announcements so we never advertise content reachable only via a relay.
+        state.announce_queue.clear();
+        for key in &keys {
             let record_key = kad::RecordKey::new(key);
             swarm.behaviour_mut().kademlia.stop_providing(&record_key);
         }

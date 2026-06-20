@@ -682,7 +682,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
     // longer exist on disk) so the DHT knows we are a provider after a restart.
     let announced = reannounce_shares(&db, &handle.cmd_tx).await;
     if announced > 0 {
-        info!("Re-announced {announced} share(s) to Kademlia");
+        info!("Re-announcing {announced} share(s) to Kademlia");
     }
     // Resume any downloads interrupted by a previous crash or restart.
     engine.resume_interrupted().await;
@@ -1273,7 +1273,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                                 tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                                 let n = reannounce_shares(&db2, &tx2).await;
                                 if n > 0 {
-                                    info!("Re-announced {n} share(s) after first peer connected");
+                                    info!("Re-announcing {n} share(s) after first peer connected");
                                 }
                             });
                         }
