@@ -118,17 +118,36 @@ not running.
 bootstrap peers and triggers a new random walk if the node has no connected
 peers. This handles transient network outages and natural DHT churn.
 
-**Provider store limits** — the Kademlia `MemoryStore` caps how many keys it
-holds, tuned per role in `BehaviourConfig`:
+**Provider store limits** — the Kademlia `MemoryStore` holds provider records in
+RAM, tuned per role in `BehaviourConfig`:
 
-- `kad_max_provided_keys` — our *own* shared files we announce. The libp2p
-  default (1024) is far too low for a real library, so a full node sets it to
-  1M. (A node sharing more than the cap fails to announce the excess with
-  "store cannot contain any more provider records".)
-- `kad_max_records` — provider records from *other* peers held in RAM to serve
-  `GET_PROVIDERS` as a DHT server. A client keeps this modest (100k) so it
-  doesn't become a large in-memory store; a bootstrap/indexer node sets it high
-  (1M) since it sees the whole network.
+- `kad_max_provided_keys` — the cap libp2p enforces on **all** provider keys in
+  the store. Crucially this is a *single pool*: it counts both our own announced
+  shares **and** the records we re-store for other peers. A full node sets it to
+  1M (the libp2p default of 1024 is far too low for a real library); a node
+  sharing more than the cap fails to announce the excess with "store cannot
+  contain any more provider records".
+- `kad_max_records` — libp2p's separate cap on Kademlia *value* records
+  (`PUT_VALUE`), which Rucio barely uses. We repurpose this field as the ceiling
+  on **foreign provider records** (see below), since libp2p offers no separate
+  knob for them: a client keeps it modest (50k), a bootstrap/indexer sets it high
+  (1M) as it sees the whole network.
+
+**Foreign provider records** — when the node is among the ~20 peers closest to a
+key, providers announce to it via `InboundRequest::AddProvider`, and it re-stores
+the record so it can answer `GET_PROVIDERS` as a DHT server. Because libp2p counts
+these in the same `max_provided_keys` pool as our own shares, it cannot bound them
+without also limiting how many files we may share. The task loop therefore caps
+them itself with a **second-chance (CLOCK)** policy: each held `(key, provider)`
+pair carries a "referenced" bit set whenever the record is refreshed; once the
+count exceeds `kad_max_records` the sweep gives any referenced entry another lap
+(clearing its bit) and evicts the first unreferenced one (via `remove_provider`).
+Records still being refreshed therefore stay resident — eviction falls on idle or
+stale ones — degrading to plain FIFO only if every record is equally hot. Our own
+announcements go through `start_providing` and never enter this structure, so they
+are never evicted. The impact on the network is small: eviction targets idle
+records, and because each node evicts on its own inflow the choice is uncorrelated
+across the ~20 holders of a key, so per-key redundancy barely moves.
 
 **Bootstrap/indexer storage** — a `rucio-bootstrap` node running the passive
 indexer keeps two independent stores: a persistent **SQLite** index (the source
@@ -154,28 +173,26 @@ files, not with their size, and the per-file cost is tiny:
 - Allocations that are proportional to the file count (the hash list built for a
   re-announce, the rescan's disk-vs-index maps) are transient and freed after use.
 
-**Observed RAM footprint** — in practice the dominant term is *not* our own
-provided keys (those cost tens of bytes each) but the `kad_max_records` store of
-*other* peers' provider records, and **announcing shares is what fills it**:
+**Observed RAM footprint** — the dominant term is *not* our own provided keys
+(tens of bytes each) but the foreign provider records we re-store, and
+**announcing shares is what triggers it**:
 
 - A daemon with an empty database (no shares) sits at ~28 MB RSS even while
-  connected — it is a near-passive DHT participant that almost nobody sends
-  `AddProvider` to.
-- Once it announces shared files it becomes visible in peers' routing tables,
-  they start sending it their provider records (`InboundRequest::AddProvider`,
-  which the node re-stores to serve as a DHT server), and the `MemoryStore`
-  fills toward its `kad_max_records` cap. At the default 100k that arena reaches
-  ~70 MB (~700 B/record), so a sharing node settles around ~100 MB RSS.
-- This growth is **not stepwise with indexing**: announcing a file costs only a
-  few KB, so the rise is the inbound third-party DHT traffic that arrives in a
-  burst once the node is visible — driven by how reachable/active the node is,
-  not by how many files it indexed.
+  connected — almost nobody sends `AddProvider` to a node that provides nothing.
+- Once it announces shares it becomes visible in peers' routing tables and they
+  start sending it their provider records. Unlike the startup announce of our own
+  shares — a concurrency-capped burst (see *Re-announcement & republication*
+  above) — this builds up **slowly over hours**: on a real node it was measured
+  climbing ~5k records/h, ~4.6 KB each.
+- With the cap at 50k that growth **plateaus around ~115–230 MB** (cap ×
+  per-record size) instead of heading for the 1M-key / ~2 GB ceiling it would
+  reach uncapped — the 48 h record TTL alone only balances it near ~1 GB.
 
-This is expected, bounded (it plateaus at the cap, it is not a leak), and
-independent of the eMule feature. ~100 MB is considered acceptable for a full
-node, so `kad_max_records` is deliberately left at 100k rather than trimmed;
-lowering it (e.g. to 5k–10k) is the lever to shrink a client's DHT-server
-footprint without affecting its own announces, search, or downloads.
+This is expected, bounded by the eviction cap (not a leak), and independent of the
+eMule feature. `kad_max_records` (50k for a full node) is the single lever to
+trade a client's DHT-server footprint against how much of the network's provider
+load it carries: raise it on a well-resourced node, lower it on a constrained one
+— it never affects the node's own announces, search, or downloads.
 
 ### Gossipsub
 
