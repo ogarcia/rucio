@@ -70,10 +70,18 @@ pub struct BehaviourConfig {
     /// our own shared files we can announce. The libp2p default (1024) is far
     /// too low for a real library, so set this generously.
     pub kad_max_provided_keys: usize,
-    /// Kademlia `MemoryStore` cap on **stored** records — provider records from
-    /// *other* peers that we hold in RAM as a DHT server. A client keeps this
+    /// Cap on **stored records from other peers** that we hold in RAM as a DHT
+    /// server — both Kademlia value records (`max_records`) and, crucially, the
+    /// provider records re-stored on inbound `AddProvider`. A client keeps this
     /// modest (it shouldn't become a large in-memory store); a bootstrap /
     /// indexer node, which sees the whole network, sets it high.
+    ///
+    /// Provider records need explicit handling: libp2p's `MemoryStore` counts
+    /// them under `max_provided_keys` *together with our own announced shares*,
+    /// so it can't bound foreign ones without also limiting how many files we
+    /// can share. The task loop therefore enforces this cap itself via a
+    /// second-chance (CLOCK) sweep, so records still being refreshed survive and
+    /// only idle ones are evicted once the count is exceeded.
     ///
     /// This is a RAM ceiling, not a hard data limit: a bootstrap/indexer also
     /// persists every captured record to SQLite for search, so hitting this cap
@@ -101,10 +109,12 @@ impl BehaviourConfig {
             capture_provider_records: false,
             relay_server: true,
             dcutr: true,
-            // We may share many files; keep records (others' provider records
-            // we hold as a DHT server) modest so a client isn't a big RAM store.
+            // We may share many files, so allow plenty of self-provided keys;
+            // but keep foreign records (others' provider records we hold as a
+            // DHT server, CLOCK-evicted in the task loop) modest so a client
+            // isn't a big in-RAM store — ~50k ≈ a few hundred MB at most.
             kad_max_provided_keys: 1_000_000,
-            kad_max_records: 100_000,
+            kad_max_records: 50_000,
             // A plain node advertises no role token.
             agent_role: None,
         }

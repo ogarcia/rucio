@@ -226,6 +226,7 @@ pub async fn spawn(
         sign_keypair,
         cmd_rx,
         EventTx::new(event_tx),
+        behaviour_cfg.kad_max_records,
     ));
 
     Ok(NodeHandle { cmd_tx, event_rx })
@@ -289,10 +290,24 @@ struct LoopState {
     /// and reset once the queue and the in-flight set are both empty, so the log
     /// reports announcements that completed, not merely got queued.
     announce_emitted: usize,
+    /// Foreign provider records we re-store as a DHT server, kept under a
+    /// second-chance (CLOCK) eviction policy so the in-RAM store stays bounded
+    /// without dropping records that are still being refreshed. libp2p caps
+    /// these together with our own announced keys, so we bound them here
+    /// instead; our own announcements go through `start_providing` and never
+    /// enter this structure, so they are never evicted.
+    ///
+    /// `foreign_providers` is the CLOCK queue (insertion / second-chance order);
+    /// `foreign_provider_ref` maps each held pair to its "referenced since the
+    /// last sweep" bit, set on refresh so the sweep spares it.
+    foreign_providers: VecDeque<(Vec<u8>, PeerId)>,
+    foreign_provider_ref: HashMap<(Vec<u8>, PeerId), bool>,
+    /// Cap on the number of foreign provider records (from `kad_max_records`).
+    max_foreign_providers: usize,
 }
 
 impl LoopState {
-    fn new() -> Self {
+    fn new(max_foreign_providers: usize) -> Self {
         Self {
             confirmed_addrs: HashSet::new(),
             ready_sent: false,
@@ -315,7 +330,50 @@ impl LoopState {
             announce_queue: VecDeque::new(),
             provide_inflight: HashSet::new(),
             announce_emitted: 0,
+            foreign_providers: VecDeque::new(),
+            foreign_provider_ref: HashMap::new(),
+            max_foreign_providers,
         }
+    }
+
+    /// Record a foreign provider record we just re-stored as a DHT server, and
+    /// return the `(key, provider)` pairs that must be evicted from the store to
+    /// stay within `max_foreign_providers`.
+    ///
+    /// A record we already hold (a refresh) is not re-enqueued; instead its
+    /// "referenced" bit is set so the next eviction sweep spares it. Eviction is
+    /// a second-chance (CLOCK) sweep: a referenced entry has its bit cleared and
+    /// is moved to the back (another lap); the first unreferenced entry is
+    /// evicted. This keeps actively-refreshed records resident while still
+    /// bounding the total — degrading to plain FIFO only when every record is
+    /// equally hot. The sweep is bounded: after at most one full rotation every
+    /// bit is clear, so an eviction always terminates.
+    fn note_foreign_provider(&mut self, key: Vec<u8>, provider: PeerId) -> Vec<(Vec<u8>, PeerId)> {
+        let pair = (key, provider);
+        if let Some(referenced) = self.foreign_provider_ref.get_mut(&pair) {
+            *referenced = true;
+            return Vec::new();
+        }
+        self.foreign_provider_ref.insert(pair.clone(), false);
+        self.foreign_providers.push_back(pair);
+
+        let mut evicted = Vec::new();
+        while self.foreign_providers.len() > self.max_foreign_providers {
+            let Some(candidate) = self.foreign_providers.pop_front() else {
+                break;
+            };
+            match self.foreign_provider_ref.get_mut(&candidate) {
+                Some(referenced) if *referenced => {
+                    *referenced = false;
+                    self.foreign_providers.push_back(candidate);
+                }
+                _ => {
+                    self.foreign_provider_ref.remove(&candidate);
+                    evicted.push(candidate);
+                }
+            }
+        }
+        evicted
     }
 
     fn store_chunk_channel(&mut self, ch: ResponseChannel<ChunkResp>, peer: PeerId) -> u64 {
@@ -430,10 +488,11 @@ async fn run_loop(
     sign_keypair: libp2p::identity::Keypair,
     mut cmd_rx: mpsc::Receiver<NodeCmd>,
     event_tx: EventTx,
+    max_foreign_providers: usize,
 ) {
     let topic_query = IdentTopic::new(TOPIC_SEARCH);
     let topic_result = IdentTopic::new(TOPIC_SEARCH_RESULT);
-    let mut state = LoopState::new();
+    let mut state = LoopState::new(max_foreign_providers);
     let mut dial_retry_tick = tokio::time::interval(tokio::time::Duration::from_millis(500));
     let mut announce_tick = tokio::time::interval(ANNOUNCE_INTERVAL);
     // First re-provide one full interval from now — startup already announces.
@@ -985,13 +1044,32 @@ async fn on_swarm_event(
                         }
                         // FilterBoth does not auto-store the record; re-store it
                         // so we keep serving it like a normal DHT server.
-                        if let Err(e) = swarm
+                        let stored = match swarm
                             .behaviour_mut()
                             .kademlia
                             .store_mut()
                             .add_provider(record)
                         {
-                            debug!(?e, "Could not store captured provider record");
+                            Ok(()) => true,
+                            Err(e) => {
+                                debug!(?e, "Could not store captured provider record");
+                                false
+                            }
+                        };
+                        // Bound how many foreign provider records we hold: libp2p
+                        // counts them under max_provided_keys alongside our own
+                        // shares, so cap them here. note_foreign_provider returns
+                        // any pairs the second-chance sweep drops once over the cap.
+                        if stored {
+                            for (old_key, old_provider) in
+                                state.note_foreign_provider(key.clone(), provider)
+                            {
+                                swarm
+                                    .behaviour_mut()
+                                    .kademlia
+                                    .store_mut()
+                                    .remove_provider(&kad::RecordKey::new(&old_key), &old_provider);
+                            }
                         }
                         let _ = event_tx
                             .emit(NodeEvent::ProviderRecord {
@@ -1837,6 +1915,36 @@ fn addr_is_private_or_loopback(addr: &Multiaddr) -> bool {
 mod tests {
     use super::*;
     use std::io::{Error, ErrorKind};
+
+    #[test]
+    fn foreign_provider_clock_spares_refreshed_records() {
+        let mut s = LoopState::new(2);
+        let p = PeerId::random();
+        // Filling up to the cap evicts nothing.
+        assert!(s.note_foreign_provider(b"k1".to_vec(), p).is_empty());
+        assert!(s.note_foreign_provider(b"k2".to_vec(), p).is_empty());
+        // With no record yet referenced, overflow behaves as plain FIFO: the
+        // oldest (k1) is evicted.
+        assert_eq!(
+            s.note_foreign_provider(b"k3".to_vec(), p),
+            vec![(b"k1".to_vec(), p)]
+        );
+        // Refresh k2 (now the oldest survivor): no re-enqueue, no eviction, just
+        // marks it referenced for the next sweep.
+        assert!(s.note_foreign_provider(b"k2".to_vec(), p).is_empty());
+        assert_eq!(s.foreign_providers.len(), 2);
+        // A new record overflows again. The CLOCK sweep gives the referenced k2 a
+        // second chance and evicts the unreferenced k3 instead — this is what
+        // distinguishes second-chance from pure FIFO (FIFO would drop k2).
+        let q = PeerId::random();
+        assert_eq!(
+            s.note_foreign_provider(b"k4".to_vec(), q),
+            vec![(b"k3".to_vec(), p)]
+        );
+        assert!(s.foreign_provider_ref.contains_key(&(b"k2".to_vec(), p)));
+        assert!(!s.foreign_provider_ref.contains_key(&(b"k3".to_vec(), p)));
+        assert!(s.foreign_provider_ref.contains_key(&(b"k4".to_vec(), q)));
+    }
 
     // The exact shape that used to log at WARN when a peer went away: a public
     // address whose transport error is a nested "Multiple dial errors" aggregate
