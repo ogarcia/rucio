@@ -78,8 +78,9 @@ WORKDIR /app
 COPY . .
 
 # Build the Leptos frontend to WASM.  dist/ is produced here and consumed
-# by the web-ui build below via rust-embed.
-RUN cd rucio-web && trunk build --release
+# by the web-ui build below via rust-embed.  --public-url ./ emits relative
+# asset paths so the served <base href> can relocate the app under a subpath.
+RUN cd rucio-web && trunk build --release --public-url ./
 
 # First pass (no web-ui): the headless daemon and the bootstrap binary.
 # Second pass recompiles only the fat `rucio` with the embedded web panel.

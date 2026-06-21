@@ -15,7 +15,7 @@ use crate::types::{Pin, PinsResponse, format_size};
 // ── API ─────────────────────────────────────────────────────────────────────
 
 async fn api_list_pins() -> Option<PinsResponse> {
-    gloo_net::http::Request::get("/api/v1/pins")
+    gloo_net::http::Request::get(&crate::api::api("/api/v1/pins"))
         .send()
         .await
         .ok()?
@@ -27,7 +27,7 @@ async fn api_list_pins() -> Option<PinsResponse> {
 /// Pin a magnet into an optional collection. `Err(message)` on failure.
 async fn api_add_pin(magnet: String, collection: Option<String>) -> Result<(), String> {
     let body = serde_json::json!({ "magnet": magnet, "collection": collection });
-    let req = gloo_net::http::Request::post("/api/v1/pins")
+    let req = gloo_net::http::Request::post(&crate::api::api("/api/v1/pins"))
         .json(&body)
         .map_err(|e| e.to_string())?;
     let resp = req.send().await.map_err(|e| e.to_string())?;
@@ -46,7 +46,7 @@ async fn api_add_pin(magnet: String, collection: Option<String>) -> Result<(), S
 
 /// Re-file a pin under a different collection (None/empty = uncollected).
 async fn api_set_pin_collection(hash: &str, collection: Option<String>) {
-    let url = format!("/api/v1/pins/{hash}/collection");
+    let url = crate::api::api(&format!("/api/v1/pins/{hash}/collection"));
     let body = serde_json::json!({ "collection": collection });
     if let Ok(req) = gloo_net::http::Request::put(&url).json(&body) {
         let _ = req.send().await;
@@ -54,7 +54,7 @@ async fn api_set_pin_collection(hash: &str, collection: Option<String>) {
 }
 
 async fn api_remove_pin(hash: &str) {
-    let url = format!("/api/v1/pins/{hash}");
+    let url = crate::api::api(&format!("/api/v1/pins/{hash}"));
     let _ = gloo_net::http::Request::delete(&url).send().await;
 }
 

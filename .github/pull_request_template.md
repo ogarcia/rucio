@@ -25,5 +25,5 @@ to avoid CI round-trips. (Activate the hook once with
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings` passes (native workspace)
 - [ ] `cargo clippy -p rucio-web --target wasm32-unknown-unknown -- -D warnings` passes (wasm frontend)
 - [ ] `cargo test` passes for the crates I touched
-- [ ] If frontend changed: the panel builds (`cd rucio-web && trunk build --release`)
+- [ ] If frontend changed: the panel builds (`cd rucio-web && trunk build --release --public-url ./`)
 - [ ] Commits follow Conventional Commits and the change is documented where relevant (docs/, README, comments)

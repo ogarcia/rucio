@@ -100,11 +100,12 @@ pub async fn persist(
 
     // Deletions first (a rename could otherwise clash with a still-present row).
     for id in deleted.get_untracked() {
-        let ok = gloo_net::http::Request::delete(&format!("/api/v1/categories/{id}"))
-            .send()
-            .await
-            .map(|r| r.ok())
-            .unwrap_or(false);
+        let ok =
+            gloo_net::http::Request::delete(&crate::api::api(&format!("/api/v1/categories/{id}")))
+                .send()
+                .await
+                .map(|r| r.ok())
+                .unwrap_or(false);
         all_ok &= ok;
     }
     if all_ok {
@@ -119,8 +120,10 @@ pub async fn persist(
         }
         let body = row.to_category();
         let req = match row.cat_id.get_untracked() {
-            Some(id) => gloo_net::http::Request::put(&format!("/api/v1/categories/{id}")),
-            None => gloo_net::http::Request::post("/api/v1/categories"),
+            Some(id) => {
+                gloo_net::http::Request::put(&crate::api::api(&format!("/api/v1/categories/{id}")))
+            }
+            None => gloo_net::http::Request::post(&crate::api::api("/api/v1/categories")),
         };
         match req.json(&body) {
             Ok(req) => match req.send().await {
@@ -156,7 +159,7 @@ pub async fn persist(
     }
 
     if all_ok
-        && let Ok(r) = gloo_net::http::Request::get("/api/v1/categories")
+        && let Ok(r) = gloo_net::http::Request::get(&crate::api::api("/api/v1/categories"))
             .send()
             .await
         && let Ok(s) = r.json::<CategoriesResponse>().await

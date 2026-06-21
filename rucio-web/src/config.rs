@@ -22,7 +22,7 @@ enum ConfigTab {
 }
 
 async fn api_get_notif_settings() -> Option<NotificationSettings> {
-    gloo_net::http::Request::get("/api/v1/config/notifications")
+    gloo_net::http::Request::get(&crate::api::api("/api/v1/config/notifications"))
         .send()
         .await
         .ok()?
@@ -32,7 +32,7 @@ async fn api_get_notif_settings() -> Option<NotificationSettings> {
 }
 
 async fn api_get_config() -> Option<ConfigResponse> {
-    gloo_net::http::Request::get("/api/v1/config")
+    gloo_net::http::Request::get(&crate::api::api("/api/v1/config"))
         .send()
         .await
         .ok()?
@@ -42,14 +42,14 @@ async fn api_get_config() -> Option<ConfigResponse> {
 }
 
 async fn api_put_config(body: &ConfigResponse) -> bool {
-    match gloo_net::http::Request::put("/api/v1/config").json(body) {
+    match gloo_net::http::Request::put(&crate::api::api("/api/v1/config")).json(body) {
         Ok(req) => req.send().await.map(|r| r.ok()).unwrap_or(false),
         Err(_) => false,
     }
 }
 
 async fn api_emule_status() -> Option<EmuleStatusResponse> {
-    gloo_net::http::Request::get("/api/v1/emule/status")
+    gloo_net::http::Request::get(&crate::api::api("/api/v1/emule/status"))
         .send()
         .await
         .ok()?
@@ -195,14 +195,16 @@ pub fn ConfigModal(
                 n_downloads.set(s.downloads);
                 n_system.set(s.system);
             }
-            if let Ok(r) = gloo_net::http::Request::get("/api/v1/config/notifications/webhooks")
-                .send()
-                .await
+            if let Ok(r) = gloo_net::http::Request::get(&crate::api::api(
+                "/api/v1/config/notifications/webhooks",
+            ))
+            .send()
+            .await
                 && let Ok(list) = r.json::<Vec<WebhookDef>>().await
             {
                 webhook_rows.set(list.iter().map(|d| mint_row(webhook_next_id, d)).collect());
             }
-            if let Ok(r) = gloo_net::http::Request::get("/api/v1/categories")
+            if let Ok(r) = gloo_net::http::Request::get(&crate::api::api("/api/v1/categories"))
                 .send()
                 .await
                 && let Ok(s) = r.json::<crate::types::CategoriesResponse>().await
@@ -226,7 +228,8 @@ pub fn ConfigModal(
         };
         spawn_local(async move {
             if let Ok(req) =
-                gloo_net::http::Request::put("/api/v1/config/notifications").json(&body)
+                gloo_net::http::Request::put(&crate::api::api("/api/v1/config/notifications"))
+                    .json(&body)
             {
                 let _ = req.send().await;
             }
@@ -295,8 +298,10 @@ pub fn ConfigModal(
         spawn_local(async move {
             // Webhooks first so the config PUT (which reloads from disk) sees
             // them; then the main config.
-            if let Ok(req) = gloo_net::http::Request::put("/api/v1/config/notifications/webhooks")
-                .json(&webhooks)
+            if let Ok(req) = gloo_net::http::Request::put(&crate::api::api(
+                "/api/v1/config/notifications/webhooks",
+            ))
+            .json(&webhooks)
             {
                 let _ = req.send().await;
             }

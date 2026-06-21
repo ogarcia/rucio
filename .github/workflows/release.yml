@@ -89,7 +89,7 @@ jobs:
       # the frontend is built first. trunk runs on the host; for the cross
       # target it then compiles the binary, reading the dist/ trunk produced.
       - name: Build frontend
-        run: cd rucio-web && trunk build --release
+        run: cd rucio-web && trunk build --release --public-url ./
 
       - name: Build (cross)
         if: matrix.use_cross
@@ -148,7 +148,7 @@ jobs:
           tool: trunk@${{ env.TRUNK_VERSION }}
 
       - name: Build frontend
-        run: cd rucio-web && trunk build --release
+        run: cd rucio-web && trunk build --release --public-url ./
 
       - name: Package
         shell: bash
@@ -196,7 +196,7 @@ jobs:
       # The embedded daemon serves the web UI (web-ui feature / rust-embed), so
       # the frontend has to be built before the crate is compiled.
       - name: Build frontend
-        run: cd rucio-web && trunk build --release
+        run: cd rucio-web && trunk build --release --public-url ./
 
       # Explicit --target so the crt-static rustflags in .cargo/config.toml apply
       # only to the final binary, not to host proc-macros / build scripts.

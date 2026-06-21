@@ -445,6 +445,25 @@ rucio config unset api.token            # disable token auth
 
 ---
 
+### `api.base_path`
+
+Path prefix the web panel is served under. Leave as `/` (the default) when Rucio
+owns its own (sub)domain. Set it when reverse-proxying the panel into a
+subdirectory, e.g. `example.com/rucio`, so the daemon injects a matching
+`<base href>` and the panel resolves its assets and API/WebSocket URLs under the
+prefix. The reverse proxy is expected to strip the prefix before forwarding (see
+[Option D](01-installation.md#under-a-subpath-examplecomrucio)). `/rucio`,
+`/rucio/` and `rucio` all normalise to `/rucio/`. Override via `RUCIOD_BASE_PATH`.
+
+```sh
+rucio config set api.base_path /rucio/
+rucio config unset api.base_path        # back to the origin root
+```
+
+**Default:** `/`.
+
+---
+
 ### `emule.enabled`
 
 Enable or disable the eMule / Kad2 subsystem at runtime.
@@ -738,6 +757,7 @@ the file value untouched.
 | Variable | Config key | Default | Format |
 |---|---|---|---|
 | `RUCIOD_API_LISTEN` | `api.listen` | `127.0.0.1:3003` | `host:port` |
+| `RUCIOD_BASE_PATH` | `api.base_path` | `/` | subpath, e.g. `/rucio/` |
 | `RUCIOD_P2P_LISTEN` | `node.listen_addrs` | `/ip4/0.0.0.0/tcp/4321,/ip6/::/tcp/4321` | comma-separated multiaddrs |
 | `RUCIOD_IDENTITY_PATH` | `node.identity_path` | `<config dir>/identity.key` | path |
 | `RUCIOD_BASE_DIR` | *(portable mode)* | *(unset)* | absolute path — roots identity, DB, downloads, temp, outboards, pins and nodes.dat under one dir |

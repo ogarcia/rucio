@@ -2,16 +2,16 @@
   "name": "Rucio",
   "short_name": "Rucio",
   "description": "Peer-to-peer file sharing over libp2p, with eMule/Kad2 compatibility",
-  "start_url": "/",
-  "scope": "/",
+  "start_url": ".",
+  "scope": ".",
   "display": "standalone",
   "background_color": "#f8fafc",
   "theme_color": "#4f6ef7",
   "icons": [
-    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
-    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
   ],
   "protocol_handlers": [
-    { "protocol": "ed2k", "url": "/?handle=%s" }
+    { "protocol": "ed2k", "url": "./?handle=%s" }
   ]
 }

@@ -42,7 +42,7 @@ pub fn NotificationsPanel(
     let clear_all = move |_| {
         notifications.set(vec![]);
         spawn_local(async move {
-            let _ = gloo_net::http::Request::delete("/api/v1/notifications")
+            let _ = gloo_net::http::Request::delete(&crate::api::api("/api/v1/notifications"))
                 .send()
                 .await;
         });
@@ -51,9 +51,11 @@ pub fn NotificationsPanel(
     let delete_one = move |id: i64| {
         notifications.update(|list| list.retain(|n| n.id != id));
         spawn_local(async move {
-            let _ = gloo_net::http::Request::delete(&format!("/api/v1/notifications/{id}"))
-                .send()
-                .await;
+            let _ = gloo_net::http::Request::delete(&crate::api::api(&format!(
+                "/api/v1/notifications/{id}"
+            )))
+            .send()
+            .await;
         });
     };
 

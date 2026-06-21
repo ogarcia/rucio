@@ -13,7 +13,7 @@ use crate::types::{
 
 async fn api_start_search(keywords: Vec<String>) -> Option<u64> {
     let body = StartSearchRequest { keywords };
-    gloo_net::http::Request::post("/api/v1/searches")
+    gloo_net::http::Request::post(&crate::api::api("/api/v1/searches"))
         .json(&body)
         .ok()?
         .send()
@@ -26,7 +26,7 @@ async fn api_start_search(keywords: Vec<String>) -> Option<u64> {
 }
 
 async fn api_list_searches() -> Option<Vec<SearchSummary>> {
-    gloo_net::http::Request::get("/api/v1/searches")
+    gloo_net::http::Request::get(&crate::api::api("/api/v1/searches"))
         .send()
         .await
         .ok()?
@@ -37,7 +37,7 @@ async fn api_list_searches() -> Option<Vec<SearchSummary>> {
 }
 
 async fn api_search_detail(id: u64) -> Option<SearchDetailResponse> {
-    gloo_net::http::Request::get(&format!("/api/v1/searches/{id}"))
+    gloo_net::http::Request::get(&crate::api::api(&format!("/api/v1/searches/{id}")))
         .send()
         .await
         .ok()?
@@ -47,7 +47,7 @@ async fn api_search_detail(id: u64) -> Option<SearchDetailResponse> {
 }
 
 async fn api_relaunch(id: u64) -> Option<u64> {
-    gloo_net::http::Request::post(&format!("/api/v1/searches/{id}/relaunch"))
+    gloo_net::http::Request::post(&crate::api::api(&format!("/api/v1/searches/{id}/relaunch")))
         .send()
         .await
         .ok()?
@@ -58,7 +58,7 @@ async fn api_relaunch(id: u64) -> Option<u64> {
 }
 
 async fn api_delete_search(id: u64) {
-    let _ = gloo_net::http::Request::delete(&format!("/api/v1/searches/{id}"))
+    let _ = gloo_net::http::Request::delete(&crate::api::api(&format!("/api/v1/searches/{id}")))
         .send()
         .await;
 }
@@ -81,10 +81,10 @@ enum DlOutcome {
 async fn api_start_download(link: String, providers: Vec<String>) -> DlOutcome {
     let builder = if link.starts_with("ed2k://") {
         let body = serde_json::json!({ "link": link });
-        gloo_net::http::Request::post("/api/v1/downloads/ed2k").json(&body)
+        gloo_net::http::Request::post(&crate::api::api("/api/v1/downloads/ed2k")).json(&body)
     } else {
         let body = serde_json::json!({ "magnet": link, "providers": providers });
-        gloo_net::http::Request::post("/api/v1/downloads").json(&body)
+        gloo_net::http::Request::post(&crate::api::api("/api/v1/downloads")).json(&body)
     };
     let Ok(req) = builder else {
         return DlOutcome::Error;

@@ -103,8 +103,10 @@ fn test_webhook(row: Row) {
     }
     row.test.set(t!("wh.testing").to_string());
     spawn_local(async move {
-        let msg = match gloo_net::http::Request::post("/api/v1/config/notifications/webhooks/test")
-            .json(&def)
+        let msg = match gloo_net::http::Request::post(&crate::api::api(
+            "/api/v1/config/notifications/webhooks/test",
+        ))
+        .json(&def)
         {
             Ok(req) => match req.send().await {
                 Ok(resp) => match resp.json::<WebhookTestResult>().await {

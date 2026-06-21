@@ -24,7 +24,7 @@ use crate::types::{
 // ── API ─────────────────────────────────────────────────────────────────────
 
 async fn api_list() -> Option<Vec<Subscription>> {
-    gloo_net::http::Request::get("/api/v1/subscriptions")
+    gloo_net::http::Request::get(&crate::api::api("/api/v1/subscriptions"))
         .send()
         .await
         .ok()?
@@ -37,7 +37,7 @@ async fn api_list() -> Option<Vec<Subscription>> {
 /// Subscribe to a peer with a byte quota. Returns `Err(message)` on failure.
 async fn api_add(peer: String, quota_bytes: u64) -> Result<(), String> {
     let body = serde_json::json!({ "peer": peer, "quota_bytes": quota_bytes });
-    let req = gloo_net::http::Request::post("/api/v1/subscriptions")
+    let req = gloo_net::http::Request::post(&crate::api::api("/api/v1/subscriptions"))
         .json(&body)
         .map_err(|e| e.to_string())?;
     let resp = req.send().await.map_err(|e| e.to_string())?;
@@ -53,7 +53,7 @@ async fn api_add(peer: String, quota_bytes: u64) -> Result<(), String> {
 /// Unsubscribe. `keep = true` retains the mirrored content (it becomes a share
 /// you own); `false` frees the space by evicting mirror-only content.
 async fn api_remove(peer_id: &str, keep: bool) {
-    let url = format!("/api/v1/subscriptions/{peer_id}?keep={keep}");
+    let url = crate::api::api(&format!("/api/v1/subscriptions/{peer_id}?keep={keep}"));
     let _ = gloo_net::http::Request::delete(&url).send().await;
 }
 
@@ -66,7 +66,7 @@ async fn api_set_collections(
     collections: Vec<String>,
     keep: bool,
 ) {
-    let url = format!("/api/v1/subscriptions/{peer_id}/collections");
+    let url = crate::api::api(&format!("/api/v1/subscriptions/{peer_id}/collections"));
     let body = serde_json::json!({
         "follow_all": follow_all, "collections": collections, "keep": keep,
     });
@@ -77,7 +77,7 @@ async fn api_set_collections(
 
 /// Re-fetch a single subscription (latest stats + available collections).
 async fn api_get(peer_id: &str) -> Option<Subscription> {
-    let url = format!("/api/v1/subscriptions/{peer_id}");
+    let url = crate::api::api(&format!("/api/v1/subscriptions/{peer_id}"));
     gloo_net::http::Request::get(&url)
         .send()
         .await
@@ -89,7 +89,7 @@ async fn api_get(peer_id: &str) -> Option<Subscription> {
 
 /// Ask the daemon to pull this peer's pin-set now (best-effort, asynchronous).
 async fn api_sync(peer_id: &str) {
-    let url = format!("/api/v1/subscriptions/{peer_id}/sync");
+    let url = crate::api::api(&format!("/api/v1/subscriptions/{peer_id}/sync"));
     let _ = gloo_net::http::Request::post(&url).send().await;
 }
 
@@ -97,7 +97,7 @@ async fn api_sync(peer_id: &str) {
 /// stake (so the keep/free prompt can be skipped); `None` on error (prompt to
 /// be safe).
 async fn api_evictable(peer_id: &str) -> Option<u64> {
-    let url = format!("/api/v1/subscriptions/{peer_id}/evictable");
+    let url = crate::api::api(&format!("/api/v1/subscriptions/{peer_id}/evictable"));
     let resp = gloo_net::http::Request::get(&url).send().await.ok()?;
     let v = resp.json::<serde_json::Value>().await.ok()?;
     v.get("bytes").and_then(|b| b.as_u64())
@@ -105,13 +105,15 @@ async fn api_evictable(peer_id: &str) -> Option<u64> {
 
 /// Re-request a mirror file the user previously cancelled.
 async fn api_refetch(peer_id: &str, hash: &str) {
-    let url = format!("/api/v1/subscriptions/{peer_id}/files/{hash}/refetch");
+    let url = crate::api::api(&format!(
+        "/api/v1/subscriptions/{peer_id}/files/{hash}/refetch"
+    ));
     let _ = gloo_net::http::Request::post(&url).send().await;
 }
 
 /// The mirror files of a subscription, with their resolved state.
 async fn api_files(peer_id: &str) -> Vec<MirrorFile> {
-    let url = format!("/api/v1/subscriptions/{peer_id}/files");
+    let url = crate::api::api(&format!("/api/v1/subscriptions/{peer_id}/files"));
     match gloo_net::http::Request::get(&url).send().await {
         Ok(resp) => resp
             .json::<SubscriptionFilesResponse>()
@@ -124,7 +126,7 @@ async fn api_files(peer_id: &str) -> Vec<MirrorFile> {
 
 /// Fetch this node's own shareable `rucio-peer:` link from the status endpoint.
 async fn api_my_link() -> Option<String> {
-    let status = gloo_net::http::Request::get("/api/v1/status")
+    let status = gloo_net::http::Request::get(&crate::api::api("/api/v1/status"))
         .send()
         .await
         .ok()?

@@ -61,7 +61,7 @@ jobs:
           sudo mv trunk /usr/local/bin/
 
       - name: Build Leptos frontend
-        run: cd rucio-web && trunk build --release
+        run: cd rucio-web && trunk build --release --public-url ./
 
       # Headless daemon (ruciod), bootstrap and the standalone CLI — no web
       # panel. rucio-cli is a workspace default-member, built by this command.

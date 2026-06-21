@@ -121,7 +121,7 @@ fn is_pausable(s: &DownloadState) -> bool {
 // ── API calls ─────────────────────────────────────────────────────────────────
 
 pub async fn refresh_downloads(downloads: RwSignal<Vec<DownloadResponse>>) {
-    if let Ok(resp) = gloo_net::http::Request::get("/api/v1/downloads")
+    if let Ok(resp) = gloo_net::http::Request::get(&crate::api::api("/api/v1/downloads"))
         .send()
         .await
         && let Ok(body) = resp.json::<crate::types::DownloadsResponse>().await
@@ -132,28 +132,31 @@ pub async fn refresh_downloads(downloads: RwSignal<Vec<DownloadResponse>>) {
 }
 
 async fn api_cancel(id: i64) {
-    let _ = gloo_net::http::Request::post(&format!("/api/v1/downloads/{id}/cancel"))
-        .send()
-        .await;
+    let _ =
+        gloo_net::http::Request::post(&crate::api::api(&format!("/api/v1/downloads/{id}/cancel")))
+            .send()
+            .await;
 }
 
 async fn api_remove(id: i64) {
-    let _ = gloo_net::http::Request::delete(&format!("/api/v1/downloads/{id}"))
+    let _ = gloo_net::http::Request::delete(&crate::api::api(&format!("/api/v1/downloads/{id}")))
         .send()
         .await;
 }
 
 async fn api_pause(id: i64) {
-    let _ = gloo_net::http::Request::post(&format!("/api/v1/downloads/{id}/pause"))
-        .send()
-        .await;
+    let _ =
+        gloo_net::http::Request::post(&crate::api::api(&format!("/api/v1/downloads/{id}/pause")))
+            .send()
+            .await;
 }
 
 /// Rename an in-progress download. Returns `true` on success (HTTP 2xx).
 async fn api_rename(id: i64, name: String) -> bool {
     let body = RenameDownloadRequest { name };
     if let Ok(req) =
-        gloo_net::http::Request::post(&format!("/api/v1/downloads/{id}/rename")).json(&body)
+        gloo_net::http::Request::post(&crate::api::api(&format!("/api/v1/downloads/{id}/rename")))
+            .json(&body)
         && let Ok(resp) = req.send().await
     {
         return resp.ok();
@@ -162,9 +165,10 @@ async fn api_rename(id: i64, name: String) -> bool {
 }
 
 async fn api_resume(id: i64) {
-    let _ = gloo_net::http::Request::post(&format!("/api/v1/downloads/{id}/resume"))
-        .send()
-        .await;
+    let _ =
+        gloo_net::http::Request::post(&crate::api::api(&format!("/api/v1/downloads/{id}/resume")))
+            .send()
+            .await;
 }
 
 // ── Bulk actions (used by the menu) ─────────────────────────────────────────
@@ -205,7 +209,7 @@ pub async fn resume_all(downloads: RwSignal<Vec<DownloadResponse>>) {
 /// Remove every finished (completed/failed/cancelled) download from the history
 /// in a single request. Files already on disk are kept.
 pub async fn clear_history(downloads: RwSignal<Vec<DownloadResponse>>) {
-    let _ = gloo_net::http::Request::delete("/api/v1/downloads/history")
+    let _ = gloo_net::http::Request::delete(&crate::api::api("/api/v1/downloads/history"))
         .send()
         .await;
     refresh_downloads(downloads).await;
@@ -229,7 +233,7 @@ pub fn any_terminal(list: &[DownloadResponse]) -> bool {
 }
 
 async fn api_fetch_detail(id: i64) -> Option<DownloadDetailResponse> {
-    gloo_net::http::Request::get(&format!("/api/v1/downloads/{id}"))
+    gloo_net::http::Request::get(&crate::api::api(&format!("/api/v1/downloads/{id}")))
         .send()
         .await
         .ok()?
@@ -239,7 +243,7 @@ async fn api_fetch_detail(id: i64) -> Option<DownloadDetailResponse> {
 }
 
 async fn api_fetch_pieces(id: i64) -> Option<DownloadPiecesResponse> {
-    gloo_net::http::Request::get(&format!("/api/v1/downloads/{id}/pieces"))
+    gloo_net::http::Request::get(&crate::api::api(&format!("/api/v1/downloads/{id}/pieces")))
         .send()
         .await
         .ok()?
@@ -286,13 +290,13 @@ pub async fn api_add_links(
             if let Some(c) = category_id {
                 body["category_id"] = c.into();
             }
-            post_link("/api/v1/downloads/ed2k", &body).await
+            post_link(&crate::api::api("/api/v1/downloads/ed2k"), &body).await
         } else if link.starts_with("rucio:") {
             let mut body = serde_json::json!({ "magnet": link, "providers": [] });
             if let Some(c) = category_id {
                 body["category_id"] = c.into();
             }
-            post_link("/api/v1/downloads", &body).await
+            post_link(&crate::api::api("/api/v1/downloads"), &body).await
         } else {
             // Not a rucio: or ed2k:// link — don't even send it.
             LinkOutcome::Rejected
@@ -1059,7 +1063,7 @@ fn DownloadInfoOverlay(
                                     spawn_local(async move {
                                         let body = serde_json::json!({ "category_id": cat });
                                         if let Ok(req) = gloo_net::http::Request::put(
-                                            &format!("/api/v1/downloads/{id}/category"),
+                                            &crate::api::api(&format!("/api/v1/downloads/{id}/category")),
                                         ).json(&body)
                                             && req.send().await.map(|r| r.ok()).unwrap_or(false)
                                         {

@@ -14,7 +14,7 @@ use crate::types::{
 };
 
 async fn api_fetch_emule_status() -> Option<EmuleStatusResponse> {
-    gloo_net::http::Request::get("/api/v1/emule/status")
+    gloo_net::http::Request::get(&crate::api::api("/api/v1/emule/status"))
         .send()
         .await
         .ok()?
@@ -168,7 +168,9 @@ pub fn StatsPanel(active_panel: RwSignal<Option<super::Panel>>) -> impl IntoView
             if !alive.load(Ordering::Relaxed) {
                 break;
             }
-            if let Ok(resp) = gloo_net::http::Request::get("/api/v1/metrics").send().await
+            if let Ok(resp) = gloo_net::http::Request::get(&crate::api::api("/api/v1/metrics"))
+                .send()
+                .await
                 && let Ok(m) = resp.json::<MetricsResponse>().await
                 && alive.load(Ordering::Relaxed)
             {
@@ -303,7 +305,9 @@ pub fn PeersPanel(active_panel: RwSignal<Option<super::Panel>>) -> impl IntoView
             if !alive.load(Ordering::Relaxed) {
                 break;
             }
-            if let Ok(resp) = gloo_net::http::Request::get("/api/v1/peers").send().await
+            if let Ok(resp) = gloo_net::http::Request::get(&crate::api::api("/api/v1/peers"))
+                .send()
+                .await
                 && let Ok(p) = resp.json::<PeersResponse>().await
                 && alive.load(Ordering::Relaxed)
             {

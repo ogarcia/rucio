@@ -21,5 +21,5 @@ js-sys        = { workspace = true }
 wasm-bindgen  = "0.2"
 serde         = { version = "1", features = ["derive"] }
 serde_json    = "1"
-web-sys       = { version = "0.3", features = ["Window", "Location", "Storage", "Document", "Element", "Navigator", "Clipboard", "UrlSearchParams", "History"] }
+web-sys       = { version = "0.3", features = ["Window", "Location", "Storage", "Document", "Element", "Navigator", "Clipboard", "Node", "Url", "UrlSearchParams", "History"] }
 rust-i18n     = { workspace = true }

@@ -15,7 +15,7 @@ use crate::types::{TempLimitRequest, TempLimitStatus, format_speed};
 
 /// Toggle the daemon's temporary speed limit; returns the resulting state.
 async fn api_set_temp_limit(active: bool) -> Option<bool> {
-    gloo_net::http::Request::put("/api/v1/config/temp-limit")
+    gloo_net::http::Request::put(&crate::api::api("/api/v1/config/temp-limit"))
         .json(&TempLimitRequest { active })
         .ok()?
         .send()

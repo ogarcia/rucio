@@ -17,19 +17,21 @@
     <!-- use-credentials: send the basic-auth/cookie credentials when fetching
          the manifest, else a proxy with HTTP auth in front returns 401 and the
          app is not installable. -->
-    <link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials"/>
+    <link rel="manifest" href="manifest.webmanifest" crossorigin="use-credentials"/>
     <meta name="theme-color" content="#4f6ef7"/>
     <meta name="mobile-web-app-capable" content="yes"/>
     <meta name="apple-mobile-web-app-capable" content="yes"/>
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
     <meta name="apple-mobile-web-app-title" content="Rucio"/>
-    <link rel="apple-touch-icon" href="/apple-touch-icon.png"/>
+    <link rel="apple-touch-icon" href="apple-touch-icon.png"/>
     <script>
         // Register the service worker (installability + fast shell load).
         // Requires a secure context: works on localhost or behind HTTPS.
+        // The path is relative so it resolves against <base href> and the
+        // worker's scope tracks the mount prefix (e.g. /rucio/).
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', () => {
-                navigator.serviceWorker.register('/sw.js').catch(() => {});
+                navigator.serviceWorker.register('sw.js').catch(() => {});
             });
         }
     </script>

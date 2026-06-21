@@ -237,6 +237,40 @@ server {
 Run the daemon with `latest` (complete) and keep `3003` on a private network
 between nginx and the daemon rather than on the public internet.
 
+#### Under a subpath (`example.com/rucio`)
+
+To mount the panel under a subdirectory instead of its own (sub)domain, tell the
+daemon its prefix with `RUCIOD_BASE_PATH` (or `api.base_path`) and let nginx
+**strip** that prefix before forwarding — note the trailing slash on both the
+`location` and the `proxy_pass` URL, which is what removes the `/rucio` prefix:
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name example.com;
+
+    # TLS config (certificates, etc.) omitted.
+
+    location /rucio/ {
+        proxy_pass http://daemon-host:3003/;   # trailing slash strips /rucio
+
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade    $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+Start the daemon with `RUCIOD_BASE_PATH=/rucio/`. The daemon injects a matching
+`<base href>` into the panel so the WASM app loads its assets and reaches the
+API/WebSocket under `/rucio/`; nginx strips the prefix so the daemon's own routes
+are unchanged. A single image works at any prefix — nothing is baked in at build
+time. `/rucio`, `/rucio/` and `rucio` are all accepted and normalise to `/rucio/`.
+
 ### Serving the panel assets yourself (against a headless daemon)
 
 Download the pre-built assets from the [Releases](../../../releases) page

@@ -22,6 +22,11 @@ self.addEventListener('activate', (event) => {
   })());
 });
 
+// Path prefix the app is mounted under (e.g. "/" or "/rucio/"). The worker is
+// registered relative to <base href>, so its scope already carries the prefix;
+// derive everything from it instead of hardcoding "/".
+const SCOPE = new URL(self.registration.scope).pathname;
+
 self.addEventListener('fetch', (event) => {
   const req = event.request;
   if (req.method !== 'GET') return;
@@ -29,20 +34,21 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
   // Never touch the REST API or the live WebSocket — always go to the network.
-  if (url.pathname.startsWith('/api/')) return;
+  if (url.pathname.startsWith(SCOPE + 'api/')) return;
 
   event.respondWith((async () => {
     const cache = await caches.open(CACHE);
 
     // Navigations: network-first so a redeploy is picked up immediately, with
-    // the cached shell as the offline fallback.
+    // the cached shell as the offline fallback. The shell is keyed by the
+    // mount root (SCOPE), not "/".
     if (req.mode === 'navigate') {
       try {
         const fresh = await fetch(req);
-        cache.put('/', fresh.clone());
+        cache.put(SCOPE, fresh.clone());
         return fresh;
       } catch {
-        return (await cache.match('/')) || (await cache.match(req)) || Response.error();
+        return (await cache.match(SCOPE)) || (await cache.match(req)) || Response.error();
       }
     }
 

@@ -505,10 +505,23 @@ pub struct NodeStatus {
 
 /// Build the full API router.
 pub fn router(state: AppState) -> Router {
+    // Scalar builds its "try it" request URLs from the OpenAPI server URL. When
+    // mounted under a subpath, point it at the prefix so requests hit
+    // /rucio/api/... (the proxy strips the prefix) instead of /api/... at the
+    // origin root. base_path is normalised to a trailing slash; drop it so the
+    // server URL joins cleanly with the /api/... paths.
+    let mut openapi = ApiDoc::openapi();
+    let base = state.config.api.base_path.as_str();
+    if base != "/" {
+        openapi.servers = Some(vec![utoipa::openapi::Server::new(
+            base.trim_end_matches('/'),
+        )]);
+    }
+
     let r = Router::new()
         .route("/api/ws", routing::get(ws::ws_handler))
         .route("/health", routing::get(health::get_health))
-        .merge(Scalar::with_url("/api/docs", ApiDoc::openapi()).custom_html(SCALAR_HTML))
+        .merge(Scalar::with_url("/api/docs", openapi).custom_html(SCALAR_HTML))
         .nest("/api/v1", v1_router());
 
     #[cfg(feature = "web-ui")]

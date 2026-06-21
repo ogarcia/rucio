@@ -118,6 +118,35 @@ pub struct NodeConfig {
 pub struct ApiConfig {
     pub listen: String,
     pub token: Option<String>,
+    /// Path prefix the web UI is served under, e.g. `/` (the default, origin
+    /// root) or `/rucio/` when reverse-proxied into a subdirectory.
+    ///
+    /// When not `/`, the daemon injects a matching `<base href>` into the served
+    /// `index.html` so the WASM app resolves all of its assets and API/WebSocket
+    /// URLs under the prefix. The reverse proxy is expected to strip the prefix
+    /// before forwarding (e.g. nginx `proxy_pass http://daemon/;`), so the
+    /// daemon's own routes (`/api/...`) are unchanged. Override via
+    /// `RUCIOD_BASE_PATH`. Accepts `rucio`, `/rucio` or `/rucio/`; all normalise
+    /// to `/rucio/`.
+    #[serde(default = "ApiConfig::default_base_path")]
+    pub base_path: String,
+}
+
+impl ApiConfig {
+    fn default_base_path() -> String {
+        "/".to_string()
+    }
+}
+
+/// Normalise a base path to exactly one leading and trailing slash (`/rucio/`),
+/// collapsing empty / `/` to the root `/`. Inner segments are preserved.
+pub(crate) fn normalize_base_path(raw: &str) -> String {
+    let trimmed = raw.trim().trim_matches('/');
+    if trimmed.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{trimmed}/")
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -416,6 +445,7 @@ impl Default for ApiConfig {
         Self {
             listen: "127.0.0.1:3003".to_string(),
             token: None,
+            base_path: ApiConfig::default_base_path(),
         }
     }
 }
@@ -627,6 +657,7 @@ impl Config {
     /// | Variable                    | Field                        | Format             |
     /// |-----------------------------|------------------------------|--------------------|
     /// | `RUCIOD_API_LISTEN`         | `api.listen`                 | `host:port`        |
+    /// | `RUCIOD_BASE_PATH`          | `api.base_path`              | subpath, e.g. `/rucio/` |
     /// | `RUCIOD_P2P_LISTEN`         | `node.listen_addrs`          | comma-separated multiaddrs |
     /// | `RUCIOD_IDENTITY_PATH`      | `node.identity_path`         | path               |
     /// | `RUCIOD_DOWNLOAD_DIR`       | `storage.download_dir`       | path               |
@@ -678,6 +709,14 @@ impl Config {
         {
             self.api.listen = v;
         }
+        if let Ok(v) = std::env::var("RUCIOD_BASE_PATH")
+            && !v.is_empty()
+        {
+            self.api.base_path = v;
+        }
+        // Normalise whatever came from the config file, env or default so the
+        // rest of the daemon can rely on the `/<prefix>/` shape (or `/`).
+        self.api.base_path = normalize_base_path(&self.api.base_path);
         if let Ok(v) = std::env::var("RUCIOD_P2P_LISTEN")
             && !v.is_empty()
         {
@@ -988,6 +1027,37 @@ mod tests {
         cfg.apply_env_overrides();
         unsafe { std::env::remove_var("RUCIOD_API_LISTEN") };
         assert_eq!(cfg.api.listen, "0.0.0.0:8080");
+    }
+
+    #[test]
+    fn normalize_base_path_shapes() {
+        assert_eq!(normalize_base_path(""), "/");
+        assert_eq!(normalize_base_path("/"), "/");
+        assert_eq!(normalize_base_path("rucio"), "/rucio/");
+        assert_eq!(normalize_base_path("/rucio"), "/rucio/");
+        assert_eq!(normalize_base_path("/rucio/"), "/rucio/");
+        assert_eq!(normalize_base_path("  /rucio/  "), "/rucio/");
+        assert_eq!(normalize_base_path("/a/b"), "/a/b/");
+    }
+
+    #[test]
+    #[serial]
+    fn env_override_base_path() {
+        unsafe { std::env::set_var("RUCIOD_BASE_PATH", "rucio") };
+        let mut cfg = Config::default();
+        cfg.apply_env_overrides();
+        unsafe { std::env::remove_var("RUCIOD_BASE_PATH") };
+        assert_eq!(cfg.api.base_path, "/rucio/");
+    }
+
+    #[test]
+    #[serial]
+    fn base_path_default_is_root() {
+        // No env set: the default normalises to the origin root.
+        unsafe { std::env::remove_var("RUCIOD_BASE_PATH") };
+        let mut cfg = Config::default();
+        cfg.apply_env_overrides();
+        assert_eq!(cfg.api.base_path, "/");
     }
 
     #[test]

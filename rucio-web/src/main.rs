@@ -1,3 +1,4 @@
+mod api;
 mod categories;
 mod config;
 mod downloads;
@@ -187,10 +188,12 @@ const LIMIT_PRESETS: [u64; 9] = [0, 512, 1024, 2048, 5120, 10240, 25600, 51200, 
 /// PUT the base speed limits to the daemon (fire-and-forget).
 fn put_limits(upload_kbps: u64, download_kbps: u64) {
     spawn_local(async move {
-        if let Ok(req) = gloo_net::http::Request::put("/api/v1/config/limits").json(&SpeedLimits {
-            upload_kbps,
-            download_kbps,
-        }) {
+        if let Ok(req) =
+            gloo_net::http::Request::put(&api::api("/api/v1/config/limits")).json(&SpeedLimits {
+                upload_kbps,
+                download_kbps,
+            })
+        {
             let _ = req.send().await;
         }
     });
@@ -295,7 +298,9 @@ fn ws_url() -> String {
     } else {
         "ws"
     };
-    format!("{ws_proto}://{host}/api/ws")
+    // Honour the mount prefix (e.g. /rucio/) so the WS reaches the proxy
+    // location, not the origin root.
+    format!("{ws_proto}://{host}{}", crate::api::api("/api/ws"))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -670,12 +675,14 @@ fn App() -> impl IntoView {
 
     // Initial data fetch.
     spawn_local(async move {
-        if let Ok(r) = gloo_net::http::Request::get("/api/v1/status").send().await
+        if let Ok(r) = gloo_net::http::Request::get(&api::api("/api/v1/status"))
+            .send()
+            .await
             && let Ok(s) = r.json::<StatusResponse>().await
         {
             status.set(Some(s));
         }
-        if let Ok(r) = gloo_net::http::Request::get("/api/v1/config/temp-limit")
+        if let Ok(r) = gloo_net::http::Request::get(&api::api("/api/v1/config/temp-limit"))
             .send()
             .await
             && let Ok(s) = r.json::<TempLimitStatus>().await
@@ -684,7 +691,7 @@ fn App() -> impl IntoView {
             temp_up.set(s.upload_kbps);
             temp_down.set(s.download_kbps);
         }
-        if let Ok(r) = gloo_net::http::Request::get("/api/v1/config/limits")
+        if let Ok(r) = gloo_net::http::Request::get(&api::api("/api/v1/config/limits"))
             .send()
             .await
             && let Ok(s) = r.json::<SpeedLimits>().await
@@ -695,13 +702,15 @@ fn App() -> impl IntoView {
         refresh_downloads(downloads).await;
         // Seed the Uploads tab so it shows current activity immediately; the WS
         // UploadProgress stream keeps it live thereafter.
-        if let Ok(r) = gloo_net::http::Request::get("/api/v1/uploads").send().await
+        if let Ok(r) = gloo_net::http::Request::get(&api::api("/api/v1/uploads"))
+            .send()
+            .await
             && let Ok(s) = r.json::<UploadsResponse>().await
         {
             uploads.set(s.uploads);
         }
         // Seed the notification centre and bell badge from persisted history.
-        if let Ok(r) = gloo_net::http::Request::get("/api/v1/notifications")
+        if let Ok(r) = gloo_net::http::Request::get(&api::api("/api/v1/notifications"))
             .send()
             .await
             && let Ok(s) = r.json::<NotificationList>().await
@@ -710,7 +719,7 @@ fn App() -> impl IntoView {
             unread.set(s.unread);
         }
         // Master switch, so the bell can hide when notifications are off.
-        if let Ok(r) = gloo_net::http::Request::get("/api/v1/config/notifications")
+        if let Ok(r) = gloo_net::http::Request::get(&api::api("/api/v1/config/notifications"))
             .send()
             .await
             && let Ok(s) = r.json::<NotificationSettings>().await
@@ -718,7 +727,7 @@ fn App() -> impl IntoView {
             notif_enabled.set(s.enabled);
         }
         // Categories, for badges in the download list and the add/detail dialogs.
-        if let Ok(r) = gloo_net::http::Request::get("/api/v1/categories")
+        if let Ok(r) = gloo_net::http::Request::get(&api::api("/api/v1/categories"))
             .send()
             .await
             && let Ok(s) = r.json::<CategoriesResponse>().await
@@ -796,7 +805,7 @@ fn App() -> impl IntoView {
                                     });
                                     spawn_local(async move {
                                         let _ = gloo_net::http::Request::post(
-                                            "/api/v1/notifications/read",
+                                            &api::api("/api/v1/notifications/read"),
                                         )
                                         .send()
                                         .await;
@@ -874,7 +883,7 @@ fn App() -> impl IntoView {
                                     let next = !temp_limit.get_untracked();
                                     spawn_local(async move {
                                         if let Ok(req) = gloo_net::http::Request::put(
-                                            "/api/v1/config/temp-limit",
+                                            &api::api("/api/v1/config/temp-limit"),
                                         )
                                         .json(&TempLimitRequest { active: next })
                                             && let Ok(resp) = req.send().await

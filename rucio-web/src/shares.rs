@@ -18,7 +18,7 @@ use crate::types::{
 // ── API ─────────────────────────────────────────────────────────────────────
 
 async fn api_list_dirs() -> Option<Vec<SharedDir>> {
-    gloo_net::http::Request::get("/api/v1/shares")
+    gloo_net::http::Request::get(&crate::api::api("/api/v1/shares"))
         .send()
         .await
         .ok()?
@@ -36,7 +36,9 @@ async fn api_list_files_page(
     offset: u32,
     limit: u32,
 ) -> Option<(Vec<ShareFile>, u64)> {
-    let mut url = format!("/api/v1/shares/files?limit={limit}&offset={offset}");
+    let mut url = crate::api::api(&format!(
+        "/api/v1/shares/files?limit={limit}&offset={offset}"
+    ));
     if !q.is_empty() {
         url.push_str("&q=");
         url.push_str(&urlencoding_encode(q));
@@ -59,7 +61,7 @@ async fn api_list_files_page(
 /// `Err(message)` on a request/validation failure.
 async fn api_add_dir(path: String) -> Result<AddShareResponse, String> {
     let body = serde_json::json!({ "path": path });
-    let req = gloo_net::http::Request::post("/api/v1/shares")
+    let req = gloo_net::http::Request::post(&crate::api::api("/api/v1/shares"))
         .json(&body)
         .map_err(|e| e.to_string())?;
     let resp = req.send().await.map_err(|e| e.to_string())?;
@@ -80,7 +82,7 @@ async fn api_add_dir(path: String) -> Result<AddShareResponse, String> {
 }
 
 async fn api_remove_dir(path: &str) {
-    let url = format!("/api/v1/shares?path={}", urlencoding_encode(path));
+    let url = crate::api::api(&format!("/api/v1/shares?path={}", urlencoding_encode(path)));
     let _ = gloo_net::http::Request::delete(&url).send().await;
 }
 
@@ -90,14 +92,14 @@ async fn api_remove_dir(path: &str) {
 /// subscribers.
 async fn api_pin_magnet(magnet: String, collection: Option<String>) {
     let body = serde_json::json!({ "magnet": magnet, "collection": collection });
-    if let Ok(req) = gloo_net::http::Request::post("/api/v1/pins").json(&body) {
+    if let Ok(req) = gloo_net::http::Request::post(&crate::api::api("/api/v1/pins")).json(&body) {
         let _ = req.send().await;
     }
 }
 
 /// Unpin a root hash (drops the pin intent; the file stays shared).
 async fn api_unpin(hash: &str) {
-    let url = format!("/api/v1/pins/{hash}");
+    let url = crate::api::api(&format!("/api/v1/pins/{hash}"));
     let _ = gloo_net::http::Request::delete(&url).send().await;
 }
 
@@ -105,7 +107,10 @@ async fn api_unpin(hash: &str) {
 /// labels in use, so the shared-files list can show what's pinned, offer to
 /// unpin, and suggest existing collections when pinning.
 async fn api_list_pinned() -> (HashSet<String>, Vec<String>) {
-    let Ok(resp) = gloo_net::http::Request::get("/api/v1/pins").send().await else {
+    let Ok(resp) = gloo_net::http::Request::get(&crate::api::api("/api/v1/pins"))
+        .send()
+        .await
+    else {
         return (HashSet::new(), Vec::new());
     };
     match resp.json::<PinsResponse>().await {

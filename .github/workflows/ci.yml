@@ -66,6 +66,6 @@ jobs:
         with:
           tool: trunk@${{ env.TRUNK_VERSION }}
       - name: Build frontend
-        run: cd rucio-web && trunk build --release
+        run: cd rucio-web && trunk build --release --public-url ./
       - name: Clippy desktop shell
         run: cargo clippy -p rucio-tauri --all-targets -- -D warnings
