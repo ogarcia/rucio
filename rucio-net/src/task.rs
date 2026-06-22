@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use libp2p::futures::StreamExt;
 use libp2p::{
     Multiaddr, PeerId, SwarmBuilder,
+    core::transport::ListenerId,
     gossipsub::{self, IdentTopic},
     kad::{self, QueryId},
     multiaddr::Protocol,
@@ -265,8 +266,10 @@ struct LoopState {
     kad_bootstrapped: bool,
     /// Relay-capable peers discovered via Identify: (peer_id, public listen addrs).
     relay_candidates: Vec<(PeerId, Vec<Multiaddr>)>,
-    /// True once `listen_on` for a relay circuit reservation has been issued.
-    relay_reserved: bool,
+    /// `ListenerId` of the active relay-circuit reservation (a `/p2p-circuit`
+    /// `listen_on`), or `None` when we hold none. Tracked both to avoid
+    /// duplicate reservations and to cancel it once we reach HighId.
+    relay_listener: Option<ListenerId>,
     /// Set after the first `start_providing` failure so we warn about a full
     /// provider store only once instead of for every share.
     provider_store_full_warned: bool,
@@ -323,7 +326,7 @@ impl LoopState {
             has_bootstrap_peers: false,
             kad_bootstrapped: false,
             relay_candidates: Vec::new(),
-            relay_reserved: false,
+            relay_listener: None,
             provider_store_full_warned: false,
             wanted_providers: HashSet::new(),
             providing: false,
@@ -897,6 +900,9 @@ async fn on_swarm_event(
             {
                 Some(new_class) => {
                     info!(%address, ?new_class, "External address confirmed (AutoNAT) — node class updated");
+                    if matches!(new_class, NodeClass::HighId) {
+                        release_relay_reservation(swarm, state);
+                    }
                     reconcile_provider_announcements(swarm, state);
                     let _ = event_tx.emit(NodeEvent::ClassChanged(new_class)).await;
                 }
@@ -913,13 +919,13 @@ async fn on_swarm_event(
                 info!(%address, ?new_class, "External address expired (AutoNAT) — node class updated");
                 // Lost HighId: fall back to a relay reservation if one is available.
                 if matches!(new_class, NodeClass::LowId)
-                    && !state.relay_reserved
+                    && state.relay_listener.is_none()
                     && !state.relay_candidates.is_empty()
                 {
                     try_relay_reservation(
                         swarm,
                         &state.relay_candidates,
-                        &mut state.relay_reserved,
+                        &mut state.relay_listener,
                     );
                 }
                 reconcile_provider_announcements(swarm, state);
@@ -1103,16 +1109,19 @@ async fn on_swarm_event(
                                 .record_observation(observed.clone(), pid, &listen_vec)
                         {
                             info!(?new_class, "Node class determined");
-                            // LowId nodes use a relay reservation so they become reachable.
+                            // LowId nodes use a relay reservation so they become
+                            // reachable; HighId nodes drop any reservation they held.
                             if matches!(new_class, NodeClass::LowId)
-                                && !state.relay_reserved
+                                && state.relay_listener.is_none()
                                 && !state.relay_candidates.is_empty()
                             {
                                 try_relay_reservation(
                                     swarm,
                                     &state.relay_candidates,
-                                    &mut state.relay_reserved,
+                                    &mut state.relay_listener,
                                 );
+                            } else if matches!(new_class, NodeClass::HighId) {
+                                release_relay_reservation(swarm, state);
                             }
                             reconcile_provider_announcements(swarm, state);
                             let _ = event_tx.emit(NodeEvent::ClassChanged(new_class)).await;
@@ -1185,12 +1194,12 @@ async fn on_swarm_event(
                             debug!(%pid, "Peer supports relay hop");
                             state.relay_candidates.push((pid, relay_addrs));
                             if matches!(state.classifier.current(), NodeClass::LowId)
-                                && !state.relay_reserved
+                                && state.relay_listener.is_none()
                             {
                                 try_relay_reservation(
                                     swarm,
                                     &state.relay_candidates,
-                                    &mut state.relay_reserved,
+                                    &mut state.relay_listener,
                                 );
                             }
                         }
@@ -1265,8 +1274,10 @@ async fn on_swarm_event(
                 use relay::client::Event;
                 match relay_client_event {
                     Event::ReservationReqAccepted { relay_peer_id, .. } => {
+                        // The reservation listener was already recorded in
+                        // `relay_listener` when `try_relay_reservation` issued the
+                        // `listen_on`; nothing more to track here.
                         info!(%relay_peer_id, "Relay reservation established");
-                        state.relay_reserved = true;
                     }
                     Event::OutboundCircuitEstablished { relay_peer_id, .. } => {
                         debug!(%relay_peer_id, "Outbound circuit via relay established");
@@ -1682,9 +1693,9 @@ fn reconcile_provider_announcements(
 fn try_relay_reservation(
     swarm: &mut libp2p::Swarm<RucioBehaviour>,
     candidates: &[(PeerId, Vec<Multiaddr>)],
-    reserved: &mut bool,
+    listener: &mut Option<ListenerId>,
 ) {
-    if *reserved {
+    if listener.is_some() {
         return;
     }
     for (relay_peer, addrs) in candidates {
@@ -1694,14 +1705,25 @@ fn try_relay_reservation(
                 .with(Protocol::P2p(*relay_peer))
                 .with(Protocol::P2pCircuit);
             match swarm.listen_on(circuit_addr.clone()) {
-                Ok(_) => {
+                Ok(id) => {
                     info!(%circuit_addr, "Relay reservation initiated (LowId node)");
-                    *reserved = true;
+                    *listener = Some(id);
                     return;
                 }
                 Err(e) => warn!(%circuit_addr, "Failed to initiate relay reservation: {e}"),
             }
         }
+    }
+}
+
+/// Cancel an active relay-circuit reservation, if any. Called when the node
+/// reaches HighId: a publicly reachable node serves peers directly, so it no
+/// longer needs — nor should keep advertising — a `/p2p-circuit` fallback.
+fn release_relay_reservation(swarm: &mut libp2p::Swarm<RucioBehaviour>, state: &mut LoopState) {
+    if let Some(id) = state.relay_listener.take()
+        && swarm.remove_listener(id)
+    {
+        info!("Relay reservation released (node became HighId)");
     }
 }
 
