@@ -1321,6 +1321,10 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                         node_status.write().await.node_class = class.clone();
                         let _ = ws_tx.send(WsEvent::NodeClassChanged { class });
                     }
+                    Some(node::messages::NodeEvent::ReachabilityChanged(reachability)) => {
+                        debug!(?reachability, "Node reachability updated");
+                        node_status.write().await.reachability = reachability;
+                    }
                     Some(node::messages::NodeEvent::SearchQueryReceived(query)) => {
                         let peer_id = node_status.read().await.peer_id.clone();
                         let cmd_tx = handle.cmd_tx.clone();

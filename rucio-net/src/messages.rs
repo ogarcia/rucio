@@ -5,7 +5,7 @@ use libp2p::{Multiaddr, PeerId, request_response::OutboundRequestId};
 use rucio_core::protocol::{
     have::{HaveRequest, HaveResponse},
     manifest::{ManifestRequest, ManifestResponse},
-    node::NodeClass,
+    node::{NodeClass, Reachability},
     pinset::{PinsetRequest, PinsetResponse},
     search::{SearchQuery, SearchResult},
     transfer::{ChunkRequest, ChunkResponse},
@@ -145,6 +145,9 @@ pub enum NodeEvent {
     },
     /// Node connectivity class has been (re)determined.
     ClassChanged(NodeClass),
+    /// The AutoNAT reachability state changed (confirmed / verifying / no
+    /// servers). Surfaced for diagnostics alongside the class.
+    ReachabilityChanged(Reachability),
     /// DHT returned providers for a hash requested via `FindProviders`.
     ProvidersFound {
         key: Vec<u8>,

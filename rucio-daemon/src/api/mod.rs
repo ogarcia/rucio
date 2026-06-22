@@ -497,6 +497,8 @@ pub struct NodeStatus {
     /// Deduplicated; populated as peers connect and exchange Identify info.
     pub observed_addrs: Vec<String>,
     pub node_class: rucio_core::protocol::node::NodeClass,
+    /// AutoNAT reachability state, surfaced for diagnostics alongside the class.
+    pub reachability: rucio_core::protocol::node::Reachability,
 }
 
 // ---------------------------------------------------------------------------

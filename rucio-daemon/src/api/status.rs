@@ -60,6 +60,7 @@ pub async fn get_status(State(state): State<AppState>) -> Json<StatusResponse> {
     Json(StatusResponse {
         peer_id: ns.peer_id.clone(),
         class: ns.node_class.clone(),
+        reachability: ns.reachability.clone(),
         connected_peers: ns.connected_peers,
         listen_addrs: ns.listen_addrs.clone(),
         observed_addrs: ns.observed_addrs.clone(),

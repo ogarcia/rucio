@@ -1,10 +1,14 @@
-use crate::protocol::node::NodeClass;
+use crate::protocol::node::{NodeClass, Reachability};
 
 /// GET /api/v1/status
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct StatusResponse {
     pub peer_id: String,
     pub class: NodeClass,
+    /// State of the AutoNAT reachability check, explaining why the node has or
+    /// has not reached `HighId` (confirmed / verifying / no servers to verify).
+    #[serde(default)]
+    pub reachability: Reachability,
     pub connected_peers: usize,
     pub listen_addrs: Vec<String>,
     /// External addresses observed by remote peers via the Identify protocol.

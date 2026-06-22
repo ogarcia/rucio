@@ -15,7 +15,7 @@ use libp2p::{
 use rucio_core::protocol::{
     have::{HaveRequest, HaveResponse},
     manifest::{ManifestRequest, ManifestResponse},
-    node::NodeClass,
+    node::{NodeClass, Reachability},
     pinset::{PinsetRequest, PinsetResponse},
     search::{SearchQuery, SearchResult},
 };
@@ -279,6 +279,8 @@ struct LoopState {
     /// is empty and we are not yet HighId, a new candidate triggers a dial to our
     /// bootstrap peers; once a server is connected we leave it to the client.
     autonat_servers: HashSet<PeerId>,
+    /// Last AutoNAT reachability state emitted, to dedupe `ReachabilityChanged`.
+    last_reachability: Option<Reachability>,
     /// Set after the first `start_providing` failure so we warn about a full
     /// provider store only once instead of for every share.
     provider_store_full_warned: bool,
@@ -338,6 +340,7 @@ impl LoopState {
             relay_listener: None,
             bootstrap_addrs: Vec::new(),
             autonat_servers: HashSet::new(),
+            last_reachability: None,
             provider_store_full_warned: false,
             wanted_providers: HashSet::new(),
             providing: false,
@@ -870,6 +873,7 @@ async fn on_swarm_event(
             // count, so closing a redundant duplicate connection isn't a churn).
             if num_established == 0 {
                 state.autonat_servers.remove(&pid);
+                emit_reachability_if_changed(state, event_tx).await;
                 if let Some(gossipsub) = swarm.behaviour_mut().gossipsub.as_mut() {
                     gossipsub.remove_explicit_peer(&pid);
                 }
@@ -922,6 +926,7 @@ async fn on_swarm_event(
                     }
                     reconcile_provider_announcements(swarm, state);
                     let _ = event_tx.emit(NodeEvent::ClassChanged(new_class)).await;
+                    emit_reachability_if_changed(state, event_tx).await;
                 }
                 None => debug!(%address, "External address confirmed (AutoNAT)"),
             }
@@ -947,6 +952,7 @@ async fn on_swarm_event(
                 }
                 reconcile_provider_announcements(swarm, state);
                 let _ = event_tx.emit(NodeEvent::ClassChanged(new_class)).await;
+                emit_reachability_if_changed(state, event_tx).await;
             }
         }
 
@@ -1157,6 +1163,7 @@ async fn on_swarm_event(
                             }
                             reconcile_provider_announcements(swarm, state);
                             let _ = event_tx.emit(NodeEvent::ClassChanged(new_class)).await;
+                            emit_reachability_if_changed(state, event_tx).await;
                         }
 
                         // Only surface addresses that are reachable from the internet
@@ -1205,6 +1212,7 @@ async fn on_swarm_event(
                             .any(|p| p.as_ref() == AUTONAT_DIAL_REQUEST_PROTOCOL)
                         {
                             state.autonat_servers.insert(pid);
+                            emit_reachability_if_changed(state, event_tx).await;
                         }
 
                         // Detect relay-capable peers before listen_addrs is consumed.
@@ -1767,6 +1775,29 @@ fn release_relay_reservation(swarm: &mut libp2p::Swarm<RucioBehaviour>, state: &
         && swarm.remove_listener(id)
     {
         info!("Relay reservation released (node became HighId)");
+    }
+}
+
+/// Derive the current AutoNAT reachability state from the node class and
+/// whether any AutoNAT server is connected.
+fn current_reachability(state: &LoopState) -> Reachability {
+    if matches!(state.classifier.current(), NodeClass::HighId) {
+        Reachability::Confirmed
+    } else if state.autonat_servers.is_empty() {
+        Reachability::NoServers
+    } else {
+        Reachability::Verifying
+    }
+}
+
+/// Emit `ReachabilityChanged` when the derived reachability differs from the
+/// last one emitted. Called after anything that can change it: a class change
+/// or an AutoNAT server connecting/disconnecting.
+async fn emit_reachability_if_changed(state: &mut LoopState, event_tx: &EventTx) {
+    let r = current_reachability(state);
+    if state.last_reachability.as_ref() != Some(&r) {
+        state.last_reachability = Some(r.clone());
+        let _ = event_tx.emit(NodeEvent::ReachabilityChanged(r)).await;
     }
 }
 
