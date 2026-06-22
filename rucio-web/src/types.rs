@@ -218,6 +218,7 @@ pub struct AddShareResponse {
 // ── Downloads ────────────────────────────────────────────────────────────────
 
 #[derive(Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "snake_case")]
 pub enum DownloadState {
     FindingProviders,
     Queued,

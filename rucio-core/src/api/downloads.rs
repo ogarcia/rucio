@@ -16,6 +16,7 @@ pub struct StartDownloadRequest {
 
 /// State of a download.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum DownloadState {
     /// No providers known yet; searching the DHT for peers that have this file.
     FindingProviders,
