@@ -30,7 +30,8 @@ use crate::NetConfig;
 
 use super::{
     behaviour::{
-        RELAY_HOP_PROTOCOL, RucioBehaviour, RucioBehaviourEvent, TOPIC_SEARCH, TOPIC_SEARCH_RESULT,
+        AUTONAT_DIAL_REQUEST_PROTOCOL, RELAY_HOP_PROTOCOL, RucioBehaviour, RucioBehaviourEvent,
+        TOPIC_SEARCH, TOPIC_SEARCH_RESULT,
     },
     classify::{ClassificationState, is_stable_external_addr},
     identity,
@@ -270,6 +271,14 @@ struct LoopState {
     /// `listen_on`), or `None` when we hold none. Tracked both to avoid
     /// duplicate reservations and to cancel it once we reach HighId.
     relay_listener: Option<ListenerId>,
+    /// Multiaddrs of our bootstrap peers (which run the AutoNAT v2 server).
+    /// Re-dialled on demand so the AutoNAT client always has a server to ask
+    /// when an external-address candidate needs verifying.
+    bootstrap_addrs: Vec<Multiaddr>,
+    /// Connected peers that advertise the AutoNAT v2 server protocol. While this
+    /// is empty and we are not yet HighId, a new candidate triggers a dial to our
+    /// bootstrap peers; once a server is connected we leave it to the client.
+    autonat_servers: HashSet<PeerId>,
     /// Set after the first `start_providing` failure so we warn about a full
     /// provider store only once instead of for every share.
     provider_store_full_warned: bool,
@@ -327,6 +336,8 @@ impl LoopState {
             kad_bootstrapped: false,
             relay_candidates: Vec::new(),
             relay_listener: None,
+            bootstrap_addrs: Vec::new(),
+            autonat_servers: HashSet::new(),
             provider_store_full_warned: false,
             wanted_providers: HashSet::new(),
             providing: false,
@@ -583,6 +594,11 @@ async fn run_loop(
                     }
                     Some(NodeCmd::AddBootstrapPeer(addr)) => {
                         info!(%addr, "Dialling bootstrap peer");
+                        // Remember bootstrap addresses so the AutoNAT check can
+                        // re-dial them on demand (see `dial_autonat_servers`).
+                        if !state.bootstrap_addrs.contains(&addr) {
+                            state.bootstrap_addrs.push(addr.clone());
+                        }
                         if let Err(e) = swarm.dial(addr) {
                             warn!("Dial failed: {e}");
                         }
@@ -853,6 +869,7 @@ async fn on_swarm_event(
             // gossipsub mesh and report the disconnect (mirrors the unique-peer
             // count, so closing a redundant duplicate connection isn't a churn).
             if num_established == 0 {
+                state.autonat_servers.remove(&pid);
                 if let Some(gossipsub) = swarm.behaviour_mut().gossipsub.as_mut() {
                     gossipsub.remove_explicit_peer(&pid);
                 }
@@ -930,6 +947,21 @@ async fn on_swarm_event(
                 }
                 reconcile_provider_announcements(swarm, state);
                 let _ = event_tx.emit(NodeEvent::ClassChanged(new_class)).await;
+            }
+        }
+
+        // A new external-address candidate appeared (identify translated our
+        // observed public IP onto our listen port). While we are not yet HighId,
+        // make sure an AutoNAT server is connected to verify it — otherwise the
+        // client probes every 5s but `random_autonat_server()` finds nobody.
+        // Self-limiting: if a server is already connected we do nothing, so a
+        // genuine LowId node (whose candidate ends up `Failed`) barely re-dials.
+        SwarmEvent::NewExternalAddrCandidate { address } => {
+            debug!(%address, "New external address candidate");
+            if !matches!(state.classifier.current(), NodeClass::HighId)
+                && state.autonat_servers.is_empty()
+            {
+                dial_autonat_servers(swarm, state);
             }
         }
 
@@ -1162,6 +1194,17 @@ async fn on_swarm_event(
                                     .kademlia
                                     .add_address(&pid, addr.clone());
                             }
+                        }
+
+                        // Track peers that can act as our AutoNAT server, so a
+                        // new external-address candidate knows whether it already
+                        // has somewhere to be verified.
+                        if info
+                            .protocols
+                            .iter()
+                            .any(|p| p.as_ref() == AUTONAT_DIAL_REQUEST_PROTOCOL)
+                        {
+                            state.autonat_servers.insert(pid);
                         }
 
                         // Detect relay-capable peers before listen_addrs is consumed.
@@ -1724,6 +1767,37 @@ fn release_relay_reservation(swarm: &mut libp2p::Swarm<RucioBehaviour>, state: &
         && swarm.remove_listener(id)
     {
         info!("Relay reservation released (node became HighId)");
+    }
+}
+
+/// Dial our known bootstrap peers (which run the AutoNAT v2 server) so the
+/// AutoNAT client has a server to ask for a reachability dial-back. Skips peers
+/// we are already connected to. Called on demand when an external-address
+/// candidate appears and no AutoNAT server is currently connected — see the
+/// `NewExternalAddrCandidate` handler.
+fn dial_autonat_servers(swarm: &mut libp2p::Swarm<RucioBehaviour>, state: &LoopState) {
+    // One reachable server is enough; cap the dials so a long bootstrap list
+    // (built-ins plus cached peers from previous sessions) can't trigger a
+    // dial storm. The real bootstrap peers are added first, so they win.
+    const MAX_AUTONAT_DIALS: usize = 3;
+    let mut dialled = 0;
+    for addr in &state.bootstrap_addrs {
+        if dialled >= MAX_AUTONAT_DIALS {
+            break;
+        }
+        // Skip bootstrap peers we already hold a connection to.
+        if let Some(Protocol::P2p(peer)) = addr.iter().last()
+            && swarm.is_connected(&peer)
+        {
+            continue;
+        }
+        match swarm.dial(addr.clone()) {
+            Ok(()) => {
+                debug!(%addr, "AutoNAT: dialling bootstrap to verify reachability");
+                dialled += 1;
+            }
+            Err(e) => debug!(%addr, "AutoNAT: bootstrap dial failed: {e}"),
+        }
     }
 }
 

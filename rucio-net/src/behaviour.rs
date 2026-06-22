@@ -29,6 +29,12 @@ pub const TOPIC_SEARCH_RESULT: &str = "/rucio/search/result/1.0.0";
 /// Protocol ID advertised by peers that can serve as a circuit relay (hop).
 pub const RELAY_HOP_PROTOCOL: &str = "/libp2p/circuit/relay/0.2.0/hop";
 
+/// AutoNAT v2 dial-request protocol, advertised by nodes running the AutoNAT
+/// server. Used to recognise which connected peers can perform reachability
+/// dial-backs for us (so a new external-address candidate knows whether it
+/// already has a server to be verified against).
+pub const AUTONAT_DIAL_REQUEST_PROTOCOL: &str = "/libp2p/autonat/2/dial-request";
+
 pub type TransferBehaviour = request_response::Behaviour<TransferCodec>;
 pub type ManifestBehaviour = request_response::Behaviour<ManifestCodec>;
 pub type PinsetBehaviour = request_response::Behaviour<PinsetCodec>;
