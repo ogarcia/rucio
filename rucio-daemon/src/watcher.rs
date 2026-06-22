@@ -377,6 +377,17 @@ async fn flush_pending(
     }
 }
 
+/// Whether `path` still falls under a currently-shared directory. Re-read from
+/// the DB on each call so that un-sharing a directory mid-scan stops queued
+/// hashing instead of draining the whole queue. On a DB error we keep the file
+/// (don't silently drop indexing work).
+async fn still_under_shared_dir(db: &Db, path: &Path) -> bool {
+    match db::shared_dirs::list(db).await {
+        Ok(dirs) => dirs.iter().any(|d| path.starts_with(Path::new(&d.path))),
+        Err(_) => true,
+    }
+}
+
 /// Index (or re-index) a file and announce it in the DHT.
 ///
 /// `ed2k_tx`, when present, receives the path of every successfully-indexed file
@@ -390,6 +401,15 @@ async fn on_file_upsert(
     outboard_dir: &Path,
     ed2k_tx: Option<&mpsc::Sender<PathBuf>>,
 ) {
+    // The directory this file lives under may have been unshared while the file
+    // was still queued for hashing (e.g. the user removed the share mid-scan).
+    // Don't (re)index a file that is no longer under any shared directory —
+    // otherwise a long startup hash keeps running for an already-removed dir.
+    if !still_under_shared_dir(db, path).await {
+        debug!(path = %path.display(), "Watcher: directory no longer shared, skipping index");
+        return;
+    }
+
     let path_str = path.to_string_lossy().into_owned();
 
     // Idempotent: if this exact path is already indexed with the same size +
@@ -721,5 +741,44 @@ mod tests {
             Path::new("/downloads/temp-extra/x.mkv"),
             &excluded
         ));
+    }
+
+    async fn test_db() -> (Db, tempfile::TempDir) {
+        use sqlx::sqlite::SqlitePoolOptions;
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("sqlite://{}?mode=rwc", dir.path().join("test.db").display());
+        let pool = SqlitePoolOptions::new()
+            .max_connections(4)
+            .connect(&url)
+            .await
+            .unwrap();
+        crate::db::apply_schema(&pool).await.unwrap();
+        (pool, dir)
+    }
+
+    #[tokio::test]
+    async fn still_shared_tracks_dir_removal_mid_scan() {
+        let (db, _d) = test_db().await;
+        db::shared_dirs::insert(&db, "/data/movies", false, 1)
+            .await
+            .unwrap();
+
+        let film = Path::new("/data/movies/film.mkv");
+        assert!(
+            still_under_shared_dir(&db, film).await,
+            "a file under a shared dir is still shared"
+        );
+        assert!(
+            !still_under_shared_dir(&db, Path::new("/other/x.mkv")).await,
+            "a file outside every shared dir is not shared"
+        );
+
+        // Unshare the directory while its files are still queued: they must stop
+        // counting as shared, which is what makes the indexing loop skip them.
+        db::shared_dirs::delete(&db, "/data/movies").await.unwrap();
+        assert!(
+            !still_under_shared_dir(&db, film).await,
+            "after the dir is unshared its files are no longer shared"
+        );
     }
 }
