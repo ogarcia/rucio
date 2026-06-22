@@ -91,6 +91,8 @@ overlay:
     title: "Node status"
     version: "Version"
     class: "Class"
+    reachability_verifying: "checking reachability…"
+    reachability_no_servers: "no verifier available"
     peer_id: "Peer ID"
     peers: "Peers"
     active_downloads: "Active downloads"

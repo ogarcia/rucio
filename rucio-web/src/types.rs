@@ -7,6 +7,10 @@ use serde::{Deserialize, Serialize};
 pub struct StatusResponse {
     pub peer_id: String,
     pub class: String,
+    /// AutoNAT reachability state ("Confirmed" / "Verifying" / "NoServers").
+    /// Only meaningful while the node is LowID — see [`reachability_hint`].
+    #[serde(default)]
+    pub reachability: String,
     pub connected_peers: usize,
     pub listen_addrs: Vec<String>,
     pub observed_addrs: Vec<String>,
@@ -867,5 +871,22 @@ pub fn class_badge(class: &str) -> (std::borrow::Cow<'static, str>, &'static str
         "HighId" => ("HighID".into(), "badge badge-high"),
         "LowId" => ("LowID".into(), "badge badge-low"),
         _ => (t!("common.class_unknown"), "badge badge-unknown"),
+    }
+}
+
+/// Short hint shown next to the class badge explaining the AutoNAT reachability
+/// state. Only returned while the node is LowID — a HighID node is already
+/// reachable, so the detail adds nothing. `None` means show nothing extra.
+pub fn reachability_hint(
+    class: &str,
+    reachability: &str,
+) -> Option<std::borrow::Cow<'static, str>> {
+    if class != "LowId" {
+        return None;
+    }
+    match reachability {
+        "Verifying" => Some(t!("overlay.node.reachability_verifying")),
+        "NoServers" => Some(t!("overlay.node.reachability_no_servers")),
+        _ => None,
     }
 }

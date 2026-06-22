@@ -10,7 +10,7 @@ use rust_i18n::t;
 use crate::icons::{self, Icon};
 use crate::types::{
     EmuleConnectivity, EmuleStatusResponse, MetricsResponse, PeerInfo, PeersResponse,
-    StatusResponse, class_badge, format_size, format_speed_full, format_uptime,
+    StatusResponse, class_badge, format_size, format_speed_full, format_uptime, reachability_hint,
 };
 
 async fn api_fetch_emule_status() -> Option<EmuleStatusResponse> {
@@ -74,6 +74,8 @@ pub fn NodeStatusPanel(
                         None => view! { <p class="loading">{t!("overlay.loading")}</p> }.into_any(),
                         Some(s) => {
                             let (label, css) = class_badge(&s.class);
+                            // Reachability detail is only useful while LowID.
+                            let reach = reachability_hint(&s.class, &s.reachability);
                             let uptime = format_uptime(s.uptime_secs);
                             view! {
                                 // Only label this section when the eMule section
@@ -88,7 +90,12 @@ pub fn NodeStatusPanel(
                                     <dt>{t!("overlay.node.version")}</dt>
                                     <dd>{s.version}</dd>
                                     <dt>{t!("overlay.node.class")}</dt>
-                                    <dd><span class=css>{label}</span></dd>
+                                    <dd>
+                                        <span class=css>{label}</span>
+                                        {reach.map(|h| view! {
+                                            <span class="muted reach-hint">{h}</span>
+                                        })}
+                                    </dd>
                                     <dt>{t!("overlay.node.peer_id")}</dt>
                                     <dd class="mono">{s.peer_id}</dd>
                                     <dt>{t!("overlay.node.peers")}</dt>

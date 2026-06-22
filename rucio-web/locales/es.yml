@@ -89,6 +89,8 @@ overlay:
     title: "Estado del nodo"
     version: "Versión"
     class: "Clase"
+    reachability_verifying: "comprobando alcanzabilidad…"
+    reachability_no_servers: "sin verificador disponible"
     peer_id: "ID de par"
     peers: "Pares"
     active_downloads: "Descargas activas"
