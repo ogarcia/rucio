@@ -82,6 +82,23 @@ Two subtleties this captures that a naive "public IP → HighID" check misses:
   reachable *only through a relay* — i.e. it is really LowID. Circuit
   addresses are excluded from the HighID decision.
 
+**Getting AutoNAT to confirm.** The translated listen-port candidate is only
+verified if an AutoNAT *server* is connected to probe it. When a candidate
+appears and the node is not yet HighID, it dials its bootstrap peers (which run
+the AutoNAT v2 server) if none is already connected, so the dial-back can run
+within seconds instead of waiting for a peer to happen to dial in. This is
+self-limiting: once a server is connected nothing more is dialled, and a
+genuinely unreachable node's candidate ends up `Failed`, so the client stops
+probing — no persistent load on the bootstrap nodes. The current state is
+surfaced as the `reachability` field of `GET /api/v1/status`
+(`confirmed` / `verifying` / `no_servers`).
+
+> **Note.** Reachability is checked shortly after startup. Without UPnP, if you
+> open or forward your port *after* the daemon is already running, restart it so
+> AutoNAT re-checks and promotes the node to HighID. The port must also be
+> forwarded one-to-one (external port == listen port), since the candidate is
+> built from the listen port.
+
 ## Display in `rucio node status`
 
 ```
@@ -137,6 +154,10 @@ When a LowID node discovers a peer that advertises the circuit relay hop
 protocol (`/libp2p/circuit/relay/0.2.0/hop`), it issues a reservation on
 that peer. After the reservation is accepted the node starts advertising a
 `/p2p-circuit` address, and remote peers can connect to it through the relay.
+
+If the node is later confirmed HighID, the reservation is cancelled
+(`remove_listener`) and the `/p2p-circuit` address is dropped — a directly
+reachable node serves peers without a relay.
 
 Any full node can act as a relay server — there is no dedicated relay
 infrastructure. The relay server enforces built-in resource limits

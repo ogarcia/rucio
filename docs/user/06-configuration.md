@@ -229,6 +229,29 @@ rucio config set network.upnp true
 rucio config set network.upnp false
 ```
 
+#### Manual port forwarding (no UPnP)
+
+If you forward the port by hand instead of relying on UPnP, keep two things in
+mind so the node is classified `HighID`:
+
+- **Forward the port one-to-one.** The external port must match your listen
+  port (`node.listen_addrs`, default `4321`) — e.g. `4321 → 4321`, or `-p
+  4321:4321` in a container. Rucio derives its candidate external address from
+  the *listen* port, so a cross-mapping (external `5000` → internal `4321`)
+  would be probed on the wrong port and stay `LowID` even though the node is
+  reachable.
+- **Open the port before starting the daemon.** Reachability is checked via
+  AutoNAT shortly after startup. Without UPnP, if you open or forward the port
+  *after* `ruciod` is already running, restart the daemon so it re-checks and
+  promotes itself to `HighID`. (With UPnP the mapping is created at startup, so
+  this does not apply.)
+
+You can watch the outcome in the status API (`GET /api/v1/status`): the
+`reachability` field reads `confirmed` once an external address is verified,
+`verifying` while a probe is pending, or `no_servers` when no AutoNAT server is
+reachable yet. `rucio node status` shows the resulting class (`HighID` /
+`LowID`).
+
 **Default:** `true`
 
 ---
