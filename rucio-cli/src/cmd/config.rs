@@ -137,6 +137,21 @@ pub async fn show(client: &ApiClient) -> Result<()> {
             p.map(|p| p.network.max_upload_tasks.to_string()).as_deref(),
         )
     );
+    println!(
+        "  exclusive_bootstrap  = {}",
+        pending_scalar(
+            &cur.network.exclusive_bootstrap.to_string(),
+            p.map(|p| p.network.exclusive_bootstrap.to_string())
+                .as_deref(),
+        )
+    );
+    println!(
+        "  upnp                 = {}",
+        pending_scalar(
+            &cur.network.upnp.to_string(),
+            p.map(|p| p.network.upnp.to_string()).as_deref(),
+        )
+    );
 
     println!("\n{}", color::section("[storage]"));
     println!(
@@ -276,6 +291,8 @@ pub async fn set(client: &ApiClient, key: &str, value: &str) -> Result<()> {
             }
             c.network.max_upload_tasks = n;
         }
+        "network.exclusive_bootstrap" => c.network.exclusive_bootstrap = parse_bool(value)?,
+        "network.upnp" => c.network.upnp = parse_bool(value)?,
         "emule.enabled" => c.emule.enabled = parse_bool(value)?,
         "emule.temp_dir" => c.emule.temp_dir = value.to_string(),
         "emule.udp_port" => c.emule.udp_port = parse_port(value)?,

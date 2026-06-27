@@ -343,6 +343,7 @@ config:
     hint_restart: "Los campos de abajo se aplican tras reiniciar el demonio."
     bootstrap: "Pares de bootstrap (uno por línea)"
     excl_boot: "Usar solo mis pares de bootstrap"
+    upnp: "Mapeo automático de puertos UPnP"
     listen: "Direcciones de escucha (una por línea)"
     max_tasks: "Tareas máximas de subida"
   storage:

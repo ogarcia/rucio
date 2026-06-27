@@ -123,10 +123,17 @@ pub struct NetworkConfig {
     /// Default `false` (configured peers are added to the built-ins).
     #[serde(default)]
     pub exclusive_bootstrap: bool,
+    /// Enable UPnP/IGD automatic port mapping. Default `true`. Restart required.
+    #[serde(default = "default_upnp")]
+    pub upnp: bool,
 }
 
 fn default_max_upload_tasks() -> usize {
     64
+}
+
+fn default_upnp() -> bool {
+    true
 }
 
 fn default_temp_limit() -> u64 {

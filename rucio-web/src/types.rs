@@ -548,6 +548,12 @@ pub struct NetworkConfig {
     pub max_upload_tasks: usize,
     #[serde(default)]
     pub exclusive_bootstrap: bool,
+    #[serde(default = "default_upnp")]
+    pub upnp: bool,
+}
+
+fn default_upnp() -> bool {
+    true
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]

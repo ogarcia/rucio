@@ -345,6 +345,7 @@ config:
     hint_restart: "The fields below apply after a daemon restart."
     bootstrap: "Bootstrap peers (one per line)"
     excl_boot: "Use only my bootstrap peers"
+    upnp: "UPnP automatic port mapping"
     listen: "Listen addresses (one per line)"
     max_tasks: "Max upload tasks"
   storage:
