@@ -149,12 +149,16 @@ pub async fn list_page(
     const COUNT_SQL: &str = "SELECT COUNT(*) FROM shared_files \
          WHERE (?1 IS NULL OR name LIKE ?1 ESCAPE '\\') \
            AND (?2 IS NULL OR path = ?2 OR path LIKE ?3 ESCAPE '\\')";
-    const PAGE_SQL: &str = "SELECT id, root_hash, name, size, mime_type, path, \
-                chunk_size, added_at, mtime \
-         FROM shared_files \
-         WHERE (?1 IS NULL OR name LIKE ?1 ESCAPE '\\') \
-           AND (?2 IS NULL OR path = ?2 OR path LIKE ?3 ESCAPE '\\') \
-         ORDER BY added_at DESC \
+    // Pinned files float to the top (a LEFT JOIN on `pins`, ordered by whether a
+    // pin row exists), then newest-first within each group. The join keys on the
+    // unique `pins.root_hash`, so it never multiplies rows.
+    const PAGE_SQL: &str = "SELECT s.id, s.root_hash, s.name, s.size, s.mime_type, s.path, \
+                s.chunk_size, s.added_at, s.mtime \
+         FROM shared_files s \
+         LEFT JOIN pins p ON p.root_hash = s.root_hash \
+         WHERE (?1 IS NULL OR s.name LIKE ?1 ESCAPE '\\') \
+           AND (?2 IS NULL OR s.path = ?2 OR s.path LIKE ?3 ESCAPE '\\') \
+         ORDER BY (p.root_hash IS NOT NULL) DESC, s.added_at DESC \
          LIMIT ?4 OFFSET ?5";
 
     let total: i64 = sqlx::query_scalar(COUNT_SQL)
@@ -620,6 +624,44 @@ mod tests {
         let (d, total_d) = list_page(&db, None, Some("/docs"), 50, 0).await.unwrap();
         assert_eq!(total_d, 1);
         assert_eq!(d[0].name, "gamma.txt");
+    }
+
+    #[tokio::test]
+    async fn list_page_floats_pinned_to_top() {
+        let (db, _dir) = test_db().await;
+        for (i, (seed, name, path)) in [
+            (1u8, "old.mkv", "/m/old.mkv"),
+            (2u8, "mid.mkv", "/m/mid.mkv"),
+            (3u8, "new.mkv", "/m/new.mkv"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            insert(
+                &db,
+                NewSharedFile {
+                    root_hash: &dummy_hash(seed),
+                    name,
+                    size: 10,
+                    mime_type: None,
+                    path,
+                    chunk_size: 4096,
+                    added_at: 1_000_000 + i as u64,
+                    mtime: 0,
+                },
+            )
+            .await
+            .unwrap();
+        }
+        // Pin the oldest file; it should jump above the newer, unpinned ones,
+        // which stay newest-first among themselves.
+        crate::db::pins::add(&db, &dummy_hash(1), None, 1)
+            .await
+            .unwrap();
+
+        let (page, _) = list_page(&db, None, None, 50, 0).await.unwrap();
+        let names: Vec<&str> = page.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["old.mkv", "new.mkv", "mid.mkv"]);
     }
 
     #[tokio::test]
