@@ -350,6 +350,11 @@ pub async fn add_share(
     let cmd_tx = state.node_cmd.clone();
     let indexing_count = state.indexing_count.clone();
     let outboard_dir = state.config.storage.outboard_dir.clone();
+    // Forward each indexed file to the eMule ed2k indexer too — the share
+    // watcher never sees this inline indexing, so without this a freshly added
+    // directory wouldn't get eMule links until the next reconcile/restart.
+    #[cfg(feature = "emule-compat")]
+    let ed2k_tx = state.ed2k_index_tx.clone();
     indexing_count.fetch_add(total, Ordering::Relaxed);
     // Latch so the main loop fires an "indexing complete" notification once this
     // batch drains, even if it finishes between two ws ticks.
@@ -365,6 +370,13 @@ pub async fn add_share(
                             root_hash.to_vec(),
                         ))
                         .await;
+                    // Queue it for eMule hashing (best-effort: if the channel
+                    // is full the file is caught by the startup backfill after
+                    // the next restart).
+                    #[cfg(feature = "emule-compat")]
+                    if let Some(tx) = &ed2k_tx {
+                        let _ = tx.try_send(path.clone());
+                    }
                 }
                 Err(e) => {
                     tracing::warn!("Failed to index {}: {e}", path.display());

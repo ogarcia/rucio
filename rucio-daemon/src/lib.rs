@@ -639,6 +639,8 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         emule_last_inbound_at: emule_last_inbound_at.clone(),
         #[cfg(feature = "emule-compat")]
         emule_cancel: emule_cancel.clone(),
+        #[cfg(feature = "emule-compat")]
+        ed2k_index_tx: ed2k_index_tx.clone(),
         external_ip,
         live_stats: Arc::clone(&live_stats),
         upload_stats: Arc::clone(&upload_stats),
