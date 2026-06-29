@@ -7,6 +7,8 @@
 //! purpose: clearing the completed-downloads list must not stop sharing. A file
 //! is shared until it changes or disappears on disk.
 
+use std::collections::HashMap;
+
 use anyhow::Result;
 use sqlx::Row;
 
@@ -176,6 +178,32 @@ pub async fn get_by_path(db: &Db, path: &str) -> Result<Option<EmuleSharedFile>>
     }))
 }
 
+/// Fetch the ed2k (MD4) hash for each of `paths` that has one, as a
+/// `path -> hash` map. Used to decorate a page of Rucio shares with their eMule
+/// link in one query instead of one lookup per row. Paths without a seeded
+/// ed2k hash are simply absent from the map.
+pub async fn ed2k_hashes_for_paths(db: &Db, paths: &[String]) -> Result<HashMap<String, Vec<u8>>> {
+    if paths.is_empty() {
+        return Ok(HashMap::new());
+    }
+    // SQLite caps a statement at 999 bound parameters; a shares page is far
+    // below that (a couple hundred), so a single IN-list is safe here.
+    // Only `?` placeholders are interpolated (one per path); the paths
+    // themselves are bound, so the assembled string carries no user data.
+    let placeholders = vec!["?"; paths.len()].join(",");
+    let sql =
+        format!("SELECT path, ed2k_hash FROM emule_shared_files WHERE path IN ({placeholders})");
+    let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));
+    for p in paths {
+        query = query.bind(p);
+    }
+    let rows = query.fetch_all(db).await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| (r.get::<String, _>("path"), r.get::<Vec<u8>, _>("ed2k_hash")))
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,6 +238,35 @@ mod tests {
         )
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn ed2k_hashes_for_paths_maps_only_seeded() {
+        let (db, _dir) = test_db().await;
+        upsert(&db, &[7u8; 16], "a.bin", 10, "/dl/a.bin", 1, b"", 1)
+            .await
+            .unwrap();
+        upsert(&db, &[8u8; 16], "b.bin", 20, "/dl/b.bin", 1, b"", 2)
+            .await
+            .unwrap();
+
+        // Empty input short-circuits to an empty map.
+        assert!(ed2k_hashes_for_paths(&db, &[]).await.unwrap().is_empty());
+
+        let map = ed2k_hashes_for_paths(
+            &db,
+            &[
+                "/dl/a.bin".to_string(),
+                "/dl/missing.bin".to_string(),
+                "/dl/b.bin".to_string(),
+            ],
+        )
+        .await
+        .unwrap();
+        assert_eq!(map.len(), 2);
+        assert_eq!(map.get("/dl/a.bin").unwrap(), &vec![7u8; 16]);
+        assert_eq!(map.get("/dl/b.bin").unwrap(), &vec![8u8; 16]);
+        assert!(!map.contains_key("/dl/missing.bin"));
     }
 
     #[tokio::test]

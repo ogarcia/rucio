@@ -11,8 +11,8 @@ use rust_i18n::t;
 use crate::icons::{self, Icon};
 use crate::statusbar::StatusBar;
 use crate::types::{
-    AddShareResponse, PinsResponse, ShareFile, SharedDir, SharedDirKind, SharedDirsResponse,
-    SharesFilesResponse, format_size,
+    AddShareResponse, EmuleStatusResponse, PinsResponse, ShareFile, SharedDir, SharedDirKind,
+    SharedDirsResponse, SharesFilesResponse, format_size,
 };
 
 // ── API ─────────────────────────────────────────────────────────────────────
@@ -97,6 +97,24 @@ async fn api_pin_magnet(magnet: String, collection: Option<String>) {
     }
 }
 
+/// Whether eMule is actually active on this daemon — compiled in *and* enabled
+/// in the config. Only then is the ed2k backfill running and generating links,
+/// so the info overlay offers an eMule link only in this case (`runtime_enabled`
+/// implies `feature_enabled`, so it covers both "no eMule build" and "eMule
+/// disabled by config").
+async fn api_emule_active() -> bool {
+    let Ok(resp) = gloo_net::http::Request::get(&crate::api::api("/api/v1/emule/status"))
+        .send()
+        .await
+    else {
+        return false;
+    };
+    resp.json::<EmuleStatusResponse>()
+        .await
+        .map(|s| s.runtime_enabled)
+        .unwrap_or(false)
+}
+
 /// Unpin a root hash (drops the pin intent; the file stays shared).
 async fn api_unpin(hash: &str) {
     let url = crate::api::api(&format!("/api/v1/pins/{hash}"));
@@ -159,6 +177,10 @@ fn confirm(message: &str) -> bool {
 /// Files fetched per page (and on the initial load). The server caps this.
 const PAGE_SIZE: u32 = 200;
 
+/// `(root_hash, magnet)` pairs handed to the pin modal — every selected file to
+/// pin under one chosen collection.
+type PinTargets = Vec<(String, String)>;
+
 #[component]
 pub fn SharesTab(
     indexing: RwSignal<usize>,
@@ -179,16 +201,25 @@ pub fn SharesTab(
     // When set, the file list is restricted to this directory. Toggled by
     // clicking a folder row.
     let selected_dir: RwSignal<Option<String>> = RwSignal::new(None);
-    // root_hash of the file whose magnet was just copied (for the "Copied!" hint).
-    let copied: RwSignal<Option<String>> = RwSignal::new(None);
-    // root_hash of the file just pinned (for the transient "Pinned!" hint).
-    let pinned: RwSignal<Option<String>> = RwSignal::new(None);
-    // Set of currently-pinned hashes, so each file row shows Pin vs Unpin.
+    // Multi-selection over the loaded files (by root_hash), plus the anchor row
+    // for shift+click range selection — the same model as the downloads list.
+    // Per-file actions (info, pin, unpin) act on the selection from the toolbar,
+    // so the rows themselves carry no buttons (keeps them readable on mobile).
+    let selected: RwSignal<HashSet<String>> = RwSignal::new(HashSet::new());
+    let anchor: RwSignal<Option<String>> = RwSignal::new(None);
+    // The file shown in the info overlay (the single selected one), or None.
+    let detail: RwSignal<Option<ShareFile>> = RwSignal::new(None);
+    // Whether eMule is active (compiled in and enabled), resolved once below —
+    // the info overlay only offers an eMule link when it is.
+    let emule_active: RwSignal<bool> = RwSignal::new(false);
+    // Set of currently-pinned hashes, so rows show a pin marker and the toolbar
+    // knows whether Pin/Unpin apply to the selection.
     let pinned_set: RwSignal<HashSet<String>> = RwSignal::new(HashSet::new());
     // Distinct collection labels in use, suggested when pinning.
     let pin_collections: RwSignal<Vec<String>> = RwSignal::new(Vec::new());
-    // When set to (hash, magnet), the "choose a collection" pin modal is open.
-    let pin_modal: RwSignal<Option<(String, String)>> = RwSignal::new(None);
+    // When set, the "choose a collection" pin modal is open for these
+    // (hash, magnet) targets.
+    let pin_modal: RwSignal<Option<PinTargets>> = RwSignal::new(None);
     // Bumped on every load; a response is applied only if its generation is
     // still current, so a reset (new filter/dir) discards an in-flight page.
     let load_gen: RwSignal<u32> = RwSignal::new(0);
@@ -196,6 +227,12 @@ pub fn SharesTab(
     // Load a page from the server. `reset` starts a fresh result set (offset 0,
     // replacing the list); otherwise it appends the next page.
     let load_files = Callback::new(move |reset: bool| {
+        if reset {
+            // A fresh result set replaces the list; drop any prior selection so
+            // the toolbar can't act on rows that are no longer shown.
+            selected.set(HashSet::new());
+            anchor.set(None);
+        }
         let q = filter.get_untracked();
         let dir = selected_dir.get_untracked();
         let offset = if reset {
@@ -281,62 +318,121 @@ pub fn SharesTab(
         q
     });
 
-    // Stays alive across this component's lifetime; used to guard the copied
-    // reset timer from firing after the tab is unmounted.
-    let alive = Arc::new(AtomicBool::new(true));
-    let alive_cleanup = alive.clone();
-    on_cleanup(move || alive_cleanup.store(false, Ordering::Relaxed));
-
-    let alive_pin = alive.clone();
-    let on_copy = Callback::new(move |(hash, magnet): (String, String)| {
-        copy_to_clipboard(&magnet);
-        copied.set(Some(hash));
-        let alive = alive.clone();
-        spawn_local(async move {
-            sleep(Duration::from_millis(1400)).await;
-            if alive.load(Ordering::Relaxed) {
-                copied.set(None);
+    // Row click with modifiers: plain = select only this row; ctrl/⌘ = toggle
+    // this row; shift = select the range from the anchor to this row.
+    let on_row_click = Callback::new(move |(hash, additive, range): (String, bool, bool)| {
+        if range && let Some(a) = anchor.get_untracked() {
+            let vis: Vec<String> =
+                files.with_untracked(|f| f.iter().map(|x| x.root_hash.clone()).collect());
+            if let (Some(i1), Some(i2)) = (
+                vis.iter().position(|x| x == &a),
+                vis.iter().position(|x| x == &hash),
+            ) {
+                let (lo, hi) = if i1 <= i2 { (i1, i2) } else { (i2, i1) };
+                selected.set(vis[lo..=hi].iter().cloned().collect());
+                return;
             }
-        });
-    });
-
-    // Clicking Pin opens a small modal to choose a collection (optional); the
-    // actual pin happens on confirm (see `do_pin`).
-    let on_pin = Callback::new(move |(hash, magnet): (String, String)| {
-        pin_modal.set(Some((hash, magnet)));
-    });
-
-    // Pin `magnet` (hash) into `collection`, with the optimistic "Pinned!" hint.
-    let do_pin = Callback::new(
-        move |(hash, magnet, collection): (String, String, Option<String>)| {
-            pinned_set.update(|s| {
-                s.insert(hash.clone());
-            });
-            pinned.set(Some(hash));
-            pin_modal.set(None);
-            let alive = alive_pin.clone();
-            spawn_local(async move {
-                api_pin_magnet(magnet, collection).await;
-                // Refresh suggestions so a freshly-created collection shows up.
-                let (set, cols) = api_list_pinned().await;
-                pin_collections.set(cols);
-                pinned_set.set(set);
-                sleep(Duration::from_millis(1400)).await;
-                if alive.load(Ordering::Relaxed) {
-                    pinned.set(None);
+        }
+        if additive {
+            selected.update(|s| {
+                if !s.insert(hash.clone()) {
+                    s.remove(&hash);
                 }
             });
-        },
-    );
+        } else {
+            selected.set(HashSet::from([hash.clone()]));
+        }
+        anchor.set(Some(hash));
+    });
 
-    let on_unpin = Callback::new(move |hash: String| {
+    // The currently-selected files still present in the loaded list.
+    let selected_files = move || -> Vec<ShareFile> {
+        files.with(|fs| {
+            fs.iter()
+                .filter(|f| selected.with(|s| s.contains(&f.root_hash)))
+                .cloned()
+                .collect()
+        })
+    };
+
+    // Info is single-item; Pin/Unpin act on whichever selected rows qualify.
+    // All three test the files actually present in the list, so a selection
+    // left over from another directory (no longer shown) disables them.
+    let can_info = move || selected_files().len() == 1;
+    let can_pin = move || {
+        selected_files()
+            .iter()
+            .any(|f| !pinned_set.get().contains(&f.root_hash))
+    };
+    let can_unpin = move || {
+        selected_files()
+            .iter()
+            .any(|f| pinned_set.get().contains(&f.root_hash))
+    };
+
+    // Open the info overlay for the single selected file.
+    let open_info = move || {
+        if let [f] = selected_files().as_slice() {
+            detail.set(Some(f.clone()));
+        }
+    };
+
+    // Clicking Pin opens the collection modal for every selected file that
+    // isn't pinned yet; the actual pin happens on confirm (see `do_pin`).
+    let on_pin = move || {
+        let targets: Vec<(String, String)> = selected_files()
+            .into_iter()
+            .filter(|f| !pinned_set.get_untracked().contains(&f.root_hash))
+            .map(|f| (f.root_hash, f.magnet))
+            .collect();
+        if !targets.is_empty() {
+            pin_modal.set(Some(targets));
+        }
+    };
+
+    // Pin every target under `collection` (optimistic), then refresh the pin set
+    // and the collection suggestions.
+    let do_pin = Callback::new(move |(targets, collection): (PinTargets, Option<String>)| {
         pinned_set.update(|s| {
-            s.remove(&hash);
+            for (h, _) in &targets {
+                s.insert(h.clone());
+            }
         });
+        pin_modal.set(None);
         spawn_local(async move {
-            api_unpin(&hash).await;
+            for (_, magnet) in targets {
+                api_pin_magnet(magnet, collection.clone()).await;
+            }
+            let (set, cols) = api_list_pinned().await;
+            pin_collections.set(cols);
+            pinned_set.set(set);
         });
     });
+
+    // Unpin every selected file that is pinned (optimistic), then refresh.
+    let on_unpin = move || {
+        let hashes: Vec<String> = selected_files()
+            .into_iter()
+            .filter(|f| pinned_set.get_untracked().contains(&f.root_hash))
+            .map(|f| f.root_hash)
+            .collect();
+        pinned_set.update(|s| {
+            for h in &hashes {
+                s.remove(h);
+            }
+        });
+        spawn_local(async move {
+            for h in &hashes {
+                api_unpin(h).await;
+            }
+            let (set, cols) = api_list_pinned().await;
+            pin_collections.set(cols);
+            pinned_set.set(set);
+        });
+    };
+
+    // Resolve eMule support once; gates the eMule link in the info overlay.
+    spawn_local(async move { emule_active.set(api_emule_active().await) });
 
     view! {
         <div class="tab-content">
@@ -349,6 +445,33 @@ pub fn SharesTab(
                     >
                         <Icon paths=icons::PLUS/>
                         <span class="btn-label">{t!("share.add")}</span>
+                    </button>
+                    <button
+                        class="toolbar-btn"
+                        title=t!("share.info_title")
+                        disabled=move || !can_info()
+                        on:click=move |_| open_info()
+                    >
+                        <Icon paths=icons::INFO_CIRCLE/>
+                        <span class="btn-label">{t!("share.info")}</span>
+                    </button>
+                    <button
+                        class="toolbar-btn"
+                        title=t!("share.pin_title")
+                        disabled=move || !can_pin()
+                        on:click=move |_| on_pin()
+                    >
+                        <Icon paths=icons::PIN/>
+                        <span class="btn-label">{t!("share.pin")}</span>
+                    </button>
+                    <button
+                        class="toolbar-btn"
+                        title=t!("share.unpin_title")
+                        disabled=move || !can_unpin()
+                        on:click=move |_| on_unpin()
+                    >
+                        <Icon paths=icons::PINNED_OFF/>
+                        <span class="btn-label">{t!("share.unpin")}</span>
                     </button>
                     {move || {
                         let n = indexing.get();
@@ -510,65 +633,33 @@ pub fn SharesTab(
                             each=move || files.get()
                             key=|f| f.root_hash.clone()
                             children=move |f| {
-                                let hash_copy = f.root_hash.clone();
-                                let magnet_copy = f.magnet.clone();
-                                let hash_btn = f.root_hash.clone();
-                                let magnet_btn = f.magnet.clone();
-                                let is_copied = {
-                                    let hash = f.root_hash.clone();
-                                    move || copied.get().as_deref() == Some(hash.as_str())
+                                let hash = f.root_hash.clone();
+                                let hash_sel = f.root_hash.clone();
+                                let hash_pin = f.root_hash.clone();
+                                // Selected rows highlight; pinned rows show a marker.
+                                let row_class = move || if selected.get().contains(&hash) {
+                                    "share-file-row share-file-selected"
+                                } else {
+                                    "share-file-row"
                                 };
-                                // Per-reactive-block hash clones (the signals are Copy).
-                                let h_title = f.root_hash.clone();
-                                let h_icon = f.root_hash.clone();
-                                let h_label = f.root_hash.clone();
                                 view! {
-                                    <li class="share-file-row">
+                                    <li
+                                        class=row_class
+                                        on:click=move |ev| {
+                                            on_row_click.run((
+                                                hash_sel.clone(),
+                                                ev.ctrl_key() || ev.meta_key(),
+                                                ev.shift_key(),
+                                            ));
+                                        }
+                                    >
+                                        <Show when=move || pinned_set.get().contains(&hash_pin) fallback=|| ()>
+                                            <span class="share-file-pin" title=t!("share.pinned_marker_title")>
+                                                <Icon paths=icons::PIN/>
+                                            </span>
+                                        </Show>
                                         <span class="share-file-name" title=f.path.clone()>{f.name.clone()}</span>
                                         <span class="share-file-size">{format_size(f.size)}</span>
-                                        <button
-                                            class="btn-sm share-copy-btn share-pin-btn"
-                                            title=move || if pinned_set.get().contains(&h_title) {
-                                                t!("share.unpin_title").to_string()
-                                            } else {
-                                                t!("share.pin_title").to_string()
-                                            }
-                                            on:click=move |_| {
-                                                if pinned_set.get_untracked().contains(&hash_btn) {
-                                                    on_unpin.run(hash_btn.clone());
-                                                } else {
-                                                    on_pin.run((hash_btn.clone(), magnet_btn.clone()));
-                                                }
-                                            }
-                                        >
-                                            {move || {
-                                                let just = pinned.get().as_deref() == Some(h_icon.as_str());
-                                                let pinned_now = pinned_set.get().contains(&h_icon);
-                                                if pinned_now && !just {
-                                                    view! { <Icon paths=icons::PINNED_OFF/> }.into_any()
-                                                } else {
-                                                    view! { <Icon paths=icons::PIN/> }.into_any()
-                                                }
-                                            }}
-                                            {move || {
-                                                let just = pinned.get().as_deref() == Some(h_label.as_str());
-                                                if just {
-                                                    t!("share.pinned_hint")
-                                                } else if pinned_set.get().contains(&h_label) {
-                                                    t!("share.unpin")
-                                                } else {
-                                                    t!("share.pin")
-                                                }
-                                            }}
-                                        </button>
-                                        <button
-                                            class="btn-sm share-copy-btn"
-                                            title=t!("share.copy_title")
-                                            on:click=move |_| on_copy.run((hash_copy.clone(), magnet_copy.clone()))
-                                        >
-                                            <Icon paths=icons::COPY/>
-                                            {move || if is_copied() { t!("share.copied") } else { t!("share.magnet") }}
-                                        </button>
                                     </li>
                                 }
                             }
@@ -620,14 +711,26 @@ pub fn SharesTab(
 
         <Show when=move || pin_modal.get().is_some()>
             {move || {
-                let (hash, magnet) = pin_modal.get().unwrap();
+                let targets = pin_modal.get().unwrap();
                 view! {
                     <PinCollectionModal
-                        hash=hash
-                        magnet=magnet
+                        targets=targets
                         collections=pin_collections
                         on_pin=do_pin
                         on_close=move || pin_modal.set(None)
+                    />
+                }
+            }}
+        </Show>
+
+        <Show when=move || detail.get().is_some()>
+            {move || {
+                let file = detail.get().unwrap();
+                view! {
+                    <ShareInfoOverlay
+                        file=file
+                        emule_active=emule_active.get()
+                        on_close=move || detail.set(None)
                     />
                 }
             }}
@@ -637,33 +740,39 @@ pub fn SharesTab(
 
 // ── Pin-to-collection modal ─────────────────────────────────────────────────
 
-/// Asks for an optional collection before pinning a shared file. Empty = pin
-/// uncollected. Suggests existing collections via a datalist.
+/// Asks for an optional collection before pinning one or more shared files.
+/// Empty = pin uncollected. Suggests existing collections via a datalist.
 #[component]
 fn PinCollectionModal(
-    hash: String,
-    magnet: String,
+    /// The (root_hash, magnet) pairs to pin, all under the chosen collection.
+    targets: PinTargets,
     collections: RwSignal<Vec<String>>,
-    on_pin: Callback<(String, String, Option<String>)>,
+    on_pin: Callback<(PinTargets, Option<String>)>,
     on_close: impl Fn() + Copy + 'static,
 ) -> impl IntoView {
     let collection = RwSignal::new(String::new());
-    let hash = StoredValue::new(hash);
-    let magnet = StoredValue::new(magnet);
+    let count = targets.len();
+    let targets = StoredValue::new(targets);
 
     let confirm = move || {
         let col = {
             let c = collection.get();
             (!c.trim().is_empty()).then(|| c.trim().to_string())
         };
-        on_pin.run((hash.get_value(), magnet.get_value(), col));
+        on_pin.run((targets.get_value(), col));
     };
 
     view! {
         <div class="modal-backdrop" on:click=move |_| on_close()>
             <div class="modal" on:click=move |e| e.stop_propagation()>
                 <div class="modal-header">
-                    <span class="modal-title">{t!("share.pin_modal_title")}</span>
+                    <span class="modal-title">
+                        {if count > 1 {
+                            t!("share.pin_modal_title_n", n = count).to_string()
+                        } else {
+                            t!("share.pin_modal_title").to_string()
+                        }}
+                    </span>
                     <button class="overlay-close" on:click=move |_| on_close()>
                         <Icon paths=icons::X/>
                     </button>
@@ -692,6 +801,121 @@ fn PinCollectionModal(
                 <div class="modal-footer">
                     <button class="btn-sm" on:click=move |_| on_close()>{t!("common.cancel")}</button>
                     <button class="btn-sm btn-primary" on:click=move |_| confirm()>{t!("share.pin")}</button>
+                </div>
+            </div>
+        </div>
+    }
+}
+
+// ── File info overlay ────────────────────────────────────────────────────────
+
+/// Read-only detail panel for a single shared file: its metadata plus the
+/// shareable links — the Rucio magnet always, and the eMule `ed2k://` link once
+/// the file has been hashed for eMule (absent until then). Each link has its
+/// own copy button.
+#[component]
+fn ShareInfoOverlay(
+    file: ShareFile,
+    /// Whether eMule is active (compiled in and enabled). When false no eMule
+    /// link is or will be generated, so that row is hidden and the section
+    /// header stays singular.
+    emule_active: bool,
+    on_close: impl Fn() + Copy + 'static,
+) -> impl IntoView {
+    // Which link was just copied ("rucio" | "ed2k"), for the transient hint.
+    let copied: RwSignal<Option<&'static str>> = RwSignal::new(None);
+    // Guard the reset timer from firing after the overlay is closed/unmounted.
+    let alive = Arc::new(AtomicBool::new(true));
+    let alive_cleanup = alive.clone();
+    on_cleanup(move || alive_cleanup.store(false, Ordering::Relaxed));
+
+    let copy = Callback::new(move |(which, text): (&'static str, String)| {
+        copy_to_clipboard(&text);
+        copied.set(Some(which));
+        let alive = alive.clone();
+        spawn_local(async move {
+            sleep(Duration::from_millis(1400)).await;
+            if alive.load(Ordering::Relaxed) {
+                copied.set(None);
+            }
+        });
+    });
+
+    let magnet = file.magnet.clone();
+    let ed2k = file.ed2k.clone();
+
+    view! {
+        <div class="overlay-backdrop" on:click=move |_| on_close()>
+            <div class="overlay" on:click=move |e| e.stop_propagation()>
+                <div class="overlay-header">
+                    <span class="overlay-title">{file.name.clone()}</span>
+                    <button class="overlay-close" on:click=move |_| on_close()>
+                        <Icon paths=icons::X/>
+                    </button>
+                </div>
+                <div class="overlay-body">
+                    <dl class="panel-dl">
+                        <dt>{t!("share.detail.path")}</dt>
+                        <dd class="mono">{file.path.clone()}</dd>
+
+                        <dt>{t!("share.detail.size")}</dt>
+                        <dd>{format_size(file.size)}</dd>
+
+                        {file.mime_type.clone().map(|m| view! {
+                            <dt>{t!("share.detail.mime")}</dt>
+                            <dd>{m}</dd>
+                        })}
+
+                        {(file.chunk_count > 0).then(|| view! {
+                            <dt>{t!("share.detail.chunks")}</dt>
+                            <dd>{file.chunk_count.to_string()}</dd>
+                        })}
+
+                        <dt>{t!("share.detail.hash")}</dt>
+                        <dd class="mono">{file.root_hash.clone()}</dd>
+                    </dl>
+
+                    <p class="section-label">
+                        {if emule_active { t!("share.detail.links") } else { t!("share.detail.link") }}
+                    </p>
+
+                    <div class="share-link-row">
+                        <span class="share-link-label">{t!("share.detail.rucio_link")}</span>
+                        <code class="mono share-link-value">{magnet.clone()}</code>
+                        <button
+                            class="btn-sm share-copy-btn"
+                            on:click={let m = magnet.clone(); move |_| copy.run(("rucio", m.clone()))}
+                        >
+                            <Icon paths=icons::COPY/>
+                            {move || if copied.get() == Some("rucio") { t!("share.copied") } else { t!("share.detail.copy") }}
+                        </button>
+                    </div>
+
+                    // The eMule row only exists in a build with eMule support; the
+                    // link itself appears once the file has been hashed for it.
+                    {emule_active.then(|| match ed2k {
+                        Some(link) => view! {
+                            <div class="share-link-row">
+                                <span class="share-link-label">{t!("share.detail.emule_link")}</span>
+                                <code class="mono share-link-value">{link.clone()}</code>
+                                <button
+                                    class="btn-sm share-copy-btn"
+                                    on:click={let l = link.clone(); move |_| copy.run(("ed2k", l.clone()))}
+                                >
+                                    <Icon paths=icons::COPY/>
+                                    {move || if copied.get() == Some("ed2k") { t!("share.copied") } else { t!("share.detail.copy") }}
+                                </button>
+                            </div>
+                        }.into_any(),
+                        None => view! {
+                            <div class="share-link-row">
+                                <span class="share-link-label">{t!("share.detail.emule_link")}</span>
+                                <span class="share-link-pending" title=t!("share.detail.emule_pending_title")>
+                                    {t!("share.detail.emule_pending")}
+                                </span>
+                            </div>
+                        }.into_any(),
+                    })}
                 </div>
             </div>
         </div>

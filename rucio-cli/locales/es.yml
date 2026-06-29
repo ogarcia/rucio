@@ -284,8 +284,12 @@ share:
   stopped_many: "Se dejó de compartir (%{n} archivos)."
   no_share_row: "No hay ningún compartido en la fila %{n}. Ejecuta `rucio share list` para ver la lista."
   magnet_need_target: "Indica un objetivo (número de fila, nombre o hash) o usa --file <ruta>"
+  ed2k_need_target: "Indica un objetivo (número de fila, nombre o hash)"
+  ed2k_unavailable: "'%{name}' aún no tiene enlace de eMule — todavía no se ha hasheado para eMule, o el soporte de eMule está desactivado."
+  no_share_match: "Ningún archivo compartido coincide con '%{target}'. Ejecuta `rucio share list` para ver la lista."
   hash_failed: "No se pudo calcular el hash de '%{path}': %{msg}"
   ambiguous: "Ambiguo: %{n} compartidos llamados '%{target}'. Usa un prefijo de hash en su lugar:"
+  ambiguous_hash: "Ambiguo: %{n} compartidos coinciden con el prefijo de hash '%{target}':"
   no_indexing: "No hay archivos indexándose."
   indexing_n: "%{n} archivo(s) indexándose…"
   indexing_complete: "Indexación completada."
@@ -499,6 +503,10 @@ help:
       arg:
         target: "Número de fila de `rucio share list`, nombre de archivo (único) o hash (completo o prefijo). Omítelo al usar --file"
         file: "Calcular el enlace magnet de un archivo local sin compartirlo ni contactar con el demonio"
+    ed2k:
+      about: "Obtener el enlace de eMule (ed2k://) de un archivo compartido"
+      arg:
+        target: "Número de fila de `rucio share list`, nombre de archivo (único) o hash (completo o prefijo)"
   node:
     about: "Información del nodo y del demonio"
     status:

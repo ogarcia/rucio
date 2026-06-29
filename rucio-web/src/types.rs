@@ -124,6 +124,14 @@ pub struct ShareFile {
     pub size: u64,
     pub path: String,
     pub magnet: String,
+    #[serde(default)]
+    pub mime_type: Option<String>,
+    #[serde(default)]
+    pub chunk_count: u64,
+    /// eMule `ed2k://` link, present once the file has been hashed for eMule
+    /// seeding (absent until then, or when eMule support is off).
+    #[serde(default)]
+    pub ed2k: Option<String>,
 }
 
 #[derive(Deserialize, Clone, Debug)]

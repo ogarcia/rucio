@@ -587,10 +587,10 @@
         @media (max-width: 540px) {
             .dl-toolbar { gap: 0.25rem; }
             .toolbar-btn {
-                flex: 1; flex-direction: column; gap: 2px;
-                padding: 0.375rem 0.25rem; font-size: 0.6875rem;
+                flex: 1; flex-direction: column; justify-content: center; gap: 2px;
+                padding: 0.375rem 0.25rem; font-size: 0.6875rem; text-align: center;
             }
-            .toolbar-btn .icon { width: 1.125rem; height: 1.125rem; }
+            .toolbar-btn .icon { width: 1.125rem; height: 1.125rem; flex: none; }
         }
 
         /* ── Modal ───────────────────────────────────────────────────────── */
@@ -1291,14 +1291,22 @@
         .sub-quota-row .search-input { flex: 1 1 6rem; min-width: 0; }
         .sub-unit { width: auto; flex: 0 0 auto; }
 
+        /* Rows are selectable (click to select; per-file actions live in the
+           toolbar), so they behave like the downloads list, not a button bar. */
         .share-file-row {
-            display: grid; grid-template-columns: 1fr auto auto auto;
-            align-items: center; gap: 0.75rem;
-            padding: 0.5rem 0; border-bottom: 1px solid var(--raised);
+            display: flex; align-items: center; gap: 0.75rem;
+            padding: 0.5rem; border-bottom: 1px solid var(--raised);
+            border-radius: 0.25rem;
+            cursor: pointer; user-select: none; -webkit-user-select: none;
         }
         .share-file-row:last-child { border-bottom: none; }
+        .share-file-selected { background: var(--row-sel); }
+        .share-file-pin {
+            display: inline-flex; color: var(--text-3); flex: none;
+        }
+        .share-file-pin .icon { width: 0.875rem; height: 0.875rem; }
         .share-file-name {
-            font-size: 0.8125rem; color: var(--text);
+            flex: 1; font-size: 0.8125rem; color: var(--text);
             white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
         }
         .share-file-size { font-size: 0.75rem; color: var(--text-3); white-space: nowrap; }
@@ -1306,9 +1314,22 @@
             display: inline-flex; align-items: center; gap: 0.3rem; white-space: nowrap;
         }
         .share-copy-btn .icon { width: 0.875rem; height: 0.875rem; }
-        /* Fixed width for the Pin/Unpin toggle so the label (Pin/Pinned!/Unpin)
-           doesn't resize the button and shift the columns. */
-        .share-pin-btn { min-width: 5.5rem; justify-content: center; }
+
+        /* Link rows inside the file info overlay: label, the link itself (wraps),
+           and a copy button. */
+        .share-link-row {
+            display: flex; align-items: center; gap: 0.5rem;
+            padding: 0.4rem 0; flex-wrap: wrap;
+        }
+        .share-link-label {
+            font-size: 0.75rem; color: var(--text-3);
+            min-width: 3.5rem; flex: none;
+        }
+        .share-link-value {
+            flex: 1; min-width: 0; font-size: 0.75rem;
+            overflow-wrap: anywhere; word-break: break-all;
+        }
+        .share-link-pending { flex: 1; font-size: 0.75rem; color: var(--text-3); font-style: italic; }
 
         /* "Load more" button for the paginated shared-files list. */
         .share-load-more {

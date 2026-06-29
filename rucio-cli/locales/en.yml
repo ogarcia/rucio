@@ -291,8 +291,12 @@ share:
   stopped_many: "Stopped sharing (%{n} files)."
   no_share_row: "No share at row %{n}. Run `rucio share list` to see the list."
   magnet_need_target: "Provide a target (row number, name, or hash) or use --file <path>"
+  ed2k_need_target: "Provide a target (row number, name, or hash)"
+  ed2k_unavailable: "'%{name}' has no eMule link yet — it hasn't been hashed for eMule, or eMule support is off."
+  no_share_match: "No shared file matches '%{target}'. Run `rucio share list` to see the list."
   hash_failed: "Failed to hash '%{path}': %{msg}"
   ambiguous: "Ambiguous: %{n} shares named '%{target}'. Use a hash prefix instead:"
+  ambiguous_hash: "Ambiguous: %{n} shares match hash prefix '%{target}':"
   no_indexing: "No files being indexed."
   indexing_n: "%{n} file(s) being indexed…"
   indexing_complete: "Indexing complete."
@@ -511,6 +515,10 @@ help:
       arg:
         target: "Row number from `rucio share list`, file name (unique), or hash (full or prefix). Omit when using --file"
         file: "Compute the magnet link for a local file without sharing it or contacting the daemon"
+    ed2k:
+      about: "Get the eMule (ed2k://) link for a shared file"
+      arg:
+        target: "Row number from `rucio share list`, file name (unique), or hash (full or prefix)"
   node:
     about: "Node and daemon information"
     status:

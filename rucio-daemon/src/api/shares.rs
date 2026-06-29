@@ -45,6 +45,47 @@ fn build_magnet(root_hash: &[u8], name: &str, size: u64, self_peer_id: &str) -> 
     .to_string()
 }
 
+/// Collect the eMule `ed2k://` link for each shared file in `rows` that the
+/// backfill has already hashed, as a `path -> link` map (one batch query, not
+/// one lookup per row). Files without a seeded ed2k hash are simply absent.
+///
+/// Only compiled with eMule support; without it every share's link is `None`.
+#[cfg(feature = "emule-compat")]
+async fn collect_ed2k_links(
+    db: &crate::db::Db,
+    rows: &[db::shares::SharedFileRow],
+) -> std::collections::HashMap<String, String> {
+    use rucio_emule::ed2k::{Ed2kHash, Ed2kLink};
+
+    let paths: Vec<String> = rows.iter().map(|r| r.path.clone()).collect();
+    let by_path = match db::emule_shared_files::ed2k_hashes_for_paths(db, &paths).await {
+        Ok(m) => m,
+        Err(_) => return std::collections::HashMap::new(),
+    };
+    rows.iter()
+        .filter_map(|r| {
+            // A non-16-byte digest is a corrupt row: skip it rather than emit a
+            // bogus link.
+            let bytes: [u8; 16] = by_path.get(&r.path)?.as_slice().try_into().ok()?;
+            let link = Ed2kLink {
+                name: r.name.clone(),
+                size: r.size as u64,
+                hash: Ed2kHash::from_bytes(bytes),
+            }
+            .to_link();
+            Some((r.path.clone(), link))
+        })
+        .collect()
+}
+
+#[cfg(not(feature = "emule-compat"))]
+async fn collect_ed2k_links(
+    _db: &crate::db::Db,
+    _rows: &[db::shares::SharedFileRow],
+) -> std::collections::HashMap<String, String> {
+    std::collections::HashMap::new()
+}
+
 // ---------------------------------------------------------------------------
 // GET /api/v1/shares
 // ---------------------------------------------------------------------------
@@ -191,10 +232,15 @@ pub async fn list_share_files(
         .unwrap_or_default();
     let peer_id = state.node_status.read().await.peer_id.clone();
 
+    // Decorate each share with its eMule link when the backfill has already
+    // hashed it (one batch lookup keyed by path, not one query per row).
+    let mut ed2k_by_path = collect_ed2k_links(&state.db, &rows).await;
+
     let shares = rows
         .into_iter()
         .map(|r| ShareResponse {
             magnet: build_magnet(&r.root_hash, &r.name, r.size as u64, &peer_id),
+            ed2k: ed2k_by_path.remove(&r.path),
             root_hash: hex::encode(&r.root_hash),
             name: r.name,
             size: r.size as u64,

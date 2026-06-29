@@ -30,6 +30,11 @@ pub struct ShareResponse {
     /// Magnet link for this file — can be shared directly with other peers.
     /// Format: `rucio:<hash>?name=<name>&size=<bytes>`
     pub magnet: String,
+    /// eMule `ed2k://` link for this file, when its MD4 hash is known (the eMule
+    /// backfill has hashed it so we already seed it to Kad). `None` until then,
+    /// or when eMule integration is off — the file is on the Rucio network
+    /// regardless. Format: `ed2k://|file|<name>|<size>|<md4>|/`
+    pub ed2k: Option<String>,
 }
 
 /// GET /api/v1/shares/files — one page of shared files plus the total count
@@ -114,6 +119,7 @@ impl From<&FileDescriptor> for ShareResponse {
             mime_type: fd.mime_type.clone(),
             path: String::new(), // not available from FileDescriptor alone
             magnet,
+            ed2k: None, // the ed2k hash lives in a separate table, keyed by path
         }
     }
 }

@@ -1,6 +1,6 @@
 //! `rucio share list`, `rucio share dirs`, `rucio share add <path>`,
 //! `rucio share remove <#|path>`, `rucio share magnet <target>`,
-//! `rucio share indexing`
+//! `rucio share ed2k <target>`, `rucio share indexing`
 
 use anyhow::{Result, bail};
 use futures_util::StreamExt as _;
@@ -312,6 +312,75 @@ pub async fn magnet(client: &ApiClient, target: Option<&str>, file: Option<&str>
     let link = client.get_share_magnet(target).await?;
     println!("{}", color::value(&link));
     Ok(())
+}
+
+/// Print the eMule (`ed2k://`) link for a shared file.
+///
+/// `target` is resolved against local shares exactly like `share magnet`
+/// (row number, unique name, or hash prefix). The link only exists once the
+/// file has been hashed for eMule — we then seed it to Kad — so a file that
+/// hasn't been hashed yet (or any file when eMule support is off) reports that
+/// it isn't available rather than printing nothing.
+pub async fn ed2k(client: &ApiClient, target: Option<&str>) -> Result<()> {
+    let target = target.ok_or_else(|| anyhow::anyhow!(t!("share.ed2k_need_target")))?;
+
+    // Full list so row numbers and name/hash lookups match `share list`.
+    let shares = client.list_all_shares(None).await?;
+    let share = resolve_share(&shares, target)?;
+
+    match &share.ed2k {
+        Some(link) => {
+            println!("{}", color::value(link));
+            Ok(())
+        }
+        None => bail!(t!("share.ed2k_unavailable", name = share.name.clone())),
+    }
+}
+
+/// Resolve a target (row number, unique file name, or hash prefix) to a single
+/// shared file. On an ambiguous name/hash it prints the candidates and exits.
+fn resolve_share<'a>(shares: &'a [ShareResponse], target: &str) -> Result<&'a ShareResponse> {
+    // 1. Numeric row index.
+    if let Ok(n) = target.trim().parse::<usize>() {
+        return shares
+            .get(n.wrapping_sub(1))
+            .ok_or_else(|| anyhow::anyhow!(t!("share.no_share_row", n = n)));
+    }
+
+    // 2. Exact name match.
+    let by_name: Vec<&ShareResponse> = shares
+        .iter()
+        .filter(|s| s.name.eq_ignore_ascii_case(target))
+        .collect();
+    match by_name.len() {
+        1 => return Ok(by_name[0]),
+        n if n > 1 => {
+            eprintln!("{}", t!("share.ambiguous", n = n, target = target));
+            for s in &by_name {
+                eprintln!("  {}  {}", color::value(&s.root_hash[..8]), s.name);
+            }
+            std::process::exit(1);
+        }
+        _ => {}
+    }
+
+    // 3. Hash prefix / full hash (root_hash is lowercase hex).
+    let needle = target.to_ascii_lowercase();
+    let by_hash: Vec<&ShareResponse> = shares
+        .iter()
+        .filter(|s| s.root_hash.starts_with(&needle))
+        .collect();
+    match by_hash.len() {
+        1 => Ok(by_hash[0]),
+        n if n > 1 => {
+            eprintln!("{}", t!("share.ambiguous_hash", n = n, target = target));
+            for s in &by_hash {
+                eprintln!("  {}  {}", color::value(&s.root_hash[..8]), s.name);
+            }
+            std::process::exit(1);
+        }
+        _ => bail!(t!("share.no_share_match", target = target)),
+    }
 }
 
 pub async fn indexing(client: &ApiClient, watch: bool) -> Result<()> {

@@ -154,6 +154,11 @@ pub enum ShareAction {
         #[arg(long, value_name = "PATH")]
         file: Option<String>,
     },
+    /// Get the eMule (ed2k://) link for a shared file
+    Ed2k {
+        /// Row number from `rucio share list`, file name (unique), or hash (full or prefix)
+        target: Option<String>,
+    },
 }
 
 /// `rucio download …` — manage downloads.
@@ -468,6 +473,7 @@ pub async fn run() -> Result<()> {
             ShareAction::Magnet { target, file } => {
                 cmd::shares::magnet(&client, target.as_deref(), file.as_deref()).await
             }
+            ShareAction::Ed2k { target } => cmd::shares::ed2k(&client, target.as_deref()).await,
             ShareAction::Indexing { watch } => cmd::shares::indexing(&client, watch).await,
         },
         Commands::Download { action } => match action {
