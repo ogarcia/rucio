@@ -236,11 +236,84 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
+  # Linux desktop app — the Tauri shell as a Flatpak (own bundle). Builds the
+  # release binary on the runner (like rucio-tauri/flatpak/build.sh), then packs
+  # it with flatpak-builder into a single-file .flatpak bundle. Pinned to
+  # ubuntu-24.04 so the host glibc stays compatible with the GNOME runtime the
+  # binary runs against; the runtime version is read from the manifest so the
+  # two never drift.
+  # ---------------------------------------------------------------------------
+  linux-flatpak:
+    name: Build Linux desktop (Flatpak)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Load build versions
+        shell: bash
+        run: grep -E '^[A-Za-z_]+=' versions.env >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: linux-flatpak
+
+      - name: Install trunk
+        uses: taiki-e/install-action@v2
+        with:
+          tool: trunk@${{ env.TRUNK_VERSION }}
+
+      # WebKitGTK dev libraries to link the Tauri shell (pulls in GTK3, libsoup
+      # and JavaScriptCore). The tray backend (libappindicator) is dlopened at
+      # runtime, not linked, so it is not needed at build time.
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev librsvg2-dev
+
+      # The embedded daemon serves the web UI (web-ui feature / rust-embed), so
+      # the frontend is built before the crate is compiled.
+      - name: Build frontend
+        run: cd rucio-web && trunk build --release --public-url ./
+
+      - name: Build desktop app
+        run: cargo build --release -p rucio-tauri
+
+      # Ubuntu 24.04 restricts unprivileged user namespaces via AppArmor, which
+      # breaks bubblewrap (used by flatpak-builder). Re-enable it on the runner.
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Install Flatpak tooling and the GNOME runtime
+        run: |
+          sudo apt-get install -y flatpak flatpak-builder
+          GNOME_VERSION=$(grep '^runtime-version:' rucio-tauri/flatpak/me.ogarcia.rucio.yml | grep -oE '[0-9]+')
+          flatpak remote-add --if-not-exists --user flathub https://flathub.org/repo/flathub.flatpakrepo
+          flatpak install -y --user flathub "org.gnome.Platform//$GNOME_VERSION" "org.gnome.Sdk//$GNOME_VERSION"
+
+      - name: Build Flatpak bundle
+        shell: bash
+        run: |
+          flatpak-builder --user --force-clean --repo=repo build-dir \
+            rucio-tauri/flatpak/me.ogarcia.rucio.yml
+          BUNDLE=rucio-${{ github.ref_name }}-linux-x86_64.flatpak
+          flatpak build-bundle repo "$BUNDLE" me.ogarcia.rucio
+          echo "ARCHIVE=$BUNDLE" >> "$GITHUB_ENV"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: rucio-linux-flatpak
+          path: ${{ env.ARCHIVE }}
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
   # Create GitHub Release and attach all binaries
   # ---------------------------------------------------------------------------
   release:
     name: GitHub Release
-    needs: [build, web, windows-desktop]
+    needs: [build, web, windows-desktop, linux-flatpak]
     # Only publish on a real tag push. On manual workflow_dispatch this job is
     # skipped, so the build/web/windows artifacts are produced for download but
     # no release is created.
