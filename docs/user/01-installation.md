@@ -4,8 +4,9 @@
 
 Rucio runs natively on Linux (x86\_64, aarch64), macOS (Apple Silicon, Intel)
 and Windows (x86\_64). On Linux and macOS it ships as a single daemon + CLI
-binary (Options A–D below); on Windows it ships as a portable desktop app — see
-[Windows](#windows--portable-desktop-app).
+binary (Options A–D below); Linux additionally offers an optional desktop app as
+a [Flatpak](#linux--desktop-app-flatpak), and Windows ships as a
+[portable desktop app](#windows--portable-desktop-app).
 
 Rust 1.85 or later is required if building from source (2024 edition features
 are used).
@@ -66,6 +67,42 @@ communicate on your networks:
 
 The app needs the Microsoft Edge **WebView2** runtime, which is preinstalled on
 Windows 10 and 11.
+
+## Linux — desktop app (Flatpak)
+
+Alongside the daemon + CLI (Options A–D), Linux has an optional **desktop app**:
+the same client wrapped in a window, shipped as a Flatpak bundle. Download
+`rucio-<version>-linux-x86_64.flatpak` from the [Releases](../../../releases)
+page and install it (the GNOME runtime it needs is pulled from Flathub):
+
+```sh
+flatpak remote-add --if-not-exists --user flathub https://flathub.org/repo/flathub.flatpakrepo
+flatpak install --user rucio-<version>-linux-x86_64.flatpak
+flatpak run me.ogarcia.rucio
+```
+
+Like the Windows build it is the complete client in one window — daemon, eMule
+support and web panel embedded — but here all of its state stays **inside the
+Flatpak sandbox** (`~/.var/app/me.ogarcia.rucio/`), not next to an executable.
+
+A few Linux specifics:
+
+- **Files it can reach.** By default the sandbox only exposes your **Downloads**
+  folder (where it downloads to and shares from). To share other directories,
+  widen it yourself with e.g. `flatpak override --user --filesystem=~/Music me.ogarcia.rucio`
+  (or the [Flatseal](https://flathub.org/apps/com.github.tchx84.Flatseal) GUI);
+  nothing broader is baked into the bundle.
+- **Background and quitting.** Closing the window keeps Rucio running in the
+  background (GNOME asks for consent the first time and lists it under *Background
+  Apps*). Reopen it by launching Rucio again; quit it from that menu, or with a
+  terminal `Ctrl+C`.
+- **Start at login.** Off by default. Enable it by editing
+  `~/.var/app/me.ogarcia.rucio/config/rucio/desktop.toml` (created on first run)
+  and setting `autostart = true`.
+
+There is no system tray on Linux (GNOME ships none), which is why closing the
+window uses the background portal instead. Building the bundle yourself is
+documented in [`rucio-tauri/flatpak/README.md`](../../rucio-tauri/flatpak/README.md).
 
 ## Option B — Build from source
 

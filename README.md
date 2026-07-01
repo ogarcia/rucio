@@ -85,6 +85,22 @@ Files) and run `Rucio.exe`. It bundles the daemon, web panel and eMule support i
 a single window, and all of its state lives next to the `.exe`. See the
 [installation guide](docs/user/01-installation.md#windows--portable-desktop-app).
 
+### Linux (desktop app)
+
+Prefer a windowed app over the daemon + CLI? Linux also ships an optional
+desktop build as a Flatpak. Download `rucio-<version>-linux-x86_64.flatpak` from
+the [Releases](../../releases) page and install it:
+
+```sh
+flatpak remote-add --if-not-exists --user flathub https://flathub.org/repo/flathub.flatpakrepo
+flatpak install --user rucio-*-linux-x86_64.flatpak
+flatpak run me.ogarcia.rucio
+```
+
+It bundles the daemon, web panel and eMule support in one window, and keeps all
+of its state inside the Flatpak sandbox. See the
+[installation guide](docs/user/01-installation.md#linux--desktop-app-flatpak).
+
 ### From source
 
 Requires Rust 1.85 or later (uses the 2024 edition).
