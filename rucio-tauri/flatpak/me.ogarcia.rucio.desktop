@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Rucio
+GenericName=P2P File Sharing
+Comment=Peer-to-peer file sharing over libp2p, with eMule/Kad2 compatibility
+Exec=rucio-tauri
+Icon=me.ogarcia.rucio
+Terminal=false
+Categories=Network;FileTransfer;P2P;
+Keywords=p2p;file-sharing;emule;kademlia;libp2p;
+StartupNotify=true
+StartupWMClass=me.ogarcia.rucio

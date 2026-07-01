@@ -21,4 +21,15 @@ rucio-daemon = { path = "../rucio-daemon", features = ["emule-compat", "web-ui"]
 tauri        = { version = "2", features = ["tray-icon"] }
 tauri-plugin-single-instance = "2"
 tauri-plugin-autostart = "2"
+# Persist and restore the window size / position / maximized state.
+tauri-plugin-window-state = "2"
 tokio        = { workspace = true }
+
+# Linux has no system tray, so closing the window can't hide to one. Instead the
+# app keeps running as a background app via the XDG Background portal, which
+# lets the desktop (e.g. GNOME's "Background Apps" menu) list and manage it.
+[target.'cfg(target_os = "linux")'.dependencies]
+ashpd = { version = "0.13", default-features = false, features = ["tokio", "background"] }
+# Read the desktop shell's own tiny, hand-edited desktop.toml (autostart).
+dirs = { workspace = true }
+toml = { workspace = true }

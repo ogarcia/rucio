@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>me.ogarcia.rucio</id>
+
+  <name>Rucio</name>
+  <summary>Peer-to-peer file sharing over libp2p, with eMule/Kad2 compatibility</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+
+  <developer id="me.ogarcia">
+    <name>Óscar García Amor</name>
+  </developer>
+
+  <description>
+    <p>
+      Rucio is a peer-to-peer file sharing application built on libp2p. It runs
+      an embedded daemon that joins the Rucio network and, for compatibility,
+      the eMule Kad2 network, letting you search, download and share files.
+    </p>
+    <p>
+      The desktop app is a thin shell around that daemon, and its whole
+      configuration and database stay inside the Flatpak sandbox. Closing its
+      window keeps it running in the background so sharing continues; manage it
+      from your desktop's background apps menu. By default it can only read and
+      write your Downloads folder; grant access to more directories with a
+      filesystem override when you want to share files from elsewhere.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">me.ogarcia.rucio.desktop</launchable>
+
+  <url type="homepage">https://github.com/ogarcia/rucio</url>
+  <url type="bugtracker">https://github.com/ogarcia/rucio/issues</url>
+  <url type="vcs-browser">https://github.com/ogarcia/rucio</url>
+
+  <categories>
+    <category>Network</category>
+    <category>FileTransfer</category>
+  </categories>
+
+  <content_rating type="oars-1.1" />
+
+  <releases>
+    <release version="0.33.0" date="2026-07-01" />
+  </releases>
+</component>

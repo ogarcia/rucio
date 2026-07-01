@@ -1,0 +1,59 @@
+# Flatpak manifest for the Rucio desktop app (own-bundle build).
+#
+# It packages the pre-built release binary produced by `build.sh` (which runs
+# `trunk build` for the embedded web UI and then `cargo build -p rucio-tauri
+# --release`). It does NOT build from source inside flatpak-builder, so no crate
+# vendoring is needed — that is the trade-off of an own bundle over a Flathub
+# submission.
+#
+# Build & install (see README.md):
+#   ./build.sh
+#   flatpak-builder --user --install --force-clean build-dir me.ogarcia.rucio.yml
+app-id: me.ogarcia.rucio
+runtime: org.gnome.Platform
+runtime-version: '48'
+sdk: org.gnome.Sdk
+command: rucio-tauri
+
+finish-args:
+  # libp2p + eMule/Kad need the network; UPnP/IGD works with shared networking.
+  - --share=network
+  # X11 shared memory for the WebKitGTK webview.
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  # GPU acceleration for WebKitGTK.
+  - --device=dri
+  # The only hole: the user's Downloads folder, where the app downloads to and
+  # shares from by default. Deliberately narrow — the config/database never
+  # leave the sandbox. Users who want to share other directories widen this
+  # themselves, e.g. `flatpak override --user --filesystem=~/Music me.ogarcia.rucio`
+  # (or via Flatseal), so nothing broader is baked into the bundle.
+  - --filesystem=xdg-download
+
+modules:
+  - name: rucio
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 rucio-tauri /app/bin/rucio-tauri
+      - install -Dm644 me.ogarcia.rucio.desktop /app/share/applications/me.ogarcia.rucio.desktop
+      - install -Dm644 me.ogarcia.rucio.metainfo.xml /app/share/metainfo/me.ogarcia.rucio.metainfo.xml
+      - install -Dm644 32x32.png /app/share/icons/hicolor/32x32/apps/me.ogarcia.rucio.png
+      - install -Dm644 128x128.png /app/share/icons/hicolor/128x128/apps/me.ogarcia.rucio.png
+      - install -Dm644 128x128@2x.png /app/share/icons/hicolor/256x256/apps/me.ogarcia.rucio.png
+      - install -Dm644 icon.png /app/share/icons/hicolor/512x512/apps/me.ogarcia.rucio.png
+    sources:
+      - type: file
+        path: ../../target/release/rucio-tauri
+      - type: file
+        path: me.ogarcia.rucio.desktop
+      - type: file
+        path: me.ogarcia.rucio.metainfo.xml
+      - type: file
+        path: ../icons/32x32.png
+      - type: file
+        path: ../icons/128x128.png
+      - type: file
+        path: ../icons/128x128@2x.png
+      - type: file
+        path: ../icons/icon.png
