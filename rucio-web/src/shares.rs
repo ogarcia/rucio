@@ -646,9 +646,15 @@ pub fn SharesTab(
                                     <li
                                         class=row_class
                                         on:click=move |ev| {
+                                            // On a touchscreen there are no modifiers, so a
+                                            // plain tap is treated as an additive toggle to
+                                            // allow building a selection.
+                                            let additive = ev.ctrl_key()
+                                                || ev.meta_key()
+                                                || crate::platform::coarse_pointer();
                                             on_row_click.run((
                                                 hash_sel.clone(),
-                                                ev.ctrl_key() || ev.meta_key(),
+                                                additive,
                                                 ev.shift_key(),
                                             ));
                                         }

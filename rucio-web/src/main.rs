@@ -6,6 +6,7 @@ mod icons;
 mod notifications;
 mod overlays;
 mod pins;
+mod platform;
 mod searches;
 mod shares;
 mod statusbar;
