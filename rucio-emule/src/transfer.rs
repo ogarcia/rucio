@@ -132,6 +132,11 @@ const OP_ENDOFDOWNLOAD: u8 = 0x48;
 /// `OP_ENDOFDOWNLOAD`: end the session and free the upload slot at once.
 const OP_CANCELTRANSFER: u8 = 0x56;
 const OP_QUEUE_RANK: u8 = 0x5c;
+/// eMule's extended-protocol (0xc5) queue ranking — payload is a u16 rank plus
+/// 10 bytes of padding. Modern eMule clients send this instead of the classic
+/// eDonkey `OP_QUEUE_RANK`; treating it as a queue update (not an unknown
+/// opcode) is what keeps us waiting in the queue instead of timing out.
+const OP_QUEUERANKING: u8 = 0x60;
 const OP_QUEUE_FULL: u8 = 0x93;
 /// Uploader withdrew our slot and put us back on its waiting queue (null
 /// payload). eMule rotates upload slots by score/time, so a peer that grants a
@@ -1251,12 +1256,11 @@ impl Session {
                         requeues,
                         "peer re-queued us (OP_OUTOFPARTREQS) — waiting for the slot again"
                     );
-                    wait_for_upload_slot(
+                    wait_requeued_slot(
                         &mut self.stream,
                         &mut self.ciphers,
                         self.op_timeout,
                         &self.hash,
-                        MAX_REQUEUE_WAITS,
                         on_event,
                     )
                     .await?;
@@ -1429,21 +1433,16 @@ where
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Send a `REQUESTPARTS` message for up to 3 consecutive 180 KB windows.
-///
-/// `large_file` selects the 64-bit-offset opcode (`OP_REQUESTPARTS_I64`) for
-/// files over 4 GiB, whose offsets do not fit in the 32-bit fields.
 /// Send `OP_STARTUPLOAD_REQ` and wait for the peer to grant an upload slot
 /// (`OP_ACCEPTUPLOAD_REQ`), tolerating up to `max_queue_waits` queue-rank
 /// re-asks (sleeping 5 s and re-sending the request between each). Emits
 /// [`DownloadEvent::Queued`] for every rank update and [`DownloadEvent::Started`]
 /// once granted.
 ///
-/// Used both by the initial handshake and to re-enter the queue after the peer
-/// withdraws our slot with `OP_OUTOFPARTREQS`. A peer that re-queues us keeps us
-/// on its waiting list, so a fresh `OP_STARTUPLOAD_REQ` prompts a rank update and
-/// eventually a re-grant; staying on the same connection is what lets our wait
-/// time (and thus queue score) accumulate instead of resetting on every reconnect.
+/// This is the *initial-contact* wait: a peer whose queue is full is abandoned
+/// after `max_queue_waits` re-asks so the caller can try (or re-knock) another
+/// source. Once we have actually held a slot and been rotated off it, use
+/// [`wait_requeued_slot`] instead, which waits patiently on the same connection.
 async fn wait_for_upload_slot<F>(
     stream: &mut TcpStream,
     ciphers: &mut ObfCiphers,
@@ -1487,16 +1486,99 @@ where
                     .context("re-send STARTUPLOAD_REQ")?;
             }
             OP_QUEUE_FULL => bail!("peer queue is full"),
-            // The peer bumped us again while we were waiting to be re-granted:
-            // stay put — the STARTUPLOAD_REQ we just (re-)sent keeps us queued.
-            OP_OUTOFPARTREQS => {
-                debug!("peer re-queued us again (OP_OUTOFPARTREQS) — still waiting for a slot")
-            }
             _ => debug!("skipping opcode 0x{opcode:02x} waiting for ACCEPTUPLOAD"),
         }
     }
 }
 
+/// Wait to be re-granted an upload slot after the peer rotated us back onto its
+/// queue (`OP_OUTOFPARTREQS`), staying on the *same* connection so the queue
+/// score we have been building does not reset.
+///
+/// Unlike [`wait_for_upload_slot`]'s knock-and-move-on, this is patient: it waits
+/// as long as the peer keeps ranking us — via the classic `OP_QUEUE_RANK` or
+/// eMule's extended `OP_QUEUERANKING` — and only re-asks when the peer falls
+/// silent for a whole read window. A busy source can take minutes to reach the
+/// top of its queue, and reconnecting is actively worse (the peer often refuses a
+/// fresh connection for a while). We give up (so the caller reconnects as a last
+/// resort) only after `MAX_WAIT` total, or a run of silent windows with no reply.
+async fn wait_requeued_slot<F>(
+    stream: &mut TcpStream,
+    ciphers: &mut ObfCiphers,
+    op_timeout: Duration,
+    hash: &Ed2kHash,
+    on_event: &mut F,
+) -> Result<()>
+where
+    F: FnMut(DownloadEvent),
+{
+    const MAX_WAIT: Duration = Duration::from_secs(600);
+    const MAX_SILENT_WINDOWS: usize = 4;
+
+    // Prompt the peer that we are (still) here and waiting for a slot.
+    write_frame(stream, ciphers, OP_STARTUPLOAD_REQ, hash.as_bytes())
+        .await
+        .context("send STARTUPLOAD_REQ (re-queue)")?;
+
+    let started = Instant::now();
+    let mut silent = 0usize;
+    loop {
+        if started.elapsed() > MAX_WAIT {
+            bail!("no upload slot re-granted after {MAX_WAIT:?} waiting in the queue");
+        }
+        match timeout(op_timeout, read_frame(stream, ciphers)).await {
+            // Silent window: nudge the peer so it keeps us on its radar. Enough
+            // consecutive silences means the connection is effectively dead.
+            Err(_elapsed) => {
+                silent += 1;
+                if silent > MAX_SILENT_WINDOWS {
+                    bail!("peer stopped responding while we waited in its queue");
+                }
+                write_frame(stream, ciphers, OP_STARTUPLOAD_REQ, hash.as_bytes())
+                    .await
+                    .context("re-send STARTUPLOAD_REQ (re-queue)")?;
+            }
+            Ok(frame) => {
+                let (proto, opcode, payload) = frame.context("read ACCEPTUPLOAD (re-queue)")?;
+                silent = 0;
+                match opcode {
+                    OP_ACCEPTUPLOAD_REQ => {
+                        on_event(DownloadEvent::Started);
+                        return Ok(());
+                    }
+                    // Classic eDonkey queue rank (u32).
+                    OP_QUEUE_RANK => {
+                        let rank = if payload.len() >= 4 {
+                            u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]])
+                        } else {
+                            0
+                        };
+                        on_event(DownloadEvent::Queued { rank });
+                    }
+                    // eMule's extended queue ranking (u16 rank + padding), sent on
+                    // the extended protocol. This is what the failing peer uses.
+                    OP_QUEUERANKING if proto == PROTO_EMULE => {
+                        let rank = if payload.len() >= 2 {
+                            u16::from_le_bytes([payload[0], payload[1]]) as u32
+                        } else {
+                            0
+                        };
+                        on_event(DownloadEvent::Queued { rank });
+                    }
+                    OP_QUEUE_FULL => bail!("peer queue is full"),
+                    // Redundant bump while we are already waiting — ignore it.
+                    OP_OUTOFPARTREQS => {}
+                    _ => debug!("skipping opcode 0x{opcode:02x} while re-queued"),
+                }
+            }
+        }
+    }
+}
+
+/// Send a `REQUESTPARTS` message for up to 3 consecutive 180 KB windows.
+///
+/// `large_file` selects the 64-bit-offset opcode (`OP_REQUESTPARTS_I64`) for
+/// files over 4 GiB, whose offsets do not fit in the 32-bit fields.
 async fn send_request_parts(
     stream: &mut TcpStream,
     ciphers: &mut ObfCiphers,
@@ -2436,6 +2518,20 @@ mod tests {
 
             let (_p, opcode, _payload) = read_frame(&mut stream, &mut ciphers).await.unwrap();
             assert_eq!(opcode, OP_STARTUPLOAD_REQ, "downloader re-enters the queue");
+            // Rank the downloader on the extended protocol (OP_QUEUERANKING),
+            // as the failing peer does, before finally granting the slot. The
+            // downloader must recognise 0x60 as "still queued", not skip it.
+            let mut ranking = vec![0u8; 12];
+            ranking[..2].copy_from_slice(&3u16.to_le_bytes()); // rank 3
+            write_frame_proto(
+                &mut stream,
+                &mut ciphers,
+                PROTO_EMULE,
+                OP_QUEUERANKING,
+                &ranking,
+            )
+            .await
+            .unwrap();
             write_frame(&mut stream, &mut ciphers, OP_ACCEPTUPLOAD_REQ, &[])
                 .await
                 .unwrap();
