@@ -561,6 +561,16 @@ const STALL_AFTER_ROUNDS: u32 = 5;
 /// whole round on the first failure.
 const MAX_SOURCE_ATTEMPTS: u32 = 3;
 
+/// Pause before re-attempting a source that just refused or failed to connect,
+/// when it is the only source left to try. Retrying instantly would hammer a
+/// single peer in a tight loop (~60 ms per attempt), and eMule tracks rapid
+/// reconnects — it can extend a refusal or drop us onto an ignore list. Only
+/// connection failures wait: a mid-transfer glitch on a connection that did
+/// work is still retried immediately. With several sources in the pool the
+/// rotation between them already spaces out hits on any one peer, so the wait
+/// is skipped there.
+const CONNECT_RETRY_BACKOFF_SECS: u64 = 3;
+
 /// Exponential back-off for source-search retries.
 /// Sequence: 30 s, 60 s, 2 min, 4 min, 8 min, 16 min, 30 min (cap), …
 fn retry_delay_secs(attempt: u32) -> u64 {
@@ -1213,8 +1223,18 @@ pub async fn run_ed2k_download(
                             debug!(dl = download_id, %peer, error = %e,
                                 "Peer unavailable — trying another source");
                             // It may be momentarily full — retry later unless exhausted.
-                            if attempts + 1 < MAX_SOURCE_ATTEMPTS {
-                                pool.lock().unwrap().push_back((source, attempts + 1));
+                            // If it is the only source left, pace ourselves before
+                            // looping so we don't hammer a peer that just refused us
+                            // (see CONNECT_RETRY_BACKOFF_SECS).
+                            let retry_alone = if attempts + 1 < MAX_SOURCE_ATTEMPTS {
+                                let mut p = pool.lock().unwrap();
+                                p.push_back((source, attempts + 1));
+                                p.len() <= 1
+                            } else {
+                                false
+                            };
+                            if retry_alone {
+                                sleep_or_cancel(CONNECT_RETRY_BACKOFF_SECS, &cancel_w).await;
                             }
                             continue 'sources;
                         }
