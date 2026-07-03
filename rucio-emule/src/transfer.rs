@@ -133,6 +133,13 @@ const OP_ENDOFDOWNLOAD: u8 = 0x48;
 const OP_CANCELTRANSFER: u8 = 0x56;
 const OP_QUEUE_RANK: u8 = 0x5c;
 const OP_QUEUE_FULL: u8 = 0x93;
+/// Uploader withdrew our slot and put us back on its waiting queue (null
+/// payload). eMule rotates upload slots by score/time, so a peer that grants a
+/// slot may bump us seconds later; its own comment: "OP_OUTOFPARTREQS will tell
+/// the downloading client to go back to OnQueue". We must stay on the same
+/// connection and wait to be re-granted — reconnecting would reset our queue
+/// position and never win a contested slot.
+const OP_OUTOFPARTREQS: u8 = 0x57;
 /// Hashset request — payload: 16-byte file hash.
 const OP_HASHSETREQUEST: u8 = 0x51;
 /// Hashset answer — payload: file_hash(16) + part_count(u16 LE) + part_hash(16)*N.
@@ -904,43 +911,15 @@ impl Session {
         }
 
         // ── STARTUPLOAD_REQ ──────────────────────────────────────────────────
-        write_frame(stream, ciphers, OP_STARTUPLOAD_REQ, opts.hash.as_bytes())
-            .await
-            .context("send STARTUPLOAD_REQ")?;
-
-        let mut queue_waits = 0;
-        loop {
-            let (_proto, opcode, payload) = timeout(opts.op_timeout, read_frame(stream, ciphers))
-                .await
-                .context("ACCEPTUPLOAD timeout")?
-                .context("read ACCEPTUPLOAD")?;
-            match opcode {
-                OP_ACCEPTUPLOAD_REQ => {
-                    on_event(DownloadEvent::Started);
-                    break;
-                }
-                OP_QUEUE_RANK => {
-                    let rank = if payload.len() >= 4 {
-                        u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]])
-                    } else {
-                        0
-                    };
-                    on_event(DownloadEvent::Queued { rank });
-                    queue_waits += 1;
-                    if queue_waits > opts.max_queue_waits {
-                        bail!("exceeded max queue waits ({rank})");
-                    }
-                    tokio::time::sleep(Duration::from_secs(5)).await;
-                    write_frame(stream, ciphers, OP_STARTUPLOAD_REQ, opts.hash.as_bytes())
-                        .await
-                        .context("re-send STARTUPLOAD_REQ")?;
-                }
-                OP_QUEUE_FULL => bail!("peer queue is full"),
-                _ => debug!("skipping opcode 0x{opcode:02x} waiting for ACCEPTUPLOAD"),
-            }
-        }
-
-        Ok(())
+        wait_for_upload_slot(
+            stream,
+            ciphers,
+            opts.op_timeout,
+            &opts.hash,
+            opts.max_queue_waits,
+            on_event,
+        )
+        .await
     }
 
     /// Ask the peer for the file's ed2k hashset (OP_HASHSETREQUEST) and return the
@@ -1012,6 +991,14 @@ impl Session {
         F: FnMut(DownloadEvent),
     {
         const PART_WINDOW: u64 = 180 * 1024;
+        // How many times we re-enter the queue after the peer withdraws our slot
+        // (OP_OUTOFPARTREQS) before giving up on this connection. Unlike the
+        // initial handshake's short "knock and move on" budget, a peer that has
+        // already granted us once is worth waiting for: staying queued lets our
+        // score climb until we win a contested slot. Each cycle is a queue-rank
+        // re-ask (5 s sleep + up to op_timeout read), so this bounds a bumped
+        // connection to a few minutes before we reconnect from scratch.
+        const MAX_REQUEUE_WAITS: usize = 8;
         // Files over 4 GiB need 64-bit-offset request/data opcodes; the 32-bit
         // fields would overflow past 4 GiB (the download would stall there).
         let large_file = self.file_size > u32::MAX as u64;
@@ -1059,6 +1046,11 @@ impl Session {
             large_file,
         )
         .await?;
+
+        // Times the peer has withdrawn our slot mid-slice (OP_OUTOFPARTREQS).
+        // Scoped to this slice: enough consecutive bumps without a byte of
+        // progress means we abandon the connection and let the caller retry.
+        let mut requeues = 0usize;
 
         loop {
             if total_filled >= end - start {
@@ -1242,6 +1234,46 @@ impl Session {
                         batch_end = (bytes_received + 3 * PART_WINDOW).min(end);
                     }
                 }
+                OP_OUTOFPARTREQS => {
+                    // The peer rotated us out of the upload slot and back onto
+                    // its waiting queue. Do NOT keep blocking for data that will
+                    // never come (that path times out and reconnects, resetting
+                    // our queue position every cycle so a contested slot is never
+                    // won). Instead re-enter the queue on this same connection,
+                    // then re-request the outstanding range and resume.
+                    requeues += 1;
+                    if requeues > MAX_REQUEUE_WAITS {
+                        bail!(
+                            "peer kept withdrawing the slot (OP_OUTOFPARTREQS x{requeues}) without sending data"
+                        );
+                    }
+                    debug!(
+                        requeues,
+                        "peer re-queued us (OP_OUTOFPARTREQS) — waiting for the slot again"
+                    );
+                    wait_for_upload_slot(
+                        &mut self.stream,
+                        &mut self.ciphers,
+                        self.op_timeout,
+                        &self.hash,
+                        MAX_REQUEUE_WAITS,
+                        on_event,
+                    )
+                    .await?;
+                    // Re-request from the current high-water mark; the peer
+                    // dropped whatever it had queued for us when it bumped us.
+                    send_request_parts(
+                        &mut self.stream,
+                        &mut self.ciphers,
+                        self.hash.as_bytes(),
+                        bytes_received,
+                        end,
+                        PART_WINDOW,
+                        large_file,
+                    )
+                    .await?;
+                    batch_end = (bytes_received + 3 * PART_WINDOW).min(end);
+                }
                 _ => {
                     debug!("skipping opcode 0x{opcode:02x} during data transfer");
                 }
@@ -1401,6 +1433,70 @@ where
 ///
 /// `large_file` selects the 64-bit-offset opcode (`OP_REQUESTPARTS_I64`) for
 /// files over 4 GiB, whose offsets do not fit in the 32-bit fields.
+/// Send `OP_STARTUPLOAD_REQ` and wait for the peer to grant an upload slot
+/// (`OP_ACCEPTUPLOAD_REQ`), tolerating up to `max_queue_waits` queue-rank
+/// re-asks (sleeping 5 s and re-sending the request between each). Emits
+/// [`DownloadEvent::Queued`] for every rank update and [`DownloadEvent::Started`]
+/// once granted.
+///
+/// Used both by the initial handshake and to re-enter the queue after the peer
+/// withdraws our slot with `OP_OUTOFPARTREQS`. A peer that re-queues us keeps us
+/// on its waiting list, so a fresh `OP_STARTUPLOAD_REQ` prompts a rank update and
+/// eventually a re-grant; staying on the same connection is what lets our wait
+/// time (and thus queue score) accumulate instead of resetting on every reconnect.
+async fn wait_for_upload_slot<F>(
+    stream: &mut TcpStream,
+    ciphers: &mut ObfCiphers,
+    op_timeout: Duration,
+    hash: &Ed2kHash,
+    max_queue_waits: usize,
+    on_event: &mut F,
+) -> Result<()>
+where
+    F: FnMut(DownloadEvent),
+{
+    write_frame(stream, ciphers, OP_STARTUPLOAD_REQ, hash.as_bytes())
+        .await
+        .context("send STARTUPLOAD_REQ")?;
+
+    let mut queue_waits = 0;
+    loop {
+        let (_proto, opcode, payload) = timeout(op_timeout, read_frame(stream, ciphers))
+            .await
+            .context("ACCEPTUPLOAD timeout")?
+            .context("read ACCEPTUPLOAD")?;
+        match opcode {
+            OP_ACCEPTUPLOAD_REQ => {
+                on_event(DownloadEvent::Started);
+                return Ok(());
+            }
+            OP_QUEUE_RANK => {
+                let rank = if payload.len() >= 4 {
+                    u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]])
+                } else {
+                    0
+                };
+                on_event(DownloadEvent::Queued { rank });
+                queue_waits += 1;
+                if queue_waits > max_queue_waits {
+                    bail!("exceeded max queue waits ({rank})");
+                }
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                write_frame(stream, ciphers, OP_STARTUPLOAD_REQ, hash.as_bytes())
+                    .await
+                    .context("re-send STARTUPLOAD_REQ")?;
+            }
+            OP_QUEUE_FULL => bail!("peer queue is full"),
+            // The peer bumped us again while we were waiting to be re-granted:
+            // stay put — the STARTUPLOAD_REQ we just (re-)sent keeps us queued.
+            OP_OUTOFPARTREQS => {
+                debug!("peer re-queued us again (OP_OUTOFPARTREQS) — still waiting for a slot")
+            }
+            _ => debug!("skipping opcode 0x{opcode:02x} waiting for ACCEPTUPLOAD"),
+        }
+    }
+}
+
 async fn send_request_parts(
     stream: &mut TcpStream,
     ciphers: &mut ObfCiphers,
@@ -2306,6 +2402,87 @@ mod tests {
         write_frame(&mut stream, &mut ciphers, OP_HELLO, &hello)
             .await
             .unwrap();
+        server.await.unwrap();
+    }
+
+    /// Regression guard for contested-slot downloads: a peer that grants an
+    /// upload slot and then rotates us back onto its queue with OP_OUTOFPARTREQS
+    /// (eMule's score/time slot rotation) must not stall the transfer. Before the
+    /// fix, `download_range` treated 0x57 as an unknown opcode, blocked until the
+    /// read timed out, and the caller reconnected — resetting our queue position
+    /// forever. Now it must re-enter the queue on the same connection and resume.
+    #[tokio::test]
+    async fn download_range_recovers_from_out_of_part_reqs() {
+        let data = sample_payload(100_000);
+        let len = data.len() as u64;
+        let hash = [0u8; 16];
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // Peer: on the first REQUESTPARTS, bump us (OP_OUTOFPARTREQS). Then, when
+        // we re-ask for the slot (STARTUPLOAD_REQ), grant it (ACCEPTUPLOAD_REQ)
+        // and serve the whole range on the following REQUESTPARTS.
+        let peer_data = data.clone();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut ciphers = ObfCiphers::default();
+
+            let (_p, opcode, _payload) = read_frame(&mut stream, &mut ciphers).await.unwrap();
+            assert_eq!(opcode, OP_REQUESTPARTS, "downloader asks for parts first");
+            write_frame(&mut stream, &mut ciphers, OP_OUTOFPARTREQS, &[])
+                .await
+                .unwrap();
+
+            let (_p, opcode, _payload) = read_frame(&mut stream, &mut ciphers).await.unwrap();
+            assert_eq!(opcode, OP_STARTUPLOAD_REQ, "downloader re-enters the queue");
+            write_frame(&mut stream, &mut ciphers, OP_ACCEPTUPLOAD_REQ, &[])
+                .await
+                .unwrap();
+
+            let (_p, opcode, _payload) = read_frame(&mut stream, &mut ciphers).await.unwrap();
+            assert_eq!(
+                opcode, OP_REQUESTPARTS,
+                "downloader re-requests after re-grant"
+            );
+            let mut part = Vec::with_capacity(24 + peer_data.len());
+            part.extend_from_slice(&hash);
+            part.extend_from_slice(&0u32.to_le_bytes()); // range start
+            part.extend_from_slice(&(peer_data.len() as u32).to_le_bytes()); // range end
+            part.extend_from_slice(&peer_data);
+            write_frame(&mut stream, &mut ciphers, OP_SENDINGPART, &part)
+                .await
+                .unwrap();
+        });
+
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let mut session = Session {
+            peer: "127.0.0.1:0".parse().unwrap(),
+            download_id: 0,
+            stream,
+            op_timeout: Duration::from_secs(5),
+            hash: Ed2kHash::from_bytes(hash),
+            file_size: len,
+            ciphers: ObfCiphers::default(),
+            min_speed_bytes_per_sec: 0,
+            plain_bytes: 0,
+            compressed_file_bytes: 0,
+            compressed_wire_bytes: 0,
+        };
+
+        let mut out = tokio::fs::File::from_std(tempfile::tempfile().unwrap());
+        let received = session
+            .download_range(0, len, None, &mut out, &mut |_| {})
+            .await
+            .expect("download must recover from OP_OUTOFPARTREQS and complete");
+        assert_eq!(received, len);
+
+        // The whole range must have landed on disk intact.
+        out.seek(std::io::SeekFrom::Start(0)).await.unwrap();
+        let mut got = Vec::new();
+        out.read_to_end(&mut got).await.unwrap();
+        assert_eq!(got, data, "recovered transfer must reproduce the data");
+
         server.await.unwrap();
     }
 
