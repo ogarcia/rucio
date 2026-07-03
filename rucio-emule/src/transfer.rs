@@ -124,6 +124,12 @@ const OP_COMPRESSEDPART_I64: u8 = 0xa1;
 /// Payload: hash[16] + start_offset[4 LE] + zlib_data[…]
 /// Range end is implicit: start_offset + decompressed.len()
 const OP_COMPRESSEDPART: u8 = 0x40;
+/// Tell the peer which file we want to download from it (payload: 16-byte file
+/// hash). eMule answers with `OP_FILESTATUS` — the per-part availability bitmap
+/// — so we learn which parts a *partial* source actually holds and only request
+/// those. Skipping this step makes us request parts the peer lacks, which eMule
+/// silently drops (no reply), stalling the transfer until it times out.
+const OP_SETREQFILEID: u8 = 0x4f;
 const OP_FILESTATUS: u8 = 0x50;
 const OP_STARTUPLOAD_REQ: u8 = 0x54;
 const OP_ACCEPTUPLOAD_REQ: u8 = 0x55;
@@ -337,6 +343,39 @@ fn parse_hashset_answer(payload: &[u8], file_hash: &[u8]) -> Option<Vec<[u8; 16]
         parts.push(h);
     }
     Some(parts)
+}
+
+/// Parse an OP_FILESTATUS payload (file_hash[16] + part_count(u16 LE) +
+/// bitfield[ceil(count/8)], LSB-first). Returns the per-part availability
+/// (`true` = the peer holds that part).
+///
+/// A `count` of 0 is eMule's "complete source" marker, and a count that does not
+/// match the file's part count is treated the same way: both return `None`, so
+/// the caller falls back to assuming every part is available rather than wrongly
+/// skipping parts (a false "missing" would strand a slice forever).
+fn parse_file_status(payload: &[u8], file_hash: &[u8], num_parts: usize) -> Option<Vec<bool>> {
+    if payload.len() < 18 || &payload[..16] != file_hash {
+        return None;
+    }
+    let count = u16::from_le_bytes([payload[16], payload[17]]) as usize;
+    // 0 = complete source; a mismatched count is not something we can map onto
+    // our parts safely. Either way, treat the source as holding everything.
+    if count == 0 || count != num_parts {
+        return None;
+    }
+    let need = 18 + count.div_ceil(8);
+    if payload.len() < need {
+        debug!(
+            "OP_FILESTATUS truncated: {count} parts need {need} bytes, got {}",
+            payload.len()
+        );
+        return None;
+    }
+    let mut avail = Vec::with_capacity(count);
+    for i in 0..count {
+        avail.push((payload[18 + i / 8] >> (i % 8)) & 1 == 1);
+    }
+    Some(avail)
 }
 
 // ── HELLO packet ─────────────────────────────────────────────────────────────
@@ -594,6 +633,11 @@ pub struct Session {
     /// `packed_size`). `compressed_file_bytes - compressed_wire_bytes` is the
     /// bandwidth compression saved us.
     compressed_wire_bytes: u64,
+    /// Per-part availability learned from the peer's `OP_FILESTATUS`. `None` when
+    /// the peer is a complete source (or never sent a status), meaning it holds
+    /// every part; `Some(v)` marks a partial source where `v[i]` is whether it
+    /// holds part `i`. The caller only requests parts the peer actually has.
+    part_status: Option<Vec<bool>>,
 }
 
 impl Drop for Session {
@@ -663,6 +707,24 @@ impl Session {
         self.ciphers.is_obfuscated()
     }
 
+    /// Whether the peer holds ED2K part `idx`. A source that sent no partial file
+    /// status (a complete source, or a client that does not report one) is
+    /// assumed to hold every part, so this returns `true` for it.
+    pub fn has_part(&self, idx: usize) -> bool {
+        match &self.part_status {
+            None => true,
+            Some(v) => v.get(idx).copied().unwrap_or(false),
+        }
+    }
+
+    /// `(available, total)` parts when the peer reported a *partial* status;
+    /// `None` for a complete source. For logging which sources are partial.
+    pub fn part_availability(&self) -> Option<(usize, usize)> {
+        self.part_status
+            .as_ref()
+            .map(|v| (v.iter().filter(|&&b| b).count(), v.len()))
+    }
+
     /// Attempt a plain (unencrypted) TCP connection and handshake.
     async fn connect_plain<F>(
         peer: SocketAddrV4,
@@ -681,7 +743,8 @@ impl Session {
             .context("connect to peer")?;
         on_event(DownloadEvent::Connected);
 
-        Self::do_handshake(peer, &mut stream, &mut ciphers, opts, &our_hash, on_event).await?;
+        let part_status =
+            Self::do_handshake(peer, &mut stream, &mut ciphers, opts, &our_hash, on_event).await?;
 
         Ok(Self {
             peer,
@@ -695,6 +758,7 @@ impl Session {
             plain_bytes: 0,
             compressed_file_bytes: 0,
             compressed_wire_bytes: 0,
+            part_status,
         })
     }
 
@@ -754,7 +818,8 @@ impl Session {
         // send key = our recv key): SYNC[4] + method[1] + pad_len[1] + padding.
         Self::read_obf_response(&mut stream, &mut ciphers, opts.op_timeout).await?;
 
-        Self::do_handshake(peer, &mut stream, &mut ciphers, opts, &our_hash, on_event).await?;
+        let part_status =
+            Self::do_handshake(peer, &mut stream, &mut ciphers, opts, &our_hash, on_event).await?;
 
         Ok(Self {
             peer,
@@ -768,6 +833,7 @@ impl Session {
             plain_bytes: 0,
             compressed_file_bytes: 0,
             compressed_wire_bytes: 0,
+            part_status,
         })
     }
 
@@ -809,6 +875,10 @@ impl Session {
     /// Shared handshake logic (HELLO → FILEREQUEST → STARTUPLOAD), used by
     /// both plain and obfuscated paths.  Returns a `PeerClosedBeforeHello`
     /// sentinel if the peer closes before HELLOANSWER.
+    ///
+    /// On success returns the peer's per-part availability: `Some(v)` for a
+    /// partial source (`v[i]` = holds part `i`), `None` for a complete source or
+    /// one that reported no status.
     async fn do_handshake<F>(
         peer: SocketAddrV4,
         stream: &mut TcpStream,
@@ -816,7 +886,7 @@ impl Session {
         opts: &DownloadOptions,
         our_hash: &[u8; 16],
         on_event: &mut F,
-    ) -> Result<()>
+    ) -> Result<Option<Vec<bool>>>
     where
         F: FnMut(DownloadEvent),
     {
@@ -869,19 +939,36 @@ impl Session {
         .await
         .context("send OP_EMULEINFO")?;
 
-        // ── FILEREQUEST ──────────────────────────────────────────────────────
+        // ── FILEREQUEST (+ SETREQFILEID) ──────────────────────────────────────
+        // Ask for the file (a name answer confirms the peer shares it) and, for
+        // multi-part files, also for its part-availability status. eMule batches
+        // these, answering 0x59 (name) then 0x50 (status); the status is captured
+        // in whichever read loop sees it (here or the hashset loop below).
+        const ED2K_PART_SIZE: u64 = 9_728_000;
+        let multi_part = opts.file_size > ED2K_PART_SIZE;
+        let num_parts = opts.file_size.div_ceil(ED2K_PART_SIZE) as usize;
+        let mut part_status: Option<Vec<bool>> = None;
+
         write_frame(stream, ciphers, OP_FILEREQUEST, opts.hash.as_bytes())
             .await
             .context("send FILEREQUEST")?;
+        if multi_part {
+            write_frame(stream, ciphers, OP_SETREQFILEID, opts.hash.as_bytes())
+                .await
+                .context("send OP_SETREQFILEID")?;
+        }
 
         loop {
-            let (_proto, opcode, _payload) = timeout(opts.op_timeout, read_frame(stream, ciphers))
+            let (_proto, opcode, payload) = timeout(opts.op_timeout, read_frame(stream, ciphers))
                 .await
                 .context("FILEREQUEST_ANSWER timeout")?
                 .context("read FILEREQUEST_ANSWER")?;
             match opcode {
                 OP_FILEREQUEST_ANSWER => break,
                 OP_FILENOTFOUND => bail!("peer does not have the file"),
+                OP_FILESTATUS => {
+                    part_status = parse_file_status(&payload, opts.hash.as_bytes(), num_parts)
+                }
                 _ => debug!("skipping opcode 0x{opcode:02x} during file request"),
             }
         }
@@ -892,8 +979,9 @@ impl Session {
         // Emitting it as an event means we capture it even from peers that go on
         // to queue us (so connect() later returns Err): the daemon already has the
         // hashset by then. Single-part files have no hashset (ed2k hash == part).
-        const ED2K_PART_SIZE: u64 = 9_728_000;
-        if opts.file_size > ED2K_PART_SIZE {
+        // The OP_FILESTATUS answer to our SETREQFILEID arrives in this window too
+        // (before the hashset answer, since we asked for it first), so grab it here.
+        if multi_part {
             write_frame(stream, ciphers, OP_HASHSETREQUEST, opts.hash.as_bytes())
                 .await
                 .context("send OP_HASHSETREQUEST")?;
@@ -905,13 +993,19 @@ impl Session {
                         // is still a usable source once another supplies the hashset.
                         _ => break,
                     };
-                if opcode == OP_HASHSETANSWER {
-                    if let Some(parts) = parse_hashset_answer(&payload, opts.hash.as_bytes()) {
-                        on_event(DownloadEvent::Hashset(parts));
+                match opcode {
+                    OP_HASHSETANSWER => {
+                        if let Some(parts) = parse_hashset_answer(&payload, opts.hash.as_bytes()) {
+                            on_event(DownloadEvent::Hashset(parts));
+                        }
+                        break;
                     }
-                    break;
+                    OP_FILESTATUS if part_status.is_none() => {
+                        part_status = parse_file_status(&payload, opts.hash.as_bytes(), num_parts);
+                    }
+                    // skip unrelated interleaved opcode and keep scanning
+                    _ => {}
                 }
-                // skip unrelated interleaved opcode and keep scanning
             }
         }
 
@@ -924,7 +1018,9 @@ impl Session {
             opts.max_queue_waits,
             on_event,
         )
-        .await
+        .await?;
+
+        Ok(part_status)
     }
 
     /// Ask the peer for the file's ed2k hashset (OP_HASHSETREQUEST) and return the
@@ -2303,6 +2399,46 @@ mod tests {
     }
 
     #[test]
+    fn file_status_parsing() {
+        let hash = [0xabu8; 16];
+        // count == 0 → complete source → None (treat as holding everything).
+        let mut complete = hash.to_vec();
+        complete.extend_from_slice(&0u16.to_le_bytes());
+        assert_eq!(parse_file_status(&complete, &hash, 3), None);
+
+        // Partial source, 10 parts, holds 0,1,3,9 (LSB-first bitfield).
+        let mut partial = hash.to_vec();
+        partial.extend_from_slice(&10u16.to_le_bytes());
+        partial.push(0b0000_1011); // parts 0,1,3
+        partial.push(0b0000_0010); // part 9 (bit 1 of second byte)
+        let avail = parse_file_status(&partial, &hash, 10).unwrap();
+        assert_eq!(
+            avail,
+            vec![
+                true, true, false, true, false, false, false, false, false, true
+            ]
+        );
+
+        // Wrong file hash → None (do not skip parts on a mismatched answer).
+        let mut wrong = vec![0u8; 16];
+        wrong.extend_from_slice(&3u16.to_le_bytes());
+        wrong.push(0b0000_0111);
+        assert_eq!(parse_file_status(&wrong, &hash, 3), None);
+
+        // Count mismatching our part count → None (assume complete, never skip).
+        let mut mism = hash.to_vec();
+        mism.extend_from_slice(&5u16.to_le_bytes());
+        mism.push(0b0001_1111);
+        assert_eq!(parse_file_status(&mism, &hash, 3), None);
+
+        // Truncated bitfield → None.
+        let mut trunc = hash.to_vec();
+        trunc.extend_from_slice(&10u16.to_le_bytes());
+        trunc.push(0b0000_0001); // only 1 byte, needs 2
+        assert_eq!(parse_file_status(&trunc, &hash, 10), None);
+    }
+
+    #[test]
     fn emule_info_payload() {
         // version + EMULE_PROTOCOL + tagcount(1) + one ET_COMPRESSION tag:
         // recognised as eMule and advertising zlib data compression.
@@ -2564,6 +2700,7 @@ mod tests {
             plain_bytes: 0,
             compressed_file_bytes: 0,
             compressed_wire_bytes: 0,
+            part_status: None,
         };
 
         let mut out = tokio::fs::File::from_std(tempfile::tempfile().unwrap());

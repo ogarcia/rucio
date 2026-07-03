@@ -1212,11 +1212,21 @@ pub async fn run_ed2k_download(
                     qranks.lock().unwrap().remove(&peer);
                     let mut session = match connect_result {
                         Ok(s) => {
-                            info!(
-                                dl = download_id, %peer,
-                                obfuscated = s.is_obfuscated(),
-                                "Peer granted upload slot — transfer starting"
-                            );
+                            // Log whether this is a partial source (and how many
+                            // parts it holds) so a peer serving only some parts is
+                            // visible — we will request only the parts it has.
+                            match s.part_availability() {
+                                Some((have, total)) => info!(
+                                    dl = download_id, %peer,
+                                    obfuscated = s.is_obfuscated(), have, total,
+                                    "Peer granted upload slot — partial source ({have}/{total} parts)"
+                                ),
+                                None => info!(
+                                    dl = download_id, %peer,
+                                    obfuscated = s.is_obfuscated(),
+                                    "Peer granted upload slot — transfer starting"
+                                ),
+                            }
                             s
                         }
                         Err(e) => {
@@ -1285,11 +1295,20 @@ pub async fn run_ed2k_download(
                         if cancel_w.load(Ordering::Relaxed) {
                             break 'sources;
                         }
-                        let (slice_idx, slice_start, slice_end) =
-                            match work.lock().unwrap().pop_front() {
-                                Some(s) => s,
-                                None => break 'sources, // all slices taken — worker done
-                            };
+                        // Take the first pending slice this source actually holds.
+                        // A complete source holds every part, so this is just
+                        // pop_front; a partial source skips the parts it lacks,
+                        // leaving them in the queue for a source that has them
+                        // (eMule silently ignores requests for parts a peer does
+                        // not have, which would otherwise stall us for 30 s).
+                        let (slice_idx, slice_start, slice_end) = {
+                            let mut q = work.lock().unwrap();
+                            match q.iter().position(|&(idx, _, _)| session.has_part(idx)) {
+                                Some(pos) => q.remove(pos).unwrap(),
+                                // Nothing left that this source can serve — move on.
+                                None => break 'sources,
+                            }
+                        };
 
                         // Open the part file for writing. It is pre-created once
                         // before workers spawn, so we deliberately do NOT pass
