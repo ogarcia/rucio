@@ -33,10 +33,27 @@ env:
   # each job below.
 
 jobs:
-  # ── Compile binaries once ──────────────────────────────────────────────────
+  # ── Compile binaries once per arch (native runners) ────────────────────────
   build:
-    name: Compile binaries
-    runs-on: ubuntu-latest
+    name: Compile binaries (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    # aarch64 musl is a cross build from the arm runner's gnu host, so ring
+    # looks for aarch64-linux-musl-gcc (not shipped by musl-tools). Point its C
+    # compiler and the linker at musl-gcc. These vars are target-scoped, so they
+    # are inert for the x86_64 job.
+    env:
+      CC_aarch64_unknown_linux_musl: musl-gcc
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          - arch: arm64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
     steps:
       - uses: actions/checkout@v7
 
@@ -46,19 +63,19 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-unknown-linux-musl,wasm32-unknown-unknown
+          targets: ${{ matrix.target }},wasm32-unknown-unknown
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.arch }}
 
       - name: Install musl tools
-        run: sudo apt-get install -y musl-tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools musl-dev
 
       - name: Install trunk
-        run: |
-          curl -sSLo trunk.tar.gz \
-            "https://github.com/trunk-rs/trunk/releases/download/v${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz"
-          tar xzf trunk.tar.gz
-          sudo mv trunk /usr/local/bin/
+        uses: taiki-e/install-action@v2
+        with:
+          tool: trunk@${{ env.TRUNK_VERSION }}
 
       - name: Build Leptos frontend
         run: cd rucio-web && trunk build --release --public-url ./
@@ -67,26 +84,26 @@ jobs:
       # panel. rucio-cli is a workspace default-member, built by this command.
       - name: Build (headless + bootstrap + cli, no web-ui)
         run: |
-          cargo build --release --locked --target x86_64-unknown-linux-musl \
+          cargo build --release --locked --target ${{ matrix.target }} \
             --features emule-compat,indexer
-          mkdir dist
-          cp target/x86_64-unknown-linux-musl/release/ruciod          dist/
-          cp target/x86_64-unknown-linux-musl/release/rucio-bootstrap dist/
-          cp target/x86_64-unknown-linux-musl/release/rucio-cli       dist/
-          strip dist/ruciod dist/rucio-bootstrap dist/rucio-cli
+          mkdir -p dist/${{ matrix.arch }}
+          cp target/${{ matrix.target }}/release/ruciod          dist/${{ matrix.arch }}/
+          cp target/${{ matrix.target }}/release/rucio-bootstrap dist/${{ matrix.arch }}/
+          cp target/${{ matrix.target }}/release/rucio-cli       dist/${{ matrix.arch }}/
+          strip dist/${{ matrix.arch }}/ruciod dist/${{ matrix.arch }}/rucio-bootstrap dist/${{ matrix.arch }}/rucio-cli
 
       # Recompile only the fat `rucio` with the embedded web panel — this is the
       # `complete`/latest image. Incremental over the build above.
       - name: Build (complete, web-ui)
         run: |
-          cargo build --release --locked --target x86_64-unknown-linux-musl \
+          cargo build --release --locked --target ${{ matrix.target }} \
             -p rucio --features emule-compat,web-ui
-          cp target/x86_64-unknown-linux-musl/release/rucio dist/rucio
-          strip dist/rucio
+          cp target/${{ matrix.target }}/release/rucio dist/${{ matrix.arch }}/rucio
+          strip dist/${{ matrix.arch }}/rucio
 
       - uses: actions/upload-artifact@v7
         with:
-          name: binaries
+          name: binaries-${{ matrix.arch }}
           path: dist/
           retention-days: 1
 
@@ -108,8 +125,14 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
-          name: binaries
+          pattern: binaries-*
           path: dist/
+          merge-multiple: true
+
+      # QEMU lets buildx run the emulated bits of the non-native platform — here
+      # only the runtime stage's `apk add`/`adduser` (a few seconds); the binaries
+      # are pre-compiled, so nothing heavy runs under emulation.
+      - uses: docker/setup-qemu-action@v4
 
       - uses: docker/setup-buildx-action@v4
 
@@ -145,6 +168,7 @@ jobs:
         with:
           context: .
           file: Containerfile
+          platforms: linux/amd64,linux/arm64
           target: complete
           build-args: |
             BUILDER=prebuilt
@@ -173,8 +197,14 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
-          name: binaries
+          pattern: binaries-*
           path: dist/
+          merge-multiple: true
+
+      # QEMU lets buildx run the emulated bits of the non-native platform — here
+      # only the runtime stage's `apk add`/`adduser` (a few seconds); the binaries
+      # are pre-compiled, so nothing heavy runs under emulation.
+      - uses: docker/setup-qemu-action@v4
 
       - uses: docker/setup-buildx-action@v4
 
@@ -210,6 +240,7 @@ jobs:
         with:
           context: .
           file: Containerfile
+          platforms: linux/amd64,linux/arm64
           target: headless
           build-args: |
             BUILDER=prebuilt
@@ -238,8 +269,14 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
-          name: binaries
+          pattern: binaries-*
           path: dist/
+          merge-multiple: true
+
+      # QEMU lets buildx run the emulated bits of the non-native platform — here
+      # only the runtime stage's `apk add`/`adduser` (a few seconds); the binaries
+      # are pre-compiled, so nothing heavy runs under emulation.
+      - uses: docker/setup-qemu-action@v4
 
       - uses: docker/setup-buildx-action@v4
 
@@ -275,6 +312,7 @@ jobs:
         with:
           context: .
           file: Containerfile
+          platforms: linux/amd64,linux/arm64
           target: cli
           build-args: |
             BUILDER=prebuilt
@@ -303,8 +341,14 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
-          name: binaries
+          pattern: binaries-*
           path: dist/
+          merge-multiple: true
+
+      # QEMU lets buildx run the emulated bits of the non-native platform — here
+      # only the runtime stage's `apk add`/`adduser` (a few seconds); the binaries
+      # are pre-compiled, so nothing heavy runs under emulation.
+      - uses: docker/setup-qemu-action@v4
 
       - uses: docker/setup-buildx-action@v4
 
@@ -340,6 +384,7 @@ jobs:
         with:
           context: .
           file: Containerfile
+          platforms: linux/amd64,linux/arm64
           target: bootstrap
           build-args: |
             BUILDER=prebuilt

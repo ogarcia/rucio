@@ -28,7 +28,9 @@
 #   podman build --target cli        -t rucio:dev-cli        .
 #   podman build --target bootstrap  -t rucio-bootstrap:dev  .
 #
-# CI build (binaries pre-compiled and placed in dist/):
+# CI build (binaries pre-compiled and placed in dist/<arch>/, arch = amd64|arm64
+# to match Docker's automatic TARGETARCH; buildx picks the right subdir per
+# platform, so the same context yields a multi-arch manifest):
 #   podman build --target complete   --build-arg BUILDER=prebuilt .
 #   podman build --target headless   --build-arg BUILDER=prebuilt .
 #   podman build --target cli        --build-arg BUILDER=prebuilt .
@@ -98,11 +100,15 @@ RUN cargo build --release --locked --features emule-compat,indexer && \
 
 # ── Stage 1b: pre-built binaries injected from CI (dist/ in build context) ───
 
+# TARGETARCH (amd64/arm64) is set automatically by buildx per target platform;
+# it must be re-declared here to be usable in COPY. The dist/<arch>/ layout is
+# produced by the container.yml build matrix.
 FROM scratch AS prebuilt
-COPY --chmod=0755 dist/ruciod          /usr/bin/ruciod
-COPY --chmod=0755 dist/rucio           /usr/bin/rucio
-COPY --chmod=0755 dist/rucio-cli       /usr/bin/rucio-cli
-COPY --chmod=0755 dist/rucio-bootstrap /usr/bin/rucio-bootstrap
+ARG TARGETARCH
+COPY --chmod=0755 dist/${TARGETARCH}/ruciod          /usr/bin/ruciod
+COPY --chmod=0755 dist/${TARGETARCH}/rucio           /usr/bin/rucio
+COPY --chmod=0755 dist/${TARGETARCH}/rucio-cli       /usr/bin/rucio-cli
+COPY --chmod=0755 dist/${TARGETARCH}/rucio-bootstrap /usr/bin/rucio-bootstrap
 
 # ── Stage 1c: indirection — points to 'builder' or 'prebuilt' via build arg ──
 
