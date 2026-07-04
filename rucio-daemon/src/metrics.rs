@@ -85,12 +85,17 @@ pub struct Metrics {
     /// Unix timestamp of daemon start (set once at construction).
     pub started_at: u64,
 
+    /// Monotonic anchor for this session's uptime (elapsed since construction).
+    start: Instant,
+
     // --- last-persisted snapshot (so we only flush deltas to DB) ---
     last_up: AtomicU64,
     last_down: AtomicU64,
     last_served: AtomicU64,
     last_received: AtomicU64,
     last_rejected: AtomicU64,
+    /// Session uptime (seconds) at the last flush, so we persist only the delta.
+    last_uptime: AtomicU64,
 }
 
 impl Metrics {
@@ -106,12 +111,19 @@ impl Metrics {
             up_window: Mutex::new(SpeedWindow::new()),
             down_window: Mutex::new(SpeedWindow::new()),
             started_at,
+            start: Instant::now(),
             last_up: AtomicU64::new(0),
             last_down: AtomicU64::new(0),
             last_served: AtomicU64::new(0),
             last_received: AtomicU64::new(0),
             last_rejected: AtomicU64::new(0),
+            last_uptime: AtomicU64::new(0),
         }
+    }
+
+    /// Seconds elapsed since this daemon session started (monotonic).
+    fn session_uptime_secs(&self) -> u64 {
+        self.start.elapsed().as_secs()
     }
 
     // -----------------------------------------------------------------------
@@ -250,6 +262,7 @@ impl Metrics {
         let served = self.chunks_served.load(Ordering::Relaxed);
         let received = self.chunks_received.load(Ordering::Relaxed);
         let rejected = self.chunks_rejected.load(Ordering::Relaxed);
+        let uptime = self.session_uptime_secs();
 
         rucio_core::api::metrics::TotalMetrics {
             uploaded_bytes: up.saturating_sub(self.last_up.load(Ordering::Relaxed)),
@@ -257,6 +270,7 @@ impl Metrics {
             chunks_served: served.saturating_sub(self.last_served.load(Ordering::Relaxed)),
             chunks_received: received.saturating_sub(self.last_received.load(Ordering::Relaxed)),
             chunks_rejected: rejected.saturating_sub(self.last_rejected.load(Ordering::Relaxed)),
+            uptime_seconds: uptime.saturating_sub(self.last_uptime.load(Ordering::Relaxed)),
         }
     }
 
@@ -269,11 +283,14 @@ impl Metrics {
         let received = self.chunks_received.load(Ordering::Relaxed);
         let rejected = self.chunks_rejected.load(Ordering::Relaxed);
 
+        let uptime = self.session_uptime_secs();
+
         let d_up = up.saturating_sub(self.last_up.swap(up, Ordering::Relaxed));
         let d_down = down.saturating_sub(self.last_down.swap(down, Ordering::Relaxed));
         let d_served = served.saturating_sub(self.last_served.swap(served, Ordering::Relaxed));
         let d_recv = received.saturating_sub(self.last_received.swap(received, Ordering::Relaxed));
         let d_rej = rejected.saturating_sub(self.last_rejected.swap(rejected, Ordering::Relaxed));
+        let d_uptime = uptime.saturating_sub(self.last_uptime.swap(uptime, Ordering::Relaxed));
 
         rucio_core::api::metrics::TotalMetrics {
             uploaded_bytes: d_up,
@@ -281,6 +298,7 @@ impl Metrics {
             chunks_served: d_served,
             chunks_received: d_recv,
             chunks_rejected: d_rej,
+            uptime_seconds: d_uptime,
         }
     }
 }

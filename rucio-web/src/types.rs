@@ -482,6 +482,7 @@ pub struct TotalMetrics {
     pub chunks_served: u64,
     pub chunks_received: u64,
     pub chunks_rejected: u64,
+    pub uptime_seconds: u64,
 }
 
 // ── Temporary speed limit ─────────────────────────────────────────────────────

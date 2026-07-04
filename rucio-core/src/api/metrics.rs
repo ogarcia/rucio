@@ -41,6 +41,8 @@ pub struct TotalMetrics {
     pub chunks_received: u64,
     /// Total chunks rejected across all sessions.
     pub chunks_rejected: u64,
+    /// Total seconds the daemon has been running across all sessions.
+    pub uptime_seconds: u64,
 }
 
 impl TotalMetrics {
@@ -54,6 +56,7 @@ impl TotalMetrics {
         self.chunks_served = self.chunks_served.saturating_add(other.chunks_served);
         self.chunks_received = self.chunks_received.saturating_add(other.chunks_received);
         self.chunks_rejected = self.chunks_rejected.saturating_add(other.chunks_rejected);
+        self.uptime_seconds = self.uptime_seconds.saturating_add(other.uptime_seconds);
     }
 }
 

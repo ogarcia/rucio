@@ -230,6 +230,8 @@ pub fn StatsPanel(active_panel: RwSignal<Option<super::Panel>>) -> impl IntoView
 
                                 <p class="section-label">{t!("overlay.stats.total")}</p>
                                 <dl class="panel-dl">
+                                    <dt>{t!("overlay.stats.uptime")}</dt>
+                                    <dd>{format_uptime(t.uptime_seconds)}</dd>
                                     <dt>{t!("overlay.stats.downloaded")}</dt>
                                     <dd>{format_size(t.downloaded_bytes)}</dd>
                                     <dt>{t!("overlay.stats.uploaded")}</dt>

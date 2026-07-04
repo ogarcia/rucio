@@ -251,7 +251,8 @@ CREATE TABLE IF NOT EXISTS metrics (
     downloaded_bytes    INTEGER NOT NULL DEFAULT 0,
     chunks_served       INTEGER NOT NULL DEFAULT 0,
     chunks_received     INTEGER NOT NULL DEFAULT 0,
-    chunks_rejected     INTEGER NOT NULL DEFAULT 0
+    chunks_rejected     INTEGER NOT NULL DEFAULT 0,
+    uptime_seconds      INTEGER NOT NULL DEFAULT 0
 );
 
 -- Ensure the singleton row exists from the start.
