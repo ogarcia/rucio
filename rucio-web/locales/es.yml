@@ -9,6 +9,10 @@ common:
   class_unknown: "Desconocido"
   on: "Sí"
   off: "No"
+  # Uptime unit suffixes (día / hora / minuto), joined as e.g. "3d 14h 5m".
+  uptime_d: "%{n}d"
+  uptime_h: "%{n}h"
+  uptime_m: "%{n}m"
 
 pin:
   add: "Fijar contenido"
@@ -120,6 +124,7 @@ overlay:
     speed_up: "↑ velocidad"
     downloaded: "↓ descargado"
     uploaded: "↑ subido"
+    ratio: "Ratio"
     chunks_received: "Bloques recibidos"
     chunks_served: "Bloques servidos"
     chunks_rejected: "Bloques rechazados"

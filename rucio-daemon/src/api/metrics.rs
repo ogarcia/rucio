@@ -45,6 +45,8 @@ pub async fn get_metrics(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
     total.add(&unflushed);
+    total.ratio =
+        rucio_core::api::metrics::share_ratio(total.uploaded_bytes, total.downloaded_bytes);
 
     Ok(Json(MetricsResponse { session, total }))
 }

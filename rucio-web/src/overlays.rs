@@ -10,7 +10,8 @@ use rust_i18n::t;
 use crate::icons::{self, Icon};
 use crate::types::{
     EmuleConnectivity, EmuleStatusResponse, MetricsResponse, PeerInfo, PeersResponse,
-    StatusResponse, class_badge, format_size, format_speed_full, format_uptime, reachability_hint,
+    StatusResponse, class_badge, format_ratio, format_size, format_speed_full, format_uptime,
+    reachability_hint,
 };
 
 async fn api_fetch_emule_status() -> Option<EmuleStatusResponse> {
@@ -218,6 +219,8 @@ pub fn StatsPanel(active_panel: RwSignal<Option<super::Panel>>) -> impl IntoView
                                     <dd>{format_size(s.downloaded_bytes)}</dd>
                                     <dt>{t!("overlay.stats.uploaded")}</dt>
                                     <dd>{format_size(s.uploaded_bytes)}</dd>
+                                    <dt>{t!("overlay.stats.ratio")}</dt>
+                                    <dd>{format_ratio(s.ratio, s.uploaded_bytes)}</dd>
                                     <dt>{t!("overlay.stats.chunks_received")}</dt>
                                     <dd>{s.chunks_received.to_string()}</dd>
                                     <dt>{t!("overlay.stats.chunks_served")}</dt>
@@ -236,6 +239,8 @@ pub fn StatsPanel(active_panel: RwSignal<Option<super::Panel>>) -> impl IntoView
                                     <dd>{format_size(t.downloaded_bytes)}</dd>
                                     <dt>{t!("overlay.stats.uploaded")}</dt>
                                     <dd>{format_size(t.uploaded_bytes)}</dd>
+                                    <dt>{t!("overlay.stats.ratio")}</dt>
+                                    <dd>{format_ratio(t.ratio, t.uploaded_bytes)}</dd>
                                     <dt>{t!("overlay.stats.chunks_received")}</dt>
                                     <dd>{t.chunks_received.to_string()}</dd>
                                     <dt>{t!("overlay.stats.chunks_served")}</dt>

@@ -233,14 +233,17 @@ impl Metrics {
     // -----------------------------------------------------------------------
 
     pub fn session_snapshot(&self) -> SessionMetrics {
+        let uploaded_bytes = self.uploaded_bytes.load(Ordering::Relaxed);
+        let downloaded_bytes = self.downloaded_bytes.load(Ordering::Relaxed);
         SessionMetrics {
-            uploaded_bytes: self.uploaded_bytes.load(Ordering::Relaxed),
-            downloaded_bytes: self.downloaded_bytes.load(Ordering::Relaxed),
+            uploaded_bytes,
+            downloaded_bytes,
             upload_speed: self.upload_speed.load(Ordering::Relaxed),
             download_speed: self.download_speed.load(Ordering::Relaxed),
             chunks_served: self.chunks_served.load(Ordering::Relaxed),
             chunks_received: self.chunks_received.load(Ordering::Relaxed),
             chunks_rejected: self.chunks_rejected.load(Ordering::Relaxed),
+            ratio: rucio_core::api::metrics::share_ratio(uploaded_bytes, downloaded_bytes),
             started_at: self.started_at,
         }
     }
@@ -271,6 +274,9 @@ impl Metrics {
             chunks_received: received.saturating_sub(self.last_received.load(Ordering::Relaxed)),
             chunks_rejected: rejected.saturating_sub(self.last_rejected.load(Ordering::Relaxed)),
             uptime_seconds: uptime.saturating_sub(self.last_uptime.load(Ordering::Relaxed)),
+            // Delta carrier: a ratio is meaningless on a delta, computed on the
+            // absolute total at the response boundary instead.
+            ratio: None,
         }
     }
 
@@ -299,6 +305,7 @@ impl Metrics {
             chunks_received: d_recv,
             chunks_rejected: d_rej,
             uptime_seconds: d_uptime,
+            ratio: None,
         }
     }
 }

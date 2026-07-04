@@ -463,6 +463,7 @@ pub struct SessionMetrics {
     pub chunks_served: u64,
     pub chunks_received: u64,
     pub chunks_rejected: u64,
+    pub ratio: Option<f64>,
     pub started_at: u64,
 }
 
@@ -483,6 +484,7 @@ pub struct TotalMetrics {
     pub chunks_received: u64,
     pub chunks_rejected: u64,
     pub uptime_seconds: u64,
+    pub ratio: Option<f64>,
 }
 
 // ── Temporary speed limit ─────────────────────────────────────────────────────
@@ -874,10 +876,35 @@ pub fn format_eta(secs: u64) -> String {
 }
 
 pub fn format_uptime(secs: u64) -> String {
-    let h = secs / 3_600;
+    let d = secs / 86_400;
+    let h = (secs % 86_400) / 3_600;
     let m = (secs % 3_600) / 60;
-    let s = secs % 60;
-    format!("{h:02}:{m:02}:{s:02}")
+    // Unit suffixes are localized (they differ per language). Granularity stops
+    // at the minute and drops leading zero units: "3d 14h 5m", "14h 5m", "5m".
+    let (day, hour, min) = (
+        t!("common.uptime_d", n = d),
+        t!("common.uptime_h", n = h),
+        t!("common.uptime_m", n = m),
+    );
+    if d > 0 {
+        format!("{day} {hour} {min}")
+    } else if h > 0 {
+        format!("{hour} {min}")
+    } else {
+        min.to_string()
+    }
+}
+
+/// Format the upload/download share ratio for display.
+///
+/// `None` means nothing has been downloaded: show "∞" if we uploaded anything
+/// (pure seeding), otherwise a plain zero.
+pub fn format_ratio(ratio: Option<f64>, uploaded_bytes: u64) -> String {
+    match ratio {
+        Some(r) => format!("{r:.2}"),
+        None if uploaded_bytes > 0 => "∞".to_string(),
+        None => "0.00".to_string(),
+    }
 }
 
 pub fn class_badge(class: &str) -> (std::borrow::Cow<'static, str>, &'static str) {

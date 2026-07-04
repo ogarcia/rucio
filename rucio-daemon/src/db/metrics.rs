@@ -22,6 +22,8 @@ pub async fn load(db: &Db) -> Result<TotalMetrics> {
         chunks_received: row.get::<i64, _>("chunks_received") as u64,
         chunks_rejected: row.get::<i64, _>("chunks_rejected") as u64,
         uptime_seconds: row.get::<i64, _>("uptime_seconds") as u64,
+        // Derived at the response boundary once the unflushed delta is overlaid.
+        ratio: None,
     })
 }
 

@@ -7,6 +7,14 @@ use utoipa::ToSchema;
 // Metrics
 // ---------------------------------------------------------------------------
 
+/// Upload/download share ratio (uploaded ÷ downloaded).
+///
+/// `None` when nothing has been downloaded yet, so the ratio is undefined —
+/// callers render that as "∞" when anything was uploaded, else zero.
+pub fn share_ratio(uploaded_bytes: u64, downloaded_bytes: u64) -> Option<f64> {
+    (downloaded_bytes > 0).then(|| uploaded_bytes as f64 / downloaded_bytes as f64)
+}
+
 /// Per-session transfer counters (since last daemon start, in memory only).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
 pub struct SessionMetrics {
@@ -24,6 +32,8 @@ pub struct SessionMetrics {
     pub chunks_received: u64,
     /// Number of chunk responses rejected due to hash mismatch.
     pub chunks_rejected: u64,
+    /// Upload/download share ratio this session (`null` if nothing downloaded).
+    pub ratio: Option<f64>,
     /// Unix timestamp (seconds) of daemon start.
     pub started_at: u64,
 }
@@ -43,6 +53,12 @@ pub struct TotalMetrics {
     pub chunks_rejected: u64,
     /// Total seconds the daemon has been running across all sessions.
     pub uptime_seconds: u64,
+    /// Cumulative upload/download share ratio (`null` if nothing downloaded).
+    ///
+    /// Derived from the absolute totals at the response boundary; it is left
+    /// `None` on the delta instances used by [`TotalMetrics::add`] / the flush,
+    /// where a ratio is meaningless.
+    pub ratio: Option<f64>,
 }
 
 impl TotalMetrics {
@@ -57,6 +73,21 @@ impl TotalMetrics {
         self.chunks_received = self.chunks_received.saturating_add(other.chunks_received);
         self.chunks_rejected = self.chunks_rejected.saturating_add(other.chunks_rejected);
         self.uptime_seconds = self.uptime_seconds.saturating_add(other.uptime_seconds);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn share_ratio_edge_cases() {
+        // Undefined while nothing is downloaded, regardless of uploads.
+        assert_eq!(share_ratio(0, 0), None);
+        assert_eq!(share_ratio(500, 0), None);
+        // Normal ratio.
+        assert_eq!(share_ratio(3000, 1000), Some(3.0));
+        assert_eq!(share_ratio(0, 1000), Some(0.0));
     }
 }
 
