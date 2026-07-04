@@ -237,6 +237,29 @@ impl Metrics {
     // Delta flush — called periodically to persist increments to SQLite
     // -----------------------------------------------------------------------
 
+    /// Return the increment accumulated since the last [`Self::take_delta`]
+    /// flush, WITHOUT advancing the "last persisted" snapshot.
+    ///
+    /// The API overlays this on the persisted DB row so the historical total
+    /// tracks live activity instead of stepping once per 30 s flush. Because it
+    /// leaves the snapshot untouched, the periodic flush still persists exactly
+    /// this delta once — no double counting.
+    pub fn unflushed_delta(&self) -> rucio_core::api::metrics::TotalMetrics {
+        let up = self.uploaded_bytes.load(Ordering::Relaxed);
+        let down = self.downloaded_bytes.load(Ordering::Relaxed);
+        let served = self.chunks_served.load(Ordering::Relaxed);
+        let received = self.chunks_received.load(Ordering::Relaxed);
+        let rejected = self.chunks_rejected.load(Ordering::Relaxed);
+
+        rucio_core::api::metrics::TotalMetrics {
+            uploaded_bytes: up.saturating_sub(self.last_up.load(Ordering::Relaxed)),
+            downloaded_bytes: down.saturating_sub(self.last_down.load(Ordering::Relaxed)),
+            chunks_served: served.saturating_sub(self.last_served.load(Ordering::Relaxed)),
+            chunks_received: received.saturating_sub(self.last_received.load(Ordering::Relaxed)),
+            chunks_rejected: rejected.saturating_sub(self.last_rejected.load(Ordering::Relaxed)),
+        }
+    }
+
     /// Compute and return the delta since the last `flush_delta()` call.
     /// Advances the "last persisted" snapshot atomically.
     pub fn take_delta(&self) -> rucio_core::api::metrics::TotalMetrics {
@@ -287,4 +310,43 @@ pub fn instant_to_unix(instant: &Instant) -> u64 {
         .unwrap_or_default()
         .as_secs()
         .saturating_sub(elapsed.as_secs())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `unflushed_delta` must report the accumulated increment WITHOUT
+    /// consuming it, so a later `take_delta` (the periodic flush) still
+    /// persists exactly that amount once — no double counting, no lost bytes.
+    #[test]
+    fn unflushed_delta_does_not_advance_snapshot() {
+        let m = Metrics::default();
+        m.record_download(1000); // +1000 bytes, +1 chunk received
+        m.record_upload(500); // +500 bytes, +1 chunk served
+
+        // Peeking twice yields the same delta: the snapshot is untouched.
+        let peek1 = m.unflushed_delta();
+        let peek2 = m.unflushed_delta();
+        assert_eq!(peek1.downloaded_bytes, 1000);
+        assert_eq!(peek1.uploaded_bytes, 500);
+        assert_eq!(peek1.chunks_received, 1);
+        assert_eq!(peek1.chunks_served, 1);
+        assert_eq!(peek2.downloaded_bytes, 1000);
+
+        // The flush consumes the very same delta exactly once.
+        let flushed = m.take_delta();
+        assert_eq!(flushed.downloaded_bytes, 1000);
+        assert_eq!(flushed.uploaded_bytes, 500);
+
+        // After the flush there is nothing left unflushed.
+        let after = m.unflushed_delta();
+        assert_eq!(after.downloaded_bytes, 0);
+        assert_eq!(after.uploaded_bytes, 0);
+        assert_eq!(after.chunks_received, 0);
+
+        // Further activity accrues a fresh unflushed delta.
+        m.record_download(250);
+        assert_eq!(m.unflushed_delta().downloaded_bytes, 250);
+    }
 }

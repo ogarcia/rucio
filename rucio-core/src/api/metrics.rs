@@ -43,6 +43,20 @@ pub struct TotalMetrics {
     pub chunks_rejected: u64,
 }
 
+impl TotalMetrics {
+    /// Add another set of totals into this one (saturating).
+    ///
+    /// Used to overlay the not-yet-persisted session delta onto the stored
+    /// totals so the API can present a live cumulative figure.
+    pub fn add(&mut self, other: &TotalMetrics) {
+        self.uploaded_bytes = self.uploaded_bytes.saturating_add(other.uploaded_bytes);
+        self.downloaded_bytes = self.downloaded_bytes.saturating_add(other.downloaded_bytes);
+        self.chunks_served = self.chunks_served.saturating_add(other.chunks_served);
+        self.chunks_received = self.chunks_received.saturating_add(other.chunks_received);
+        self.chunks_rejected = self.chunks_rejected.saturating_add(other.chunks_rejected);
+    }
+}
+
 /// Response body for `GET /api/v1/metrics`.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct MetricsResponse {

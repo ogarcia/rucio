@@ -31,10 +31,20 @@ pub async fn get_metrics(
 ) -> Result<Json<MetricsResponse>, StatusCode> {
     let session = state.metrics.session_snapshot();
 
-    let total: TotalMetrics = crate::db::metrics::load(&state.db).await.map_err(|e| {
+    // The persisted totals only advance on the 30 s flush, so on their own they
+    // step once per flush and look frozen between flushes. Overlay the
+    // not-yet-flushed in-memory delta so the historical figure tracks live
+    // activity. Read the delta BEFORE loading the row: should the flush task
+    // interleave, this biases the (benign, display-only) race toward a
+    // transient overshoot that self-corrects on the next poll rather than a
+    // backwards dip. The overlay does not advance the snapshot, so the flush
+    // still persists this delta exactly once.
+    let unflushed = state.metrics.unflushed_delta();
+    let mut total: TotalMetrics = crate::db::metrics::load(&state.db).await.map_err(|e| {
         tracing::warn!("metrics DB read error: {e}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
+    total.add(&unflushed);
 
     Ok(Json(MetricsResponse { session, total }))
 }
