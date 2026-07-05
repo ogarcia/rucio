@@ -164,9 +164,9 @@ use searches::SearchesTab;
 use shares::SharesTab;
 use subscriptions::SubscriptionsTab;
 use types::{
-    ActiveUpload, CategoriesResponse, Category, DownloadResponse, Notification, NotificationList,
-    NotificationSettings, SearchResult, SearchState, SearchSummary, SpeedLimits, StatusResponse,
-    TempLimitRequest, TempLimitStatus, UploadsResponse, WsEvent, format_rate_kbps,
+    ActiveUpload, CategoriesResponse, Category, DownloadResponse, DownloadSettings, Notification,
+    NotificationList, NotificationSettings, SearchResult, SearchState, SearchSummary, SpeedLimits,
+    StatusResponse, TempLimitRequest, TempLimitStatus, UploadsResponse, WsEvent, format_rate_kbps,
     is_streamed_state,
 };
 use uploads::UploadsTab;
@@ -638,6 +638,8 @@ fn App() -> impl IntoView {
     };
     // Whether the temporary speed limit is engaged (runtime-only on the daemon).
     let temp_limit: RwSignal<bool> = RwSignal::new(false);
+    // Auto-clear finished downloads from the history (persisted daemon setting).
+    let auto_clear: RwSignal<bool> = RwSignal::new(false);
     // Base (normal) caps shown in the menu dropdowns, KB/s (0 = unlimited).
     let base_up: RwSignal<u64> = RwSignal::new(0);
     let base_down: RwSignal<u64> = RwSignal::new(0);
@@ -691,6 +693,13 @@ fn App() -> impl IntoView {
             temp_limit.set(s.active);
             temp_up.set(s.upload_kbps);
             temp_down.set(s.download_kbps);
+        }
+        if let Ok(r) = gloo_net::http::Request::get(&api::api("/api/v1/config/downloads"))
+            .send()
+            .await
+            && let Ok(s) = r.json::<DownloadSettings>().await
+        {
+            auto_clear.set(s.auto_clear_completed);
         }
         if let Ok(r) = gloo_net::http::Request::get(&api::api("/api/v1/config/limits"))
             .send()
@@ -949,6 +958,28 @@ fn App() -> impl IntoView {
                                         spawn_local(clear_history(downloads));
                                     }
                                 }>{t!("menu.clear_history")}</button>
+                                <button class="dropdown-item dropdown-toggle" on:click=move |_| {
+                                    let next = !auto_clear.get_untracked();
+                                    spawn_local(async move {
+                                        if let Ok(req) = gloo_net::http::Request::put(
+                                            &api::api("/api/v1/config/downloads"),
+                                        )
+                                        .json(&DownloadSettings { auto_clear_completed: next })
+                                            && req.send().await.map(|r| r.ok()).unwrap_or(false)
+                                        {
+                                            auto_clear.set(next);
+                                        }
+                                    });
+                                }>
+                                    <span>{t!("menu.auto_clear")}</span>
+                                    <span class=move || if auto_clear.get() {
+                                        "toggle-pill toggle-on"
+                                    } else {
+                                        "toggle-pill"
+                                    }>
+                                        {move || if auto_clear.get() { t!("common.on") } else { t!("common.off") }}
+                                    </span>
+                                </button>
                             </div>
                             <div class="dropdown-sep"/>
                             // ── Node (read-only info panels) ──────────────

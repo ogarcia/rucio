@@ -627,6 +627,7 @@ pub async fn run_ed2k_download(
     node_tx: tokio::sync::mpsc::Sender<crate::node::messages::NodeCmd>,
     cancel: Arc<AtomicBool>,
     cancel_registry: EmuleCancelRegistry,
+    auto_clear: Arc<AtomicBool>,
 ) -> Result<()> {
     // Deregister from the cancel registry on every exit path (the flag was
     // inserted by the spawn site before this task started).
@@ -1783,6 +1784,14 @@ pub async fn run_ed2k_download(
         info.hashset = hashset;
     }
     live_stats.write().await.remove(&live_key);
+
+    // Auto-clear: drop the just-completed entry from the history if the user
+    // opted in. Seeding is decoupled from the downloads list (it lives in
+    // emule_shared_files, registered above), so the file keeps being served —
+    // only the history row goes, exactly like a manual clear.
+    if auto_clear.load(Ordering::Relaxed) {
+        let _ = crate::db::emule_downloads::delete(db, download_id).await;
+    }
     Ok(())
 }
 

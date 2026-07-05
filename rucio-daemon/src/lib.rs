@@ -351,6 +351,13 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
     let notifier =
         crate::notifier::Notifier::new(db.clone(), ws_tx.clone(), Arc::clone(&notif_state));
 
+    // Live toggle for auto-clearing finished downloads, seeded from config and
+    // flipped at runtime by the settings handler. The download-completion and
+    // cancel paths read it to decide whether to drop the finished entry.
+    let auto_clear = Arc::new(std::sync::atomic::AtomicBool::new(
+        config.downloads.auto_clear_completed,
+    ));
+
     let mut engine = transfer::DownloadEngine::new(
         db.clone(),
         handle.cmd_tx.clone(),
@@ -365,6 +372,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         Arc::clone(&live_stats),
         Arc::clone(&upload_stats),
         notifier.clone(),
+        Arc::clone(&auto_clear),
     );
 
     let (download_tx, mut download_rx) = tokio::sync::mpsc::channel::<api::DownloadRequest>(32);
@@ -646,6 +654,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         upload_stats: Arc::clone(&upload_stats),
         notifications: Arc::clone(&notif_state),
         indexing_seen: Arc::clone(&indexing_seen),
+        auto_clear: Arc::clone(&auto_clear),
     };
 
     // --- eMule: republish our shared files as Kad sources (good citizen) ----
@@ -752,6 +761,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                 let reg = emule_cancel.clone();
                 let notif = notifier.clone();
                 let node_tx = handle.cmd_tx.clone();
+                let ac = Arc::clone(&auto_clear);
                 tokio::spawn(async move {
                     if let Err(e) = crate::emule::run_ed2k_download(
                         &row.ed2k_link,
@@ -768,6 +778,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                         node_tx,
                         cancel,
                         reg,
+                        ac,
                     )
                     .await
                     {
@@ -1220,11 +1231,12 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                                             let reg = emule_cancel.clone();
                                             let notif = notifier.clone();
                                             let node_tx = handle.cmd_tx.clone();
+                                            let ac = Arc::clone(&auto_clear);
                                             tokio::spawn(async move {
                                                 if let Err(e) = crate::emule::run_ed2k_download(
                                                     &link, download_id, &config, &db, &kad, &ad,
                                                     &slots, &ls, &met, &dt, &notif, node_tx, cancel,
-                                                    reg,
+                                                    reg, ac,
                                                 )
                                                 .await
                                                 {

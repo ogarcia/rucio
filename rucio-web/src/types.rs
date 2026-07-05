@@ -506,6 +506,12 @@ pub struct TempLimitRequest {
     pub active: bool,
 }
 
+/// `GET`/`PUT /api/v1/config/downloads`: download-history behaviour toggles.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug)]
+pub struct DownloadSettings {
+    pub auto_clear_completed: bool,
+}
+
 #[derive(Serialize, Deserialize, Clone, Copy, Debug)]
 pub struct SpeedLimits {
     pub upload_kbps: u64,

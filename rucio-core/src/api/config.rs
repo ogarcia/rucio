@@ -57,6 +57,17 @@ pub struct ConfigSnapshot {
     pub emule: EmuleConfig,
 }
 
+/// `GET`/`PUT /api/v1/config/downloads`. Download-history behaviour toggles,
+/// applied live and persisted — mirrors the daemon's `DownloadsConfig`.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, utoipa::ToSchema,
+)]
+pub struct DownloadSettings {
+    /// Automatically drop finished downloads (completed or user-cancelled, but
+    /// not errored) from the history so the user need not clear them by hand.
+    pub auto_clear_completed: bool,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct EmuleConfig {
     /// Whether the eMule / Kad2 subsystem is enabled at runtime.

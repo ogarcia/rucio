@@ -68,6 +68,7 @@ menu:
   resume_all: "Reanudar todas"
   clear_history: "Limpiar historial"
   clear_confirm: "¿Limpiar del historial todas las descargas finalizadas? Los archivos en disco se conservan."
+  auto_clear: "Limpiar automáticamente"
   node: "Nodo"
   settings: "Ajustes"
 

@@ -329,6 +329,9 @@ pub struct DownloadEngine {
     upload_stats: Arc<crate::upload_stats::UploadRegistry>,
     /// Notification service — records a notification when a download completes.
     notifier: crate::notifier::Notifier,
+    /// Live toggle: when set, a completed download is removed from the history
+    /// as soon as it finishes (the file on disk is kept).
+    auto_clear: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl DownloadEngine {
@@ -347,6 +350,7 @@ impl DownloadEngine {
         live_stats: crate::live_stats::LiveStatsMap,
         upload_stats: Arc<crate::upload_stats::UploadRegistry>,
         notifier: crate::notifier::Notifier,
+        auto_clear: Arc<std::sync::atomic::AtomicBool>,
     ) -> Self {
         Self {
             db,
@@ -366,6 +370,7 @@ impl DownloadEngine {
             live_stats,
             upload_stats,
             notifier,
+            auto_clear,
         }
     }
 
@@ -1695,6 +1700,13 @@ impl DownloadEngine {
                                     Some(hash_hex),
                                 )
                                 .await;
+                            // Auto-clear: drop the just-completed entry from the
+                            // history if the user opted in. The file (now shared)
+                            // and its outboard are untouched — only the download
+                            // row goes, exactly like a manual clear.
+                            if self.auto_clear.load(std::sync::atomic::Ordering::Relaxed) {
+                                let _ = db::downloads::delete(&self.db, dl_id).await;
+                            }
                         }
                         Err(e) => {
                             warn!(
@@ -2567,6 +2579,7 @@ mod tests {
             Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             Arc::new(crate::upload_stats::UploadRegistry::new()),
             notifier,
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
         );
         (engine, cmd_rx, db_dir)
     }

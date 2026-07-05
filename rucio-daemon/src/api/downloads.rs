@@ -644,6 +644,13 @@ pub async fn cancel_download(State(state): State<AppState>, Path(id): Path<i64>)
             if !signal_emule_stop(&state, emule_id) {
                 remove_emule_partials(&state.config, &row.ed2k_hash).await;
             }
+            // With auto-clear on, drop the cancelled entry from the history
+            // straight away. The running task (if any) still cleans up its
+            // partials — it falls back to a 'cancelled' teardown when the row is
+            // already gone — so deleting the row here is safe.
+            if state.auto_clear.load(std::sync::atomic::Ordering::Relaxed) {
+                let _ = crate::db::emule_downloads::delete(&state.db, emule_id).await;
+            }
             StatusCode::NO_CONTENT
         }
         #[cfg(not(feature = "emule-compat"))]
@@ -691,8 +698,10 @@ pub async fn cancel_download(State(state): State<AppState>, Path(id): Path<i64>)
                     .send(DownloadRequest::Cancel {
                         download_id: id,
                         root_hash,
-                        // User cancel: keep the `cancelled` row in their list.
-                        delete_row: false,
+                        // A user cancel normally keeps the `cancelled` row in the
+                        // list; with auto-clear on, drop it straight away (the
+                        // engine still cleans up the .part first).
+                        delete_row: state.auto_clear.load(std::sync::atomic::Ordering::Relaxed),
                     })
                     .await;
                 StatusCode::NO_CONTENT

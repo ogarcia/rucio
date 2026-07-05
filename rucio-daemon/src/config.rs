@@ -18,6 +18,20 @@ pub struct Config {
     pub emule: EmuleConfig,
     #[serde(default)]
     pub notifications: NotificationConfig,
+    #[serde(default)]
+    pub downloads: DownloadsConfig,
+}
+
+/// Download-history behaviour.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct DownloadsConfig {
+    /// When set, finished downloads are removed from the history automatically
+    /// so the user does not have to clear them by hand. It applies to the same
+    /// entries a manual clear would remove *except* errored ones: completed
+    /// downloads and those the user cancelled. Failed downloads are kept so the
+    /// error stays visible. Files already written to disk are never touched.
+    #[serde(default)]
+    pub auto_clear_completed: bool,
 }
 
 /// In-app notification centre settings.
@@ -866,6 +880,13 @@ impl Config {
             && !v.is_empty()
         {
             self.network.upnp = !matches!(v.to_lowercase().as_str(), "false" | "0" | "no" | "off");
+        }
+        // RUCIOD_AUTO_CLEAR_COMPLETED=true / 1 / yes enables auto-clearing finished downloads.
+        if let Ok(v) = std::env::var("RUCIOD_AUTO_CLEAR_COMPLETED")
+            && !v.is_empty()
+        {
+            self.downloads.auto_clear_completed =
+                matches!(v.to_lowercase().as_str(), "true" | "1" | "yes" | "on");
         }
     }
 

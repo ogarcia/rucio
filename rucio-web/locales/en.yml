@@ -70,6 +70,7 @@ menu:
   resume_all: "Resume all"
   clear_history: "Clear history"
   clear_confirm: "Clear all finished downloads from the history? Files on disk are kept."
+  auto_clear: "Clear automatically"
   node: "Node"
   settings: "Settings"
 

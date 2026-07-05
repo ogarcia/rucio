@@ -112,6 +112,8 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         config::put_limits,
         config::get_notification_settings,
         config::put_notification_settings,
+        config::get_download_settings,
+        config::put_download_settings,
         config::get_webhooks,
         config::put_webhooks,
         config::test_webhook,
@@ -178,6 +180,7 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         rucio_core::api::config::NetworkConfig,
         rucio_core::api::config::StorageConfig,
         rucio_core::api::config::EmuleConfig,
+        rucio_core::api::config::DownloadSettings,
         rucio_core::api::config::TempLimitStatus,
         rucio_core::api::config::TempLimitRequest,
         rucio_core::api::config::SpeedLimits,
@@ -492,6 +495,10 @@ pub struct AppState {
     /// clears it and fires an "indexing complete" notification once the pending
     /// count drains to 0.
     pub indexing_seen: Arc<std::sync::atomic::AtomicBool>,
+    /// Live toggle for auto-clearing finished downloads from the history.
+    /// Flipped by the settings handler; read by the download completion and
+    /// cancel paths to decide whether to drop the finished entry immediately.
+    pub auto_clear: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Live node status kept in memory and updated by the event loop.
@@ -626,6 +633,11 @@ fn v1_router() -> Router<AppState> {
         .route(
             "/config/notifications/webhooks/test",
             routing::post(config::test_webhook),
+        )
+        // download-history behaviour (auto-clear), grouped under config
+        .route(
+            "/config/downloads",
+            routing::get(config::get_download_settings).put(config::put_download_settings),
         )
         // download categories
         .route(

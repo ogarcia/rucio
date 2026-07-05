@@ -8,8 +8,8 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use rucio_core::api::config::{
-    ApiConfig, ConfigResponse, ConfigSnapshot, EmuleConfig, NetworkConfig, NodeConfig, SpeedLimits,
-    StorageConfig, TempLimitRequest, TempLimitStatus,
+    ApiConfig, ConfigResponse, ConfigSnapshot, DownloadSettings, EmuleConfig, NetworkConfig,
+    NodeConfig, SpeedLimits, StorageConfig, TempLimitRequest, TempLimitStatus,
 };
 use rucio_core::api::notifications::{NotificationSettings, WebhookTestResult};
 
@@ -369,6 +369,62 @@ pub async fn put_notification_settings(
         Ok(()) => StatusCode::NO_CONTENT,
         Err(e) => {
             tracing::error!("Failed to save notification settings: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    }
+}
+
+/// Get download-history settings.
+///
+/// Returns the live auto-clear toggle (not the startup snapshot, which goes
+/// stale after a PUT).
+#[utoipa::path(
+    get,
+    path = "/api/v1/config/downloads",
+    tag = "config",
+    responses((status = 200, description = "Current download-history settings", body = DownloadSettings)),
+)]
+pub async fn get_download_settings(State(state): State<AppState>) -> Json<DownloadSettings> {
+    Json(DownloadSettings {
+        auto_clear_completed: state.auto_clear.load(std::sync::atomic::Ordering::Relaxed),
+    })
+}
+
+/// Update download-history settings.
+///
+/// Applies the auto-clear toggle live (so downloads finishing from now on are
+/// cleared or kept accordingly) and persists it to `config.toml`.
+#[utoipa::path(
+    put,
+    path = "/api/v1/config/downloads",
+    tag = "config",
+    request_body = DownloadSettings,
+    responses(
+        (status = 204, description = "Settings applied and persisted"),
+        (status = 500, description = "Could not persist settings"),
+    )
+)]
+pub async fn put_download_settings(
+    State(state): State<AppState>,
+    Json(req): Json<DownloadSettings>,
+) -> StatusCode {
+    // Apply to the live toggle immediately so the change takes effect now.
+    state.auto_clear.store(
+        req.auto_clear_completed,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+
+    // Persist: load what is on disk, swap only this toggle, and save — so we
+    // never clobber other settings.
+    let mut cfg = match Config::load(state.config_path.as_deref()) {
+        Ok(c) => c,
+        Err(_) => (*state.config).clone(),
+    };
+    cfg.downloads.auto_clear_completed = req.auto_clear_completed;
+    match cfg.save(state.config_path.as_deref()) {
+        Ok(()) => StatusCode::NO_CONTENT,
+        Err(e) => {
+            tracing::error!("Failed to save download settings: {e}");
             StatusCode::INTERNAL_SERVER_ERROR
         }
     }
