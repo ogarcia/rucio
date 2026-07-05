@@ -522,7 +522,7 @@ pub fn DownloadsTab(
                 </button>
                 <button
                     class="toolbar-btn"
-                    title=t!("download.toolbar.remove_title")
+                    title=t!("download.toolbar.clear_title")
                     disabled=move || !can_remove()
                     on:click=move |_| {
                         let targets: Vec<i64> = selected_dls()
@@ -540,7 +540,7 @@ pub fn DownloadsTab(
                     }
                 >
                     <Icon paths=icons::TRASH/>
-                    <span class="btn-label">{t!("download.toolbar.remove")}</span>
+                    <span class="btn-label">{t!("download.toolbar.clear")}</span>
                 </button>
             </div>
             </div>

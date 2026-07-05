@@ -413,8 +413,8 @@ download:
     pause_title: "Pausar descargas"
     cancel: "Cancelar"
     cancel_title: "Cancelar descargas"
-    remove: "Eliminar"
-    remove_title: "Eliminar del historial"
+    clear: "Limpiar"
+    clear_title: "Limpiar del historial"
   filter:
     all: "Todas"
     active: "Activas"

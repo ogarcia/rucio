@@ -415,8 +415,8 @@ download:
     pause_title: "Pause downloads"
     cancel: "Cancel"
     cancel_title: "Cancel downloads"
-    remove: "Remove"
-    remove_title: "Remove from history"
+    clear: "Clear"
+    clear_title: "Clear from history"
   filter:
     all: "All"
     active: "Active"
