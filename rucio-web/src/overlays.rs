@@ -395,9 +395,24 @@ pub fn PeersPanel(active_panel: RwSignal<Option<super::Panel>>) -> impl IntoView
     }
 }
 
+/// Display version from the running daemon's `/api/v1/status`: `v0.36.0-dev`
+/// alone, or `v0.36.0-dev (49e59a1)` when the daemon build baked in a git
+/// commit hash. The daemon is the single source of truth; `commit` is empty
+/// when git wasn't available at the daemon's build time.
+fn version_string(status: &StatusResponse) -> String {
+    if status.commit.is_empty() {
+        format!("v{}", status.version)
+    } else {
+        format!("v{} ({})", status.version, status.commit)
+    }
+}
+
 /// Quick reference: version, repository and where to report issues.
 #[component]
-pub fn AboutPanel(active_panel: RwSignal<Option<super::Panel>>) -> impl IntoView {
+pub fn AboutPanel(
+    status: RwSignal<Option<StatusResponse>>,
+    active_panel: RwSignal<Option<super::Panel>>,
+) -> impl IntoView {
     let close = move || active_panel.set(None);
     const REPO: &str = "https://github.com/ogarcia/rucio";
 
@@ -421,7 +436,7 @@ pub fn AboutPanel(active_panel: RwSignal<Option<super::Panel>>) -> impl IntoView
                     ></svg>
                     <div style="font-size: 1.3rem; font-weight: 600;">"Rucio"</div>
                     <div style="color: var(--text-3); margin-top: 0.15rem;">
-                        {format!("v{}", env!("CARGO_PKG_VERSION"))}
+                        {move || status.get().map(|s| version_string(&s)).unwrap_or_default()}
                     </div>
                     <p style="color: var(--text-2); margin: 0.9rem 0 1.1rem;">
                         {t!("overlay.about.tagline")}

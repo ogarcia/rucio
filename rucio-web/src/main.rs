@@ -1108,7 +1108,7 @@ fn App() -> impl IntoView {
                 <StatsPanel active_panel=active_panel/>
             }.into_any(),
             Panel::About => view! {
-                <AboutPanel active_panel=active_panel/>
+                <AboutPanel status=status active_panel=active_panel/>
             }.into_any(),
             Panel::Notifications => view! {
                 <NotificationsPanel

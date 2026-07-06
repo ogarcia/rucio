@@ -17,6 +17,8 @@ pub struct StatusResponse {
     pub uptime_secs: u64,
     pub version: String,
     #[serde(default)]
+    pub commit: String,
+    #[serde(default)]
     pub active_downloads: usize,
     #[serde(default)]
     pub active_uploads: usize,

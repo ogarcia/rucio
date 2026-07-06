@@ -17,6 +17,11 @@ pub struct StatusResponse {
     pub observed_addrs: Vec<String>,
     pub uptime_secs: u64,
     pub version: String,
+    /// Short git commit hash the daemon was built from, or empty when git was
+    /// unavailable at build time. Displayed with `version` (e.g. the web About
+    /// panel shows `v0.36.0-dev (49e59a1)`).
+    #[serde(default)]
+    pub commit: String,
     /// Number of rucio/libp2p downloads currently active (finding providers,
     /// queued, transferring, or stalled). The eMule equivalent lives in the
     /// eMule status response.

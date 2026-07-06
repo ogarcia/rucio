@@ -28,5 +28,6 @@ pub async fn get_health(State(_state): State<AppState>) -> Json<HealthResponse> 
     Json(HealthResponse {
         status: "ok".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
+        commit: env!("RUCIO_GIT_HASH").to_string(),
     })
 }

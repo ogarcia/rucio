@@ -66,6 +66,7 @@ pub async fn get_status(State(state): State<AppState>) -> Json<StatusResponse> {
         observed_addrs: ns.observed_addrs.clone(),
         uptime_secs: uptime,
         version: env!("CARGO_PKG_VERSION").to_string(),
+        commit: env!("RUCIO_GIT_HASH").to_string(),
         active_downloads,
         active_uploads,
         external_ip,

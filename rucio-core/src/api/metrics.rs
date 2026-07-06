@@ -109,4 +109,8 @@ pub struct HealthResponse {
     pub status: String,
     /// Daemon version string (from `CARGO_PKG_VERSION`).
     pub version: String,
+    /// Short git commit hash the daemon was built from, or empty when git was
+    /// unavailable at build time.
+    #[serde(default)]
+    pub commit: String,
 }
