@@ -89,7 +89,7 @@ pub fn NodeStatusPanel(
                                     })}
                                 <dl class="panel-dl">
                                     <dt>{t!("overlay.node.version")}</dt>
-                                    <dd>{s.version}</dd>
+                                    <dd>{format!("{}{}", s.version, commit_suffix(&s.commit))}</dd>
                                     <dt>{t!("overlay.node.class")}</dt>
                                     <dd>
                                         <span class=css>{label}</span>
@@ -395,16 +395,21 @@ pub fn PeersPanel(active_panel: RwSignal<Option<super::Panel>>) -> impl IntoView
     }
 }
 
-/// Display version from the running daemon's `/api/v1/status`: `v0.36.0-dev`
-/// alone, or `v0.36.0-dev (49e59a1)` when the daemon build baked in a git
-/// commit hash. The daemon is the single source of truth; `commit` is empty
-/// when git wasn't available at the daemon's build time.
-fn version_string(status: &StatusResponse) -> String {
-    if status.commit.is_empty() {
-        format!("v{}", status.version)
+/// ` (49e59a1)` when the daemon reported a git commit hash, else empty.
+/// Appended after the version in both the About panel and the node-status
+/// modal. `commit` is empty when git wasn't available at the daemon's build
+/// time (the daemon is the single source of truth — see `/api/v1/status`).
+fn commit_suffix(commit: &str) -> String {
+    if commit.is_empty() {
+        String::new()
     } else {
-        format!("v{} ({})", status.version, status.commit)
+        format!(" ({commit})")
     }
+}
+
+/// About-panel version line: `v0.36.0-dev` or `v0.36.0-dev (49e59a1)`.
+fn version_string(status: &StatusResponse) -> String {
+    format!("v{}{}", status.version, commit_suffix(&status.commit))
 }
 
 /// Quick reference: version, repository and where to report issues.
