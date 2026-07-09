@@ -94,9 +94,11 @@ pub fn ConfigModal(
     temp_down: RwSignal<u64>,
     notif_enabled: RwSignal<bool>,
     categories: RwSignal<Vec<Category>>,
-    // Local presentation prefs (theme + language) live on the Interface tab.
+    // Local presentation prefs (theme, language, compact list) live on the
+    // Interface tab.
     theme: RwSignal<crate::Theme>,
     lang: RwSignal<crate::Language>,
+    compact: RwSignal<bool>,
     on_close: impl Fn() + Copy + 'static,
 ) -> impl IntoView {
     let tab = RwSignal::new(ConfigTab::Network);
@@ -428,6 +430,24 @@ pub fn ConfigModal(
                                         </select>
                                     </div>
                                     <p class="config-hint">{t!("config.interface.lang_hint")}</p>
+                                    <div class="config-field config-field-keep">
+                                        <label class="config-label">{t!("config.interface.compact")}</label>
+                                        <span
+                                            class=move || if compact.get() {
+                                                "toggle-pill toggle-on toggle-clickable"
+                                            } else {
+                                                "toggle-pill toggle-clickable"
+                                            }
+                                            on:click=move |_| {
+                                                let v = !compact.get_untracked();
+                                                compact.set(v);
+                                                crate::save_compact(v);
+                                            }
+                                        >
+                                            {move || if compact.get() { t!("common.on") } else { t!("common.off") }}
+                                        </span>
+                                    </div>
+                                    <p class="config-hint">{t!("config.interface.compact_hint")}</p>
                                 </div>
                             }.into_any(),
                             ConfigTab::Network => view! {

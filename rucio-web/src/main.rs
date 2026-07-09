@@ -266,6 +266,22 @@ fn save_tab(t: Tab) {
     }
 }
 
+/// Load the compact-download-list preference (Interface settings), default off.
+fn load_compact() -> bool {
+    web_sys::window()
+        .and_then(|w| w.local_storage().ok().flatten())
+        .and_then(|ls| ls.get_item("rucio-dl-compact").ok().flatten())
+        .as_deref()
+        == Some("1")
+}
+
+/// Persist the compact-download-list preference.
+pub(crate) fn save_compact(on: bool) {
+    if let Some(ls) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
+        let _ = ls.set_item("rucio-dl-compact", if on { "1" } else { "0" });
+    }
+}
+
 /// The navigation sections, shown as top-bar tabs (wide) or sidebar items
 /// (narrow). One source so both stay in sync.
 const TABS: [Tab; 6] = [
@@ -618,6 +634,8 @@ fn App() -> impl IntoView {
     let theme: RwSignal<Theme> = RwSignal::new(initial_theme);
     // Reflects the stored language choice; changing it persists and reloads.
     let lang: RwSignal<Language> = RwSignal::new(load_language());
+    // Compact download list toggle (Interface settings); read by DownloadsTab.
+    let compact: RwSignal<bool> = RwSignal::new(load_compact());
 
     let ws_connected: RwSignal<bool> = RwSignal::new(false);
     let status: RwSignal<Option<StatusResponse>> = RwSignal::new(None);
@@ -1025,6 +1043,7 @@ fn App() -> impl IntoView {
                             dl_speed=dl_speed
                             ul_speed=ul_speed
                             temp_limit=temp_limit
+                            compact=compact
                         />
                     }.into_any(),
                     Tab::Uploads => view! {
@@ -1128,6 +1147,7 @@ fn App() -> impl IntoView {
                 categories=categories
                 theme=theme
                 lang=lang
+                compact=compact
                 on_close=move || config_open.set(false)
             />
         </Show>

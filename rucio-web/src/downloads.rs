@@ -400,6 +400,9 @@ pub fn DownloadsTab(
     dl_speed: RwSignal<u64>,
     ul_speed: RwSignal<u64>,
     temp_limit: RwSignal<bool>,
+    /// Compact one-row list toggle, owned by the app and set from Interface
+    /// settings; the rows read it to pick their layout.
+    compact: RwSignal<bool>,
 ) -> impl IntoView {
     // Re-sync the full list when the tab is opened. The WS only streams *active*
     // downloads, so terminal rows deleted out-of-band — e.g. a completed mirror
@@ -671,6 +674,7 @@ pub fn DownloadsTab(
                                     categories=categories
                                     selected_ids=selected_ids
                                     on_select=on_row_click
+                                    compact=compact
                                 />
                             }
                         />
@@ -791,6 +795,7 @@ fn DownloadRow(
     categories: RwSignal<Vec<Category>>,
     selected_ids: RwSignal<HashSet<i64>>,
     on_select: Callback<(i64, bool, bool)>,
+    compact: RwSignal<bool>,
 ) -> impl IntoView {
     // Each reactive prop reads the signal directly and locates the row by id.
     // We deliberately avoid wrapping this in a per-row Memo: Memos inside a
@@ -923,12 +928,40 @@ fn DownloadRow(
         })
     };
 
+    // Compact view: the speed while downloading (falling back to the state label
+    // until a rate sample arrives), otherwise the state label (paused, completed…).
+    let compact_text = move || -> String {
+        with_row(&|d| match d.state {
+            DownloadState::Downloading => d
+                .speed_bps
+                .filter(|&b| b > 0)
+                .map(format_speed)
+                .unwrap_or_else(|| state_label(&d.state).to_string()),
+            _ => state_label(&d.state).to_string(),
+        })
+    };
+    // Percentage label for the compact bar; "—" when the total size is unknown.
+    let pct_text = move || -> String {
+        downloads.with(|v| {
+            v.iter()
+                .find(|d| d.id == id)
+                .and_then(pct_for)
+                .map(|p| format!("{p:.0}%"))
+                .unwrap_or_else(|| "—".to_string())
+        })
+    };
+
     view! {
         <li
-            class=move || if selected_ids.with(|s| s.contains(&id)) {
-                "dl-row dl-row-selected"
-            } else {
-                "dl-row"
+            class=move || {
+                let mut c = String::from("dl-row");
+                if selected_ids.with(|s| s.contains(&id)) {
+                    c.push_str(" dl-row-selected");
+                }
+                if compact.get() {
+                    c.push_str(" dl-row-compact");
+                }
+                c
             }
             on:click=move |ev| {
                 // On a touchscreen there are no modifiers, so a plain tap is
@@ -937,59 +970,76 @@ fn DownloadRow(
                 on_select.run((id, additive, ev.shift_key()));
             }
         >
-            <div class="dl-top">
-                <span class="dl-name">{name}</span>
-                // Category badge first (right after the name) so it lines up
-                // under the state pill in the row below; the priority marker
-                // follows it.
-                {move || category().map(|(cname, color)| {
-                    // Coloured badge: background = category colour, text picked
-                    // for contrast. A colourless category falls back to the
-                    // shared neutral grey, matching the Settings colour picker.
-                    let c = color.unwrap_or_else(|| NEUTRAL_CATEGORY_COLOR.to_string());
-                    let style = format!("background:{c};color:{}", contrast_text(&c));
-                    view! { <span class="dl-cat-badge" style=style>{cname}</span> }
-                })}
-                {move || {
-                    // At-a-glance priority marker; Medium (default) shows nothing.
-                    let prio = downloads
-                        .with(|v| v.iter().find(|d| d.id == id).map(|d| d.priority))
-                        .unwrap_or_default();
-                    let (cls, glyph, label): (&str, &str, String) = match prio {
-                        DownloadPriority::High => (
-                            "dl-prio dl-prio-high",
-                            "\u{25B2}",
-                            t!("download.priority.high").to_string(),
-                        ),
-                        DownloadPriority::Low => (
-                            "dl-prio dl-prio-low",
-                            "\u{25BC}",
-                            t!("download.priority.low").to_string(),
-                        ),
-                        DownloadPriority::Medium => ("", "", String::new()),
-                    };
-                    (!glyph.is_empty()).then(|| view! {
-                        <span class=cls title=label>{glyph}</span>
-                    })
-                }}
-                <span class="dl-size">{size_label}</span>
-            </div>
-
-            <Show when=show_bar fallback=|| ()>
-                <div class="dl-bar-track">
-                    <div class="dl-bar-fill" style=bar_width/>
+        {move || if compact.get() {
+            // Compact: one row — name, speed-or-state, and a small bar with the
+            // percentage inside it.
+            view! {
+                <div class="dl-crow">
+                    <span class="dl-name">{name}</span>
+                    <span class="dl-crow-status">{compact_text}</span>
+                    <div class="dl-cbar" title=pct_text>
+                        <div class="dl-cbar-fill" style=bar_width></div>
+                        <span class="dl-cbar-pct">{pct_text}</span>
+                    </div>
                 </div>
-            </Show>
+            }.into_any()
+        } else {
+            view! {
+                <div class="dl-top">
+                    <span class="dl-name">{name}</span>
+                    // Category badge first (right after the name) so it lines up
+                    // under the state pill in the row below; the priority marker
+                    // follows it.
+                    {move || category().map(|(cname, color)| {
+                        // Coloured badge: background = category colour, text picked
+                        // for contrast. A colourless category falls back to the
+                        // shared neutral grey, matching the Settings colour picker.
+                        let c = color.unwrap_or_else(|| NEUTRAL_CATEGORY_COLOR.to_string());
+                        let style = format!("background:{c};color:{}", contrast_text(&c));
+                        view! { <span class="dl-cat-badge" style=style>{cname}</span> }
+                    })}
+                    {move || {
+                        // At-a-glance priority marker; Medium (default) shows nothing.
+                        let prio = downloads
+                            .with(|v| v.iter().find(|d| d.id == id).map(|d| d.priority))
+                            .unwrap_or_default();
+                        let (cls, glyph, label): (&str, &str, String) = match prio {
+                            DownloadPriority::High => (
+                                "dl-prio dl-prio-high",
+                                "\u{25B2}",
+                                t!("download.priority.high").to_string(),
+                            ),
+                            DownloadPriority::Low => (
+                                "dl-prio dl-prio-low",
+                                "\u{25BC}",
+                                t!("download.priority.low").to_string(),
+                            ),
+                            DownloadPriority::Medium => ("", "", String::new()),
+                        };
+                        (!glyph.is_empty()).then(|| view! {
+                            <span class=cls title=label>{glyph}</span>
+                        })
+                    }}
+                    <span class="dl-size">{size_label}</span>
+                </div>
 
-            <div class="dl-bottom">
-                <span class=state_class>{state_text}</span>
-                <Show when=has_error fallback=|| ()>
-                    <span class="dl-error">{error_text}</span>
+                <Show when=show_bar fallback=|| ()>
+                    <div class="dl-bar-track">
+                        <div class="dl-bar-fill" style=bar_width/>
+                    </div>
                 </Show>
-                <Show when=move || !live_info().is_empty() fallback=|| ()>
-                    <span class="dl-live">{live_info}</span>
-                </Show>
-            </div>
+
+                <div class="dl-bottom">
+                    <span class=state_class>{state_text}</span>
+                    <Show when=has_error fallback=|| ()>
+                        <span class="dl-error">{error_text}</span>
+                    </Show>
+                    <Show when=move || !live_info().is_empty() fallback=|| ()>
+                        <span class="dl-live">{live_info}</span>
+                    </Show>
+                </div>
+            }.into_any()
+        }}
         </li>
     }
 }

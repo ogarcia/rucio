@@ -348,7 +348,7 @@ config:
   loading: "Loading…"
   pending: "There are saved changes waiting for a daemon restart."
   interface:
-    hint: "Theme and language are stored in this browser, not on the daemon."
+    hint: "These preferences are stored in this browser, not on the daemon."
     theme: "Theme"
     theme_auto: "Automatic (follow system)"
     theme_light: "Light"
@@ -356,6 +356,8 @@ config:
     language: "Language"
     lang_auto: "Automatic (browser language)"
     lang_hint: "Changing the language reloads the page."
+    compact: "Compact download list"
+    compact_hint: "Show each download on a single row."
   network:
     hint_limits: "Speed limits in KB/s (0 = unlimited); applied immediately."
     download_limit: "Download limit"

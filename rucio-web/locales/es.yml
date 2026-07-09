@@ -346,7 +346,7 @@ config:
   loading: "Cargando…"
   pending: "Hay cambios guardados a la espera de reiniciar el demonio."
   interface:
-    hint: "El tema y el idioma se guardan en este navegador, no en el demonio."
+    hint: "Estas preferencias se guardan en este navegador, no en el demonio."
     theme: "Tema"
     theme_auto: "Automático (según el sistema)"
     theme_light: "Claro"
@@ -354,6 +354,8 @@ config:
     language: "Idioma"
     lang_auto: "Automático (idioma del navegador)"
     lang_hint: "Al cambiar el idioma se recarga la página."
+    compact: "Lista de descargas compacta"
+    compact_hint: "Muestra cada descarga en una sola fila."
   network:
     hint_limits: "Límites de velocidad en KB/s (0 = sin límite); se aplican inmediatamente."
     download_limit: "Límite de descarga"

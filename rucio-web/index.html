@@ -660,7 +660,7 @@
         .config-tab-active { color: var(--text); border-bottom-color: var(--accent); }
 
         .config-section { display: flex; flex-direction: column; gap: 0.625rem; }
-        .config-hint { font-size: 0.7rem; color: var(--text-4); margin-top: 0.25rem; }
+        .config-hint { font-size: 0.7rem; color: var(--text-4); }
         .config-field {
             display: flex; align-items: center; justify-content: space-between; gap: 1rem;
         }
@@ -930,6 +930,31 @@
             white-space: nowrap; font-variant-numeric: tabular-nums;
         }
         .dl-actions { margin-left: auto; display: flex; gap: 0.5rem; }
+
+        /* ── Compact (one-row) download list ─────────────────────────────── */
+        .dl-row-compact { padding-top: 0.4rem; padding-bottom: 0.4rem; }
+        .dl-crow { display: flex; align-items: center; gap: 0.75rem; }
+        .dl-crow .dl-name { flex: 1 1 auto; }
+        .dl-crow-status {
+            flex: none; font-size: 0.75rem; color: var(--text-3);
+            white-space: nowrap; font-variant-numeric: tabular-nums;
+        }
+        /* Small progress bar with the percentage centred inside it; the halo
+           keeps the digits legible over the accent-filled portion. */
+        .dl-cbar {
+            flex: none; position: relative; width: 6rem; height: 1.05rem;
+            background: var(--bar-track); border-radius: 0.25rem; overflow: hidden;
+        }
+        .dl-cbar-fill {
+            position: absolute; inset: 0 auto 0 0; width: 0;
+            background: var(--accent); transition: width 0.4s ease;
+        }
+        .dl-cbar-pct {
+            position: relative; display: block; text-align: center;
+            font-size: 0.65rem; line-height: 1.05rem; font-weight: 600;
+            color: var(--text); font-variant-numeric: tabular-nums;
+            text-shadow: 0 0 3px var(--bar-track), 0 0 2px var(--bar-track);
+        }
 
         /* ── Uploads ─────────────────────────────────────────────────────── */
 
