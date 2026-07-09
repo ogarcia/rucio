@@ -443,6 +443,7 @@ download:
     kind: "Tipo"
     category: "Categoría"
     category_none: "Ninguna"
+    priority: "Prioridad"
     progress: "Progreso"
     size: "Tamaño"
     speed: "Velocidad"
@@ -463,6 +464,10 @@ download:
     renaming: "Renombrando…"
     rename_btn: "Renombrar"
     pieces: "Piezas"
+  priority:
+    low: "Baja"
+    medium: "Media"
+    high: "Alta"
   piece:
     none: "Sin datos de piezas"
     full: "Totalmente disponible en el enjambre"

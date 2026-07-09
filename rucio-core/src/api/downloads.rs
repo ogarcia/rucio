@@ -36,6 +36,55 @@ pub enum DownloadState {
     Cancelled,
 }
 
+/// User-set priority of a download. Decides who wins when a resource is scarce:
+/// a `High` download is admitted to a free eMule slot — and claims a shared
+/// provider's request slots — before others, while `Low` yields. It never
+/// preempts a transfer already in progress. `Medium` is the default: every
+/// download starts here, so a fresh install behaves exactly as before.
+///
+/// Distinct from `throttle::TrafficClass` (the per-backend bandwidth class,
+/// rucio vs eMule) — this is the user's per-download choice.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+    utoipa::ToSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum DownloadPriority {
+    Low,
+    #[default]
+    Medium,
+    High,
+}
+
+impl DownloadPriority {
+    /// Stable integer encoding for the DB `priority` column. Higher = more
+    /// priority, so `ORDER BY priority DESC` sorts the way the user expects.
+    pub fn as_i64(self) -> i64 {
+        match self {
+            Self::Low => 0,
+            Self::Medium => 1,
+            Self::High => 2,
+        }
+    }
+
+    /// Decode from the DB integer. Unknown values fall back to `Medium` so a
+    /// stray row can never break listing.
+    pub fn from_i64(v: i64) -> Self {
+        match v {
+            0 => Self::Low,
+            2 => Self::High,
+            _ => Self::Medium,
+        }
+    }
+}
+
 /// Response for a single download.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct DownloadResponse {
@@ -66,6 +115,9 @@ pub struct DownloadResponse {
     /// Category this download is filed under, if any (null = global dir).
     #[serde(default)]
     pub category_id: Option<i64>,
+    /// User-set priority: `low` | `medium` | `high` (default `medium`).
+    #[serde(default)]
+    pub priority: DownloadPriority,
 }
 
 /// GET /api/v1/downloads
@@ -131,6 +183,9 @@ pub struct DownloadDetailResponse {
     /// Category this download is filed under, if any (null = global dir).
     #[serde(default)]
     pub category_id: Option<i64>,
+    /// User-set priority: `low` | `medium` | `high` (default `medium`).
+    #[serde(default)]
+    pub priority: DownloadPriority,
 }
 
 /// Live per-peer download detail: one source we are pulling chunks from.
@@ -200,6 +255,13 @@ pub struct RenameDownloadRequest {
     /// New file name the download will be saved as on completion. Only the
     /// final path component is kept; directory separators are stripped.
     pub name: String,
+}
+
+/// Request body for PUT /api/v1/downloads/{id}/priority.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+pub struct SetDownloadPriorityRequest {
+    /// New priority for the download.
+    pub priority: DownloadPriority,
 }
 
 /// Response for POST /api/v1/downloads/ed2k.

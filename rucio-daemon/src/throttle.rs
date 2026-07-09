@@ -34,7 +34,7 @@ use std::time::{Duration, Instant};
 /// transfers use `High`; eMule transfers use `Low`, so the lure protocol yields
 /// to the real network without us becoming a bad eMule citizen.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Priority {
+pub enum TrafficClass {
     High,
     Low,
 }
@@ -116,8 +116,8 @@ impl Inner {
 /// small-chunk one (e.g. a ~180 KiB eMule block) when the cap is saturated.
 const FAIR_QUANTUM: u64 = 64 * 1024;
 
-/// How many [`Priority::High`] quanta are served before a waiting
-/// [`Priority::Low`] one is let through, when both saturate the cap. This
+/// How many [`TrafficClass::High`] quanta are served before a waiting
+/// [`TrafficClass::Low`] one is let through, when both saturate the cap. This
 /// reserves Low (eMule) a floor of ~`1/(N+1)` of the bandwidth — good-citizen
 /// seeding to the eMule network is never fully starved by Rucio traffic — while
 /// still giving Rucio the lion's share. A user who wants 100% for Rucio just
@@ -131,8 +131,8 @@ pub struct TokenBucket {
     /// the cap fairly instead of letting whoever wins the lock race monopolise
     /// it. Only contended (and only meaningfully held) when a limit is set.
     turn: tokio::sync::Mutex<()>,
-    /// Number of [`Priority::High`] transfers currently inside `acquire`.
-    /// [`Priority::Low`] callers defer to these (see [`HIGH_QUANTA_PER_LOW`]).
+    /// Number of [`TrafficClass::High`] transfers currently inside `acquire`.
+    /// [`TrafficClass::Low`] callers defer to these (see [`HIGH_QUANTA_PER_LOW`]).
     high_active: AtomicUsize,
     /// High quanta served since the last Low quantum. Once it reaches
     /// [`HIGH_QUANTA_PER_LOW`], a waiting Low caller is let through and resets
@@ -161,9 +161,9 @@ impl TokenBucket {
     /// queueing. Under a limit, the request is consumed in [`FAIR_QUANTUM`]-sized
     /// steps through a FIFO turnstile, so concurrent transfers of the same
     /// priority round-robin the available tokens by bytes. Across priorities,
-    /// [`Priority::Low`] callers yield each quantum to any active
-    /// [`Priority::High`] caller (see [`Priority`]).
-    pub async fn acquire(&self, bytes: u64, prio: Priority) {
+    /// [`TrafficClass::Low`] callers yield each quantum to any active
+    /// [`TrafficClass::High`] caller (see [`TrafficClass`]).
+    pub async fn acquire(&self, bytes: u64, prio: TrafficClass) {
         // Unlimited: no throttling, and no serialisation (taking the turnstile
         // would needlessly cap concurrency when there is no rate to share).
         if self.rate_kbps() == 0 {
@@ -171,7 +171,7 @@ impl TokenBucket {
         }
         // A High caller stays counted for its whole acquire, so Low callers
         // keep yielding until it has fully drained its request.
-        let _hi = (prio == Priority::High).then(|| HighActive::new(self));
+        let _hi = (prio == TrafficClass::High).then(|| HighActive::new(self));
 
         let mut remaining = bytes;
         while remaining > 0 {
@@ -180,7 +180,7 @@ impl TokenBucket {
             // High has spent its weighted allowance, then Low takes a guaranteed
             // turn (its reserved share). The `notified()` future is armed before
             // the check so a High caller yielding between the two isn't missed.
-            if prio == Priority::Low {
+            if prio == TrafficClass::Low {
                 loop {
                     let notified = self.low_gate.notified();
                     if self.high_active.load(Ordering::Acquire) == 0
@@ -209,12 +209,12 @@ impl TokenBucket {
             // Weighted bookkeeping: count High quanta and, on reaching the
             // allowance, release a Low turn; a Low quantum resets the allowance.
             match prio {
-                Priority::High => {
+                TrafficClass::High => {
                     if self.high_quanta.fetch_add(1, Ordering::AcqRel) + 1 == HIGH_QUANTA_PER_LOW {
                         self.low_gate.notify_waiters();
                     }
                 }
-                Priority::Low => self.high_quanta.store(0, Ordering::Release),
+                TrafficClass::Low => self.high_quanta.store(0, Ordering::Release),
             }
             remaining -= take;
         }
@@ -238,9 +238,9 @@ impl TokenBucket {
     }
 }
 
-/// Marks a [`Priority::High`] transfer as active for the lifetime of an
+/// Marks a [`TrafficClass::High`] transfer as active for the lifetime of an
 /// `acquire`. On drop it decrements the count and, when it was the last one,
-/// wakes parked [`Priority::Low`] callers. A guard makes the decrement
+/// wakes parked [`TrafficClass::Low`] callers. A guard makes the decrement
 /// exception-safe — a leaked count would block every Low transfer forever.
 struct HighActive<'a> {
     bucket: &'a TokenBucket,
@@ -436,7 +436,7 @@ mod tests {
     async fn acquire_unlimited_is_instant() {
         let tb = TokenBucket::new(0);
         // Should complete without sleeping.
-        tb.acquire(1024 * 1024, Priority::High).await;
+        tb.acquire(1024 * 1024, TrafficClass::High).await;
     }
 
     #[test]
@@ -458,7 +458,7 @@ mod tests {
         // would otherwise loop forever; on a full bucket the oversized special
         // case grants it immediately, so acquire returns instead of hanging.
         let tb = TokenBucket::new(1);
-        tb.acquire(3 * 1024, Priority::High).await;
+        tb.acquire(3 * 1024, TrafficClass::High).await;
     }
 
     #[tokio::test]
@@ -467,9 +467,9 @@ mod tests {
         // after draining the burst, a further 500 KiB at 1000 KB/s cannot be
         // delivered faster than ~0.5 s. Lower-bound only, so it's not flaky.
         let tb = TokenBucket::new(1000);
-        tb.acquire(2000 * 1024, Priority::High).await; // drain the full burst
+        tb.acquire(2000 * 1024, TrafficClass::High).await; // drain the full burst
         let t0 = Instant::now();
-        tb.acquire(500 * 1024, Priority::High).await;
+        tb.acquire(500 * 1024, TrafficClass::High).await;
         assert!(t0.elapsed() >= Duration::from_millis(350));
     }
 
@@ -478,7 +478,7 @@ mod tests {
         use std::sync::atomic::AtomicU64;
 
         let tb = Arc::new(TokenBucket::new(1000)); // 1000 KB/s
-        tb.acquire(2000 * 1024, Priority::High).await; // drain the burst
+        tb.acquire(2000 * 1024, TrafficClass::High).await; // drain the burst
 
         let (hi, lo) = (Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(0)));
 
@@ -486,14 +486,14 @@ mod tests {
         let (tbh, h) = (tb.clone(), hi.clone());
         let high = tokio::spawn(async move {
             loop {
-                tbh.acquire(64 * 1024, Priority::High).await;
+                tbh.acquire(64 * 1024, TrafficClass::High).await;
                 h.fetch_add(64 * 1024, Ordering::Relaxed);
             }
         });
         let (tbl, l) = (tb.clone(), lo.clone());
         let low = tokio::spawn(async move {
             loop {
-                tbl.acquire(64 * 1024, Priority::Low).await;
+                tbl.acquire(64 * 1024, TrafficClass::Low).await;
                 l.fetch_add(64 * 1024, Ordering::Relaxed);
             }
         });

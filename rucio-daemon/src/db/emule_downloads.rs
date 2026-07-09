@@ -55,6 +55,9 @@ pub struct EmuleDownloadRow {
     pub updated_at: i64,
     /// Category this download is filed under (NULL = global download dir).
     pub category_id: Option<i64>,
+    /// User priority, encoded as an integer (0 low, 1 medium, 2 high). Decode
+    /// with `DownloadPriority::from_i64`.
+    pub priority: i64,
 }
 
 /// Insert a new eMule download row, handling duplicates gracefully.
@@ -128,8 +131,8 @@ pub async fn create(
 pub async fn list(db: &Db) -> Result<Vec<EmuleDownloadRow>> {
     let rows = sqlx::query(
         "SELECT id, ed2k_hash, name, total_size, ed2k_link, status,
-                bytes_done, dest_path, error_msg, added_at, updated_at, category_id
-         FROM emule_downloads ORDER BY added_at ASC",
+                bytes_done, dest_path, error_msg, added_at, updated_at, category_id, priority
+         FROM emule_downloads ORDER BY priority DESC, added_at ASC",
     )
     .fetch_all(db)
     .await?;
@@ -146,10 +149,10 @@ pub async fn list(db: &Db) -> Result<Vec<EmuleDownloadRow>> {
 pub async fn list_resumable(db: &Db) -> Result<Vec<EmuleDownloadRow>> {
     let rows = sqlx::query(
         "SELECT id, ed2k_hash, name, total_size, ed2k_link, status,
-                bytes_done, dest_path, error_msg, added_at, updated_at, category_id
+                bytes_done, dest_path, error_msg, added_at, updated_at, category_id, priority
          FROM emule_downloads
          WHERE status IN ('finding_providers', 'downloading', 'queued', 'stalled')
-         ORDER BY added_at ASC",
+         ORDER BY priority DESC, added_at ASC",
     )
     .fetch_all(db)
     .await?;
@@ -170,7 +173,7 @@ pub async fn get_status(db: &Db, id: i64) -> Result<Option<String>> {
 pub async fn get(db: &Db, id: i64) -> Result<Option<EmuleDownloadRow>> {
     let row = sqlx::query(
         "SELECT id, ed2k_hash, name, total_size, ed2k_link, status,
-                bytes_done, dest_path, error_msg, added_at, updated_at, category_id
+                bytes_done, dest_path, error_msg, added_at, updated_at, category_id, priority
          FROM emule_downloads WHERE id = ?1",
     )
     .bind(id)
@@ -209,6 +212,18 @@ pub async fn get_category_id(db: &Db, id: i64) -> Result<Option<i64>> {
 pub async fn set_category(db: &Db, id: i64, category_id: Option<i64>) -> Result<bool> {
     let affected = sqlx::query("UPDATE emule_downloads SET category_id = ?1 WHERE id = ?2")
         .bind(category_id)
+        .bind(id)
+        .execute(db)
+        .await?
+        .rows_affected();
+    Ok(affected > 0)
+}
+
+/// Set the download's user priority (0 low, 1 medium, 2 high). Returns `true`
+/// if a row was updated.
+pub async fn set_priority(db: &Db, id: i64, priority: i64) -> Result<bool> {
+    let affected = sqlx::query("UPDATE emule_downloads SET priority = ?1 WHERE id = ?2")
+        .bind(priority)
         .bind(id)
         .execute(db)
         .await?
@@ -334,6 +349,7 @@ fn row_from_sqlx(r: &sqlx::sqlite::SqliteRow) -> EmuleDownloadRow {
         added_at: r.get("added_at"),
         updated_at: r.get("updated_at"),
         category_id: r.get("category_id"),
+        priority: r.get("priority"),
     }
 }
 

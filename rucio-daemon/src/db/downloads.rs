@@ -19,6 +19,9 @@ pub struct DownloadRow {
     pub updated_at: i64,
     /// Category this download is filed under (NULL = global download dir).
     pub category_id: Option<i64>,
+    /// User priority, encoded as an integer (0 low, 1 medium, 2 high). Decode
+    /// with `DownloadPriority::from_i64`.
+    pub priority: i64,
 }
 
 /// Build a [`DownloadRow`] from a query row. The SELECT must list the columns in
@@ -36,6 +39,7 @@ fn row_to_download(r: &sqlx::sqlite::SqliteRow) -> DownloadRow {
         added_at: r.get("added_at"),
         updated_at: r.get("updated_at"),
         category_id: r.get("category_id"),
+        priority: r.get("priority"),
     }
 }
 
@@ -194,8 +198,8 @@ pub async fn finalize_pending(
 pub async fn list(db: &Db) -> Result<Vec<DownloadRow>> {
     let rows = sqlx::query(
         "SELECT id, root_hash, name, total_size, dest_path, status,
-                bytes_done, error_msg, added_at, updated_at, category_id
-         FROM downloads ORDER BY added_at ASC",
+                bytes_done, error_msg, added_at, updated_at, category_id, priority
+         FROM downloads ORDER BY priority DESC, added_at ASC",
     )
     .fetch_all(db)
     .await?;
@@ -207,7 +211,7 @@ pub async fn list(db: &Db) -> Result<Vec<DownloadRow>> {
 pub async fn get(db: &Db, id: i64) -> Result<Option<DownloadRow>> {
     let row = sqlx::query(
         "SELECT id, root_hash, name, total_size, dest_path, status,
-                bytes_done, error_msg, added_at, updated_at, category_id
+                bytes_done, error_msg, added_at, updated_at, category_id, priority
          FROM downloads WHERE id = ?1",
     )
     .bind(id)
@@ -221,7 +225,7 @@ pub async fn get(db: &Db, id: i64) -> Result<Option<DownloadRow>> {
 pub async fn get_by_root_hash(db: &Db, root_hash: &[u8; 32]) -> Result<Option<DownloadRow>> {
     let row = sqlx::query(
         "SELECT id, root_hash, name, total_size, dest_path, status,
-                bytes_done, error_msg, added_at, updated_at, category_id
+                bytes_done, error_msg, added_at, updated_at, category_id, priority
          FROM downloads WHERE root_hash = ?1",
     )
     .bind(root_hash.as_slice())
@@ -332,6 +336,18 @@ pub async fn set_category(db: &Db, download_id: i64, category_id: Option<i64>) -
     Ok(affected > 0)
 }
 
+/// Set the download's user priority (0 low, 1 medium, 2 high). Returns `true`
+/// if a row was updated.
+pub async fn set_priority(db: &Db, download_id: i64, priority: i64) -> Result<bool> {
+    let affected = sqlx::query("UPDATE downloads SET priority = ?1 WHERE id = ?2")
+        .bind(priority)
+        .bind(download_id)
+        .execute(db)
+        .await?
+        .rows_affected();
+    Ok(affected > 0)
+}
+
 /// Status of the download with this root hash, if any. Lets the HTTP layer
 /// answer synchronously (the engine's authoritative `create_pending` runs
 /// asynchronously and its "already completed/active" result is otherwise lost).
@@ -404,10 +420,10 @@ pub struct ChunkRow {
 pub async fn list_resumable(db: &Db) -> Result<Vec<DownloadRow>> {
     let rows = sqlx::query(
         "SELECT id, root_hash, name, total_size, dest_path, status,
-                bytes_done, error_msg, added_at, updated_at, category_id
+                bytes_done, error_msg, added_at, updated_at, category_id, priority
          FROM downloads
          WHERE status IN ('finding_providers', 'queued', 'downloading')
-         ORDER BY added_at ASC",
+         ORDER BY priority DESC, added_at ASC",
     )
     .fetch_all(db)
     .await?;

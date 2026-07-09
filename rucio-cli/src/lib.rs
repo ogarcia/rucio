@@ -201,6 +201,14 @@ pub enum DownloadAction {
         /// Category id (from `rucio category list`); omit to clear the category
         category: Option<i64>,
     },
+    /// Set a download's priority (low, medium, high)
+    Priority {
+        /// Row number from `rucio download list` (e.g. 1) or root hash (full or prefix)
+        target: String,
+        /// New priority level
+        #[arg(value_enum)]
+        level: PriorityLevel,
+    },
     /// Cancel an in-progress download
     Cancel {
         /// Row number from `rucio download list` (e.g. 1) or root hash (full or prefix)
@@ -221,6 +229,25 @@ pub enum DownloadAction {
         /// Row number from `rucio download list` (e.g. 1) or root hash prefix (omit to remove all finished downloads)
         hash: Option<String>,
     },
+}
+
+/// Download priority level accepted by `rucio download priority`.
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+pub enum PriorityLevel {
+    Low,
+    Medium,
+    High,
+}
+
+impl PriorityLevel {
+    fn to_core(self) -> rucio_core::api::downloads::DownloadPriority {
+        use rucio_core::api::downloads::DownloadPriority as P;
+        match self {
+            PriorityLevel::Low => P::Low,
+            PriorityLevel::Medium => P::Medium,
+            PriorityLevel::High => P::High,
+        }
+    }
 }
 
 /// `rucio category …` — manage download categories.
@@ -490,6 +517,9 @@ pub async fn run() -> Result<()> {
             DownloadAction::Show { target } => cmd::downloads::show(&client, &target).await,
             DownloadAction::Category { target, category } => {
                 cmd::downloads::set_category(&client, &target, category).await
+            }
+            DownloadAction::Priority { target, level } => {
+                cmd::downloads::set_priority(&client, &target, level.to_core()).await
             }
             DownloadAction::Cancel { hash } => cmd::downloads::cancel(&client, &hash).await,
             DownloadAction::Pause { hash } => cmd::downloads::pause(&client, &hash).await,

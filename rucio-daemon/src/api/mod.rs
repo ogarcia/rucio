@@ -97,6 +97,7 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         downloads::resume_download,
         downloads::rename_download,
         downloads::set_download_category,
+        downloads::set_download_priority,
         downloads::delete_download,
         downloads::clear_history,
         searches::post_search,
@@ -157,8 +158,10 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         rucio_core::api::downloads::StartDownloadRequest,
         rucio_core::api::downloads::StartEd2kDownloadRequest,
         rucio_core::api::downloads::RenameDownloadRequest,
+        rucio_core::api::downloads::SetDownloadPriorityRequest,
         rucio_core::api::downloads::StartEd2kDownloadResponse,
         rucio_core::api::downloads::DownloadState,
+        rucio_core::api::downloads::DownloadPriority,
         rucio_core::api::downloads::DownloadResponse,
         rucio_core::api::downloads::DownloadsResponse,
         rucio_core::api::downloads::DownloadDetailResponse,
@@ -415,6 +418,13 @@ pub enum DownloadRequest {
         /// New file name (already sanitised to a bare file name by the handler).
         new_name: String,
     },
+    /// Update a download's user priority in the live scheduler (already
+    /// persisted to the DB by the handler).
+    SetPriority {
+        download_id: i64,
+        /// Encoded priority (0 low, 1 medium, 2 high).
+        priority: i64,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -464,6 +474,11 @@ pub struct AppState {
     /// too; cloned here so the status endpoint can read `available_permits()`.
     #[cfg(feature = "emule-compat")]
     pub emule_upload_slots: Arc<tokio::sync::Semaphore>,
+    /// Priority-aware admission gate bounding concurrent eMule downloads. Cloned
+    /// here so the priority endpoint can re-rank a download still waiting for a
+    /// slot; the download tasks hold the same gate to acquire/release slots.
+    #[cfg(feature = "emule-compat")]
+    pub emule_download_slots: Arc<crate::emule::PriorityAdmission>,
     /// Counter of inbound eMule TCP connections accepted since startup.
     #[cfg(feature = "emule-compat")]
     pub emule_inbound_connections: Arc<std::sync::atomic::AtomicU64>,
@@ -598,6 +613,10 @@ fn v1_router() -> Router<AppState> {
         .route(
             "/downloads/{id}/category",
             routing::put(downloads::set_download_category),
+        )
+        .route(
+            "/downloads/{id}/priority",
+            routing::put(downloads::set_download_priority),
         )
         // unified searches
         .route("/searches", routing::post(searches::post_search))

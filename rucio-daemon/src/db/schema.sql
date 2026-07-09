@@ -180,6 +180,7 @@ CREATE TABLE IF NOT EXISTS downloads (
     bytes_done      INTEGER NOT NULL DEFAULT 0,
     error_msg       TEXT,
     category_id     INTEGER REFERENCES categories(id) ON DELETE SET NULL,  -- NULL = global download_dir
+    priority        INTEGER NOT NULL DEFAULT 1,  -- user priority: 0 low, 1 medium, 2 high
     added_at        INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL
 );
@@ -201,6 +202,7 @@ CREATE TABLE IF NOT EXISTS emule_downloads (
     dest_path   TEXT    NOT NULL DEFAULT '',
     error_msg   TEXT,
     category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,  -- NULL = global download_dir
+    priority    INTEGER NOT NULL DEFAULT 1,  -- user priority: 0 low, 1 medium, 2 high
     added_at    INTEGER NOT NULL,
     updated_at  INTEGER NOT NULL
 );

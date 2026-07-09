@@ -12,9 +12,9 @@ use gloo_timers::future::sleep;
 use crate::icons::{self, Icon};
 use crate::statusbar::StatusBar;
 use crate::types::{
-    Category, DownloadDetailResponse, DownloadPiecesResponse, DownloadResponse, DownloadState,
-    NEUTRAL_CATEGORY_COLOR, PieceState, RenameDownloadRequest, contrast_text, format_eta,
-    format_size, format_speed, is_streamed_state,
+    Category, DownloadDetailResponse, DownloadPiecesResponse, DownloadPriority, DownloadResponse,
+    DownloadState, NEUTRAL_CATEGORY_COLOR, PieceState, RenameDownloadRequest, contrast_text,
+    format_eta, format_size, format_speed, is_streamed_state,
 };
 
 // ── Filter ────────────────────────────────────────────────────────────────────
@@ -838,6 +838,28 @@ fn DownloadRow(
         >
             <div class="dl-top">
                 <span class="dl-name">{name}</span>
+                {move || {
+                    // At-a-glance priority marker; Medium (default) shows nothing.
+                    let prio = downloads
+                        .with(|v| v.iter().find(|d| d.id == id).map(|d| d.priority))
+                        .unwrap_or_default();
+                    let (cls, glyph, label): (&str, &str, String) = match prio {
+                        DownloadPriority::High => (
+                            "dl-prio dl-prio-high",
+                            "\u{25B2}",
+                            t!("download.priority.high").to_string(),
+                        ),
+                        DownloadPriority::Low => (
+                            "dl-prio dl-prio-low",
+                            "\u{25BC}",
+                            t!("download.priority.low").to_string(),
+                        ),
+                        DownloadPriority::Medium => ("", "", String::new()),
+                    };
+                    (!glyph.is_empty()).then(|| view! {
+                        <span class=cls title=label>{glyph}</span>
+                    })
+                }}
                 {move || category().map(|(cname, color)| {
                     // Coloured badge: background = category colour, text picked
                     // for contrast. A colourless category falls back to the
@@ -1007,6 +1029,8 @@ fn DownloadInfoOverlay(
     let id = detail.id;
     // Current category, editable: changing it PUTs and refreshes the list badge.
     let cur_cat: RwSignal<Option<i64>> = RwSignal::new(detail.category_id);
+    // Current priority, editable: changing it PUTs and refreshes the list.
+    let cur_prio: RwSignal<DownloadPriority> = RwSignal::new(detail.priority);
     let name = detail
         .name
         .clone()
@@ -1080,6 +1104,36 @@ fn DownloadInfoOverlay(
                                 <For each=move || categories.get() key=|c| c.id let:c>
                                     <option value=c.id.to_string()>{c.name.clone()}</option>
                                 </For>
+                            </select>
+                        </dd>
+
+                        <dt>{t!("download.detail.priority")}</dt>
+                        <dd>
+                            <select
+                                class="dl-filter-select"
+                                prop:value=move || cur_prio.get().as_str().to_string()
+                                on:change=move |e| {
+                                    let prio = match event_target_value(&e).as_str() {
+                                        "low" => DownloadPriority::Low,
+                                        "high" => DownloadPriority::High,
+                                        _ => DownloadPriority::Medium,
+                                    };
+                                    cur_prio.set(prio);
+                                    spawn_local(async move {
+                                        let body = serde_json::json!({ "priority": prio.as_str() });
+                                        if let Ok(req) = gloo_net::http::Request::put(
+                                            &crate::api::api(&format!("/api/v1/downloads/{id}/priority")),
+                                        ).json(&body)
+                                            && req.send().await.map(|r| r.ok()).unwrap_or(false)
+                                        {
+                                            refresh_downloads(downloads).await;
+                                        }
+                                    });
+                                }
+                            >
+                                <option value="high">{t!("download.priority.high")}</option>
+                                <option value="medium">{t!("download.priority.medium")}</option>
+                                <option value="low">{t!("download.priority.low")}</option>
                             </select>
                         </dd>
 

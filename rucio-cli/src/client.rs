@@ -322,6 +322,19 @@ impl ApiClient {
         .await
     }
 
+    /// Set a download's user priority. `id` may be negative for an eMule download.
+    pub async fn set_download_priority(
+        &self,
+        id: i64,
+        priority: rucio_core::api::downloads::DownloadPriority,
+    ) -> Result<()> {
+        self.put(
+            &format!("/api/v1/downloads/{id}/priority"),
+            &rucio_core::api::downloads::SetDownloadPriorityRequest { priority },
+        )
+        .await
+    }
+
     /// Retrieve the magnet link for a locally shared file by hash (full or prefix).
     pub async fn get_share_magnet(&self, hash: &str) -> Result<String> {
         self.get(&format!("/api/v1/shares/{hash}/magnet")).await

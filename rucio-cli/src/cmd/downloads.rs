@@ -372,6 +372,36 @@ pub async fn set_category(
     Ok(())
 }
 
+/// Set a download's priority (low / medium / high).
+pub async fn set_priority(
+    client: &ApiClient,
+    target: &str,
+    priority: rucio_core::api::downloads::DownloadPriority,
+) -> Result<()> {
+    let Some(dl) = client.find_download_by_idx_or_hash(target).await? else {
+        bail!(t!("download.no_download_for", target = target));
+    };
+    client.set_download_priority(dl.id, priority).await?;
+    println!(
+        "{}",
+        color::success(&t!(
+            "download.priority_set",
+            level = priority_label(priority)
+        ))
+    );
+    Ok(())
+}
+
+/// Human label for a priority level, for CLI output.
+fn priority_label(priority: rucio_core::api::downloads::DownloadPriority) -> String {
+    use rucio_core::api::downloads::DownloadPriority as P;
+    match priority {
+        P::Low => t!("download.priority.low").to_string(),
+        P::Medium => t!("download.priority.medium").to_string(),
+        P::High => t!("download.priority.high").to_string(),
+    }
+}
+
 pub async fn show(client: &ApiClient, target: &str) -> Result<()> {
     let dl = client.find_download_by_idx_or_hash(target).await?;
     let Some(dl) = dl else {
@@ -397,6 +427,7 @@ pub async fn show(client: &ApiClient, target: &str) -> Result<()> {
     let l_hash = t!("download.show.hash");
     let l_state = t!("download.show.state");
     let l_category = t!("download.show.category");
+    let l_priority = t!("download.show.priority");
     let l_size = t!("download.show.size");
     let l_downloaded = t!("download.show.downloaded");
     let l_progress = t!("download.show.progress");
@@ -418,6 +449,7 @@ pub async fn show(client: &ApiClient, target: &str) -> Result<()> {
         l_hash.as_ref(),
         l_state.as_ref(),
         l_category.as_ref(),
+        l_priority.as_ref(),
         l_size.as_ref(),
         l_downloaded.as_ref(),
         l_progress.as_ref(),
@@ -453,6 +485,10 @@ pub async fn show(client: &ApiClient, target: &str) -> Result<()> {
             .unwrap_or_else(|| format!("#{cid}"));
         println!("  {l_category:<w$} {}", color::value(&name));
     }
+    println!(
+        "  {l_priority:<w$} {}",
+        color::value(&priority_label(d.priority))
+    );
     println!(
         "  {l_size:<w$} {}",
         d.size.map(human_size).unwrap_or_else(|| "-".to_string())

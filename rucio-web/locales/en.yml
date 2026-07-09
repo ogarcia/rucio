@@ -445,6 +445,7 @@ download:
     kind: "Kind"
     category: "Category"
     category_none: "None"
+    priority: "Priority"
     progress: "Progress"
     size: "Size"
     speed: "Speed"
@@ -465,6 +466,10 @@ download:
     renaming: "Renaming…"
     rename_btn: "Rename"
     pieces: "Pieces"
+  priority:
+    low: "Low"
+    medium: "Medium"
+    high: "High"
   piece:
     none: "No piece data"
     full: "Fully available across the swarm"

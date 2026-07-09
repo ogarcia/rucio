@@ -171,8 +171,8 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         listen_addrs: config.node.listen_addrs.clone(),
         behaviour: rucio_net::BehaviourConfig::full(),
     };
-    // Shared upload throttle: eMule uploads (Priority::Low) and Rucio chunk
-    // serving (Priority::High) draw from this one bucket, so the configured cap
+    // Shared upload throttle: eMule uploads (TrafficClass::Low) and Rucio chunk
+    // serving (TrafficClass::High) draw from this one bucket, so the configured cap
     // is shared between them with Rucio taking precedence. Built here (before
     // the node task) so we can hand the network layer a limiter that paces the
     // chunk *write* at the byte level — a smooth stream instead of dumping a
@@ -191,7 +191,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
             let up = Arc::clone(&up);
             let met = Arc::clone(&met);
             Box::pin(async move {
-                up.acquire(bytes, crate::throttle::Priority::High).await;
+                up.acquire(bytes, crate::throttle::TrafficClass::High).await;
                 met.record_upload_bytes(bytes);
             })
         })
@@ -484,7 +484,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
     // Global cap on concurrently active eMule downloads.  Surplus downloads
     // wait in the `queued` state until a running download finishes.
     #[cfg(feature = "emule-compat")]
-    let emule_download_slots = std::sync::Arc::new(tokio::sync::Semaphore::new(
+    let emule_download_slots = std::sync::Arc::new(crate::emule::PriorityAdmission::new(
         config.emule.max_concurrent_downloads.clamp(1, 50),
     ));
 
@@ -563,7 +563,9 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                 // always wins the shared cap — eMule is the lure, not the product.
                 let upload_limiter: rucio_emule::transfer::ByteLimiter = Arc::new(move |bytes| {
                     let up = Arc::clone(&up);
-                    Box::pin(async move { up.acquire(bytes, crate::throttle::Priority::Low).await })
+                    Box::pin(
+                        async move { up.acquire(bytes, crate::throttle::TrafficClass::Low).await },
+                    )
                 });
                 let upload_ctx = std::sync::Arc::new(rucio_emule::transfer::UploadContext {
                     slots: emule_upload_slots.clone(),
@@ -641,6 +643,8 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         emule_active_downloads: active_downloads.clone(),
         #[cfg(feature = "emule-compat")]
         emule_upload_slots: emule_upload_slots.clone(),
+        #[cfg(feature = "emule-compat")]
+        emule_download_slots: emule_download_slots.clone(),
         #[cfg(feature = "emule-compat")]
         emule_inbound_connections: emule_inbound_connections.clone(),
         #[cfg(feature = "emule-compat")]
@@ -1061,6 +1065,9 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                                 sources_total,
                                 best_queue_rank,
                                 category_id: r.category_id,
+                                priority: rucio_core::api::downloads::DownloadPriority::from_i64(
+                                    r.priority,
+                                ),
                             });
                         }
                     }
@@ -1114,6 +1121,9 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                                 sources_total,
                                 best_queue_rank,
                                 category_id: r.category_id,
+                                priority: rucio_core::api::downloads::DownloadPriority::from_i64(
+                                    r.priority,
+                                ),
                             });
                         }
                     }
@@ -1187,6 +1197,9 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                         }
                         api::DownloadRequest::Rename { download_id, new_name } => {
                             engine.rename(download_id, new_name).await;
+                        }
+                        api::DownloadRequest::SetPriority { download_id, priority } => {
+                            engine.set_priority(download_id, priority).await;
                         }
                         api::DownloadRequest::StartEd2k { link, download_id } => {
                             #[cfg(feature = "emule-compat")]

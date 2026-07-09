@@ -863,18 +863,26 @@
             white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
             min-width: 0;
         }
-        .dl-size { font-size: 0.75rem; color: var(--text-3); white-space: nowrap; }
-        /* Category badge: sits next to the name; margin-right:auto pushes the
-           size to the far right. Background/colour come from an inline style
-           when the category has a colour; otherwise this neutral default. */
+        /* margin-left:auto anchors the size to the far right, so the name,
+           priority marker and category badge stay packed on the left in every
+           combination (with/without a category, with/without a priority mark). */
+        .dl-size { font-size: 0.75rem; color: var(--text-3); white-space: nowrap; margin-left: auto; }
+        /* Category badge: sits just after the name (and priority marker), left-
+           aligned. Background/colour come from an inline style when the category
+           has a colour; otherwise this neutral default. */
         .dl-cat-badge {
-            flex: none; margin-right: auto;
+            flex: none;
             padding: 0.05rem 0.45rem; border-radius: 9999px;
             font-size: 0.65rem; font-weight: 600; white-space: nowrap;
             background: var(--sn); color: var(--text-2);
             /* Clip an over-long category name so the badge can't grow unbounded. */
             max-width: 10rem; overflow: hidden; text-overflow: ellipsis;
         }
+        /* Priority marker next to the name: an up chevron for high, down for
+           low. Medium (the default) shows nothing, so most rows stay uncluttered. */
+        .dl-prio { flex: none; font-size: 0.7rem; font-weight: 700; line-height: 1; }
+        .dl-prio-high { color: var(--text); }
+        .dl-prio-low { color: var(--text-3); }
 
         .dl-bar-track {
             height: 4px; background: var(--bar-track); border-radius: 2px;

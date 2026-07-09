@@ -244,6 +244,27 @@ pub enum DownloadState {
     Cancelled,
 }
 
+/// User-set download priority, mirrored from the daemon.
+#[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DownloadPriority {
+    Low,
+    #[default]
+    Medium,
+    High,
+}
+
+impl DownloadPriority {
+    /// Wire value used by the API (`low` | `medium` | `high`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DownloadPriority::Low => "low",
+            DownloadPriority::Medium => "medium",
+            DownloadPriority::High => "high",
+        }
+    }
+}
+
 #[derive(Deserialize, Clone, Debug, PartialEq)]
 pub struct DownloadResponse {
     pub id: i64,
@@ -267,6 +288,8 @@ pub struct DownloadResponse {
     pub best_queue_rank: Option<u32>,
     #[serde(default)]
     pub category_id: Option<i64>,
+    #[serde(default)]
+    pub priority: DownloadPriority,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -302,6 +325,8 @@ pub struct DownloadDetailResponse {
     pub best_queue_rank: Option<u32>,
     #[serde(default)]
     pub category_id: Option<i64>,
+    #[serde(default)]
+    pub priority: DownloadPriority,
 }
 
 /// One source we are downloading from (libp2p), mirrored from the daemon.

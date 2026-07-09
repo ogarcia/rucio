@@ -19,7 +19,6 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::net::UdpSocket;
-use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 
@@ -46,6 +45,128 @@ impl Drop for RegistryGuard {
         if let Ok(mut reg) = self.registry.lock() {
             reg.remove(&self.download_id);
         }
+    }
+}
+
+/// Priority-aware admission gate for eMule download slots — the replacement for
+/// a plain `Semaphore`. When a slot frees, the waiting download with the highest
+/// user priority takes it first (tie-break: earliest `added_at`, then lowest
+/// id). No preemption: a slot is only handed out when one frees, never taken
+/// from a running download.
+///
+/// Each `run_ed2k_download` task registers as a waiter and parks until it is its
+/// turn, mirroring how it previously blocked on `Semaphore::acquire_owned`.
+pub struct PriorityAdmission {
+    inner: Mutex<AdmissionInner>,
+    /// Pulsed whenever a slot frees or a waiter's priority changes, so parked
+    /// acquirers re-evaluate whether it is now their turn.
+    slot_freed: tokio::sync::Notify,
+}
+
+struct AdmissionInner {
+    capacity: usize,
+    active: usize,
+    /// `download_id` → (priority, added_at) for every waiter currently parked in
+    /// [`PriorityAdmission::acquire`]. The entry is removed on admission.
+    waiters: HashMap<i64, (i64, i64)>,
+}
+
+/// Occupies one download slot for as long as it is held. Dropping it frees the
+/// slot and wakes the parked waiters so the next-ranked one can proceed.
+pub struct SlotPermit {
+    gate: Arc<PriorityAdmission>,
+}
+
+impl PriorityAdmission {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            inner: Mutex::new(AdmissionInner {
+                capacity,
+                active: 0,
+                waiters: HashMap::new(),
+            }),
+            slot_freed: tokio::sync::Notify::new(),
+        }
+    }
+
+    /// Free slots right now (running downloads counted). Lets a caller report
+    /// `queued` before parking — the same role `Semaphore::available_permits`
+    /// played.
+    pub fn available_permits(&self) -> usize {
+        let g = self.inner.lock().unwrap();
+        g.capacity.saturating_sub(g.active)
+    }
+
+    /// Register `download_id` as wanting a slot and wait until it is its turn,
+    /// then occupy the slot. The returned [`SlotPermit`] holds it until dropped.
+    pub async fn acquire(
+        self: &Arc<Self>,
+        download_id: i64,
+        priority: i64,
+        added_at: i64,
+    ) -> SlotPermit {
+        {
+            let mut g = self.inner.lock().unwrap();
+            g.waiters.insert(download_id, (priority, added_at));
+        }
+        loop {
+            // Arm the wake-up *before* checking so a slot freed between the check
+            // and the await is not missed (the documented `Notify` pattern).
+            let notified = self.slot_freed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+
+            {
+                let mut g = self.inner.lock().unwrap();
+                if g.active < g.capacity && g.is_next(download_id) {
+                    g.waiters.remove(&download_id);
+                    g.active += 1;
+                    return SlotPermit {
+                        gate: Arc::clone(self),
+                    };
+                }
+            }
+            notified.await;
+        }
+    }
+
+    /// Re-rank a *waiting* download after a priority change so it is considered
+    /// for the next free slot at its new level. No-op when the download is not
+    /// currently waiting (already running or finished) — consistent with the
+    /// no-preemption rule.
+    pub fn set_priority(&self, download_id: i64, priority: i64) {
+        {
+            let mut g = self.inner.lock().unwrap();
+            match g.waiters.get_mut(&download_id) {
+                Some(w) => w.0 = priority,
+                None => return,
+            }
+        }
+        self.slot_freed.notify_waiters();
+    }
+}
+
+impl AdmissionInner {
+    /// True if `id` outranks every other waiter: higher priority, then earlier
+    /// `added_at`, then lower id (a total order, so exactly one waiter is next).
+    fn is_next(&self, id: i64) -> bool {
+        let Some(&(p, a)) = self.waiters.get(&id) else {
+            return false;
+        };
+        let me = (std::cmp::Reverse(p), a, id);
+        self.waiters
+            .iter()
+            .all(|(&other, &(op, oa))| me <= (std::cmp::Reverse(op), oa, other))
+    }
+}
+
+impl Drop for SlotPermit {
+    fn drop(&mut self) {
+        {
+            let mut g = self.gate.inner.lock().unwrap();
+            g.active = g.active.saturating_sub(1);
+        }
+        self.gate.slot_freed.notify_waiters();
     }
 }
 
@@ -619,7 +740,7 @@ pub async fn run_ed2k_download(
     db: &Db,
     kad: &KadHandle,
     active_downloads: &ActiveDownloads,
-    download_slots: &Arc<Semaphore>,
+    download_slots: &Arc<PriorityAdmission>,
     live_stats: &crate::live_stats::LiveStatsMap,
     metrics: &Arc<crate::metrics::Metrics>,
     download_throttle: &Arc<crate::throttle::TokenBucket>,
@@ -721,7 +842,7 @@ pub async fn run_ed2k_download(
     // with hysteresis: kept across short re-search rounds and released only when
     // the download falls back to `stalled` (or pauses / finishes, when this
     // function returns and the permit drops).
-    let mut slot: Option<tokio::sync::OwnedSemaphorePermit> = None;
+    let mut slot: Option<SlotPermit> = None;
 
     // How long to reuse a source cache before querying Kad2 again.
     // eMule's own re-ask interval is 30 minutes; we match it to avoid
@@ -883,24 +1004,19 @@ pub async fn run_ed2k_download(
                     crate::db::emule_downloads::set_status_if_running(db, download_id, "queued")
                         .await;
             }
-            match download_slots.clone().acquire_owned().await {
-                Ok(permit) => slot = Some(permit),
-                Err(_) => {
-                    // Semaphore closed — daemon shutting down. Keep the .part for
-                    // resume (not a cancel), just drop the in-memory entries.
-                    cleanup_on_stop(
-                        "shutdown",
-                        &part_path,
-                        &met_path,
-                        active_downloads,
-                        &hash_key,
-                        live_stats,
-                        live_key,
-                    )
-                    .await;
-                    return Ok(());
-                }
-            }
+            // Admission order is by user priority (then added_at). Re-read them
+            // now so a priority change made while searching is honoured at the
+            // next free slot. Fall back to medium (1) if the row has vanished.
+            let (want_priority, want_added_at) =
+                match crate::db::emule_downloads::get(db, download_id).await {
+                    Ok(Some(r)) => (r.priority, r.added_at),
+                    _ => (1, 0),
+                };
+            slot = Some(
+                download_slots
+                    .acquire(download_id, want_priority, want_added_at)
+                    .await,
+            );
             // The user may have paused/cancelled while we waited for the slot.
             if let Some(reason) = stop_reason(db, download_id).await {
                 info!(dl = download_id, status = %reason, "stopped while waiting for a slot");
@@ -1421,7 +1537,7 @@ pub async fn run_ed2k_download(
                                 throttle_w
                                     .acquire(
                                         slice_end - slice_start,
-                                        crate::throttle::Priority::Low,
+                                        crate::throttle::TrafficClass::Low,
                                     )
                                     .await;
                                 save_progress(&met, &snapshot);
@@ -1984,4 +2100,93 @@ pub async fn bootstrap_nodes_dat(path: &std::path::Path, url: &str) -> Result<us
         .with_context(|| format!("writing nodes.dat to {}", path.display()))?;
 
     Ok(contacts.len())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod admission_tests {
+    use super::PriorityAdmission;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    /// Let spawned acquirers run so they register as waiters before we act.
+    async fn settle() {
+        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    #[tokio::test]
+    async fn respects_capacity() {
+        let gate = Arc::new(PriorityAdmission::new(2));
+        assert_eq!(gate.available_permits(), 2);
+        let p1 = gate.acquire(1, 1, 1).await;
+        let p2 = gate.acquire(2, 1, 2).await;
+        assert_eq!(gate.available_permits(), 0);
+        drop(p1);
+        assert_eq!(gate.available_permits(), 1);
+        drop(p2);
+        assert_eq!(gate.available_permits(), 2);
+    }
+
+    #[tokio::test]
+    async fn higher_priority_admitted_first() {
+        let gate = Arc::new(PriorityAdmission::new(1));
+        let hold = gate.acquire(0, 1, 0).await; // occupy the only slot
+
+        let g_low = Arc::clone(&gate);
+        let mut low = tokio::spawn(async move { g_low.acquire(1, 0, 1).await });
+        let g_high = Arc::clone(&gate);
+        let high = tokio::spawn(async move { g_high.acquire(2, 2, 2).await });
+        settle().await;
+
+        drop(hold); // frees the slot — the high-priority waiter must win it
+
+        let permit = tokio::time::timeout(Duration::from_millis(500), high)
+            .await
+            .expect("high-priority acquire timed out")
+            .unwrap();
+        // The low-priority waiter is still parked while the slot is taken.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut low)
+                .await
+                .is_err(),
+            "low-priority download should still be waiting for a slot"
+        );
+        assert_eq!(gate.available_permits(), 0);
+        drop(permit); // now the low-priority one can proceed
+        let _ = tokio::time::timeout(Duration::from_millis(500), low)
+            .await
+            .expect("low-priority acquire timed out")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn set_priority_reranks_waiter() {
+        let gate = Arc::new(PriorityAdmission::new(1));
+        let hold = gate.acquire(0, 1, 0).await;
+
+        // Two medium waiters; by tie-break id 1 (earlier added_at) would win.
+        let g1 = Arc::clone(&gate);
+        let first = tokio::spawn(async move { g1.acquire(1, 1, 1).await });
+        let g2 = Arc::clone(&gate);
+        let second = tokio::spawn(async move { g2.acquire(2, 1, 2).await });
+        settle().await;
+
+        // Bump id 2 to high so it now outranks id 1.
+        gate.set_priority(2, 2);
+        drop(hold);
+
+        let permit = tokio::time::timeout(Duration::from_millis(500), second)
+            .await
+            .expect("bumped waiter should be admitted first")
+            .unwrap();
+        drop(permit);
+        let _ = tokio::time::timeout(Duration::from_millis(500), first)
+            .await
+            .expect("first waiter timed out")
+            .unwrap();
+    }
 }

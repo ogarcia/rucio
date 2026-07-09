@@ -7,8 +7,8 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use rucio_core::api::categories::SetCategoryRequest;
 use rucio_core::api::downloads::{
-    DownloadDetailResponse, DownloadResponse, DownloadState, DownloadsResponse,
-    RenameDownloadRequest, StartDownloadRequest,
+    DownloadDetailResponse, DownloadPriority, DownloadResponse, DownloadState, DownloadsResponse,
+    RenameDownloadRequest, SetDownloadPriorityRequest, StartDownloadRequest,
 };
 
 use rucio_core::protocol::chunk::Hash;
@@ -102,6 +102,7 @@ pub async fn list_downloads(State(state): State<AppState>) -> Json<DownloadsResp
                     sources_total: ls.map(|l| l.sources_total),
                     best_queue_rank: ls.and_then(|l| l.best_queue_rank),
                     category_id: r.category_id,
+                    priority: DownloadPriority::from_i64(r.priority),
                 },
             ));
         }
@@ -136,6 +137,7 @@ pub async fn list_downloads(State(state): State<AppState>) -> Json<DownloadsResp
                     sources_total: ls.map(|l| l.sources_total),
                     best_queue_rank: ls.and_then(|l| l.best_queue_rank),
                     category_id: r.category_id,
+                    priority: DownloadPriority::from_i64(r.priority),
                 },
             ));
         }
@@ -237,6 +239,7 @@ pub async fn get_download(
             queued_sources: live.as_ref().map(|l| l.queued_sources).filter(|&n| n > 0),
             best_queue_rank: live.as_ref().and_then(|l| l.best_queue_rank),
             category_id: row.category_id,
+            priority: DownloadPriority::from_i64(row.priority),
         }))
     } else {
         // eMule download
@@ -300,6 +303,7 @@ pub async fn get_download(
                 queued_sources: live.as_ref().map(|l| l.queued_sources).filter(|&n| n > 0),
                 best_queue_rank: live.as_ref().and_then(|l| l.best_queue_rank),
                 category_id: row.category_id,
+                priority: DownloadPriority::from_i64(row.priority),
             }))
         }
         #[cfg(not(feature = "emule-compat"))]
@@ -1356,6 +1360,75 @@ pub async fn set_download_category(
         Ok(false) => StatusCode::NOT_FOUND,
         Err(e) => {
             tracing::error!("set_download_category: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    }
+}
+
+/// Set download priority
+///
+/// Changes a download's user priority (`low` | `medium` | `high`, default
+/// `medium`). Priority decides who wins when a resource is scarce: a
+/// higher-priority download is admitted to a free eMule slot — and claims a
+/// shared provider's request slots — ahead of lower-priority ones. It never
+/// preempts a transfer already in progress, and with an uncapped, uncontended
+/// link it has no visible effect (nothing to arbitrate).
+///
+/// Use **negative IDs** (e.g. `-3`) for eMule downloads.
+#[utoipa::path(
+    put,
+    path = "/api/v1/downloads/{id}/priority",
+    params(
+        ("id" = i64, Path, description = "Numeric download ID from `GET /api/v1/downloads`. Negative = eMule download.")
+    ),
+    request_body = SetDownloadPriorityRequest,
+    responses(
+        (status = 204, description = "Priority updated."),
+        (status = 404, description = "No download with that id."),
+    )
+)]
+pub async fn set_download_priority(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<SetDownloadPriorityRequest>,
+) -> StatusCode {
+    let priority = req.priority.as_i64();
+    let updated = if id < 0 {
+        #[cfg(feature = "emule-compat")]
+        {
+            let emule_id = -id;
+            let ok = crate::db::emule_downloads::set_priority(&state.db, emule_id, priority).await;
+            // Re-rank it in the admission gate if it is still waiting for a slot
+            // (no-op once it is running — no preemption).
+            if matches!(ok, Ok(true)) {
+                state.emule_download_slots.set_priority(emule_id, priority);
+            }
+            ok
+        }
+        #[cfg(not(feature = "emule-compat"))]
+        {
+            let _ = &state;
+            anyhow::Ok(false)
+        }
+    } else {
+        let ok = crate::db::downloads::set_priority(&state.db, id, priority).await;
+        // Refresh the live scheduler so a bump takes effect without a restart.
+        if matches!(ok, Ok(true)) {
+            let _ = state
+                .download_tx
+                .send(DownloadRequest::SetPriority {
+                    download_id: id,
+                    priority,
+                })
+                .await;
+        }
+        ok
+    };
+    match updated {
+        Ok(true) => StatusCode::NO_CONTENT,
+        Ok(false) => StatusCode::NOT_FOUND,
+        Err(e) => {
+            tracing::error!("set_download_priority: {e}");
             StatusCode::INTERNAL_SERVER_ERROR
         }
     }

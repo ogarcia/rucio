@@ -44,7 +44,7 @@ use rucio_core::protocol::{
 use crate::db::{self, Db};
 use crate::metrics::Metrics;
 use crate::node::messages::NodeCmd;
-use crate::throttle::{Priority, TokenBucket};
+use crate::throttle::{TokenBucket, TrafficClass};
 
 // ---------------------------------------------------------------------------
 // Tuning
@@ -215,6 +215,10 @@ impl Default for PeerCap {
 /// An active download for which the manifest has been received.
 struct ActiveDownload {
     download_id: i64,
+    /// User priority (0 low, 1 medium, 2 high). Higher-priority downloads claim
+    /// a shared provider's free request slots before lower ones (see
+    /// [`DownloadEngine::dispatch_idle`]). Never preempts an in-flight chunk.
+    priority: i64,
     dest_path: PathBuf,
     chunk_size: u32,
     /// Total file size in bytes (defines the bao tree and the last chunk size).
@@ -626,6 +630,7 @@ impl DownloadEngine {
         let done_count = done.len();
         let dl = ActiveDownload {
             download_id: row.id,
+            priority: row.priority,
             dest_path,
             chunk_size,
             total_size,
@@ -1202,9 +1207,19 @@ impl DownloadEngine {
                 // the name is a local choice. Fall back to the peer's name only
                 // if the row somehow has none.
                 let dl_id = pending.db_id;
-                let chosen_name = match db::downloads::get(&self.db, dl_id).await {
-                    Ok(Some(r)) if !r.name.trim().is_empty() => r.name,
-                    _ => name.clone(),
+                // Read the row once for both the user-chosen name and the
+                // priority (which may have been set while finding providers,
+                // before this ActiveDownload existed). Fall back to medium (1).
+                let (chosen_name, row_priority) = match db::downloads::get(&self.db, dl_id).await {
+                    Ok(Some(r)) => {
+                        let name = if r.name.trim().is_empty() {
+                            name.clone()
+                        } else {
+                            r.name
+                        };
+                        (name, r.priority)
+                    }
+                    _ => (name.clone(), 1),
                 };
 
                 // In-progress downloads go to temp_dir, named with the hash frag
@@ -1272,6 +1287,7 @@ impl DownloadEngine {
 
                 let dl = ActiveDownload {
                     download_id: dl_id,
+                    priority: row_priority,
                     dest_path,
                     chunk_size,
                     total_size,
@@ -1430,15 +1446,41 @@ impl DownloadEngine {
     /// back up (within the tick interval) so downloads don't stall behind each
     /// other on a shared, capacity-limited provider.
     pub async fn dispatch_idle(&mut self) {
-        let hashes: Vec<[u8; 32]> = self
+        // Dispatch highest-priority downloads first (tie-break: lower id = added
+        // earlier), so when several downloads share a capacity-limited provider
+        // the higher-priority one claims that peer's free request slots before
+        // the others. Downloads on disjoint peers are unaffected — each still
+        // gets that peer's whole cap, so priority never throttles a download
+        // that isn't actually contending for the same source.
+        let mut hashes: Vec<[u8; 32]> = self
             .active
             .iter()
             .filter(|(_, dl)| !dl.queued.is_empty())
             .map(|(h, _)| *h)
             .collect();
+        hashes.sort_by_key(|h| {
+            let dl = &self.active[h];
+            (std::cmp::Reverse(dl.priority), dl.download_id)
+        });
         for h in hashes {
             self.dispatch_requests(h).await;
         }
+    }
+
+    /// Update a download's user priority in memory so the next dispatch honours
+    /// it. Persisted separately by the API handler; this only refreshes the live
+    /// scheduler state (no effect on chunks already in flight — no preemption).
+    pub async fn set_priority(&mut self, download_id: i64, priority: i64) {
+        if let Some(dl) = self
+            .active
+            .values_mut()
+            .find(|dl| dl.download_id == download_id)
+        {
+            dl.priority = priority;
+        }
+        // Re-dispatch so a bump takes effect immediately on any shared provider
+        // with free slots, instead of waiting for the next periodic tick.
+        self.dispatch_idle().await;
     }
 
     // -----------------------------------------------------------------------
@@ -1502,7 +1544,7 @@ impl DownloadEngine {
                 // Throttle download bandwidth before the (CPU + disk) verify.
                 // Rucio transfers take priority over eMule on the shared cap.
                 self.download_throttle
-                    .acquire(data.len() as u64, Priority::High)
+                    .acquire(data.len() as u64, TrafficClass::High)
                     .await;
 
                 // Verify the bao slice against the file root, write the verified
@@ -2512,6 +2554,7 @@ mod tests {
         let total_size = total as u64 * CHUNK_SIZE as u64;
         ActiveDownload {
             download_id: 1,
+            priority: 1,
             dest_path: PathBuf::from("/tmp/x.part"),
             chunk_size: CHUNK_SIZE,
             total_size,
