@@ -1338,85 +1338,89 @@ impl DownloadEngine {
     // -----------------------------------------------------------------------
 
     async fn dispatch_requests(&mut self, root_hash: [u8; 32]) {
-        // Snapshot this download's providers (don't hold a borrow — we need
-        // `&self.active` below to sum the *global* per-peer in-flight count).
-        let providers: Vec<PeerId> = match self.active.get(&root_hash) {
-            Some(d) if !d.queued.is_empty() => d.providers.clone(),
-            _ => return,
+        // The event is about `root_hash`; consider the peers it uses. On each of
+        // those peers we fill the free slots from *all* downloads that share it,
+        // highest priority first — so a high-priority download claims a shared
+        // provider's request slots ahead of lower-priority ones on every
+        // dispatch, not just the periodic tick. (We proceed even when the
+        // trigger itself has no queued chunks: a chunk it just completed may
+        // have freed a slot that another download should now get.)
+        let peers: Vec<PeerId> = match self.active.get(&root_hash) {
+            Some(d) => d.providers.clone(),
+            None => return,
         };
-        if providers.is_empty() {
+        if peers.is_empty() {
             return;
         }
 
-        // Free slots per provider, bounded by the GLOBAL per-peer cap: the cap
-        // counts chunks in-flight to that peer across *all* active downloads, so
-        // many simultaneous downloads from one peer (e.g. a batch of mirror
-        // fetches) can't flood it with cap × N concurrent requests — which would
-        // share its bandwidth so thinly that every request times out.
-        let mut work: Vec<(PeerId, usize)> = Vec::new();
-        for p in providers {
+        // Downloads with queued chunks, in the order they get to claim a shared
+        // peer's free slots: highest priority first, then lowest id (added
+        // earlier). Disjoint-peer downloads are unaffected — each still gets a
+        // peer's whole cap, so priority never throttles a non-contending one.
+        let mut order: Vec<[u8; 32]> = self
+            .active
+            .iter()
+            .filter(|(_, d)| !d.queued.is_empty())
+            .map(|(h, _)| *h)
+            .collect();
+        order.sort_by_key(|h| {
+            let d = &self.active[h];
+            (std::cmp::Reverse(d.priority), d.download_id)
+        });
+
+        // (peer, chunk_idx, owner) collected across peers, sent after the loop.
+        let mut assigned: Vec<(PeerId, u32, [u8; 32])> = Vec::new();
+
+        for peer in peers {
+            // Global per-peer cap: chunks in-flight to this peer across *all*
+            // downloads (so N downloads sharing a peer can't flood it with
+            // cap × N requests and time each other out), plus what we've already
+            // handed this peer in this pass.
             let used: usize = self
                 .active
                 .values()
-                .filter_map(|d| d.peer_state.get(&p))
+                .filter_map(|d| d.peer_state.get(&peer))
                 .map(|ps| ps.in_flight.len())
                 .sum();
-            let cap = self.peer_caps.entry(p).or_default().max_slots;
-            let free = cap.saturating_sub(used);
-            if free > 0 {
-                work.push((p, free));
+            let already = assigned.iter().filter(|(p, _, _)| *p == peer).count();
+            let cap = self.peer_caps.entry(peer).or_default().max_slots;
+            let mut free = cap.saturating_sub(used + already);
+            if free == 0 {
+                continue;
             }
-        }
-        if work.is_empty() {
-            return;
-        }
-
-        let dl = self.active.get_mut(&root_hash).unwrap();
-
-        // Assign queued chunks to peers round-robin.
-        let mut assigned: Vec<(PeerId, u32)> = Vec::new();
-        'outer: loop {
-            let mut progress = false;
-            for (peer, free) in work.iter_mut() {
-                if *free == 0 {
+            // Drain queued chunks onto this peer from the priority-ordered
+            // downloads that have it as a provider.
+            for h in &order {
+                if free == 0 {
+                    break;
+                }
+                let dl = self.active.get_mut(h).unwrap();
+                if !dl.providers.contains(&peer) {
                     continue;
                 }
-                let Some(chunk_idx) = dl.queued.pop_front() else {
-                    break 'outer;
-                };
-                assigned.push((*peer, chunk_idx));
-                *free -= 1;
-                progress = true;
-                if dl.queued.is_empty() {
-                    break 'outer;
+                while free > 0 {
+                    let Some(chunk_idx) = dl.queued.pop_front() else {
+                        break;
+                    };
+                    dl.in_flight.insert(chunk_idx);
+                    assigned.push((peer, chunk_idx, *h));
+                    free -= 1;
                 }
             }
-            if !progress {
-                break;
-            }
         }
 
-        // Send the requests — we need to release the mutable borrow of `dl`.
-        // assigned is already owned so we can just proceed.
-        {
-            let dl = self.active.get_mut(&root_hash).unwrap();
-            for &(_, chunk_idx) in &assigned {
-                dl.in_flight.insert(chunk_idx);
-            }
-        }
-
-        for (peer, chunk_idx) in assigned {
+        for (peer, chunk_idx, owner) in assigned {
             let (id_tx, id_rx) = oneshot::channel();
             // This peer's cumulative-bytes counter, for net to fill as it reads
             // the chunk — a flat per-peer download rate in the detail view.
             let download_sink = self
                 .active
-                .get_mut(&root_hash)
+                .get_mut(&owner)
                 .map(|dl| Arc::clone(&dl.peer_state.entry(peer).or_default().bytes_downloaded));
             let cmd = NodeCmd::RequestChunk {
                 peer,
                 request: ChunkRequest {
-                    root_hash,
+                    root_hash: owner,
                     chunk_idx,
                 },
                 download_sink,
@@ -1426,8 +1430,8 @@ impl DownloadEngine {
                 warn!("node cmd channel closed");
                 return;
             }
-            // Get back the OutboundRequestId and record it.
-            if let (Ok(request_id), Some(dl)) = (id_rx.await, self.active.get_mut(&root_hash)) {
+            // Get back the OutboundRequestId and record it against its owner.
+            if let (Ok(request_id), Some(dl)) = (id_rx.await, self.active.get_mut(&owner)) {
                 dl.inflight_map.insert(request_id, (peer, chunk_idx));
                 dl.peer_state
                     .entry(peer)
@@ -1446,22 +1450,15 @@ impl DownloadEngine {
     /// back up (within the tick interval) so downloads don't stall behind each
     /// other on a shared, capacity-limited provider.
     pub async fn dispatch_idle(&mut self) {
-        // Dispatch highest-priority downloads first (tie-break: lower id = added
-        // earlier), so when several downloads share a capacity-limited provider
-        // the higher-priority one claims that peer's free request slots before
-        // the others. Downloads on disjoint peers are unaffected — each still
-        // gets that peer's whole cap, so priority never throttles a download
-        // that isn't actually contending for the same source.
-        let mut hashes: Vec<[u8; 32]> = self
+        // Order doesn't matter here: `dispatch_requests` already fills each
+        // peer's free slots by priority across all downloads that share it, so
+        // one call per download simply ensures every peer gets visited.
+        let hashes: Vec<[u8; 32]> = self
             .active
             .iter()
             .filter(|(_, dl)| !dl.queued.is_empty())
             .map(|(h, _)| *h)
             .collect();
-        hashes.sort_by_key(|h| {
-            let dl = &self.active[h];
-            (std::cmp::Reverse(dl.priority), dl.download_id)
-        });
         for h in hashes {
             self.dispatch_requests(h).await;
         }
@@ -3500,6 +3497,53 @@ mod tests {
         assert_eq!(state(&engine), (1, 1));
         // Still a provider (not yet at MAX_PEER_FAILURES).
         assert!(engine.active.get(&hash).unwrap().providers.contains(&p));
+
+        let _ = stop_tx.send(());
+        let _ = acker_handle.await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shared_peer_slots_go_to_higher_priority_first() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut engine, rx, _db_dir) = make_engine(&tmp).await;
+        let (acker_handle, stop_tx) = spawn_acker(rx);
+
+        let p = peer(1);
+        let low_hash = [0x01u8; 32];
+        let high_hash = [0x02u8; 32];
+
+        // Two downloads sharing the one provider `p`, each with queued chunks.
+        for (h, id, prio) in [(low_hash, 1, 0i64), (high_hash, 2, 2i64)] {
+            let mut dl = test_download(4);
+            dl.download_id = id;
+            dl.priority = prio;
+            dl.providers = vec![p];
+            dl.queued = (0..4).collect();
+            engine.active.insert(h, dl);
+        }
+        // Only one request slot on the shared peer, so exactly one download can
+        // claim it — it must be the higher-priority one.
+        engine.peer_caps.insert(
+            p,
+            PeerCap {
+                max_slots: 1,
+                ok_streak: 0,
+            },
+        );
+
+        // A *low*-priority event triggers the dispatch; the shared slot must
+        // still go to the high-priority download, not the one that fired.
+        engine.dispatch_requests(low_hash).await;
+
+        assert_eq!(
+            engine.active.get(&high_hash).unwrap().in_flight.len(),
+            1,
+            "high-priority download claims the only shared slot"
+        );
+        assert!(
+            engine.active.get(&low_hash).unwrap().in_flight.is_empty(),
+            "low-priority download yields the shared slot"
+        );
 
         let _ = stop_tx.send(());
         let _ = acker_handle.await.unwrap();
