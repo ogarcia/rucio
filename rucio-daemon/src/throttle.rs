@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 
 /// Scheduling priority for a [`TokenBucket::acquire`] call. When the cap is
 /// saturated, `High` transfers get the larger share but `Low` keeps a reserved
-/// floor (see [`HIGH_QUANTA_PER_LOW`]) rather than being starved — and either
+/// floor (see [`HIGH_BYTES_PER_LOW`]) rather than being starved — and either
 /// gets the whole cap when the other is idle (work-conserving). Rucio (libp2p)
 /// transfers use `High`; eMule transfers use `Low`, so the lure protocol yields
 /// to the real network without us becoming a bad eMule citizen.
@@ -116,13 +116,15 @@ impl Inner {
 /// small-chunk one (e.g. a ~180 KiB eMule block) when the cap is saturated.
 const FAIR_QUANTUM: u64 = 64 * 1024;
 
-/// How many [`TrafficClass::High`] quanta are served before a waiting
-/// [`TrafficClass::Low`] one is let through, when both saturate the cap. This
-/// reserves Low (eMule) a floor of ~`1/(N+1)` of the bandwidth — good-citizen
-/// seeding to the eMule network is never fully starved by Rucio traffic — while
-/// still giving Rucio the lion's share. A user who wants 100% for Rucio just
-/// disables eMule.
-const HIGH_QUANTA_PER_LOW: usize = 4;
+/// How many *bytes* of [`TrafficClass::High`] traffic are served before a
+/// waiting [`TrafficClass::Low`] one is let through, when both saturate the cap.
+/// Expressed in bytes (not quanta) so the eMule floor stays fixed at ~1/5 even
+/// though High quanta now vary in size with per-download priority weight (see
+/// [`TokenBucket::acquire_weighted`]): the floor is `FAIR_QUANTUM` of Low per
+/// `HIGH_BYTES_PER_LOW` of High → `1/(N+1)` = 1/5. Good-citizen seeding to the
+/// eMule network is never fully starved by Rucio traffic, while Rucio still gets
+/// the lion's share. A user who wants 100% for Rucio just disables eMule.
+const HIGH_BYTES_PER_LOW: u64 = 4 * FAIR_QUANTUM;
 
 pub struct TokenBucket {
     inner: Mutex<Inner>,
@@ -132,12 +134,12 @@ pub struct TokenBucket {
     /// it. Only contended (and only meaningfully held) when a limit is set.
     turn: tokio::sync::Mutex<()>,
     /// Number of [`TrafficClass::High`] transfers currently inside `acquire`.
-    /// [`TrafficClass::Low`] callers defer to these (see [`HIGH_QUANTA_PER_LOW`]).
+    /// [`TrafficClass::Low`] callers defer to these (see [`HIGH_BYTES_PER_LOW`]).
     high_active: AtomicUsize,
-    /// High quanta served since the last Low quantum. Once it reaches
-    /// [`HIGH_QUANTA_PER_LOW`], a waiting Low caller is let through and resets
+    /// High bytes served since the last Low quantum. Once it reaches
+    /// [`HIGH_BYTES_PER_LOW`], a waiting Low caller is let through and resets
     /// it — this is what reserves Low its bandwidth floor.
-    high_quanta: AtomicUsize,
+    high_bytes: AtomicU64,
     /// Woken when High yields a turn (count drained to zero, or the weighted
     /// allowance reached), so parked `Low` callers re-check and proceed.
     low_gate: tokio::sync::Notify,
@@ -150,20 +152,32 @@ impl TokenBucket {
             inner: Mutex::new(Inner::new(rate_kbps)),
             turn: tokio::sync::Mutex::new(()),
             high_active: AtomicUsize::new(0),
-            high_quanta: AtomicUsize::new(0),
+            high_bytes: AtomicU64::new(0),
             low_gate: tokio::sync::Notify::new(),
         }
     }
 
-    /// Block the current async task until `bytes` tokens are available.
+    /// Block the current async task until `bytes` tokens are available, at the
+    /// neutral weight (equal round-robin share within a class). Convenience
+    /// wrapper over [`TokenBucket::acquire_weighted`] for callers with no
+    /// per-download priority (eMule transfers, all uploads).
+    pub async fn acquire(&self, bytes: u64, class: TrafficClass) {
+        self.acquire_weighted(bytes, class, 1).await;
+    }
+
+    /// Like [`TokenBucket::acquire`], but the caller's share within its class is
+    /// scaled by `weight`: each turn at the FIFO turnstile it consumes up to
+    /// `FAIR_QUANTUM * weight` bytes instead of one `FAIR_QUANTUM`. Over a round,
+    /// a weight-4 acquirer therefore gets ~4× the bytes of a weight-1 one of the
+    /// same class when the cap is saturated. Used by libp2p downloads to give
+    /// higher-priority downloads a larger slice of a capped pipe; `weight` maps
+    /// from `DownloadPriority` (low=1, medium=2, high=4).
     ///
-    /// When the limit is 0 this returns immediately without any sleep or
-    /// queueing. Under a limit, the request is consumed in [`FAIR_QUANTUM`]-sized
-    /// steps through a FIFO turnstile, so concurrent transfers of the same
-    /// priority round-robin the available tokens by bytes. Across priorities,
-    /// [`TrafficClass::Low`] callers yield each quantum to any active
-    /// [`TrafficClass::High`] caller (see [`TrafficClass`]).
-    pub async fn acquire(&self, bytes: u64, prio: TrafficClass) {
+    /// When the limit is 0 this returns immediately — with an uncapped pipe
+    /// there is nothing to share, so weight has no effect. The eMule floor is
+    /// unaffected by any weight because it is accounted in bytes
+    /// ([`HIGH_BYTES_PER_LOW`]) and Low callers always use `weight = 1`.
+    pub async fn acquire_weighted(&self, bytes: u64, class: TrafficClass, weight: u32) {
         // Unlimited: no throttling, and no serialisation (taking the turnstile
         // would needlessly cap concurrency when there is no rate to share).
         if self.rate_kbps() == 0 {
@@ -171,20 +185,24 @@ impl TokenBucket {
         }
         // A High caller stays counted for its whole acquire, so Low callers
         // keep yielding until it has fully drained its request.
-        let _hi = (prio == TrafficClass::High).then(|| HighActive::new(self));
+        let _hi = (class == TrafficClass::High).then(|| HighActive::new(self));
+
+        // Per-turn allowance: the priority weight makes a higher-priority
+        // download take a bigger bite each turn (min 1× so weight 0 is safe).
+        let quantum = FAIR_QUANTUM * weight.max(1) as u64;
 
         let mut remaining = bytes;
         while remaining > 0 {
-            let take = remaining.min(FAIR_QUANTUM);
+            let take = remaining.min(quantum);
             // Low priority defers to in-flight High transfers — but only until
-            // High has spent its weighted allowance, then Low takes a guaranteed
+            // High has spent its byte allowance, then Low takes a guaranteed
             // turn (its reserved share). The `notified()` future is armed before
             // the check so a High caller yielding between the two isn't missed.
-            if prio == TrafficClass::Low {
+            if class == TrafficClass::Low {
                 loop {
                     let notified = self.low_gate.notified();
                     if self.high_active.load(Ordering::Acquire) == 0
-                        || self.high_quanta.load(Ordering::Acquire) >= HIGH_QUANTA_PER_LOW
+                        || self.high_bytes.load(Ordering::Acquire) >= HIGH_BYTES_PER_LOW
                     {
                         break;
                     }
@@ -206,15 +224,16 @@ impl TokenBucket {
                     }
                 }
             }
-            // Weighted bookkeeping: count High quanta and, on reaching the
-            // allowance, release a Low turn; a Low quantum resets the allowance.
-            match prio {
+            // Byte-weighted bookkeeping: accumulate High bytes and, on crossing
+            // the allowance, release a Low turn; a Low quantum resets it.
+            match class {
                 TrafficClass::High => {
-                    if self.high_quanta.fetch_add(1, Ordering::AcqRel) + 1 == HIGH_QUANTA_PER_LOW {
+                    let prev = self.high_bytes.fetch_add(take, Ordering::AcqRel);
+                    if prev < HIGH_BYTES_PER_LOW && prev + take >= HIGH_BYTES_PER_LOW {
                         self.low_gate.notify_waiters();
                     }
                 }
-                TrafficClass::Low => self.high_quanta.store(0, Ordering::Release),
+                TrafficClass::Low => self.high_bytes.store(0, Ordering::Release),
             }
             remaining -= take;
         }
@@ -506,5 +525,51 @@ mod tests {
         // High wins the larger share, but Low keeps its reserved floor.
         assert!(l > 0, "Low (eMule) was starved");
         assert!(h > l, "High (Rucio) did not get the larger share");
+    }
+
+    #[tokio::test]
+    async fn higher_weight_gets_the_larger_intra_class_share() {
+        use std::sync::atomic::AtomicU64;
+
+        let tb = Arc::new(TokenBucket::new(1000)); // 1000 KB/s
+        tb.acquire(2000 * 1024, TrafficClass::High).await; // drain the burst
+
+        let (heavy_bytes, light_bytes) = (Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(0)));
+
+        // Two same-class (High) transfers contend flat-out; the heavy one takes
+        // a 4× larger bite per turn (its priority weight), so over each turnstile
+        // round it moves ~4× the bytes. Each loop acquires exactly its per-turn
+        // quantum so the counter reflects the per-turn share.
+        let (t, c) = (tb.clone(), heavy_bytes.clone());
+        let heavy = tokio::spawn(async move {
+            loop {
+                t.acquire_weighted(4 * 64 * 1024, TrafficClass::High, 4)
+                    .await;
+                c.fetch_add(4 * 64 * 1024, Ordering::Relaxed);
+            }
+        });
+        let (t, c) = (tb.clone(), light_bytes.clone());
+        let light = tokio::spawn(async move {
+            loop {
+                t.acquire_weighted(64 * 1024, TrafficClass::High, 1).await;
+                c.fetch_add(64 * 1024, Ordering::Relaxed);
+            }
+        });
+
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        heavy.abort();
+        light.abort();
+
+        let (h, l) = (
+            heavy_bytes.load(Ordering::Relaxed),
+            light_bytes.load(Ordering::Relaxed),
+        );
+        // Expected ~4:1; assert a clear >2× with slack for scheduling jitter, and
+        // that the low-weight transfer is not starved (weighted, not strict).
+        assert!(l > 0, "the low-weight download was starved");
+        assert!(
+            h > l * 2,
+            "higher-weight download did not get a proportionally larger share (heavy={h}, light={l})"
+        );
     }
 }

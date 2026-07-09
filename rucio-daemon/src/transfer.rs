@@ -277,6 +277,17 @@ fn bitmap_bytes(bits: usize) -> usize {
     bits.div_ceil(8)
 }
 
+/// Token-bucket weight for a download's priority (low=1, medium=2, high=4): a
+/// higher-priority download takes a proportionally larger slice of a *capped*
+/// download pipe. Has no effect when no rate limit is set (nothing to share).
+fn prio_weight(priority: i64) -> u32 {
+    match priority {
+        0 => 1, // low
+        2 => 4, // high
+        _ => 2, // medium (default)
+    }
+}
+
 /// Clear any bits at or beyond `bits` in the final byte so a popcount can't
 /// exceed the real chunk count.
 fn mask_trailing_bits(map: &mut [u8], bits: usize) {
@@ -1537,11 +1548,14 @@ impl DownloadEngine {
                     (total_size - chunk_idx as u64 * nominal as u64).min(nominal as u64) as u32;
                 let dest_path = dl.dest_path.clone();
                 let ob = Arc::clone(&dl.partial_outboard);
+                // Weight this download's share of a capped pipe by its priority.
+                let dl_weight = prio_weight(dl.priority);
 
                 // Throttle download bandwidth before the (CPU + disk) verify.
-                // Rucio transfers take priority over eMule on the shared cap.
+                // Rucio transfers take priority over eMule on the shared cap;
+                // within Rucio, higher-priority downloads get a larger slice.
                 self.download_throttle
-                    .acquire(data.len() as u64, TrafficClass::High)
+                    .acquire_weighted(data.len() as u64, TrafficClass::High, dl_weight)
                     .await;
 
                 // Verify the bao slice against the file root, write the verified
