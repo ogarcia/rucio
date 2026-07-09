@@ -468,6 +468,12 @@ download:
     low: "Baja"
     medium: "Media"
     high: "Alta"
+  bulk:
+    title: "Editar %{n} descargas"
+    hint: "Solo se aplican a las descargas seleccionadas los campos que cambies."
+    unchanged: "Sin cambios"
+    apply: "Aplicar"
+    applying: "Aplicando…"
   piece:
     none: "Sin datos de piezas"
     full: "Totalmente disponible en el enjambre"

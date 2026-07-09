@@ -358,6 +358,8 @@ pub fn DownloadsTab(
     let anchor: RwSignal<Option<i64>> = RwSignal::new(None);
     let add_open: RwSignal<bool> = RwSignal::new(false);
     let detail: RwSignal<Option<DownloadDetailResponse>> = RwSignal::new(None);
+    // Open flag for the multi-selection bulk-edit modal (category + priority).
+    let bulk_open: RwSignal<bool> = RwSignal::new(false);
 
     let filter_state: RwSignal<FilterState> = RwSignal::new(FilterState::All);
     let filter_name: RwSignal<String> = RwSignal::new(String::new());
@@ -373,8 +375,9 @@ pub fn DownloadsTab(
         })
     };
 
-    // Info is single-item only.
-    let can_info = move || selected_ids.with(|s| s.len()) == 1;
+    // Enabled with any selection: one row opens the detail panel, several open
+    // the bulk-edit modal (category + priority).
+    let can_info = move || !selected_ids.with(|s| s.is_empty());
     // Cancel/remove act on whichever selected rows qualify.
     let can_cancel = move || selected_dls().iter().any(|d| !is_terminal(&d.state));
     let can_remove = move || selected_dls().iter().any(|d| is_terminal(&d.state));
@@ -450,12 +453,17 @@ pub fn DownloadsTab(
                     disabled=move || !can_info()
                     on:click=move |_| {
                         let ids: Vec<i64> = selected_ids.with(|s| s.iter().copied().collect());
-                        if let [id] = ids[..] {
-                            spawn_local(async move {
-                                if let Some(d) = api_fetch_detail(id).await {
-                                    detail.set(Some(d));
-                                }
-                            });
+                        match ids[..] {
+                            [id] => {
+                                // Single selection: full detail panel.
+                                spawn_local(async move {
+                                    if let Some(d) = api_fetch_detail(id).await {
+                                        detail.set(Some(d));
+                                    }
+                                });
+                            }
+                            [_, _, ..] => bulk_open.set(true), // several: bulk edit
+                            [] => {}
                         }
                     }
                 >
@@ -666,6 +674,16 @@ pub fn DownloadsTab(
                 on_close=move || detail.set(None)
             />
         })}
+
+        // ── Bulk-edit modal (multi-selection) ──────────────────────────────
+        <Show when=move || bulk_open.get()>
+            <BulkEditOverlay
+                selected_ids=selected_ids
+                categories=categories
+                downloads=downloads
+                on_close=move || bulk_open.set(false)
+            />
+        </Show>
     }
 }
 
@@ -1010,6 +1028,142 @@ fn AddModal(
                         on:click=move |_| submit()
                     >
                         {move || if busy.get() { t!("download.add_modal.adding") } else { t!("download.add_modal.add_btn") }}
+                    </button>
+                </div>
+            </div>
+        </div>
+    }
+}
+
+// ── Bulk-edit modal ─────────────────────────────────────────────────────────
+
+/// Edit category and/or priority for several selected downloads at once. Each
+/// field defaults to "leave unchanged", so applying only touches the dimensions
+/// the user actually picked — never clobbering the rest.
+#[component]
+fn BulkEditOverlay(
+    selected_ids: RwSignal<HashSet<i64>>,
+    categories: RwSignal<Vec<Category>>,
+    downloads: RwSignal<Vec<DownloadResponse>>,
+    on_close: impl Fn() + Copy + 'static,
+) -> impl IntoView {
+    // Snapshot the selection at open time so the applied set is stable even if
+    // the live list refreshes underneath us.
+    let ids: Vec<i64> = selected_ids.get_untracked().into_iter().collect();
+    let count = ids.len();
+
+    // `None` = leave unchanged. For category the inner Option distinguishes
+    // "clear to global" (Some(None)) from "set to id" (Some(Some(id))).
+    let cat_choice: RwSignal<Option<Option<i64>>> = RwSignal::new(None);
+    let prio_choice: RwSignal<Option<DownloadPriority>> = RwSignal::new(None);
+    let busy = RwSignal::new(false);
+
+    let apply = move |_| {
+        let cat = cat_choice.get_untracked();
+        let prio = prio_choice.get_untracked();
+        // Nothing chosen → just close, no requests.
+        if cat.is_none() && prio.is_none() {
+            on_close();
+            return;
+        }
+        let ids = ids.clone();
+        busy.set(true);
+        spawn_local(async move {
+            for id in ids {
+                if let Some(catopt) = cat {
+                    let body = serde_json::json!({ "category_id": catopt });
+                    if let Ok(req) = gloo_net::http::Request::put(&crate::api::api(&format!(
+                        "/api/v1/downloads/{id}/category"
+                    )))
+                    .json(&body)
+                    {
+                        let _ = req.send().await;
+                    }
+                }
+                if let Some(p) = prio {
+                    let body = serde_json::json!({ "priority": p.as_str() });
+                    if let Ok(req) = gloo_net::http::Request::put(&crate::api::api(&format!(
+                        "/api/v1/downloads/{id}/priority"
+                    )))
+                    .json(&body)
+                    {
+                        let _ = req.send().await;
+                    }
+                }
+            }
+            refresh_downloads(downloads).await;
+            busy.set(false);
+            on_close();
+        });
+    };
+
+    view! {
+        <div class="modal-backdrop" on:click=move |_| on_close()>
+            <div class="modal" on:click=move |e| e.stop_propagation()>
+                <div class="modal-header">
+                    <span class="modal-title">{t!("download.bulk.title", n = count)}</span>
+                    <button class="overlay-close" on:click=move |_| on_close()>
+                        <Icon paths=icons::X/>
+                    </button>
+                </div>
+                <div class="modal-body">
+                    <p class="modal-hint">{t!("download.bulk.hint")}</p>
+
+                    <div class="bulk-fields">
+                        <Show when=move || !categories.get().is_empty()>
+                            <div class="bulk-row">
+                                <label class="config-label">{t!("download.detail.category")}</label>
+                                <select
+                                    class="dl-filter-select"
+                                    on:change=move |e| {
+                                        let v = event_target_value(&e);
+                                        let choice = match v.as_str() {
+                                            "" => None,
+                                            "none" => Some(None),
+                                            s => s.parse::<i64>().ok().map(Some),
+                                        };
+                                        cat_choice.set(choice);
+                                    }
+                                >
+                                    <option value="" selected=true>{t!("download.bulk.unchanged")}</option>
+                                    <option value="none">{t!("download.detail.category_none")}</option>
+                                    <For each=move || categories.get() key=|c| c.id let:c>
+                                        <option value=c.id.to_string()>{c.name.clone()}</option>
+                                    </For>
+                                </select>
+                            </div>
+                        </Show>
+
+                        <div class="bulk-row">
+                            <label class="config-label">{t!("download.detail.priority")}</label>
+                            <select
+                                class="dl-filter-select"
+                                on:change=move |e| {
+                                    let choice = match event_target_value(&e).as_str() {
+                                        "low" => Some(DownloadPriority::Low),
+                                        "medium" => Some(DownloadPriority::Medium),
+                                        "high" => Some(DownloadPriority::High),
+                                        _ => None,
+                                    };
+                                    prio_choice.set(choice);
+                                }
+                            >
+                                <option value="" selected=true>{t!("download.bulk.unchanged")}</option>
+                                <option value="high">{t!("download.priority.high")}</option>
+                                <option value="medium">{t!("download.priority.medium")}</option>
+                                <option value="low">{t!("download.priority.low")}</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn-sm" on:click=move |_| on_close()>{t!("common.cancel")}</button>
+                    <button
+                        class="btn-sm btn-primary"
+                        disabled=move || busy.get()
+                        on:click=apply
+                    >
+                        {move || if busy.get() { t!("download.bulk.applying") } else { t!("download.bulk.apply") }}
                     </button>
                 </div>
             </div>

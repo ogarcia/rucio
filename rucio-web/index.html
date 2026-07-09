@@ -507,6 +507,13 @@
            above; min-width:0 lets it shrink (and clip a long name) instead of
            overflowing, and overrides the shared 14rem cap. */
         .add-cat-row .dl-filter-select { flex: 1; min-width: 0; max-width: none; }
+        /* Bulk-edit modal: each label/select pair is a row on a shared 2-column
+           grid (display:contents lifts the pair into the grid), so the selects
+           line up in one column no matter how wide each label is. */
+        .bulk-fields { display: grid; grid-template-columns: auto 1fr; align-items: center; column-gap: 0.75rem; row-gap: 0.5rem; }
+        .bulk-fields .bulk-row { display: contents; }
+        .bulk-fields .config-label { margin: 0; }
+        .bulk-fields .dl-filter-select { min-width: 0; max-width: none; }
 
         /* ── Panel contents ──────────────────────────────────────────────── */
 

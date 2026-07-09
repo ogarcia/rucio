@@ -470,6 +470,12 @@ download:
     low: "Low"
     medium: "Medium"
     high: "High"
+  bulk:
+    title: "Edit %{n} downloads"
+    hint: "Only the fields you change are applied to the selected downloads."
+    unchanged: "Leave unchanged"
+    apply: "Apply"
+    applying: "Applying…"
   piece:
     none: "No piece data"
     full: "Fully available across the swarm"
