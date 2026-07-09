@@ -939,6 +939,17 @@ fn DownloadRow(
         >
             <div class="dl-top">
                 <span class="dl-name">{name}</span>
+                // Category badge first (right after the name) so it lines up
+                // under the state pill in the row below; the priority marker
+                // follows it.
+                {move || category().map(|(cname, color)| {
+                    // Coloured badge: background = category colour, text picked
+                    // for contrast. A colourless category falls back to the
+                    // shared neutral grey, matching the Settings colour picker.
+                    let c = color.unwrap_or_else(|| NEUTRAL_CATEGORY_COLOR.to_string());
+                    let style = format!("background:{c};color:{}", contrast_text(&c));
+                    view! { <span class="dl-cat-badge" style=style>{cname}</span> }
+                })}
                 {move || {
                     // At-a-glance priority marker; Medium (default) shows nothing.
                     let prio = downloads
@@ -961,14 +972,6 @@ fn DownloadRow(
                         <span class=cls title=label>{glyph}</span>
                     })
                 }}
-                {move || category().map(|(cname, color)| {
-                    // Coloured badge: background = category colour, text picked
-                    // for contrast. A colourless category falls back to the
-                    // shared neutral grey, matching the Settings colour picker.
-                    let c = color.unwrap_or_else(|| NEUTRAL_CATEGORY_COLOR.to_string());
-                    let style = format!("background:{c};color:{}", contrast_text(&c));
-                    view! { <span class="dl-cat-badge" style=style>{cname}</span> }
-                })}
                 <span class="dl-size">{size_label}</span>
             </div>
 

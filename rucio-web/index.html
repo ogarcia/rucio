@@ -827,6 +827,13 @@
             .dl-statusbar:has(.dl-filter-select) .dl-status-right  { grid-row: 2; grid-column: 1 / -1; justify-self: end; margin-left: 0; }
             /* Tighter badge cap on narrow screens so it leaves room for name+size. */
             .dl-cat-badge { max-width: 6rem; }
+            /* When a category badge is present there isn't room for name + badge
+               + size on one phone-width line (the name gets squeezed away), so
+               give the name its own full-width first line and let the priority
+               marker, badge and size wrap onto a second one. Rows without a
+               category keep the compact single line. */
+            .dl-top:has(.dl-cat-badge) { flex-wrap: wrap; gap: 0.35rem 0.5rem; }
+            .dl-top:has(.dl-cat-badge) .dl-name { flex: 1 1 100%; }
         }
 
         /* Narrowest tier: three rows — but ONLY when the category select is also
