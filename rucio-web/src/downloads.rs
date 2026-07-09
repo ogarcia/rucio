@@ -43,6 +43,30 @@ impl FilterState {
             ),
         }
     }
+
+    /// Stable key for the `<select>` option value and localStorage.
+    fn as_key(self) -> &'static str {
+        match self {
+            FilterState::All => "all",
+            FilterState::Active => "active",
+            FilterState::Downloading => "downloading",
+            FilterState::Paused => "paused",
+            FilterState::Completed => "completed",
+            FilterState::History => "history",
+        }
+    }
+
+    /// Parse a key back; unknown values fall back to `All`.
+    fn from_key(v: &str) -> Self {
+        match v {
+            "active" => FilterState::Active,
+            "downloading" => FilterState::Downloading,
+            "paused" => FilterState::Paused,
+            "completed" => FilterState::Completed,
+            "history" => FilterState::History,
+            _ => FilterState::All,
+        }
+    }
 }
 
 /// Category filter for the download list.
@@ -71,6 +95,37 @@ impl CatFilter {
                 Err(_) => CatFilter::All,
             },
         }
+    }
+
+    /// Inverse of [`CatFilter::from_value`], for the `<select>` value and
+    /// localStorage: "" = all, "none" = uncategorized, else the id.
+    fn to_value(self) -> String {
+        match self {
+            CatFilter::All => String::new(),
+            CatFilter::Uncategorized => "none".to_string(),
+            CatFilter::Id(id) => id.to_string(),
+        }
+    }
+}
+
+// ── Filter persistence ──────────────────────────────────────────────────────
+
+/// localStorage keys for the persisted download filters (state + category),
+/// kept across reloads like the active tab.
+const FILTER_STATE_KEY: &str = "rucio-dl-filter";
+const FILTER_CAT_KEY: &str = "rucio-dl-cat";
+
+fn ls() -> Option<web_sys::Storage> {
+    web_sys::window().and_then(|w| w.local_storage().ok().flatten())
+}
+
+fn load_filter(key: &str) -> Option<String> {
+    ls().and_then(|s| s.get_item(key).ok().flatten())
+}
+
+fn save_filter(key: &str, val: &str) {
+    if let Some(s) = ls() {
+        let _ = s.set_item(key, val);
     }
 }
 
@@ -361,9 +416,36 @@ pub fn DownloadsTab(
     // Open flag for the multi-selection bulk-edit modal (category + priority).
     let bulk_open: RwSignal<bool> = RwSignal::new(false);
 
-    let filter_state: RwSignal<FilterState> = RwSignal::new(FilterState::All);
+    // State and category filters persist across reloads (like the active tab);
+    // the name search stays transient. Restore them from localStorage.
+    let filter_state: RwSignal<FilterState> = RwSignal::new(
+        load_filter(FILTER_STATE_KEY)
+            .map(|s| FilterState::from_key(&s))
+            .unwrap_or(FilterState::All),
+    );
     let filter_name: RwSignal<String> = RwSignal::new(String::new());
-    let filter_cat: RwSignal<CatFilter> = RwSignal::new(CatFilter::All);
+    let filter_cat: RwSignal<CatFilter> = RwSignal::new(
+        load_filter(FILTER_CAT_KEY)
+            .map(|s| CatFilter::from_value(&s))
+            .unwrap_or(CatFilter::All),
+    );
+
+    // If the selected category is later deleted, fall back to "all" so the user
+    // isn't stranded on an empty view they can't change (the category picker
+    // hides when there are none). The `loaded` latch — carried as the effect's
+    // previous return value — avoids resetting during the initial fetch, when
+    // `categories` is briefly empty before it arrives.
+    Effect::new(move |loaded: Option<bool>| {
+        let loaded = loaded.unwrap_or(false) || categories.with(|c| !c.is_empty());
+        if loaded
+            && let CatFilter::Id(id) = filter_cat.get_untracked()
+            && categories.with(|c| !c.iter().any(|x| x.id == id))
+        {
+            filter_cat.set(CatFilter::All);
+            save_filter(FILTER_CAT_KEY, &CatFilter::All.to_value());
+        }
+        loaded
+    });
 
     // The DownloadResponses currently selected.
     let selected_dls = move || {
@@ -600,15 +682,11 @@ pub fn DownloadsTab(
             <StatusBar dl_speed=dl_speed ul_speed=ul_speed temp_limit=temp_limit>
                 <select
                     class="dl-filter-select"
+                    prop:value=move || filter_state.get().as_key()
                     on:change=move |e| {
-                        filter_state.set(match event_target_value(&e).as_str() {
-                            "active"      => FilterState::Active,
-                            "downloading" => FilterState::Downloading,
-                            "paused"      => FilterState::Paused,
-                            "completed"   => FilterState::Completed,
-                            "history"     => FilterState::History,
-                            _             => FilterState::All,
-                        });
+                        let fs = FilterState::from_key(&event_target_value(&e));
+                        filter_state.set(fs);
+                        save_filter(FILTER_STATE_KEY, fs.as_key());
                     }
                 >
                     <option value="all">{t!("download.filter.all")}</option>
@@ -621,7 +699,12 @@ pub fn DownloadsTab(
                 <Show when=move || !categories.get().is_empty()>
                     <select
                         class="dl-filter-select"
-                        on:change=move |e| filter_cat.set(CatFilter::from_value(&event_target_value(&e)))
+                        prop:value=move || filter_cat.get().to_value()
+                        on:change=move |e| {
+                            let fc = CatFilter::from_value(&event_target_value(&e));
+                            filter_cat.set(fc);
+                            save_filter(FILTER_CAT_KEY, &fc.to_value());
+                        }
                     >
                         <option value="">{t!("download.filter.all_categories")}</option>
                         <option value="none">{t!("download.filter.uncategorized")}</option>
