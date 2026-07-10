@@ -54,8 +54,10 @@ pub async fn get_status(State(state): State<AppState>) -> Json<StatusResponse> {
                 .count()
         })
         .unwrap_or(0);
-    // Active rucio uploads: distinct peers currently pulling from us.
-    let active_uploads = state.upload_stats.snapshot().len();
+    // Active uploads: distinct files we are currently serving, so it counts one
+    // per upload — symmetric with `active_downloads` (one per download) — rather
+    // than one per peer/file connection.
+    let active_uploads = state.upload_stats.active_file_count();
 
     Json(StatusResponse {
         peer_id: ns.peer_id.clone(),

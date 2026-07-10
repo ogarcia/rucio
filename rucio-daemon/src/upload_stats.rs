@@ -225,6 +225,25 @@ impl UploadRegistry {
         out
     }
 
+    /// Number of distinct files currently being served (to one or more peers) —
+    /// the upload-side analogue of one active download per file, so it counts
+    /// the same way regardless of how many peer connections each file has.
+    pub fn active_file_count(&self) -> usize {
+        let map = self.inner.lock().unwrap();
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for key in map.keys() {
+            seen.insert(key.file_hash.as_str());
+        }
+        seen.len()
+    }
+
+    /// Number of active upload connections right now: one per peer/file transfer
+    /// row (a peer pulling two files counts twice; two peers pulling one file
+    /// count twice). The connection-level counterpart to [`Self::active_file_count`].
+    pub fn active_connection_count(&self) -> usize {
+        self.inner.lock().unwrap().len()
+    }
+
     /// Insert (or reuse) an eMule upload row and return its byte counter. The
     /// row is removed when the returned key is dropped via [`Self::remove`].
     #[cfg(feature = "emule-compat")]

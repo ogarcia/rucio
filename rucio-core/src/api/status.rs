@@ -27,8 +27,9 @@ pub struct StatusResponse {
     /// eMule status response.
     #[serde(default)]
     pub active_downloads: usize,
-    /// Number of peers currently downloading a file from us over rucio/libp2p
-    /// right now (distinct active uploads).
+    /// Number of distinct files currently being uploaded (served to one or more
+    /// peers) right now — one per upload, mirroring `active_downloads`, not one
+    /// per peer connection.
     #[serde(default)]
     pub active_uploads: usize,
     /// External IP address as reported by UPnP gateway.
