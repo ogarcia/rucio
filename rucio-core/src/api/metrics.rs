@@ -94,8 +94,20 @@ mod tests {
 /// Response body for `GET /api/v1/metrics`.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct MetricsResponse {
+    /// In-memory counters since the last daemon start; reset to zero on restart.
     pub session: SessionMetrics,
+    /// Cumulative counters persisted in SQLite, carried across restarts.
     pub total: TotalMetrics,
+    /// Active download connections right now: the number of (file, peer)
+    /// transfer pairs across all downloads (each download's active-source
+    /// count, summed). A file pulled from three peers counts as three.
+    #[serde(default)]
+    pub download_conns: usize,
+    /// Active upload connections right now: the number of (peer, file) transfer
+    /// pairs being served. Counted the same way as `download_conns`, so the two
+    /// figures are directly comparable.
+    #[serde(default)]
+    pub upload_conns: usize,
 }
 
 // ---------------------------------------------------------------------------

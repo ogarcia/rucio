@@ -123,6 +123,8 @@ overlay:
     uptime: "Tiempo activo"
     speed_down: "↓ velocidad"
     speed_up: "↑ velocidad"
+    conns_down: "↓ conexiones"
+    conns_up: "↑ conexiones"
     downloaded: "↓ descargado"
     uploaded: "↑ subido"
     ratio: "Ratio"

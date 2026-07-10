@@ -8,19 +8,27 @@ use rucio_core::api::metrics::{MetricsResponse, TotalMetrics};
 
 use crate::api::AppState;
 
-/// Retrieve transfer metrics.
+/// Transfer metrics
 ///
-/// Returns two counter sets:
+/// A point-in-time snapshot of transfer activity, in three parts:
 ///
-/// - `session`: in-memory counters since the last daemon start (bytes,
-///   speeds, chunks).  Speeds are a 5-second rolling average.
-/// - `total`: cumulative counters persisted in SQLite across restarts.
+/// - `session` — in-memory counters since the last daemon start: bytes moved,
+///   current speeds (a 5-second rolling average) and chunk tallies. Reset to
+///   zero on restart.
+/// - `total` — the same byte and chunk counters accumulated across every
+///   session, persisted in SQLite so they survive restarts.
+/// - `download_conns` / `upload_conns` — live connection gauges: the number of
+///   active `(file, peer)` transfer pairs in each direction right now. A file
+///   pulled from three peers is three download connections; a file served to
+///   two peers is two upload connections. Both directions are counted the same
+///   way, so the two figures are directly comparable. Note these count
+///   *connections*, not transfers — unlike the node status endpoint's
+///   `active_downloads` / `active_uploads`, which count one per file regardless
+///   of how many connections it spans.
 #[utoipa::path(
     get,
     path = "/api/v1/metrics",
     tag = "node",
-    summary = "Transfer metrics",
-    description = "Session counters (in-memory, since last start) and lifetime totals (SQLite).",
     responses(
         (status = 200, description = "Metrics retrieved", body = MetricsResponse),
         (status = 500, description = "Database error reading totals"),
@@ -48,5 +56,21 @@ pub async fn get_metrics(
     total.ratio =
         rucio_core::api::metrics::share_ratio(total.uploaded_bytes, total.downloaded_bytes);
 
-    Ok(Json(MetricsResponse { session, total }))
+    // Live connection gauges (not accumulated): (file, peer) transfer pairs in
+    // each direction, counted the same way so the two are comparable.
+    let upload_conns = state.upload_stats.active_connection_count();
+    let download_conns: usize = state
+        .live_stats
+        .read()
+        .await
+        .values()
+        .map(|s| s.sources_active as usize)
+        .sum();
+
+    Ok(Json(MetricsResponse {
+        session,
+        total,
+        download_conns,
+        upload_conns,
+    }))
 }

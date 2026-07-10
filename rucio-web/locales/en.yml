@@ -125,6 +125,8 @@ overlay:
     uptime: "Uptime"
     speed_down: "↓ speed"
     speed_up: "↑ speed"
+    conns_down: "↓ connections"
+    conns_up: "↑ connections"
     downloaded: "↓ downloaded"
     uploaded: "↑ uploaded"
     ratio: "Ratio"

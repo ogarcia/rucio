@@ -215,6 +215,10 @@ pub fn StatsPanel(active_panel: RwSignal<Option<super::Panel>>) -> impl IntoView
                                     <dd>{format_speed_full(s.download_speed)}</dd>
                                     <dt>{t!("overlay.stats.speed_up")}</dt>
                                     <dd>{format_speed_full(s.upload_speed)}</dd>
+                                    <dt>{t!("overlay.stats.conns_down")}</dt>
+                                    <dd>{m.download_conns.to_string()}</dd>
+                                    <dt>{t!("overlay.stats.conns_up")}</dt>
+                                    <dd>{m.upload_conns.to_string()}</dd>
                                     <dt>{t!("overlay.stats.downloaded")}</dt>
                                     <dd>{format_size(s.downloaded_bytes)}</dd>
                                     <dt>{t!("overlay.stats.uploaded")}</dt>

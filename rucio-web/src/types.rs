@@ -479,6 +479,10 @@ pub fn is_streamed_state(s: &DownloadState) -> bool {
 pub struct MetricsResponse {
     pub session: SessionMetrics,
     pub total: TotalMetrics,
+    #[serde(default)]
+    pub download_conns: usize,
+    #[serde(default)]
+    pub upload_conns: usize,
 }
 
 #[derive(Deserialize, Clone, Debug)]
