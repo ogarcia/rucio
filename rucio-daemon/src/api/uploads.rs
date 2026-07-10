@@ -17,8 +17,6 @@ use crate::api::AppState;
     get,
     path = "/api/v1/uploads",
     tag = "uploads",
-    summary = "Active uploads",
-    description = "Peers currently downloading from this node, with per-peer rate.",
     responses(
         (status = 200, description = "Active uploads retrieved", body = UploadsResponse),
     )

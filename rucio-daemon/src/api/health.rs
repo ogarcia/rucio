@@ -7,19 +7,16 @@ use rucio_core::api::metrics::HealthResponse;
 
 use crate::api::AppState;
 
-/// Return daemon health.
+/// Liveness probe
 ///
 /// Always returns `200 OK` with `{ "status": "ok", "version": "..." }` as
-/// long as the daemon process is running.  Container health-check tools
+/// long as the daemon process is running. Container health-check tools
 /// (Docker `HEALTHCHECK`, Kubernetes liveness probe) can use this endpoint
 /// without any authentication.
 #[utoipa::path(
     get,
     path = "/health",
     tag = "health",
-    summary = "Liveness probe",
-    description = "Returns 200 OK whenever the daemon is running. \
-                   Suitable for Docker HEALTHCHECK and Kubernetes liveness probes.",
     responses(
         (status = 200, description = "Daemon is alive", body = HealthResponse),
     )
