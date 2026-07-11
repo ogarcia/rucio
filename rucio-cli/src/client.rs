@@ -203,6 +203,7 @@ impl ApiClient {
             "/api/v1/shares",
             &AddShareRequest {
                 path: path.to_string(),
+                filter: Default::default(),
             },
         )
         .await

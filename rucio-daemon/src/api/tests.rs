@@ -109,6 +109,7 @@ async fn test_state() -> (
             &crate::config::NotificationConfig::default(),
         ),
         indexing_seen: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        reconcile_trigger: Arc::new(tokio::sync::Notify::new()),
         auto_clear: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     (state, cmd_rx, download_rx, dir)

@@ -381,13 +381,6 @@ async fn flush_pending(
 /// the DB on each call so that un-sharing a directory mid-scan stops queued
 /// hashing instead of draining the whole queue. On a DB error we keep the file
 /// (don't silently drop indexing work).
-async fn still_under_shared_dir(db: &Db, path: &Path) -> bool {
-    match db::shared_dirs::list(db).await {
-        Ok(dirs) => dirs.iter().any(|d| path.starts_with(Path::new(&d.path))),
-        Err(_) => true,
-    }
-}
-
 /// Index (or re-index) a file and announce it in the DHT.
 ///
 /// `ed2k_tx`, when present, receives the path of every successfully-indexed file
@@ -401,12 +394,12 @@ async fn on_file_upsert(
     outboard_dir: &Path,
     ed2k_tx: Option<&crate::ed2k_index::Ed2kIndex>,
 ) {
-    // The directory this file lives under may have been unshared while the file
-    // was still queued for hashing (e.g. the user removed the share mid-scan).
-    // Don't (re)index a file that is no longer under any shared directory —
-    // otherwise a long startup hash keeps running for an already-removed dir.
-    if !still_under_shared_dir(db, path).await {
-        debug!(path = %path.display(), "Watcher: directory no longer shared, skipping index");
+    // Don't (re)index a file the share no longer wants: its directory may have
+    // been unshared while the file was queued (e.g. the user removed the share
+    // mid-scan), or the directory's filter (recursive flag / extensions) may
+    // exclude it. `should_share` applies the most-specific directory's filter.
+    if !db::shared_dirs::should_share(db, path).await {
+        debug!(path = %path.display(), "Watcher: not shared (unshared or filtered out), skipping index");
         return;
     }
 
@@ -607,6 +600,12 @@ pub async fn reconcile_shares(
         // index before are de-indexed below (in DB, absent from disk → removed).
         disk.retain(|p, _| !is_excluded(Path::new(p), excluded));
 
+        // Apply each directory's file filter (recursive flag + extensions).
+        // Files that no longer match are dropped from the disk set, so the
+        // de-index pass below removes them — this is what makes editing a
+        // directory's filter take effect on the next reconcile without a restart.
+        disk.retain(|p, _| db::shared_dirs::dirs_share(&rows, Path::new(p)));
+
         // New or changed files → (re)index (queued, indexed below).
         for (path, &(disk_size, disk_mtime)) in &disk {
             match db_by_path.get(path) {
@@ -779,11 +778,11 @@ mod tests {
 
         let film = Path::new("/data/movies/film.mkv");
         assert!(
-            still_under_shared_dir(&db, film).await,
+            db::shared_dirs::should_share(&db, film).await,
             "a file under a shared dir is still shared"
         );
         assert!(
-            !still_under_shared_dir(&db, Path::new("/other/x.mkv")).await,
+            !db::shared_dirs::should_share(&db, Path::new("/other/x.mkv")).await,
             "a file outside every shared dir is not shared"
         );
 
@@ -791,7 +790,7 @@ mod tests {
         // counting as shared, which is what makes the indexing loop skip them.
         db::shared_dirs::delete(&db, "/data/movies").await.unwrap();
         assert!(
-            !still_under_shared_dir(&db, film).await,
+            !db::shared_dirs::should_share(&db, film).await,
             "after the dir is unshared its files are no longer shared"
         );
     }

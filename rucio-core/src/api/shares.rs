@@ -1,11 +1,103 @@
 use crate::protocol::file::FileDescriptor;
 
+/// How a directory's `extensions` list is applied when deciding which files to
+/// share. `All` (the default) ignores the list and shares every file.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+    utoipa::ToSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtFilterMode {
+    /// Share every file regardless of extension.
+    #[default]
+    All,
+    /// Share only files whose extension is in the list.
+    Only,
+    /// Share every file except those whose extension is in the list.
+    Except,
+}
+
+impl ExtFilterMode {
+    /// Stable integer encoding for the DB `ext_mode` column.
+    pub fn as_i64(self) -> i64 {
+        match self {
+            ExtFilterMode::All => 0,
+            ExtFilterMode::Only => 1,
+            ExtFilterMode::Except => 2,
+        }
+    }
+
+    /// Decode from the DB integer; unknown values fall back to `All`.
+    pub fn from_i64(v: i64) -> Self {
+        match v {
+            1 => ExtFilterMode::Only,
+            2 => ExtFilterMode::Except,
+            _ => ExtFilterMode::All,
+        }
+    }
+}
+
+/// Which files under a shared directory to actually index and share. The
+/// default (`recursive = true`, `ext_mode = all`) shares the whole tree — the
+/// original behaviour.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+pub struct ShareFilter {
+    /// Recurse into subdirectories. When false, only files directly in the
+    /// directory are shared (its subdirectories are ignored).
+    #[serde(default = "default_recursive")]
+    pub recursive: bool,
+    /// How `extensions` is applied.
+    #[serde(default)]
+    pub ext_mode: ExtFilterMode,
+    /// `'|'`-separated file extensions to match, case-insensitive, without the
+    /// dot — e.g. `"mp3|mkv|avi"` (same style as a category's keywords). Ignored
+    /// when `ext_mode` is `all`; empty/null otherwise means "match nothing".
+    #[serde(default)]
+    pub extensions: Option<String>,
+}
+
+fn default_recursive() -> bool {
+    true
+}
+
+impl Default for ShareFilter {
+    fn default() -> Self {
+        Self {
+            recursive: true,
+            ext_mode: ExtFilterMode::All,
+            extensions: None,
+        }
+    }
+}
+
 /// POST /api/v1/shares
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct AddShareRequest {
     /// Absolute path to a directory to watch and share.
     /// Individual files are not accepted; wrap them in a directory first.
     pub path: String,
+    /// Which files under the directory to share. Omit for the default (share the
+    /// whole tree).
+    #[serde(default)]
+    pub filter: ShareFilter,
+}
+
+/// PUT /api/v1/shares — update an existing shared directory's file filter.
+/// A reconcile then indexes newly-matching files and de-indexes newly-excluded
+/// ones.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+pub struct UpdateSharedDirRequest {
+    /// Absolute path of the shared directory to update.
+    pub path: String,
+    /// The new filter to apply.
+    pub filter: ShareFilter,
 }
 
 /// Response to POST /api/v1/shares
@@ -94,6 +186,10 @@ pub struct SharedDirResponse {
     pub file_count: u64,
     /// Total size of indexed files under this directory, in bytes.
     pub total_size: u64,
+    /// Which files under this directory are shared (recursive flag + extension
+    /// filter). Defaults to "share the whole tree".
+    #[serde(default)]
+    pub filter: ShareFilter,
 }
 
 /// GET /api/v1/shares — the watched directories (the unit of add/remove).

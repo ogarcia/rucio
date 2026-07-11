@@ -83,6 +83,7 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         shares::list_shares,
         shares::list_share_files,
         shares::add_share,
+        shares::update_shared_dir,
         shares::indexing_status,
         shares::get_magnet,
         shares::remove_share,
@@ -150,6 +151,9 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         rucio_core::api::status::PeersResponse,
         rucio_core::api::status::PeerResponse,
         rucio_core::api::shares::AddShareRequest,
+        rucio_core::api::shares::UpdateSharedDirRequest,
+        rucio_core::api::shares::ShareFilter,
+        rucio_core::api::shares::ExtFilterMode,
         rucio_core::api::shares::AddShareResponse,
         rucio_core::api::shares::ShareResponse,
         rucio_core::api::shares::SharesResponse,
@@ -511,6 +515,9 @@ pub struct AppState {
     /// clears it and fires an "indexing complete" notification once the pending
     /// count drains to 0.
     pub indexing_seen: Arc<std::sync::atomic::AtomicBool>,
+    /// Pinged to run a share reconcile now (e.g. after editing a directory's
+    /// file filter) instead of waiting for the periodic sweep.
+    pub reconcile_trigger: Arc<tokio::sync::Notify>,
     /// Live toggle for auto-clearing finished downloads from the history.
     /// Flipped by the settings handler; read by the download completion and
     /// cancel paths to decide whether to drop the finished entry immediately.
@@ -571,6 +578,7 @@ fn v1_router() -> Router<AppState> {
         .route("/shares", routing::get(shares::list_shares))
         .route("/shares/files", routing::get(shares::list_share_files))
         .route("/shares", routing::post(shares::add_share))
+        .route("/shares", routing::put(shares::update_shared_dir))
         .route("/shares/indexing", routing::get(shares::indexing_status))
         .route("/shares", routing::delete(shares::remove_shares_by_path))
         .route("/shares/{hash}", routing::delete(shares::remove_share))

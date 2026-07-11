@@ -1,6 +1,7 @@
 //! GET    /api/v1/shares
 //! GET    /api/v1/shares/indexing
 //! POST   /api/v1/shares
+//! PUT    /api/v1/shares          (update a directory's file filter)
 //! DELETE /api/v1/shares/:hash
 //! DELETE /api/v1/shares          (query param: path=<prefix>)
 
@@ -11,7 +12,7 @@ use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::StatusCode;
 use rucio_core::api::shares::{
     AddShareRequest, AddShareResponse, ShareResponse, SharedDirKind, SharedDirResponse,
-    SharedDirsResponse, SharesResponse,
+    SharedDirsResponse, SharesResponse, UpdateSharedDirRequest,
 };
 use rucio_core::protocol::chunk::{CHUNK_SIZE, Hash};
 use rucio_core::protocol::magnet::MagnetLink;
@@ -149,16 +150,74 @@ pub async fn list_shares(State(state): State<AppState>) -> Json<SharedDirsRespon
             // mid-reconcile): label it generically rather than as Downloads.
             SharedDirKind::Config
         };
+        let filter = rucio_core::api::shares::ShareFilter {
+            recursive: d.recursive,
+            ext_mode: rucio_core::api::shares::ExtFilterMode::from_i64(d.ext_mode),
+            extensions: d.ext_list,
+        };
         out.push(SharedDirResponse {
             path: d.path,
             protected: d.protected,
             kind,
             file_count: file_count as u64,
             total_size: total_size as u64,
+            filter,
         });
     }
 
     Json(SharedDirsResponse { dirs: out })
+}
+
+/// Update a shared directory's file filter
+///
+/// Changes which files under an already-shared directory are indexed: the
+/// recursive flag and the extension filter (`all` / `only` / `except` a
+/// `'|'`-separated list of extensions). A reconcile is triggered immediately, so
+/// newly-matching files get indexed and newly-excluded ones de-indexed without
+/// waiting for the periodic sweep. Returns 404 if the path is not a shared
+/// directory.
+#[utoipa::path(
+    put,
+    path = "/api/v1/shares",
+    tag = "shares",
+    request_body = UpdateSharedDirRequest,
+    responses(
+        (status = 204, description = "Filter updated; a reconcile was triggered."),
+        (status = 404, description = "No shared directory at that path."),
+    )
+)]
+pub async fn update_shared_dir(
+    State(state): State<AppState>,
+    Json(req): Json<UpdateSharedDirRequest>,
+) -> StatusCode {
+    let path = req.path.trim_end_matches('/');
+    let ext_list = req
+        .filter
+        .extensions
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    match db::shared_dirs::update_filter(
+        &state.db,
+        path,
+        req.filter.recursive,
+        req.filter.ext_mode.as_i64(),
+        ext_list,
+    )
+    .await
+    {
+        Ok(true) => {
+            // Re-evaluate the share now: index newly-matching files, de-index
+            // newly-excluded ones.
+            state.reconcile_trigger.notify_one();
+            StatusCode::NO_CONTENT
+        }
+        Ok(false) => StatusCode::NOT_FOUND,
+        Err(e) => {
+            tracing::error!("update_shared_dir: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -307,27 +366,47 @@ pub async fn add_share(
         ));
     }
 
-    // Collect all file paths to index
-    let paths = collect_files(&root).map_err(|e| {
-        tracing::error!("Failed to collect files under {}: {e}", root.display());
-        (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": e.to_string() })),
-        )
-    })?;
-
-    let total = paths.len();
-
-    // Register the directory in shared_dirs (idempotent)
+    // Register the directory (with its file filter) first, so the filter is in
+    // place before we pick which files to index. Re-adding updates the filter.
     let now = now_secs();
     let path_str = root.to_string_lossy().into_owned();
-    if let Err(e) = db::shared_dirs::insert(&state.db, &path_str, false, now).await {
+    let ext_list = req
+        .filter
+        .extensions
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if let Err(e) = db::shared_dirs::insert_with_filter(
+        &state.db,
+        &path_str,
+        false,
+        req.filter.recursive,
+        req.filter.ext_mode.as_i64(),
+        ext_list,
+        now,
+    )
+    .await
+    {
         tracing::error!("Failed to register shared dir {}: {e}", root.display());
         return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": "failed to register directory" })),
         ));
     }
+
+    // Collect every file under the directory, then keep only the ones its filter
+    // shares (recursive flag + extensions), resolved against the most-specific
+    // shared directory so nested shares with their own filters are respected.
+    let mut paths = collect_files(&root).map_err(|e| {
+        tracing::error!("Failed to collect files under {}: {e}", root.display());
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+    })?;
+    let dirs = db::shared_dirs::list(&state.db).await.unwrap_or_default();
+    paths.retain(|p| db::shared_dirs::dirs_share(&dirs, p));
+    let total = paths.len();
 
     // Notify the watcher about the new directory
     let _ = state

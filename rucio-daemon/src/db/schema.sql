@@ -13,6 +13,9 @@ CREATE TABLE IF NOT EXISTS shared_dirs (
     id          INTEGER PRIMARY KEY,
     path        TEXT    NOT NULL UNIQUE,  -- absolute path, no trailing slash
     protected   INTEGER NOT NULL DEFAULT 0,  -- 1 = cannot be removed by user
+    recursive   INTEGER NOT NULL DEFAULT 1,  -- 1 = share subdirectories too, 0 = this dir only
+    ext_mode    INTEGER NOT NULL DEFAULT 0,  -- extension filter: 0 all, 1 only these, 2 except these
+    ext_list    TEXT,                        -- '|'-separated extensions (lowercase, no dots), e.g. mp3|mkv|avi
     added_at    INTEGER NOT NULL
 );
 

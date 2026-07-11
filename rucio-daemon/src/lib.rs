@@ -426,6 +426,10 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
     // inotify event the kernel dropped under load) would otherwise be missed —
     // then re-check once a day. Cheap on a stable library: it only hashes files
     // that are actually new or whose size/mtime changed.
+    // Pinged (e.g. by the edit-share-filter endpoint) to run a reconcile now
+    // instead of waiting for the 24 h sweep, so a filter change takes effect
+    // promptly. Shared with AppState.
+    let reconcile_trigger = Arc::new(tokio::sync::Notify::new());
     let reconcile_task = {
         let db = db.clone();
         let node_tx = handle.cmd_tx.clone();
@@ -434,10 +438,11 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         let ed2k_tx = ed2k_index.clone();
         let indexing_seen = Arc::clone(&indexing_seen);
         let outboard_dir = config.storage.outboard_dir.clone();
+        let trigger = Arc::clone(&reconcile_trigger);
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(24 * 3600));
+            tick.tick().await; // consume the immediate first fire
             loop {
-                tick.tick().await; // fires immediately on the first iteration
                 watcher::reconcile_shares(
                     &db,
                     &node_tx,
@@ -452,6 +457,11 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                 // (watcher de-index, files vanished from disk, a crash between
                 // the DB delete and the inline file delete).
                 transfer::gc_orphan_outboards(&db, &outboard_dir).await;
+                // Wait for the next scheduled sweep or a manual trigger.
+                tokio::select! {
+                    _ = tick.tick() => {}
+                    _ = trigger.notified() => {}
+                }
             }
         })
     };
@@ -660,6 +670,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         upload_stats: Arc::clone(&upload_stats),
         notifications: Arc::clone(&notif_state),
         indexing_seen: Arc::clone(&indexing_seen),
+        reconcile_trigger: Arc::clone(&reconcile_trigger),
         auto_clear: Arc::clone(&auto_clear),
     };
 
