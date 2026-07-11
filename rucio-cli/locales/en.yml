@@ -305,8 +305,10 @@ share:
   ambiguous_hash: "Ambiguous: %{n} shares match hash prefix '%{target}':"
   no_indexing: "No files being indexed."
   indexing_n: "%{n} file(s) being indexed…"
+  ed2k_indexing_n: "%{n} file(s) being hashed for eMule…"
   indexing_complete: "Indexing complete."
   indexing_line: "Indexing: %{n} file(s) pending…"
+  ed2k_indexing_line: "eMule: %{n} file(s) hashing…"
   yes: "yes"
   col:
     num: "#"

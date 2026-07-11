@@ -645,18 +645,28 @@ pub(crate) use rucio_core::protocol::hashing::collect_files;
 /// are detected. Poll this endpoint after adding a directory to know when all files are ready
 /// to be discovered by other peers.
 ///
-/// Returns `{ "pending": 0 }` when there is nothing being indexed.
+/// `pending` is the Rucio (BLAKE3) indexing backlog; `ed2k_pending` is the separate eMule (MD4)
+/// hashing backlog, which runs behind it and is `0` when eMule is disabled. Both are `0` when
+/// there is nothing being indexed.
 #[utoipa::path(
     get,
     path = "/api/v1/shares/indexing",
     responses(
-        (status = 200, description = "Number of files pending indexing.", body = serde_json::Value,
-         example = json!({ "pending": 0 })),
+        (status = 200, description = "Files pending indexing (Rucio) and eMule hashing.", body = serde_json::Value,
+         example = json!({ "pending": 0, "ed2k_pending": 0 })),
     )
 )]
 pub async fn indexing_status(State(state): State<super::AppState>) -> Json<serde_json::Value> {
     let pending = state.indexing_count.load(Ordering::Relaxed);
-    Json(serde_json::json!({ "pending": pending }))
+    #[cfg(feature = "emule-compat")]
+    let ed2k_pending = state
+        .ed2k_index
+        .as_ref()
+        .map(|e| e.pending_count())
+        .unwrap_or(0);
+    #[cfg(not(feature = "emule-compat"))]
+    let ed2k_pending = 0usize;
+    Json(serde_json::json!({ "pending": pending, "ed2k_pending": ed2k_pending }))
 }
 
 /// Hash a single file, split into chunks, and insert into the DB.

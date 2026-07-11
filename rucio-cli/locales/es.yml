@@ -298,8 +298,10 @@ share:
   ambiguous_hash: "Ambiguo: %{n} compartidos coinciden con el prefijo de hash '%{target}':"
   no_indexing: "No hay archivos indexándose."
   indexing_n: "%{n} archivo(s) indexándose…"
+  ed2k_indexing_n: "%{n} archivo(s) hasheándose para eMule…"
   indexing_complete: "Indexación completada."
   indexing_line: "Indexando: %{n} archivo(s) pendiente(s)…"
+  ed2k_indexing_line: "eMule: %{n} archivo(s) hasheándose…"
   yes: "sí"
   col:
     num: "#"

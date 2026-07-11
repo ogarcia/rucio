@@ -384,29 +384,40 @@ fn resolve_share<'a>(shares: &'a [ShareResponse], target: &str) -> Result<&'a Sh
 }
 
 pub async fn indexing(client: &ApiClient, watch: bool) -> Result<()> {
-    let pending = client.indexing_pending().await?;
+    let (pending, ed2k_pending) = client.indexing_pending().await?;
 
     if !watch {
-        if pending == 0 {
+        if pending == 0 && ed2k_pending == 0 {
             println!("{}", t!("share.no_indexing"));
         } else {
-            println!(
-                "{}",
-                t!("share.indexing_n", n = color::value(&pending.to_string()))
-            );
+            if pending > 0 {
+                println!(
+                    "{}",
+                    t!("share.indexing_n", n = color::value(&pending.to_string()))
+                );
+            }
+            if ed2k_pending > 0 {
+                println!(
+                    "{}",
+                    t!(
+                        "share.ed2k_indexing_n",
+                        n = color::value(&ed2k_pending.to_string())
+                    )
+                );
+            }
         }
         return Ok(());
     }
 
     // --watch mode ----------------------------------------------------------
-    if pending == 0 {
+    if pending == 0 && ed2k_pending == 0 {
         println!("{}", t!("share.no_indexing"));
         return Ok(());
     }
 
     print!("{HIDE_CURSOR}");
     let result = tokio::select! {
-        r = indexing_watch_loop(client, pending) => r,
+        r = indexing_watch_loop(client, pending, ed2k_pending) => r,
         _ = tokio::signal::ctrl_c() => {
             println!();
             Ok(())
@@ -418,19 +429,22 @@ pub async fn indexing(client: &ApiClient, watch: bool) -> Result<()> {
 
 /// WS-first watch loop; falls back to HTTP polling if the WebSocket is
 /// unavailable.
-async fn indexing_watch_loop(client: &ApiClient, initial: usize) -> Result<()> {
+async fn indexing_watch_loop(client: &ApiClient, rucio: usize, emule: usize) -> Result<()> {
     match client.ws_stream().await {
-        Ok(stream) => indexing_watch_ws(stream, initial).await,
+        Ok(stream) => indexing_watch_ws(stream, rucio, emule).await,
         Err(e) => {
             tracing::debug!("WebSocket unavailable ({e}), falling back to HTTP polling");
-            indexing_watch_http(client, initial).await
+            indexing_watch_http(client, rucio, emule).await
         }
     }
 }
 
-async fn indexing_watch_ws(mut stream: crate::client::WsStream, initial: usize) -> Result<()> {
-    let mut pending = initial;
-    print_indexing_line(pending);
+async fn indexing_watch_ws(
+    mut stream: crate::client::WsStream,
+    mut pending: usize,
+    mut ed2k_pending: usize,
+) -> Result<()> {
+    print_indexing_line(pending, ed2k_pending);
 
     loop {
         match stream.next().await {
@@ -439,10 +453,15 @@ async fn indexing_watch_ws(mut stream: crate::client::WsStream, initial: usize) 
                     Ok(e) => e,
                     Err(_) => continue,
                 };
-                if let WsEvent::IndexingCount { pending: p, .. } = event {
+                if let WsEvent::IndexingCount {
+                    pending: p,
+                    ed2k_pending: e,
+                } = event
+                {
                     pending = p;
-                    print_indexing_line(pending);
-                    if pending == 0 {
+                    ed2k_pending = e;
+                    print_indexing_line(pending, ed2k_pending);
+                    if pending == 0 && ed2k_pending == 0 {
                         println!("\n{}", color::success(&t!("share.indexing_complete")));
                         return Ok(());
                     }
@@ -461,25 +480,28 @@ async fn indexing_watch_ws(mut stream: crate::client::WsStream, initial: usize) 
     }
 }
 
-async fn indexing_watch_http(client: &ApiClient, initial: usize) -> Result<()> {
+async fn indexing_watch_http(
+    client: &ApiClient,
+    mut pending: usize,
+    mut ed2k_pending: usize,
+) -> Result<()> {
     use tokio::time::{Duration, interval};
 
-    let mut pending = initial;
     let mut ticker = interval(Duration::from_secs(1));
-    print_indexing_line(pending);
+    print_indexing_line(pending, ed2k_pending);
 
     loop {
         ticker.tick().await;
 
-        pending = match client.indexing_pending().await {
-            Ok(n) => n,
+        (pending, ed2k_pending) = match client.indexing_pending().await {
+            Ok(v) => v,
             Err(e) => {
                 println!("\n{}", t!("common.daemon_contact_error", msg = e));
                 return Ok(());
             }
         };
-        print_indexing_line(pending);
-        if pending == 0 {
+        print_indexing_line(pending, ed2k_pending);
+        if pending == 0 && ed2k_pending == 0 {
             println!("\n{}", color::success(&t!("share.indexing_complete")));
             return Ok(());
         }
@@ -487,18 +509,33 @@ async fn indexing_watch_http(client: &ApiClient, initial: usize) -> Result<()> {
 }
 
 /// Overwrite the current terminal line with the latest count.
-fn print_indexing_line(pending: usize) {
-    if pending == 0 {
+fn print_indexing_line(pending: usize, ed2k_pending: usize) {
+    if pending == 0 && ed2k_pending == 0 {
         // Caller prints the final message; just clear the spinner line.
         print!("{CLEAR_LINE}");
     } else {
-        print!(
-            "{CLEAR_LINE}{}",
-            t!(
-                "share.indexing_line",
-                n = color::value(&pending.to_string())
-            )
-        );
+        // Show whichever backlog is non-empty (eMule hashing lags the Rucio
+        // indexing, so it can still be running after the Rucio part is done).
+        let mut parts: Vec<String> = Vec::new();
+        if pending > 0 {
+            parts.push(
+                t!(
+                    "share.indexing_line",
+                    n = color::value(&pending.to_string())
+                )
+                .to_string(),
+            );
+        }
+        if ed2k_pending > 0 {
+            parts.push(
+                t!(
+                    "share.ed2k_indexing_line",
+                    n = color::value(&ed2k_pending.to_string())
+                )
+                .to_string(),
+            );
+        }
+        print!("{CLEAR_LINE}{}", parts.join("  ·  "));
     }
     // Flush stdout so the partial line is visible immediately.
     use std::io::Write as _;

@@ -341,7 +341,9 @@ impl ApiClient {
     }
 
     /// Return the number of files currently being indexed by the daemon.
-    pub async fn indexing_pending(&self) -> Result<usize> {
+    /// Files pending indexing: `(rucio, emule)` — the Rucio (BLAKE3) backlog and
+    /// the separate eMule (MD4) hashing backlog (`0` when eMule is disabled).
+    pub async fn indexing_pending(&self) -> Result<(usize, usize)> {
         let url = format!("{}/api/v1/shares/indexing", self.base);
         let resp = self
             .inner
@@ -350,7 +352,9 @@ impl ApiClient {
             .await
             .with_context(|| format!("GET {url}"))?;
         let body: serde_json::Value = resp.json().await.unwrap_or_default();
-        Ok(body["pending"].as_u64().unwrap_or(0) as usize)
+        let rucio = body["pending"].as_u64().unwrap_or(0) as usize;
+        let emule = body["ed2k_pending"].as_u64().unwrap_or(0) as usize;
+        Ok((rucio, emule))
     }
 
     pub async fn remove_shares_by_path(&self, path: &str) -> Result<u64> {
