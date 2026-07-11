@@ -11,8 +11,8 @@ use rust_i18n::t;
 use crate::icons::{self, Icon};
 use crate::statusbar::StatusBar;
 use crate::types::{
-    AddShareResponse, EmuleStatusResponse, PinsResponse, ShareFile, SharedDir, SharedDirKind,
-    SharedDirsResponse, SharesFilesResponse, format_size,
+    AddShareResponse, EmuleStatusResponse, ExtFilterMode, PinsResponse, ShareFile, ShareFilter,
+    SharedDir, SharedDirKind, SharedDirsResponse, SharesFilesResponse, format_size,
 };
 
 // ── API ─────────────────────────────────────────────────────────────────────
@@ -59,8 +59,8 @@ async fn api_list_files_page(
 
 /// POST a directory to share. Returns the queued count and any read errors, or
 /// `Err(message)` on a request/validation failure.
-async fn api_add_dir(path: String) -> Result<AddShareResponse, String> {
-    let body = serde_json::json!({ "path": path });
+async fn api_add_dir(path: String, filter: ShareFilter) -> Result<AddShareResponse, String> {
+    let body = serde_json::json!({ "path": path, "filter": filter });
     let req = gloo_net::http::Request::post(&crate::api::api("/api/v1/shares"))
         .json(&body)
         .map_err(|e| e.to_string())?;
@@ -78,6 +78,20 @@ async fn api_add_dir(path: String) -> Result<AddShareResponse, String> {
             .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(String::from))
             .unwrap_or_else(|| format!("HTTP {}", resp.status()));
         Err(msg)
+    }
+}
+
+/// PUT a shared directory's updated filter (triggers a reconcile server-side).
+async fn api_update_dir(path: String, filter: ShareFilter) -> Result<(), String> {
+    let body = serde_json::json!({ "path": path, "filter": filter });
+    let req = gloo_net::http::Request::put(&crate::api::api("/api/v1/shares"))
+        .json(&body)
+        .map_err(|e| e.to_string())?;
+    let resp = req.send().await.map_err(|e| e.to_string())?;
+    if resp.ok() {
+        Ok(())
+    } else {
+        Err(format!("HTTP {}", resp.status()))
     }
 }
 
@@ -200,6 +214,8 @@ pub fn SharesTab(
     let loading: RwSignal<bool> = RwSignal::new(false);
     let filter: RwSignal<String> = RwSignal::new(String::new());
     let add_open: RwSignal<bool> = RwSignal::new(false);
+    // The directory whose filter is being edited (None = no edit dialog open).
+    let editing: RwSignal<Option<SharedDir>> = RwSignal::new(None);
     // When set, the file list is restricted to this directory. Toggled by
     // clicking a folder row.
     let selected_dir: RwSignal<Option<String>> = RwSignal::new(None);
@@ -511,6 +527,7 @@ pub fn SharesTab(
                                 let path_click = d.path.clone();
                                 let path_class = d.path.clone();
                                 let path_rm = d.path.clone();
+                                let d_edit = d.clone();
                                 let kind = d.kind;
                                 view! {
                                     <li
@@ -539,6 +556,16 @@ pub fn SharesTab(
                                         </div>
                                         {if kind == SharedDirKind::User {
                                             view! {
+                                                <button
+                                                    class="icon-btn"
+                                                    title=t!("share.edit_title")
+                                                    on:click=move |ev| {
+                                                        ev.stop_propagation();
+                                                        editing.set(Some(d_edit.clone()));
+                                                    }
+                                                >
+                                                    <Icon paths=icons::PENCIL/>
+                                                </button>
                                                 <button
                                                     class="icon-btn icon-btn-danger"
                                                     title=t!("share.unshare_title")
@@ -725,6 +752,14 @@ pub fn SharesTab(
                 on_close=move || add_open.set(false)
             />
         </Show>
+
+        {move || editing.get().map(|d| view! {
+            <EditDirModal
+                dir=d
+                on_saved=move || { reload_dirs(); load_files.run(true); }
+                on_close=move || editing.set(None)
+            />
+        })}
 
         <Show when=move || pin_modal.get().is_some()>
             {move || {
@@ -941,6 +976,67 @@ fn ShareInfoOverlay(
 
 // ── Add-directory modal ─────────────────────────────────────────────────────
 
+/// Build a `ShareFilter` from the modal's signals (drops the extension list when
+/// the mode is "all" or the field is blank).
+fn build_share_filter(recursive: bool, ext_mode: ExtFilterMode, extensions: &str) -> ShareFilter {
+    let ext = extensions.trim();
+    ShareFilter {
+        recursive,
+        ext_mode,
+        extensions: (ext_mode != ExtFilterMode::All && !ext.is_empty()).then(|| ext.to_string()),
+    }
+}
+
+/// The shared filter controls used by both the add and edit dialogs: a recursive
+/// toggle, an extension-mode selector and an extensions field (shown only when
+/// the mode filters by extension).
+#[component]
+fn FilterFields(
+    recursive: RwSignal<bool>,
+    ext_mode: RwSignal<ExtFilterMode>,
+    extensions: RwSignal<String>,
+) -> impl IntoView {
+    view! {
+        <label class="share-filter-check">
+            <input
+                type="checkbox"
+                prop:checked=move || recursive.get()
+                on:change=move |e| recursive.set(event_target_checked(&e))
+            />
+            {t!("share.filter.recursive_label")}
+        </label>
+        <div class="add-cat-row">
+            <label class="config-label">{t!("share.filter.ext_label")}</label>
+            <select
+                class="dl-filter-select"
+                prop:value=move || match ext_mode.get() {
+                    ExtFilterMode::All => "all",
+                    ExtFilterMode::Only => "only",
+                    ExtFilterMode::Except => "except",
+                }
+                on:change=move |e| ext_mode.set(match event_target_value(&e).as_str() {
+                    "only" => ExtFilterMode::Only,
+                    "except" => ExtFilterMode::Except,
+                    _ => ExtFilterMode::All,
+                })
+            >
+                <option value="all">{t!("share.filter.mode_all")}</option>
+                <option value="only">{t!("share.filter.mode_only")}</option>
+                <option value="except">{t!("share.filter.mode_except")}</option>
+            </select>
+        </div>
+        <Show when=move || ext_mode.get() != ExtFilterMode::All>
+            <input
+                class="search-input"
+                type="text"
+                placeholder="mp3|mkv|avi"
+                prop:value=move || extensions.get()
+                on:input=move |e| extensions.set(event_target_value(&e))
+            />
+        </Show>
+    }
+}
+
 #[component]
 fn AddDirModal(
     on_added: impl Fn() + Copy + 'static,
@@ -949,16 +1045,20 @@ fn AddDirModal(
     let path = RwSignal::new(String::new());
     let busy = RwSignal::new(false);
     let error: RwSignal<Option<String>> = RwSignal::new(None);
+    let recursive = RwSignal::new(true);
+    let ext_mode = RwSignal::new(ExtFilterMode::All);
+    let extensions = RwSignal::new(String::new());
 
     let submit = move || {
         let p = path.get().trim().to_string();
         if p.is_empty() {
             return;
         }
+        let filter = build_share_filter(recursive.get(), ext_mode.get(), &extensions.get());
         busy.set(true);
         error.set(None);
         spawn_local(async move {
-            match api_add_dir(p).await {
+            match api_add_dir(p, filter).await {
                 Ok(resp) => {
                     on_added();
                     if resp.errors.is_empty() {
@@ -1007,6 +1107,7 @@ fn AddDirModal(
                         on:input=move |e| path.set(event_target_value(&e))
                         on:keydown=move |e| { if e.key() == "Enter" { submit(); } }
                     />
+                    <FilterFields recursive=recursive ext_mode=ext_mode extensions=extensions/>
                     {move || error.get().map(|e| view! { <p class="error-msg">{e}</p> })}
                 </div>
                 <div class="modal-footer">
@@ -1017,6 +1118,70 @@ fn AddDirModal(
                         on:click=move |_| submit()
                     >
                         {move || if busy.get() { t!("share.adding") } else { t!("share.share_btn") }}
+                    </button>
+                </div>
+            </div>
+        </div>
+    }
+}
+
+// ── Edit-directory modal ────────────────────────────────────────────────────
+
+#[component]
+fn EditDirModal(
+    dir: SharedDir,
+    on_saved: impl Fn() + Copy + 'static,
+    on_close: impl Fn() + Copy + 'static,
+) -> impl IntoView {
+    let recursive = RwSignal::new(dir.filter.recursive);
+    let ext_mode = RwSignal::new(dir.filter.ext_mode);
+    let extensions = RwSignal::new(dir.filter.extensions.clone().unwrap_or_default());
+    let busy = RwSignal::new(false);
+    let error: RwSignal<Option<String>> = RwSignal::new(None);
+    let path = dir.path.clone();
+    let title_path = dir.path.clone();
+
+    let submit = move || {
+        let filter = build_share_filter(recursive.get(), ext_mode.get(), &extensions.get());
+        let path = path.clone();
+        busy.set(true);
+        error.set(None);
+        spawn_local(async move {
+            match api_update_dir(path, filter).await {
+                Ok(()) => {
+                    on_saved();
+                    on_close();
+                }
+                Err(msg) => {
+                    error.set(Some(msg));
+                    busy.set(false);
+                }
+            }
+        });
+    };
+
+    view! {
+        <div class="modal-backdrop" on:click=move |_| on_close()>
+            <div class="modal" on:click=move |e| e.stop_propagation()>
+                <div class="modal-header">
+                    <span class="modal-title">{t!("share.edit_title")}</span>
+                    <button class="overlay-close" on:click=move |_| on_close()>
+                        <Icon paths=icons::X/>
+                    </button>
+                </div>
+                <div class="modal-body">
+                    <p class="modal-hint">{title_path}</p>
+                    <FilterFields recursive=recursive ext_mode=ext_mode extensions=extensions/>
+                    {move || error.get().map(|e| view! { <p class="error-msg">{e}</p> })}
+                </div>
+                <div class="modal-footer">
+                    <button class="btn-sm" on:click=move |_| on_close()>{t!("common.cancel")}</button>
+                    <button
+                        class="btn-sm btn-primary"
+                        disabled=move || busy.get()
+                        on:click=move |_| submit()
+                    >
+                        {move || if busy.get() { t!("common.saving") } else { t!("common.save") }}
                     </button>
                 </div>
             </div>

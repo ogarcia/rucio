@@ -235,6 +235,13 @@ share:
   dir_meta: "%{count} archivo(s) · %{size}"
   unshare_title: "Dejar de compartir esta carpeta (los archivos permanecen en disco)"
   unshare_confirm: "¿Dejar de compartir esta carpeta?\n%{path}\n\nLos archivos permanecen en disco; al volver a añadirla se reindexarán."
+  edit_title: "Editar el filtro de esta carpeta"
+  filter:
+    recursive_label: "Incluir subdirectorios"
+    ext_label: "Extensiones"
+    mode_all: "Todos los archivos"
+    mode_only: "Solo estas extensiones"
+    mode_except: "Todos excepto estas"
   kind:
     pins: "Pines"
     pins_title: "El directorio de pines siempre se comparte"
@@ -281,7 +288,7 @@ share:
   pin_modal_title_n: "Fijar %{n} archivos en una colección"
   pin_modal_hint: "Clasifica un pin en una colección para que los suscriptores puedan seguir solo las colecciones tuyas que les interesen. Déjalo en blanco para fijarlo sin colección."
   pin_collection_placeholder: "Colección (opcional) — p. ej. Manuales, Series"
-  add_dir_hint: "Introduce la ruta absoluta de un directorio en el host del demonio. Todos los archivos que contenga se indexan y se comparten. No se aceptan archivos individuales."
+  add_dir_hint: "Introduce la ruta absoluta de un directorio en el host del demonio. Todos los archivos que contenga se indexan y se comparten."
   add_partial: "Se compartieron %{queued} archivo(s); %{count} ruta(s) no se pudieron leer:\n%{list}"
   adding: "Añadiendo…"
   share_btn: "Compartir"

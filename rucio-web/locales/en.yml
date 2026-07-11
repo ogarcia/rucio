@@ -237,6 +237,13 @@ share:
   dir_meta: "%{count} file(s) · %{size}"
   unshare_title: "Stop sharing this folder (files stay on disk)"
   unshare_confirm: "Stop sharing this folder?\n%{path}\n\nFiles stay on disk; re-adding will re-index them."
+  edit_title: "Edit this folder's filter"
+  filter:
+    recursive_label: "Include subdirectories"
+    ext_label: "Extensions"
+    mode_all: "All files"
+    mode_only: "Only these extensions"
+    mode_except: "Every file except these"
   kind:
     pins: "Pins"
     pins_title: "The pin directory is always shared"
@@ -283,7 +290,7 @@ share:
   pin_modal_title_n: "Pin %{n} files to a collection"
   pin_modal_hint: "File a pin under a collection so subscribers can follow just the collections of yours they care about. Leave it blank to pin it uncollected."
   pin_collection_placeholder: "Collection (optional) — e.g. Manuals, Series"
-  add_dir_hint: "Enter the absolute path of a directory on the daemon host. All files under it are indexed and shared. Individual files aren't accepted."
+  add_dir_hint: "Enter the absolute path of a directory on the daemon host. All files under it are indexed and shared."
   add_partial: "Shared %{queued} file(s); %{count} path(s) could not be read:\n%{list}"
   adding: "Adding…"
   share_btn: "Share"

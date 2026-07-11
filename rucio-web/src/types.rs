@@ -102,6 +102,41 @@ pub enum SharedDirKind {
     Config,
 }
 
+/// How a directory's extension list is applied, mirrored from the daemon.
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtFilterMode {
+    #[default]
+    All,
+    Only,
+    Except,
+}
+
+/// Which files under a shared directory are shared, mirrored from the daemon.
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
+pub struct ShareFilter {
+    #[serde(default = "default_recursive")]
+    pub recursive: bool,
+    #[serde(default)]
+    pub ext_mode: ExtFilterMode,
+    #[serde(default)]
+    pub extensions: Option<String>,
+}
+
+fn default_recursive() -> bool {
+    true
+}
+
+impl Default for ShareFilter {
+    fn default() -> Self {
+        Self {
+            recursive: true,
+            ext_mode: ExtFilterMode::All,
+            extensions: None,
+        }
+    }
+}
+
 /// A watched directory (the unit of add/remove). GET /api/v1/shares.
 #[derive(Deserialize, Clone, Debug, PartialEq)]
 pub struct SharedDir {
@@ -111,6 +146,8 @@ pub struct SharedDir {
     pub kind: SharedDirKind,
     pub file_count: u64,
     pub total_size: u64,
+    #[serde(default)]
+    pub filter: ShareFilter,
 }
 
 #[derive(Deserialize, Clone, Debug)]
