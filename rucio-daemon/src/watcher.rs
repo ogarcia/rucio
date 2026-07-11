@@ -422,6 +422,20 @@ async fn on_file_upsert(
             .unwrap_or(-1);
         if disk_size == row.size && file_mtime_secs(path) == row.mtime {
             debug!(path = %path.display(), "Watcher: unchanged, skipping re-index");
+            // The rucio index is up to date, but the eMule hash may still be
+            // missing — e.g. its earlier hashing was dropped when the ed2k
+            // channel was momentarily full. Re-queue *only* the ed2k hashing
+            // (no re-hash of the rucio side) when there is no ed2k row for this
+            // path yet, so a reconcile sweep recovers it without a restart.
+            if let Some(tx) = ed2k_tx
+                && db::emule_shared_files::get_by_path(db, &path_str)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_none()
+            {
+                let _ = tx.try_send(path.to_path_buf());
+            }
             return;
         }
         // Content changed: drop the stale row (exact match → uses the path
