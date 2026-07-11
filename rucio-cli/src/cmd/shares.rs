@@ -4,7 +4,7 @@
 
 use anyhow::{Result, bail};
 use futures_util::StreamExt as _;
-use rucio_core::api::shares::ShareResponse;
+use rucio_core::api::shares::{ExtFilterMode, ShareFilter, ShareResponse};
 use rucio_core::api::ws::WsEvent;
 use rust_i18n::t;
 use tabled::builder::Builder;
@@ -131,7 +131,7 @@ pub async fn dirs(client: &ApiClient) -> Result<()> {
         return Ok(());
     }
 
-    let rows: Vec<[String; 5]> = resp
+    let rows: Vec<[String; 6]> = resp
         .dirs
         .iter()
         .enumerate()
@@ -146,6 +146,7 @@ pub async fn dirs(client: &ApiClient) -> Result<()> {
                 } else {
                     "-".to_string()
                 },
+                filter_summary(&d.filter),
             ]
         })
         .collect();
@@ -160,6 +161,7 @@ pub async fn dirs(client: &ApiClient) -> Result<()> {
         t!("share.col.files").to_string(),
         t!("share.col.size").to_string(),
         t!("share.col.protected").to_string(),
+        t!("share.col.filter").to_string(),
     ]);
     for r in rows {
         builder.push_record(r);
@@ -176,8 +178,56 @@ pub async fn dirs(client: &ApiClient) -> Result<()> {
     Ok(())
 }
 
-pub async fn add(client: &ApiClient, path: &str) -> Result<()> {
-    match client.add_share(path).await {
+/// One-line human summary of a directory's file filter, e.g. "recursive",
+/// "flat", "recursive, only mp3|mkv" or "recursive, except iso".
+fn filter_summary(f: &ShareFilter) -> String {
+    let rec = if f.recursive {
+        t!("share.filter.recursive")
+    } else {
+        t!("share.filter.flat")
+    };
+    match f.ext_mode {
+        ExtFilterMode::All => rec.to_string(),
+        ExtFilterMode::Only => format!(
+            "{rec}, {}",
+            t!(
+                "share.filter.only",
+                exts = f.extensions.as_deref().unwrap_or("-")
+            )
+        ),
+        ExtFilterMode::Except => format!(
+            "{rec}, {}",
+            t!(
+                "share.filter.except",
+                exts = f.extensions.as_deref().unwrap_or("-")
+            )
+        ),
+    }
+}
+
+/// Build a filter from the mutually-exclusive `--only` / `--except` flags.
+fn build_filter(recursive: bool, only: Option<String>, except: Option<String>) -> ShareFilter {
+    let (ext_mode, extensions) = match (only, except) {
+        (Some(e), _) => (ExtFilterMode::Only, Some(e)),
+        (_, Some(e)) => (ExtFilterMode::Except, Some(e)),
+        _ => (ExtFilterMode::All, None),
+    };
+    ShareFilter {
+        recursive,
+        ext_mode,
+        extensions,
+    }
+}
+
+pub async fn add(
+    client: &ApiClient,
+    path: &str,
+    recursive: bool,
+    only: Option<String>,
+    except: Option<String>,
+) -> Result<()> {
+    let filter = build_filter(recursive, only, except);
+    match client.add_share(path, filter).await {
         Ok(resp) => {
             println!(
                 "{}",
@@ -195,6 +245,63 @@ pub async fn add(client: &ApiClient, path: &str) -> Result<()> {
             std::process::exit(1);
         }
     }
+    Ok(())
+}
+
+/// Edit a shared directory's filter. Resolves `target` (a `share dirs` number or
+/// a path), starts from the directory's current filter and applies only the
+/// options that were passed, then PUTs it (which triggers a reconcile).
+#[allow(clippy::too_many_arguments)]
+pub async fn edit(
+    client: &ApiClient,
+    target: &str,
+    recursive: bool,
+    no_recursive: bool,
+    all: bool,
+    only: Option<String>,
+    except: Option<String>,
+) -> Result<()> {
+    let dirs = client.list_shared_dirs().await?.dirs;
+    let target = target.trim();
+    let dir = if let Ok(n) = target.parse::<usize>() {
+        dirs.get(n.wrapping_sub(1))
+            .ok_or_else(|| anyhow::anyhow!(t!("share.no_dir_n", n = n)))?
+    } else {
+        let t = target.trim_end_matches('/');
+        dirs.iter()
+            .find(|d| d.path.trim_end_matches('/') == t)
+            .ok_or_else(|| anyhow::anyhow!(t!("share.no_dir_at", path = target)))?
+    };
+
+    // Start from the current filter; override only what was asked for.
+    let mut filter = dir.filter.clone();
+    if recursive {
+        filter.recursive = true;
+    }
+    if no_recursive {
+        filter.recursive = false;
+    }
+    if all {
+        filter.ext_mode = ExtFilterMode::All;
+        filter.extensions = None;
+    } else if only.is_some() {
+        filter.ext_mode = ExtFilterMode::Only;
+        filter.extensions = only;
+    } else if except.is_some() {
+        filter.ext_mode = ExtFilterMode::Except;
+        filter.extensions = except;
+    }
+
+    let path = dir.path.clone();
+    client.update_shared_dir(&path, filter.clone()).await?;
+    println!(
+        "{}",
+        color::success(&t!(
+            "share.filter_updated",
+            path = path,
+            filter = filter_summary(&filter)
+        ))
+    );
     Ok(())
 }
 

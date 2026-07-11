@@ -289,6 +289,12 @@ share:
   dirs_footer_many: "%{n} directories · remove one with `rucio share remove <#>` · protected = cannot be removed (download/pin/category/config dir)"
   queued_indexing: "Queued %{n} file(s) for indexing."
   read_errors: "%{n} file(s) could not be read:"
+  filter_updated: "Filter updated for %{path}: %{filter}"
+  filter:
+    recursive: "recursive"
+    flat: "flat"
+    only: "only %{exts}"
+    except: "except %{exts}"
   no_dir_n: "no directory #%{n}. Run `rucio share dirs` to see the list."
   protected_n: "directory #%{n} (%{path}) is protected and cannot be removed (download/pin/category/config dir)"
   stopped_dir: "Stopped sharing %{path} (%{removed} file(s))."
@@ -320,6 +326,7 @@ share:
     directory: "Directory"
     files: "Files"
     protected: "Protected"
+    filter: "Filter"
 
 # Config field names ([node], identity_path, listen…) are literal config.toml
 # identifiers and are NOT translated. Only states, messages and the settable-key

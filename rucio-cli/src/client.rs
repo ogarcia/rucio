@@ -26,7 +26,8 @@ use rucio_core::api::{
         StartSearchRequest,
     },
     shares::{
-        AddShareRequest, AddShareResponse, ShareResponse, SharedDirsResponse, SharesResponse,
+        AddShareRequest, AddShareResponse, ShareFilter, ShareResponse, SharedDirsResponse,
+        SharesResponse, UpdateSharedDirRequest,
     },
     status::{PeersResponse, StatusResponse},
     subscriptions::{SubscriptionRequest, SubscriptionResponse, SubscriptionsResponse},
@@ -198,12 +199,24 @@ impl ApiClient {
         Ok(out)
     }
 
-    pub async fn add_share(&self, path: &str) -> Result<AddShareResponse> {
+    pub async fn add_share(&self, path: &str, filter: ShareFilter) -> Result<AddShareResponse> {
         self.post(
             "/api/v1/shares",
             &AddShareRequest {
                 path: path.to_string(),
-                filter: Default::default(),
+                filter,
+            },
+        )
+        .await
+    }
+
+    /// Update a shared directory's file filter.
+    pub async fn update_shared_dir(&self, path: &str, filter: ShareFilter) -> Result<()> {
+        self.put(
+            "/api/v1/shares",
+            &UpdateSharedDirRequest {
+                path: path.to_string(),
+                filter,
             },
         )
         .await

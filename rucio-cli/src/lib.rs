@@ -133,6 +133,36 @@ pub enum ShareAction {
     Add {
         /// Path to the directory to share
         path: String,
+        /// Share only files directly in the directory, not its subdirectories
+        #[arg(long)]
+        no_recursive: bool,
+        /// Share only files with these extensions ('|'-separated, e.g. mp3|mkv)
+        #[arg(long, value_name = "EXTS", conflicts_with = "except")]
+        only: Option<String>,
+        /// Share every file except those with these extensions ('|'-separated)
+        #[arg(long, value_name = "EXTS", conflicts_with = "only")]
+        except: Option<String>,
+    },
+    /// Edit a shared directory's file filter (recursion + extensions). Only the
+    /// options you pass are changed; the rest keep their current value.
+    Edit {
+        /// A directory number from `rucio share dirs`, or its filesystem path
+        target: String,
+        /// Recurse into subdirectories
+        #[arg(long, conflicts_with = "no_recursive")]
+        recursive: bool,
+        /// Share only files directly in the directory
+        #[arg(long, conflicts_with = "recursive")]
+        no_recursive: bool,
+        /// Clear the extension filter (share every file)
+        #[arg(long, conflicts_with_all = ["only", "except"])]
+        all: bool,
+        /// Share only these extensions ('|'-separated)
+        #[arg(long, value_name = "EXTS", conflicts_with_all = ["all", "except"])]
+        only: Option<String>,
+        /// Share every file except these extensions ('|'-separated)
+        #[arg(long, value_name = "EXTS", conflicts_with_all = ["all", "only"])]
+        except: Option<String>,
     },
     /// Stop sharing a directory
     Remove {
@@ -488,7 +518,23 @@ pub async fn run() -> Result<()> {
 
     match cli.command {
         Commands::Share { action } => match action {
-            ShareAction::Add { path } => cmd::shares::add(&client, &path).await,
+            ShareAction::Add {
+                path,
+                no_recursive,
+                only,
+                except,
+            } => cmd::shares::add(&client, &path, !no_recursive, only, except).await,
+            ShareAction::Edit {
+                target,
+                recursive,
+                no_recursive,
+                all,
+                only,
+                except,
+            } => {
+                cmd::shares::edit(&client, &target, recursive, no_recursive, all, only, except)
+                    .await
+            }
             ShareAction::List {
                 filter,
                 all,

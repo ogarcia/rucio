@@ -282,6 +282,12 @@ share:
   dirs_footer_many: "%{n} directorios · elimina uno con `rucio share remove <#>` · protegido = no se puede eliminar (directorio de descarga/pin/categoría/config)"
   queued_indexing: "%{n} archivo(s) en cola para indexar."
   read_errors: "%{n} archivo(s) no se pudieron leer:"
+  filter_updated: "Filtro actualizado para %{path}: %{filter}"
+  filter:
+    recursive: "recursivo"
+    flat: "sin subdirectorios"
+    only: "solo %{exts}"
+    except: "excepto %{exts}"
   no_dir_n: "no existe el directorio #%{n}. Ejecuta `rucio share dirs` para ver la lista."
   protected_n: "el directorio #%{n} (%{path}) está protegido y no se puede eliminar (directorio de descarga/pin/categoría/config)"
   stopped_dir: "Se dejó de compartir %{path} (%{removed} archivo(s))."
@@ -313,6 +319,7 @@ share:
     directory: "Directorio"
     files: "Archivos"
     protected: "Protegido"
+    filter: "Filtro"
 
 config:
   bool_invalid: "'%{value}' no es un booleano válido (usa true/false)"
