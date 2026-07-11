@@ -101,7 +101,7 @@ async fn test_state() -> (
         #[cfg(feature = "emule-compat")]
         emule_cancel: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         #[cfg(feature = "emule-compat")]
-        ed2k_index_tx: None,
+        ed2k_index: None,
         external_ip: Arc::new(tokio::sync::RwLock::new(None)),
         live_stats: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         upload_stats: Arc::new(crate::upload_stats::UploadRegistry::new()),
@@ -801,7 +801,10 @@ async fn ws_event_serializes_with_type_and_data_fields() {
 
     let cases: &[(WsEvent, &str, &str)] = &[
         (
-            WsEvent::IndexingCount { pending: 7 },
+            WsEvent::IndexingCount {
+                pending: 7,
+                ed2k_pending: 0,
+            },
             r#""type":"indexing_count""#,
             r#""pending":7"#,
         ),

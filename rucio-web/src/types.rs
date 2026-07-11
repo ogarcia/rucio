@@ -838,6 +838,8 @@ pub enum WsEvent {
     UploadProgress(Vec<ActiveUpload>),
     IndexingCount {
         pending: usize,
+        #[serde(default)]
+        ed2k_pending: usize,
     },
     SearchResult {
         search_id: u64,

@@ -230,6 +230,7 @@ share:
   add: "Add directory"
   add_title: "Share a directory"
   indexing: "%{n} indexing…"
+  ed2k_indexing: "%{n} hashing for eMule…"
   folders: "Folders"
   no_folders: "No shared folders"
   dir_click_title: "Click to show only this folder's files"

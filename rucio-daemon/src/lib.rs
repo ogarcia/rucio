@@ -2,6 +2,8 @@ pub mod api;
 pub mod config;
 pub mod db;
 
+pub mod ed2k_index;
+
 pub mod emule;
 #[cfg(feature = "emule-compat")]
 pub mod emule_identity;
@@ -383,14 +385,14 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
     // Bounded + non-blocking on the watcher side, so eMule seeding can never
     // throttle the Rucio share pipeline.
     #[cfg(feature = "emule-compat")]
-    let (ed2k_index_tx, ed2k_index_rx) = if config.emule.enabled {
+    let (ed2k_index, ed2k_index_rx) = if config.emule.enabled {
         let (tx, rx) = tokio::sync::mpsc::channel::<std::path::PathBuf>(512);
-        (Some(tx), Some(rx))
+        (Some(crate::ed2k_index::Ed2kIndex::new(tx)), Some(rx))
     } else {
         (None, None)
     };
     #[cfg(not(feature = "emule-compat"))]
-    let ed2k_index_tx: Option<tokio::sync::mpsc::Sender<std::path::PathBuf>> = None;
+    let ed2k_index: Option<crate::ed2k_index::Ed2kIndex> = None;
 
     // --- Watcher service ----------------------------------------------------
     // Shared with AppState so watcher-driven indexing shows up in the indexing
@@ -407,7 +409,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         Arc::clone(&indexing_count),
         Arc::clone(&excluded_index_dirs),
         config.storage.outboard_dir.clone(),
-        ed2k_index_tx.clone(),
+        ed2k_index.clone(),
     );
 
     // Register all known shared dirs with the watcher (including download_dir
@@ -429,7 +431,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         let node_tx = handle.cmd_tx.clone();
         let indexing_count = indexing_count.clone();
         let excluded = Arc::clone(&excluded_index_dirs);
-        let ed2k_tx = ed2k_index_tx.clone();
+        let ed2k_tx = ed2k_index.clone();
         let indexing_seen = Arc::clone(&indexing_seen);
         let outboard_dir = config.storage.outboard_dir.clone();
         tokio::spawn(async move {
@@ -652,7 +654,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         #[cfg(feature = "emule-compat")]
         emule_cancel: emule_cancel.clone(),
         #[cfg(feature = "emule-compat")]
-        ed2k_index_tx: ed2k_index_tx.clone(),
+        ed2k_index: ed2k_index.clone(),
         external_ip,
         live_stats: Arc::clone(&live_stats),
         upload_stats: Arc::clone(&upload_stats),
@@ -675,9 +677,21 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         // too — anyone holding the ed2k link finds us. One-shot catch-up for
         // pre-existing shares, plus an event-driven consumer for files indexed
         // while running (fed by the share watcher). No periodic rescan.
-        crate::emule::spawn_ed2k_startup_backfill(db.clone(), active_downloads.clone());
+        // Shared pending counter so both the startup catch-up and the live
+        // consumer report eMule hashing progress (separate from Rucio indexing).
+        let ed2k_pending = ed2k_index.as_ref().map(|e| e.pending()).unwrap_or_default();
+        crate::emule::spawn_ed2k_startup_backfill(
+            db.clone(),
+            active_downloads.clone(),
+            ed2k_pending.clone(),
+        );
         if let Some(rx) = ed2k_index_rx {
-            crate::emule::spawn_ed2k_indexer(db.clone(), active_downloads.clone(), rx);
+            crate::emule::spawn_ed2k_indexer(
+                db.clone(),
+                active_downloads.clone(),
+                rx,
+                ed2k_pending,
+            );
         }
     }
 
@@ -1005,8 +1019,20 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                 if ws_tx.receiver_count() == 0 {
                     continue;
                 }
-                // IndexingCount
-                let _ = ws_tx.send(WsEvent::IndexingCount { pending });
+                // IndexingCount — rucio indexing plus the separate eMule ed2k
+                // hashing queue (0 when eMule is disabled).
+                #[cfg(feature = "emule-compat")]
+                let ed2k_pending = app_state
+                    .ed2k_index
+                    .as_ref()
+                    .map(|e| e.pending_count())
+                    .unwrap_or(0);
+                #[cfg(not(feature = "emule-compat"))]
+                let ed2k_pending = 0usize;
+                let _ = ws_tx.send(WsEvent::IndexingCount {
+                    pending,
+                    ed2k_pending,
+                });
                 // Aggregate session speeds (5-second moving average from the
                 // metrics sampler).  Lets the client show live rates without
                 // a separate polling request.

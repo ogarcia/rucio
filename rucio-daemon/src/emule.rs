@@ -458,7 +458,12 @@ const ED2K_BACKFILL_SPACING: Duration = Duration::from_secs(3);
 /// (`spawn_blocking`) with [`ED2K_BACKFILL_SPACING`] between files. Files added
 /// or changed *while running* are handled by [`spawn_ed2k_indexer`] instead, so
 /// this is not a loop — no periodic CPU spikes.
-pub fn spawn_ed2k_startup_backfill(db: Db, active_downloads: ActiveDownloads) {
+pub fn spawn_ed2k_startup_backfill(
+    db: Db,
+    active_downloads: ActiveDownloads,
+    pending: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+) {
+    use std::sync::atomic::Ordering;
     tokio::spawn(async move {
         // Snapshot the candidates once. Anything indexed after this point comes
         // in through the live channel, and anything that fails here is retried
@@ -478,8 +483,11 @@ pub fn spawn_ed2k_startup_backfill(db: Db, active_downloads: ActiveDownloads) {
             count = candidates.len(),
             "Computing ed2k hashes for existing Rucio shares to seed on eMule"
         );
+        // Reflect the backlog in the eMule hashing gauge (shown in the UI).
+        pending.fetch_add(candidates.len(), Ordering::Relaxed);
         for cand in candidates {
             backfill_path(&db, &active_downloads, std::path::PathBuf::from(cand.path)).await;
+            pending.fetch_sub(1, Ordering::Relaxed);
             tokio::time::sleep(ED2K_BACKFILL_SPACING).await;
         }
     });
@@ -488,17 +496,22 @@ pub fn spawn_ed2k_startup_backfill(db: Db, active_downloads: ActiveDownloads) {
 /// Consume freshly-indexed Rucio share paths and seed each on eMule, hashing it
 /// the moment it becomes a share — event-driven, so no periodic rescan is ever
 /// needed. The sender side is the share watcher's `on_file_upsert` (live events
-/// and offline-reconcile alike); it uses `try_send`, so a burst that overflows
-/// the channel simply drops the surplus, which the next startup backfill picks
-/// up. eMule seeding must never throttle the Rucio share pipeline.
+/// and offline-reconcile alike) via [`crate::ed2k_index::Ed2kIndex::enqueue`],
+/// which uses `try_send`, so a burst that overflows the channel simply drops the
+/// surplus — recovered by the reconcile sweep. eMule seeding must never throttle
+/// the Rucio share pipeline. `pending` mirrors the queue depth for the UI; each
+/// finished file decrements it (the sender incremented it on enqueue).
 pub fn spawn_ed2k_indexer(
     db: Db,
     active_downloads: ActiveDownloads,
     mut rx: tokio::sync::mpsc::Receiver<std::path::PathBuf>,
+    pending: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 ) {
+    use std::sync::atomic::Ordering;
     tokio::spawn(async move {
         while let Some(path) = rx.recv().await {
             backfill_path(&db, &active_downloads, path).await;
+            pending.fetch_sub(1, Ordering::Relaxed);
         }
     });
 }

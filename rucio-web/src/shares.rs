@@ -184,6 +184,8 @@ type PinTargets = Vec<(String, String)>;
 #[component]
 pub fn SharesTab(
     indexing: RwSignal<usize>,
+    /// Separate eMule (ed2k/MD4) hashing backlog, shown next to the Rucio one.
+    ed2k_indexing: RwSignal<usize>,
     dl_speed: RwSignal<u64>,
     ul_speed: RwSignal<u64>,
     temp_limit: RwSignal<bool>,
@@ -479,6 +481,15 @@ pub fn SharesTab(
                             <span class="share-indexing">
                                 <span class="spinner"></span>
                                 {t!("share.indexing", n = n)}
+                            </span>
+                        })
+                    }}
+                    {move || {
+                        let n = ed2k_indexing.get();
+                        (n > 0).then(|| view! {
+                            <span class="share-indexing">
+                                <span class="spinner"></span>
+                                {t!("share.ed2k_indexing", n = n)}
                             </span>
                         })
                     }}

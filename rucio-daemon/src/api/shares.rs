@@ -354,7 +354,7 @@ pub async fn add_share(
     // watcher never sees this inline indexing, so without this a freshly added
     // directory wouldn't get eMule links until the next reconcile/restart.
     #[cfg(feature = "emule-compat")]
-    let ed2k_tx = state.ed2k_index_tx.clone();
+    let ed2k_index = state.ed2k_index.clone();
     indexing_count.fetch_add(total, Ordering::Relaxed);
     // Latch so the main loop fires an "indexing complete" notification once this
     // batch drains, even if it finishes between two ws ticks.
@@ -371,11 +371,11 @@ pub async fn add_share(
                         ))
                         .await;
                     // Queue it for eMule hashing (best-effort: if the channel
-                    // is full the file is caught by the startup backfill after
-                    // the next restart).
+                    // is full the file is caught by the reconcile sweep, which
+                    // re-queues anything still missing its ed2k hash).
                     #[cfg(feature = "emule-compat")]
-                    if let Some(tx) = &ed2k_tx {
-                        let _ = tx.try_send(path.clone());
+                    if let Some(q) = &ed2k_index {
+                        q.enqueue(path.clone());
                     }
                 }
                 Err(e) => {

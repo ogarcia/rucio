@@ -439,7 +439,7 @@ async fn indexing_watch_ws(mut stream: crate::client::WsStream, initial: usize) 
                     Ok(e) => e,
                     Err(_) => continue,
                 };
-                if let WsEvent::IndexingCount { pending: p } = event {
+                if let WsEvent::IndexingCount { pending: p, .. } = event {
                     pending = p;
                     print_indexing_line(pending);
                     if pending == 0 {

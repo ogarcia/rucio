@@ -38,8 +38,14 @@ pub enum WsEvent {
     /// upload-side mirror of `DownloadProgress`).
     UploadProgress(Vec<crate::api::uploads::ActiveUpload>),
 
-    /// The number of files currently being indexed changed.
-    IndexingCount { pending: usize },
+    /// The number of files currently being indexed changed. `pending` is the
+    /// Rucio (BLAKE3) indexing backlog; `ed2k_pending` is the separate eMule
+    /// (MD4) hashing backlog, which runs behind it and is `0` when eMule is off.
+    IndexingCount {
+        pending: usize,
+        #[serde(default)]
+        ed2k_pending: usize,
+    },
 
     /// A new search result arrived for an open query. Carries the owning
     /// `search_id` so the client can route it to the right search (several may

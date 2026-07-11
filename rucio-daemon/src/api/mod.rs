@@ -493,10 +493,11 @@ pub struct AppState {
     /// Sender to the eMule ed2k indexer. A directory added through the API is
     /// indexed inline by the handler, which the share watcher never sees, so the
     /// handler forwards each indexed file here to get it hashed for eMule too —
-    /// otherwise its ed2k link wouldn't appear until the next restart.
+    /// otherwise its ed2k link wouldn't appear until the next restart. Also
+    /// carries the eMule-hashing pending gauge shown separately in the UI.
     /// `None` when eMule is disabled at runtime.
     #[cfg(feature = "emule-compat")]
-    pub ed2k_index_tx: Option<tokio::sync::mpsc::Sender<std::path::PathBuf>>,
+    pub ed2k_index: Option<crate::ed2k_index::Ed2kIndex>,
     /// External IP address as reported by UPnP gateway.  `None` when no gateway found.
     pub external_ip: crate::upnp::ExternalIp,
     /// Per-download live statistics (sources, pieces in flight, speed).

@@ -228,6 +228,7 @@ share:
   add: "Añadir directorio"
   add_title: "Compartir un directorio"
   indexing: "%{n} indexándose…"
+  ed2k_indexing: "%{n} hasheándose para eMule…"
   folders: "Carpetas"
   no_folders: "No hay carpetas compartidas"
   dir_click_title: "Haz clic para mostrar solo los archivos de esta carpeta"

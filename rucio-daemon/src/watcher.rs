@@ -91,7 +91,7 @@ pub fn spawn(
     indexing_count: Arc<AtomicUsize>,
     excluded: Arc<Vec<PathBuf>>,
     outboard_dir: PathBuf,
-    ed2k_tx: Option<mpsc::Sender<PathBuf>>,
+    ed2k_tx: Option<crate::ed2k_index::Ed2kIndex>,
 ) -> (WatcherHandle, tokio::task::JoinHandle<()>) {
     let (cmd_tx, cmd_rx) = mpsc::channel::<WatcherCmd>(64);
 
@@ -125,7 +125,7 @@ async fn run(
     indexing_count: Arc<AtomicUsize>,
     excluded: Arc<Vec<PathBuf>>,
     outboard_dir: PathBuf,
-    ed2k_tx: Option<mpsc::Sender<PathBuf>>,
+    ed2k_tx: Option<crate::ed2k_index::Ed2kIndex>,
 ) -> Result<()> {
     // Bridge: notify (sync) → tokio (async)
     let (ev_tx, mut ev_rx) = mpsc::channel::<notify::Result<Event>>(256);
@@ -346,7 +346,7 @@ async fn flush_pending(
     node_tx: &mpsc::Sender<NodeCmd>,
     indexing_count: &AtomicUsize,
     outboard_dir: &Path,
-    ed2k_tx: Option<&mpsc::Sender<PathBuf>>,
+    ed2k_tx: Option<&crate::ed2k_index::Ed2kIndex>,
 ) {
     let now = Instant::now();
     let ready: Vec<PathBuf> = pending
@@ -399,7 +399,7 @@ async fn on_file_upsert(
     db: &Db,
     node_tx: &mpsc::Sender<NodeCmd>,
     outboard_dir: &Path,
-    ed2k_tx: Option<&mpsc::Sender<PathBuf>>,
+    ed2k_tx: Option<&crate::ed2k_index::Ed2kIndex>,
 ) {
     // The directory this file lives under may have been unshared while the file
     // was still queued for hashing (e.g. the user removed the share mid-scan).
@@ -434,7 +434,7 @@ async fn on_file_upsert(
                     .flatten()
                     .is_none()
             {
-                let _ = tx.try_send(path.to_path_buf());
+                tx.enqueue(path.to_path_buf());
             }
             return;
         }
@@ -457,7 +457,7 @@ async fn on_file_upsert(
                 .send(NodeCmd::StartProviding(root_hash.to_vec()))
                 .await;
             if let Some(tx) = ed2k_tx {
-                let _ = tx.try_send(path.to_path_buf());
+                tx.enqueue(path.to_path_buf());
             }
         }
         Err(e) => warn!(path = %path.display(), "Watcher: failed to index: {e}"),
@@ -545,7 +545,7 @@ pub async fn reconcile_shares(
     indexing_count: &AtomicUsize,
     excluded: &[PathBuf],
     outboard_dir: &Path,
-    ed2k_tx: Option<&mpsc::Sender<PathBuf>>,
+    ed2k_tx: Option<&crate::ed2k_index::Ed2kIndex>,
     indexing_seen: &AtomicBool,
 ) {
     let rows = match db::shared_dirs::list(db).await {

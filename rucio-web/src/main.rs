@@ -330,6 +330,7 @@ fn start_ws_loop(
     ul_speed: RwSignal<u64>,
     search: SearchStore,
     indexing: RwSignal<usize>,
+    ed2k_indexing: RwSignal<usize>,
     notifs: RwSignal<Vec<Notification>>,
     unread: RwSignal<i64>,
 ) {
@@ -395,8 +396,17 @@ fn start_ws_loop(
                                     && let Ok(event) = serde_json::from_str::<WsEvent>(&text)
                                 {
                                     handle_event(
-                                        event, downloads, uploads, status, dl_speed, ul_speed,
-                                        search, indexing, notifs, unread,
+                                        event,
+                                        downloads,
+                                        uploads,
+                                        status,
+                                        dl_speed,
+                                        ul_speed,
+                                        search,
+                                        indexing,
+                                        ed2k_indexing,
+                                        notifs,
+                                        unread,
                                     );
                                 }
                             }
@@ -429,6 +439,7 @@ fn handle_event(
     ul_speed: RwSignal<u64>,
     search: SearchStore,
     indexing: RwSignal<usize>,
+    ed2k_indexing: RwSignal<usize>,
     notifs: RwSignal<Vec<Notification>>,
     unread: RwSignal<i64>,
 ) {
@@ -584,8 +595,12 @@ fn handle_event(
             });
         }
 
-        WsEvent::IndexingCount { pending } => {
+        WsEvent::IndexingCount {
+            pending,
+            ed2k_pending,
+        } => {
             indexing.set(pending);
+            ed2k_indexing.set(ed2k_pending);
         }
 
         WsEvent::SessionStats {
@@ -645,8 +660,10 @@ fn App() -> impl IntoView {
     let categories: RwSignal<Vec<Category>> = RwSignal::new(vec![]);
     // Peers currently downloading from us (driven by the WS UploadProgress).
     let uploads: RwSignal<Vec<ActiveUpload>> = RwSignal::new(vec![]);
-    // Number of files currently being indexed (driven by the WS IndexingCount).
+    // Number of files currently being indexed (driven by the WS IndexingCount):
+    // `indexing` is the Rucio backlog, `ed2k_indexing` the separate eMule one.
     let indexing: RwSignal<usize> = RwSignal::new(0);
+    let ed2k_indexing: RwSignal<usize> = RwSignal::new(0);
     let dl_speed: RwSignal<u64> = RwSignal::new(0);
     let ul_speed: RwSignal<u64> = RwSignal::new(0);
     let search = SearchStore {
@@ -774,6 +791,7 @@ fn App() -> impl IntoView {
         ul_speed,
         search,
         indexing,
+        ed2k_indexing,
         notifications,
         unread,
     );
@@ -1066,6 +1084,7 @@ fn App() -> impl IntoView {
                     Tab::Shares => view! {
                         <SharesTab
                             indexing=indexing
+                            ed2k_indexing=ed2k_indexing
                             dl_speed=dl_speed
                             ul_speed=ul_speed
                             temp_limit=temp_limit
