@@ -109,6 +109,48 @@ pub fn outboard_len(total_size: u64) -> usize {
     BaoTree::new(total_size, BLOCK_SIZE).outboard_size() as usize
 }
 
+/// Rebuild the completed-chunk set of a (possibly partial) file from disk alone:
+/// given its outboard and the data on disk, return the transfer-chunk indices
+/// that are fully present *and* valid against `root` — no network, no
+/// re-download. A transfer chunk counts as done only if every 1 MiB block it
+/// covers validates, so any hole or corruption drops just its chunk.
+///
+/// `outboard_bytes` may be a partial outboard (nodes for undownloaded regions
+/// left zero): validation simply skips what the outboard cannot cover. The
+/// caller must pass the file's true `root` (from the link); a wrong or all-zero
+/// outboard yields no valid chunks.
+///
+/// Blocking I/O — call inside `spawn_blocking`.
+pub fn valid_chunks(
+    outboard_bytes: Vec<u8>,
+    part_path: &Path,
+    root: blake3::Hash,
+    total_size: u64,
+    chunk_size: u32,
+) -> io::Result<Vec<u32>> {
+    let tree = BaoTree::new(total_size, BLOCK_SIZE);
+    let ob = PreOrderMemOutboard {
+        root,
+        tree,
+        data: outboard_bytes,
+    };
+    let file = std::fs::File::open(part_path)?;
+
+    // Union of every valid range (in 1 KiB bao-chunk units).
+    let all = ChunkRanges::all();
+    let mut valid = ChunkRanges::empty();
+    for item in bao_tree::io::sync::valid_ranges(&ob, &file, &all) {
+        valid |= ChunkRanges::from(item?);
+    }
+
+    // A transfer chunk is done iff its whole byte range is covered.
+    let n = total_size.div_ceil(chunk_size as u64) as u32;
+    let done = (0..n)
+        .filter(|&idx| chunk_ranges(idx, chunk_size, total_size).is_subset(&valid))
+        .collect();
+    Ok(done)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -119,6 +161,94 @@ mod tests {
         f.write_all(bytes).unwrap();
         f.flush().unwrap();
         f
+    }
+
+    fn ramp(size: usize) -> Vec<u8> {
+        (0..size).map(|i| (i % 251) as u8).collect()
+    }
+
+    /// Reproduce a mid-download `.part` + partial outboard on disk: "download"
+    /// `chunks` by encoding each slice from the full outboard and decoding it
+    /// into a fresh zeroed outboard + a sparse part file (holes stay zero).
+    fn simulate_partial(
+        src: &std::path::Path,
+        full_ob: &[u8],
+        root: blake3::Hash,
+        size: u64,
+        chunk_size: u32,
+        chunks: &[u32],
+    ) -> (tempfile::NamedTempFile, Vec<u8>) {
+        let mut part = tempfile::NamedTempFile::new().unwrap();
+        part.as_file().set_len(size).unwrap();
+        let mut partial_ob = vec![0u8; outboard_len(size)];
+        for &idx in chunks {
+            let ranges = chunk_ranges(idx, chunk_size, size);
+            let slice = encode_slice(src, full_ob.to_vec(), root, size, &ranges).unwrap();
+            partial_ob =
+                decode_slice_into(&slice, &ranges, part.as_file_mut(), root, size, partial_ob)
+                    .unwrap();
+        }
+        (part, partial_ob)
+    }
+
+    #[test]
+    fn valid_chunks_rebuilds_partial_doneset_from_disk() {
+        let size = 18 * 1024 * 1024u64; // 5 chunks of 4 MiB (last is 2 MiB)
+        let chunk_size = 4 * 1024 * 1024u32;
+        let src = write_tmp(&ramp(size as usize));
+        let (root, full_ob, _) = compute_outboard(src.path()).unwrap();
+
+        // Downloaded chunks 0,2,4; chunks 1,3 are holes.
+        let (part, partial_ob) =
+            simulate_partial(src.path(), &full_ob, root, size, chunk_size, &[0, 2, 4]);
+
+        // A) Rebuilt from .part + partial .obao, no network.
+        assert_eq!(
+            valid_chunks(partial_ob.clone(), part.path(), root, size, chunk_size).unwrap(),
+            vec![0, 2, 4]
+        );
+
+        // B) Corrupt the whole chunk 2 region -> only chunk 2 drops.
+        {
+            use std::io::{Seek, SeekFrom, Write};
+            let mut f = part.reopen().unwrap();
+            f.seek(SeekFrom::Start(2 * chunk_size as u64)).unwrap();
+            f.write_all(&vec![0xFFu8; chunk_size as usize]).unwrap();
+            f.flush().unwrap();
+        }
+        assert_eq!(
+            valid_chunks(partial_ob.clone(), part.path(), root, size, chunk_size).unwrap(),
+            vec![0, 4]
+        );
+
+        // C) A lost outboard (all zeros) on a partial file recovers nothing:
+        //    the 32-byte root alone cannot validate partial content.
+        assert_eq!(
+            valid_chunks(
+                vec![0u8; outboard_len(size)],
+                part.path(),
+                root,
+                size,
+                chunk_size
+            )
+            .unwrap(),
+            Vec::<u32>::new()
+        );
+    }
+
+    #[test]
+    fn valid_chunks_complete_file_is_all_done() {
+        // Non-block-aligned tail to exercise the ragged end.
+        let size = 18 * 1024 * 1024u64 + 777;
+        let chunk_size = 4 * 1024 * 1024u32;
+        let src = write_tmp(&ramp(size as usize));
+        let (root, full_ob, _) = compute_outboard(src.path()).unwrap();
+
+        let n = size.div_ceil(chunk_size as u64) as u32;
+        assert_eq!(
+            valid_chunks(full_ob, src.path(), root, size, chunk_size).unwrap(),
+            (0..n).collect::<Vec<_>>()
+        );
     }
 
     #[test]

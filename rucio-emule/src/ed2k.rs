@@ -204,6 +204,72 @@ pub fn verify_part_hashes(part_hashes: &[[u8; 16]], target: &Ed2kHash) -> bool {
     false
 }
 
+/// Rebuild the completed-slice bitmap of a `.part` on disk by MD4-verifying each
+/// slice against `hashset` (the per-part hashes, already checked against the
+/// file's ed2k root by [`verify_part_hashes`]). A slice counts as done only if
+/// its on-disk bytes reproduce the expected hash, so holes (sparse zeros) and
+/// any corrupt or foreign bytes are rejected — the result is safe to trust.
+///
+/// Used on the ADD path to regenerate a missing/incoherent `.part.met` from the
+/// data already present. Reads the file in slice-sized blocks; a slice past the
+/// file's end (never written) or that reads short is left `false`.
+///
+/// Blocking I/O — call inside `spawn_blocking`.
+pub fn verify_part_against_hashset(
+    part_path: &std::path::Path,
+    hashset: &[[u8; 16]],
+    num_slices: usize,
+    file_size: u64,
+) -> Vec<bool> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut done = vec![false; num_slices];
+    let mut file = match std::fs::File::open(part_path) {
+        Ok(f) => f,
+        Err(_) => return done,
+    };
+    let mut buf = vec![0u8; CHUNK_SIZE];
+
+    for (i, slot) in done.iter_mut().enumerate() {
+        let start = i as u64 * CHUNK_SIZE as u64;
+        let want = ((start + CHUNK_SIZE as u64)
+            .min(file_size)
+            .saturating_sub(start)) as usize;
+        if want == 0 {
+            continue;
+        }
+        if file.seek(SeekFrom::Start(start)).is_err() {
+            break;
+        }
+        // Read exactly `want` bytes. A short read means the slice was never
+        // written (past EOF) → not done. A mid-file hole reads as zeros of the
+        // full length, which simply fails the hash below.
+        let mut filled = 0usize;
+        let mut short = false;
+        while filled < want {
+            match file.read(&mut buf[filled..want]) {
+                Ok(0) => {
+                    short = true;
+                    break;
+                }
+                Ok(n) => filled += n,
+                Err(_) => {
+                    short = true;
+                    break;
+                }
+            }
+        }
+        if short {
+            continue;
+        }
+        let md4: [u8; 16] = Md4::digest(&buf[..want]).into();
+        if hashset.get(i) == Some(&md4) {
+            *slot = true;
+        }
+    }
+    done
+}
+
 // ── Link parsing ─────────────────────────────────────────────────────────────
 
 /// A parsed `ed2k://|file|…|…|…|/` link.
@@ -289,6 +355,54 @@ pub enum Ed2kError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn verify_part_against_hashset_marks_only_present_and_correct_slices() {
+        use std::io::{Seek, SeekFrom, Write};
+
+        // Three slices: two full + a short tail. Ramp data so no slice is zeros.
+        let total = 2 * CHUNK_SIZE as u64 + 1000;
+        let data: Vec<u8> = (0..total as usize).map(|i| (i % 251) as u8).collect();
+        let (_root, parts) = hash_reader_full(std::io::Cursor::new(&data)).unwrap();
+        assert_eq!(parts.len(), 3);
+
+        // Partial `.part`: slice 0 and 2 written, slice 1 left as a sparse hole.
+        let dir = tempfile::tempdir().unwrap();
+        let part = dir.path().join("x.part");
+        {
+            let mut f = std::fs::File::create(&part).unwrap();
+            f.set_len(total).unwrap();
+            f.write_all(&data[..CHUNK_SIZE]).unwrap();
+            f.seek(SeekFrom::Start(2 * CHUNK_SIZE as u64)).unwrap();
+            f.write_all(&data[2 * CHUNK_SIZE..]).unwrap();
+            f.flush().unwrap();
+        }
+
+        assert_eq!(
+            verify_part_against_hashset(&part, &parts, 3, total),
+            vec![true, false, true]
+        );
+
+        // Corrupt slice 0 -> it drops; a missing file -> nothing.
+        {
+            let mut f = std::fs::OpenOptions::new().write(true).open(&part).unwrap();
+            f.write_all(&[0xFF; 16]).unwrap();
+            f.flush().unwrap();
+        }
+        assert_eq!(
+            verify_part_against_hashset(&part, &parts, 3, total),
+            vec![false, false, true]
+        );
+        assert_eq!(
+            verify_part_against_hashset(
+                dir.path().join("missing.part").as_path(),
+                &parts,
+                3,
+                total
+            ),
+            vec![false, false, false]
+        );
+    }
 
     #[test]
     fn test_hash_empty() {

@@ -762,6 +762,12 @@ pub async fn run_ed2k_download(
     cancel: Arc<AtomicBool>,
     cancel_registry: EmuleCancelRegistry,
     auto_clear: Arc<AtomicBool>,
+    // True only on the ADD path: when a `.part` already sits in the temp dir but
+    // its `.part.met` progress sidecar is missing/incoherent, re-validate the
+    // on-disk data against the (peer-provided, root-verified) hashset and adopt
+    // the slices that check out — instead of re-downloading them. A normal
+    // resume passes `false` and trusts the sidecar as before.
+    adopt_from_disk: bool,
 ) -> Result<()> {
     // Deregister from the cancel registry on every exit path (the flag was
     // inserted by the spawn site before this task started).
@@ -874,6 +880,11 @@ pub async fn run_ed2k_download(
         .unwrap_or([0u8; 16]);
     let our_nick = config.emule.nick.clone();
 
+    // ADD path: rebuild a missing/incoherent `.part.met` from the bytes on disk
+    // once we hold a root-verified hashset. Latched so it runs at most once for
+    // the whole download (across re-search rounds), never on a normal resume.
+    let reconciled = Arc::new(AtomicBool::new(false));
+
     loop {
         // Check for user-requested stop (cancel / pause) before doing any work.
         // The in-memory `cancel` flag makes the round abort promptly; the DB
@@ -918,6 +929,15 @@ pub async fn run_ed2k_download(
             );
             let _ = crate::db::emule_downloads::set_bytes_done(db, download_id, bytes_done).await;
         }
+
+        // Reconcile only makes sense when the sidecar reported nothing yet a
+        // `.part` with bytes exists on disk — i.e. the user re-added a link over
+        // a moved `.part` whose `.part.met` is missing/incoherent. A consistent
+        // sidecar (done_count > 0) is trusted as-is. Latched once per download.
+        let round_needs_reconcile = adopt_from_disk
+            && !reconciled.load(Ordering::Relaxed)
+            && done_count == 0
+            && std::fs::metadata(&part_path).map(|m| m.len()).unwrap_or(0) > 0;
 
         // --- Search for sources (skip if cache is still fresh) ---
         let cache_age_secs = last_search_at.map_or(u64::MAX, |t| t.elapsed().as_secs());
@@ -1265,6 +1285,9 @@ pub async fn run_ed2k_download(
             let nick_w = our_nick.clone();
             let min_speed = min_speed_bytes;
             let part_hashes_w = part_hashes.clone();
+            let reconciled_w = reconciled.clone();
+            let needs_reconcile = round_needs_reconcile;
+            let num_slices_w = num_slices;
 
             join_set.spawn(async move {
                 // Work one source at a time: connect once, then download as many
@@ -1417,6 +1440,69 @@ pub async fn run_ed2k_download(
                             pool.lock().unwrap().push_back((source, attempts + 1));
                         }
                         continue 'sources;
+                    }
+
+                    // ADD path: now that we hold a root-verified hashset, rebuild
+                    // `.part.met` from the bytes already on disk so present slices
+                    // are adopted (skipped) instead of re-downloaded. Runs once
+                    // per download; the first worker to win the latch does it.
+                    if needs_reconcile && !reconciled_w.swap(true, Ordering::SeqCst) {
+                        let hs = part_hashes_w.lock().unwrap().clone();
+                        if let Some(hs) = hs {
+                            let part_c = part.clone();
+                            let verified = tokio::task::spawn_blocking(move || {
+                                rucio_emule::ed2k::verify_part_against_hashset(
+                                    &part_c,
+                                    &hs,
+                                    num_slices_w,
+                                    file_size,
+                                )
+                            })
+                            .await
+                            .ok();
+                            if let Some(verified) = verified {
+                                let adopted = verified.iter().filter(|&&d| d).count();
+                                if adopted > 0 {
+                                    let bytes_done: u64 = verified
+                                        .iter()
+                                        .enumerate()
+                                        .filter(|&(_, &d)| d)
+                                        .map(|(i, _)| {
+                                            let s = i as u64 * CHUNK_SIZE as u64;
+                                            (s + CHUNK_SIZE as u64).min(file_size) - s
+                                        })
+                                        .sum();
+                                    // Publish the rebuilt progress: persist the
+                                    // sidecar, drop present slices from the shared
+                                    // queue, and reseed the byte counters.
+                                    *done.lock().unwrap() = verified.clone();
+                                    save_progress(&met, &verified);
+                                    work.lock().unwrap().retain(|(i, _, _)| !verified[*i]);
+                                    {
+                                        let mut pr = progress_w.lock().unwrap();
+                                        pr.per_slice = vec![0u64; num_slices_w];
+                                        pr.total = bytes_done;
+                                        for (i, &d) in verified.iter().enumerate() {
+                                            if d {
+                                                let s = i as u64 * CHUNK_SIZE as u64;
+                                                pr.per_slice[i] =
+                                                    (s + CHUNK_SIZE as u64).min(file_size) - s;
+                                            }
+                                        }
+                                    }
+                                    let _ = crate::db::emule_downloads::set_bytes_done(
+                                        &db_w,
+                                        download_id,
+                                        bytes_done,
+                                    )
+                                    .await;
+                                    info!(
+                                        dl = download_id,
+                                        adopted, "Adopted slices from existing .part"
+                                    );
+                                }
+                            }
+                        }
                     }
 
                     // Download slices over this one connection until the queue is

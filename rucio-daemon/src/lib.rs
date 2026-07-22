@@ -808,6 +808,8 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                         cancel,
                         reg,
                         ac,
+                        // Resume: trust the DB and the `.part.met` sidecar.
+                        false,
                     )
                     .await
                     {
@@ -1287,6 +1289,8 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                                                     &link, download_id, &config, &db, &kad, &ad,
                                                     &slots, &ls, &met, &dt, &notif, node_tx, cancel,
                                                     reg, ac,
+                                                    // Add path: adopt a pre-existing `.part`.
+                                                    true,
                                                 )
                                                 .await
                                                 {
