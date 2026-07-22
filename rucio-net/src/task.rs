@@ -16,6 +16,7 @@ use rucio_core::protocol::{
     have::{HaveRequest, HaveResponse},
     manifest::{ManifestRequest, ManifestResponse},
     node::{NodeClass, Reachability},
+    outboard::{OutboardRequest, OutboardResponse},
     pinset::{PinsetRequest, PinsetResponse},
     search::{SearchQuery, SearchResult},
 };
@@ -247,6 +248,8 @@ struct LoopState {
     pending_chunk_channels: HashMap<u64, (ResponseChannel<ChunkResp>, PeerId)>,
     /// Pending inbound manifest request channels keyed by a monotonic id.
     pending_manifest_channels: HashMap<u64, ResponseChannel<ManifestResponse>>,
+    /// Pending inbound outboard request channels keyed by a monotonic id.
+    pending_outboard_channels: HashMap<u64, ResponseChannel<OutboardResponse>>,
     /// Pending inbound pin-set request channels keyed by a monotonic id.
     pending_pinset_channels: HashMap<u64, ResponseChannel<PinsetResponse>>,
     /// Pending inbound availability request channels keyed by a monotonic id.
@@ -329,6 +332,7 @@ impl LoopState {
             classifier: ClassificationState::default(),
             pending_chunk_channels: HashMap::new(),
             pending_manifest_channels: HashMap::new(),
+            pending_outboard_channels: HashMap::new(),
             pending_pinset_channels: HashMap::new(),
             pending_have_channels: HashMap::new(),
             next_channel_id: 0,
@@ -404,6 +408,13 @@ impl LoopState {
         let id = self.next_channel_id;
         self.next_channel_id += 1;
         self.pending_manifest_channels.insert(id, ch);
+        id
+    }
+
+    fn store_outboard_channel(&mut self, ch: ResponseChannel<OutboardResponse>) -> u64 {
+        let id = self.next_channel_id;
+        self.next_channel_id += 1;
+        self.pending_outboard_channels.insert(id, ch);
         id
     }
 
@@ -684,6 +695,27 @@ async fn run_loop(
                             }
                         } else {
                             warn!(%channel_id, "RespondManifest: unknown channel id");
+                        }
+                    }
+                    Some(NodeCmd::RequestOutboard { peer, request, id_tx }) => {
+                        if let Some(outboard) = swarm.behaviour_mut().outboard.as_mut() {
+                            let request_id = outboard.send_request(&peer, request);
+                            let _ = id_tx.send(request_id);
+                        } else {
+                            warn!("RequestOutboard ignored: outboard protocol disabled");
+                        }
+                    }
+                    Some(NodeCmd::RespondOutboard { channel_id, response }) => {
+                        if let Some(ch) = state.pending_outboard_channels.remove(&channel_id) {
+                            // Same as chunks: `Err` carries the response back
+                            // and just means the requester is gone.
+                            if let Some(outboard) = swarm.behaviour_mut().outboard.as_mut()
+                                && outboard.send_response(ch, response).is_err()
+                            {
+                                debug!(%channel_id, "Outboard response dropped: requester no longer reachable");
+                            }
+                        } else {
+                            warn!(%channel_id, "RespondOutboard: unknown channel id");
                         }
                     }
                     Some(NodeCmd::RequestPinset { peer, request, id_tx }) => {
@@ -1294,6 +1326,10 @@ async fn on_swarm_event(
                 on_manifest_event(mn_event, event_tx, state).await;
             }
 
+            RucioBehaviourEvent::Outboard(ob_event) => {
+                on_outboard_event(ob_event, event_tx, state).await;
+            }
+
             RucioBehaviourEvent::Pinset(ps_event) => {
                 on_pinset_event(ps_event, event_tx, state).await;
             }
@@ -1551,6 +1587,69 @@ async fn on_manifest_event(
         }
         request_response::Event::InboundFailure { peer, error, .. } => {
             debug!(%peer, %error, "Inbound manifest request did not complete");
+        }
+        request_response::Event::ResponseSent { .. } => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Outboard (request-response) handler
+// ---------------------------------------------------------------------------
+
+async fn on_outboard_event(
+    event: request_response::Event<OutboardRequest, OutboardResponse>,
+    event_tx: &EventTx,
+    state: &mut LoopState,
+) {
+    match event {
+        request_response::Event::Message {
+            peer,
+            message:
+                request_response::Message::Response {
+                    request_id,
+                    response,
+                },
+            ..
+        } => {
+            debug!(%peer, "Received outboard response");
+            let _ = event_tx
+                .emit(NodeEvent::OutboardReceived {
+                    request_id,
+                    peer,
+                    response,
+                })
+                .await;
+        }
+
+        request_response::Event::Message {
+            peer,
+            message:
+                request_response::Message::Request {
+                    request, channel, ..
+                },
+            ..
+        } => {
+            debug!(%peer, root_hash = hex::encode(request.root_hash), "Received outboard request");
+            let channel_id = state.store_outboard_channel(channel);
+            let delivered = event_tx
+                .emit(NodeEvent::OutboardRequested {
+                    peer,
+                    request,
+                    channel_id,
+                })
+                .await;
+            if !delivered {
+                // Event dropped under overload — drop the response channel too
+                // so it doesn't linger forever (the peer's request expires).
+                state.pending_outboard_channels.remove(&channel_id);
+            }
+        }
+
+        request_response::Event::OutboundFailure { peer, error, .. } => {
+            warn!(%peer, %error, "Outbound outboard request failed");
+        }
+        request_response::Event::InboundFailure { peer, error, .. } => {
+            debug!(%peer, %error, "Inbound outboard request did not complete");
         }
         request_response::Event::ResponseSent { .. } => {}
     }

@@ -6,6 +6,7 @@ pub mod have;
 pub mod magnet;
 pub mod manifest;
 pub mod node;
+pub mod outboard;
 pub mod pinset;
 pub mod search;
 pub mod transfer;

@@ -15,6 +15,7 @@ pub mod have_codec;
 pub mod identity;
 pub mod manifest_codec;
 pub mod messages;
+pub mod outboard_codec;
 pub mod pinset_codec;
 pub mod task;
 pub mod transfer_codec;

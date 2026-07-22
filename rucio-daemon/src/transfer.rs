@@ -38,6 +38,7 @@ use rucio_core::protocol::{
     chunk::CHUNK_SIZE,
     have::{HaveRequest, HaveResponse},
     manifest::{ManifestRequest, ManifestResponse},
+    outboard::{OutboardRequest, OutboardResponse},
     transfer::{ChunkRequest, ChunkResponse},
 };
 
@@ -302,6 +303,17 @@ fn mask_trailing_bits(map: &mut [u8], bits: usize) {
 // ---------------------------------------------------------------------------
 // DownloadEngine
 // ---------------------------------------------------------------------------
+
+/// What to do with a `.part` already on disk when a link is (re)added.
+enum PartAdoption {
+    /// Adopt the listed chunks now, keeping the file and using this outboard.
+    Adopt { done: Vec<u32>, outboard: Vec<u8> },
+    /// A partial `.part` with no usable outboard: keep it and fetch the tree
+    /// from a peer to validate and adopt it once it arrives.
+    FetchOutboard,
+    /// Nothing to adopt — start fresh (truncate).
+    Fresh,
+}
 
 pub struct DownloadEngine {
     db: Db,
@@ -1186,29 +1198,32 @@ impl DownloadEngine {
     // Manifest received
     // -----------------------------------------------------------------------
 
-    /// On the ADD path, try to adopt an existing `.part` at `dest_path` instead
-    /// of truncating it: rebuild the completed-chunk set by validating the
-    /// on-disk data against the link `root`. Returns `Some((done_chunk_idxs,
-    /// outboard))` to adopt, or `None` to start fresh. Never trusts unverified
-    /// bytes — everything is checked against the root, so a foreign or corrupt
-    /// file simply yields fewer (or zero) adopted chunks.
+    /// On the ADD path, decide what to do with an existing `.part` at
+    /// `dest_path` instead of blindly truncating it. Never trusts unverified
+    /// bytes — everything is checked against the link `root`, so a foreign or
+    /// corrupt file simply yields fewer (or zero) adopted chunks.
     ///
-    /// - `.obao` present (right size): validate what it covers (`valid_chunks`).
+    /// - `.obao` present (right size): validate what it covers (`valid_chunks`)
+    ///   → [`PartAdoption::Adopt`].
     /// - no usable `.obao` but the file is complete: recompute the whole tree
-    ///   and accept only if its root matches the link (`compute_outboard`).
-    /// - a partial file with no `.obao` can't be validated here (that needs the
-    ///   fetch-outboard protocol) → `None`.
+    ///   and accept only if its root matches → [`PartAdoption::Adopt`].
+    /// - a partial file with no usable `.obao`: keep it and fetch the tree from
+    ///   a peer (the 32-byte root alone can't validate partial content) →
+    ///   [`PartAdoption::FetchOutboard`].
+    /// - no file (or empty): [`PartAdoption::Fresh`].
     async fn reconcile_existing_part(
         dest_path: PathBuf,
         root_hash: [u8; 32],
         total_size: u64,
         chunk_size: u32,
-    ) -> Option<(Vec<u32>, Vec<u8>)> {
+    ) -> PartAdoption {
         tokio::task::spawn_blocking(move || {
             use rucio_core::protocol::bao;
-            let meta = std::fs::metadata(&dest_path).ok()?;
+            let Ok(meta) = std::fs::metadata(&dest_path) else {
+                return PartAdoption::Fresh;
+            };
             if meta.len() == 0 {
-                return None;
+                return PartAdoption::Fresh;
             }
             let root = blake3::Hash::from_bytes(root_hash);
             let want = bao::outboard_len(total_size);
@@ -1220,23 +1235,28 @@ impl DownloadEngine {
                     bao::valid_chunks(ob.clone(), &dest_path, root, total_size, chunk_size)
                 && !done.is_empty()
             {
-                return Some((done, ob));
+                return PartAdoption::Adopt { done, outboard: ob };
             }
 
-            // Case 2: no usable outboard — only a fully complete file can be
-            // adopted, by recomputing its tree and matching the link root.
+            // Case 2: no usable outboard — a fully complete file can be adopted
+            // by recomputing its tree and matching the link root.
             if meta.len() == total_size
                 && let Ok((computed, ob, _)) = bao::compute_outboard(&dest_path)
                 && computed == root
             {
                 let n = total_size.div_ceil(chunk_size as u64) as u32;
-                return Some(((0..n).collect(), ob));
+                return PartAdoption::Adopt {
+                    done: (0..n).collect(),
+                    outboard: ob,
+                };
             }
-            None
+
+            // A partial file with no usable outboard: keep it and fetch the tree
+            // from a peer so we can validate and adopt it later.
+            PartAdoption::FetchOutboard
         })
         .await
-        .ok()
-        .flatten()
+        .unwrap_or(PartAdoption::Fresh)
     }
 
     pub async fn on_manifest_received(
@@ -1328,6 +1348,9 @@ impl DownloadEngine {
                 // the chunks that check out (moving a partial download between
                 // machines, or recovering a lost sidecar via re-add). Falls back
                 // to a fresh, truncated file when there's nothing to adopt.
+                let zero_outboard =
+                    || vec![0u8; rucio_core::protocol::bao::outboard_len(total_size)];
+                let mut fetch_outboard = false;
                 let (mut done_set, outboard_bytes, truncate_part) =
                     match Self::reconcile_existing_part(
                         dest_path.clone(),
@@ -1337,13 +1360,27 @@ impl DownloadEngine {
                     )
                     .await
                     {
-                        Some((done, ob)) => (done.into_iter().collect::<HashSet<u32>>(), ob, false),
-                        None => (
-                            HashSet::new(),
-                            vec![0u8; rucio_core::protocol::bao::outboard_len(total_size)],
-                            true,
-                        ),
+                        PartAdoption::Adopt { done, outboard } => {
+                            (done.into_iter().collect::<HashSet<u32>>(), outboard, false)
+                        }
+                        // Keep the partial file and fetch its tree from a peer;
+                        // adoption happens when the outboard arrives. The download
+                        // runs meanwhile, so a fetch that never lands just means
+                        // re-downloading (the current fallback).
+                        PartAdoption::FetchOutboard => {
+                            fetch_outboard = true;
+                            (HashSet::new(), zero_outboard(), false)
+                        }
+                        PartAdoption::Fresh => (HashSet::new(), zero_outboard(), true),
                     };
+
+                // Providers to ask for the outboard (captured before `pending`
+                // is moved into the ActiveDownload below).
+                let outboard_providers = if fetch_outboard {
+                    pending.providers.clone()
+                } else {
+                    Vec::new()
+                };
 
                 // A fully-adopted (complete) file still needs the normal
                 // completion path (rename to download_dir, share-cache
@@ -1442,6 +1479,23 @@ impl DownloadEngine {
                 );
 
                 self.dispatch_requests(root_hash).await;
+
+                // Ask providers for the file's outboard so we can validate and
+                // adopt the kept `.part`. Fire-and-forget: the reply arrives as
+                // `OutboardReceived` and is routed by root hash to
+                // `on_outboard_received`. Idempotent, so asking several providers
+                // (to reach one holding the complete file) is harmless.
+                for peer in outboard_providers {
+                    let (id_tx, _id_rx) = oneshot::channel();
+                    let _ = self
+                        .cmd_tx
+                        .send(NodeCmd::RequestOutboard {
+                            peer,
+                            request: OutboardRequest { root_hash },
+                            id_tx,
+                        })
+                        .await;
+                }
             }
 
             ManifestResponse::NotFound => {
@@ -2032,6 +2086,105 @@ impl DownloadEngine {
         });
     }
 
+    /// Answer an inbound outboard request: serve the full bao tree for a file we
+    /// hold COMPLETE (from the share outboard cache, or recomputed). A partial
+    /// holder answers `NotFound` — its tree doesn't cover the whole file, so it
+    /// can't help the requester validate arbitrary chunks.
+    pub async fn serve_outboard(&self, _peer: PeerId, request: OutboardRequest, channel_id: u64) {
+        let db = self.db.clone();
+        let cmd_tx = self.cmd_tx.clone();
+        let outboard_dir = self.outboard_dir.clone();
+        tokio::spawn(async move {
+            let response = build_outboard_response(&db, &outboard_dir, &request.root_hash).await;
+            let _ = cmd_tx
+                .send(NodeCmd::RespondOutboard {
+                    channel_id,
+                    response,
+                })
+                .await;
+        });
+    }
+
+    /// A provider answered our outboard fetch: validate the kept `.part` against
+    /// the received tree and adopt the chunks that check out, recovering a
+    /// partial download whose `.obao` was missing without re-downloading what is
+    /// already on disk. Genuine holes and in-flight chunks are untouched, so the
+    /// download completes normally.
+    pub async fn on_outboard_received(&mut self, response: OutboardResponse) {
+        let (root_hash, outboard) = match response {
+            OutboardResponse::Ok {
+                root_hash,
+                outboard,
+            } => (root_hash, outboard),
+            _ => return,
+        };
+        let (dest_path, total_size, chunk_size) = match self.active.get(&root_hash) {
+            Some(dl) => (dl.dest_path.clone(), dl.total_size, dl.chunk_size),
+            None => return, // download finished or was removed while we waited
+        };
+        // The tree must be sized for this file; otherwise it's not usable.
+        if outboard.len() != rucio_core::protocol::bao::outboard_len(total_size) {
+            return;
+        }
+
+        // Validate the on-disk data against the fetched tree off the runtime.
+        let root = blake3::Hash::from_bytes(root_hash);
+        let ob_for_validate = outboard.clone();
+        let dest = dest_path.clone();
+        let valid = tokio::task::spawn_blocking(move || {
+            rucio_core::protocol::bao::valid_chunks(
+                ob_for_validate,
+                &dest,
+                root,
+                total_size,
+                chunk_size,
+            )
+        })
+        .await
+        .ok()
+        .and_then(|r| r.ok());
+        let Some(valid) = valid else { return };
+        if valid.is_empty() {
+            return;
+        }
+
+        // Adopt: the download may have progressed while we validated, so only
+        // mark chunks that aren't already done.
+        let Some(dl) = self.active.get_mut(&root_hash) else {
+            return;
+        };
+        let dl_id = dl.download_id;
+        // Replace the working outboard with the full fetched tree — a superset
+        // consistent with `root`, so ongoing decodes and partial serving still
+        // work.
+        *dl.partial_outboard.lock().unwrap() = outboard.clone();
+        let mut done_ids = Vec::new();
+        for idx in valid {
+            if dl.done.insert(idx) {
+                dl.queued.retain(|&q| q != idx);
+                dl.in_flight.remove(&idx);
+                done_ids.push(idx);
+            }
+        }
+        if done_ids.is_empty() {
+            return;
+        }
+
+        // Persist the full outboard next to the `.part` and the adopted chunks.
+        let _ = tokio::fs::write(partial_outboard_path(&dest_path), &outboard).await;
+        for &idx in &done_ids {
+            let sz = (total_size - idx as u64 * chunk_size as u64).min(chunk_size as u64) as u32;
+            if let Err(e) = db::downloads::chunk_done(&self.db, dl_id, idx, sz).await {
+                warn!(id = dl_id, idx, "chunk_done (outboard adopt) error: {e}");
+            }
+        }
+        info!(
+            id = dl_id,
+            adopted = done_ids.len(),
+            "Adopted chunks via fetched outboard"
+        );
+    }
+
     // -----------------------------------------------------------------------
     // Availability (`/have`)
     // -----------------------------------------------------------------------
@@ -2523,6 +2676,60 @@ fn derive_chunk_count(total_size: u64, chunk_size: u32) -> u32 {
     total_size.div_ceil(chunk_size as u64) as u32
 }
 
+/// Build an [`OutboardResponse`] for `root_hash`: serve the full bao outboard
+/// only if we hold the COMPLETE file (a `shared_files` row). The tree comes from
+/// the share cache, or is recomputed from the file if the cache is missing or
+/// stale. A file we don't have complete (a partial download, or unknown) answers
+/// `NotFound` — a partial holder's tree can't validate the requester's chunks.
+async fn build_outboard_response(
+    db: &Db,
+    outboard_dir: &std::path::Path,
+    root_hash: &[u8; 32],
+) -> OutboardResponse {
+    use sqlx::Row;
+    let row = sqlx::query("SELECT path, size FROM shared_files WHERE root_hash = ?1")
+        .bind(root_hash.as_slice())
+        .fetch_optional(db)
+        .await;
+    let row = match row {
+        Ok(Some(r)) => r,
+        Ok(None) => return OutboardResponse::NotFound,
+        Err(e) => return OutboardResponse::Error(e.to_string()),
+    };
+    let path: String = row.get("path");
+    let total_size: i64 = row.get("size");
+    let total_size = total_size as u64;
+    let outboard_path = share_outboard_path(outboard_dir, root_hash);
+
+    // Load the cached outboard, regenerating it from the file if missing/stale.
+    let result = tokio::task::spawn_blocking(move || -> std::io::Result<Vec<u8>> {
+        let data_path = std::path::PathBuf::from(&path);
+        let want_len = rucio_core::protocol::bao::outboard_len(total_size);
+        match std::fs::read(&outboard_path) {
+            Ok(bytes) if bytes.len() == want_len => Ok(bytes),
+            _ => {
+                let (_root, bytes, _size) =
+                    rucio_core::protocol::bao::compute_outboard(&data_path)?;
+                if let Some(parent) = outboard_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let _ = std::fs::write(&outboard_path, &bytes);
+                Ok(bytes)
+            }
+        }
+    })
+    .await;
+
+    match result {
+        Ok(Ok(outboard)) => OutboardResponse::Ok {
+            root_hash: *root_hash,
+            outboard,
+        },
+        Ok(Err(e)) => OutboardResponse::Error(e.to_string()),
+        Err(e) => OutboardResponse::Error(e.to_string()),
+    }
+}
+
 /// Build our `/have` answer for a file: which of its chunks we can serve right
 /// now. A complete share answers all-ones; an in-progress download answers its
 /// verified chunks (partial sharing); an unknown file answers `NotFound`.
@@ -2696,22 +2903,82 @@ mod tests {
         std::fs::write(partial_outboard_path(&part), &ob).unwrap();
 
         // With the outboard present, adopt exactly {0, 2}.
-        let (mut done, _ob) =
-            DownloadEngine::reconcile_existing_part(part.clone(), root_bytes, size, chunk_size)
-                .await
-                .expect("should adopt");
-        done.sort_unstable();
-        assert_eq!(done, vec![0, 2]);
+        match DownloadEngine::reconcile_existing_part(part.clone(), root_bytes, size, chunk_size)
+            .await
+        {
+            PartAdoption::Adopt { mut done, .. } => {
+                done.sort_unstable();
+                assert_eq!(done, vec![0, 2]);
+            }
+            _ => panic!("expected Adopt with an outboard present"),
+        }
 
         // Drop the outboard: a partial file with no tree can't be validated
-        // against the bare root → never adopted (safe by construction).
+        // against the bare root (Merkle math), so we keep it and fetch the tree
+        // from a peer — never adopting unverified bytes.
         std::fs::remove_file(partial_outboard_path(&part)).unwrap();
         assert!(
-            DownloadEngine::reconcile_existing_part(part, root_bytes, size, chunk_size)
-                .await
-                .is_none(),
-            "partial file without outboard must not be adopted"
+            matches!(
+                DownloadEngine::reconcile_existing_part(part, root_bytes, size, chunk_size).await,
+                PartAdoption::FetchOutboard
+            ),
+            "partial file without outboard should trigger a fetch, not adopt"
         );
+    }
+
+    #[tokio::test]
+    async fn build_outboard_response_serves_complete_share_else_not_found() {
+        use rucio_core::protocol::bao;
+        use std::io::Write;
+
+        let (db, _guard) = make_db().await;
+        let dir = tempfile::tempdir().unwrap();
+        let outboard_dir = dir.path().join("obao");
+
+        // A complete file on disk, registered as a share.
+        let size = 6 * 1024 * 1024u64;
+        let data: Vec<u8> = (0..size as usize).map(|i| (i % 251) as u8).collect();
+        let file = dir.path().join("f.bin");
+        {
+            let mut f = std::fs::File::create(&file).unwrap();
+            f.write_all(&data).unwrap();
+            f.flush().unwrap();
+        }
+        let (root, full_ob, _) = bao::compute_outboard(&file).unwrap();
+        let root_bytes = *root.as_bytes();
+        db::shares::insert(
+            &db,
+            db::shares::NewSharedFile {
+                root_hash: &root_bytes,
+                name: "f.bin",
+                size,
+                mime_type: None,
+                path: file.to_str().unwrap(),
+                chunk_size: 4 * 1024 * 1024,
+                added_at: 0,
+                mtime: 0,
+            },
+        )
+        .await
+        .unwrap();
+
+        // We hold it complete → serve the full, root-matching outboard.
+        match build_outboard_response(&db, &outboard_dir, &root_bytes).await {
+            OutboardResponse::Ok {
+                root_hash,
+                outboard,
+            } => {
+                assert_eq!(root_hash, root_bytes);
+                assert_eq!(outboard, full_ob);
+            }
+            _ => panic!("expected Ok for a complete share"),
+        }
+
+        // An unknown hash (not a complete share) → NotFound.
+        assert!(matches!(
+            build_outboard_response(&db, &outboard_dir, &[0u8; 32]).await,
+            OutboardResponse::NotFound
+        ));
     }
 
     // -----------------------------------------------------------------------

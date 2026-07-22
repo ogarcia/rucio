@@ -18,9 +18,11 @@ use std::time::Duration;
 
 use super::have_codec::{HaveCodec, HaveProtocol};
 use super::manifest_codec::{ManifestCodec, ManifestProtocol};
+use super::outboard_codec::{OutboardCodec, OutboardProtocol};
 use super::pinset_codec::{PinsetCodec, PinsetProtocol};
 use super::transfer_codec::{TransferCodec, TransferProtocol};
 use rucio_core::protocol::manifest::{ManifestRequest, ManifestResponse};
+use rucio_core::protocol::outboard::{OutboardRequest, OutboardResponse};
 use rucio_core::protocol::transfer::{ChunkRequest, ChunkResponse};
 
 pub const TOPIC_SEARCH: &str = "/rucio/search/1.0.0";
@@ -37,6 +39,7 @@ pub const AUTONAT_DIAL_REQUEST_PROTOCOL: &str = "/libp2p/autonat/2/dial-request"
 
 pub type TransferBehaviour = request_response::Behaviour<TransferCodec>;
 pub type ManifestBehaviour = request_response::Behaviour<ManifestCodec>;
+pub type OutboardBehaviour = request_response::Behaviour<OutboardCodec>;
 pub type PinsetBehaviour = request_response::Behaviour<PinsetCodec>;
 pub type HaveBehaviour = request_response::Behaviour<HaveCodec>;
 
@@ -52,6 +55,9 @@ pub struct BehaviourConfig {
     pub transfer: bool,
     /// Manifest request-response protocol.
     pub manifest: bool,
+    /// Outboard request-response protocol (fetch the full bao outboard of a file
+    /// by its root hash to rebuild a lost `.obao` sidecar).
+    pub outboard: bool,
     /// Pin-set request-response protocol (cooperative pinning: serve our pin-set
     /// and fetch peers' pin-sets).
     pub pinset: bool,
@@ -110,6 +116,7 @@ impl BehaviourConfig {
             gossipsub: true,
             transfer: true,
             manifest: true,
+            outboard: true,
             pinset: true,
             have: true,
             capture_provider_records: false,
@@ -135,6 +142,7 @@ impl BehaviourConfig {
             gossipsub: false,
             transfer: false,
             manifest: false,
+            outboard: false,
             pinset: false,
             have: false,
             capture_provider_records: false,
@@ -176,6 +184,7 @@ pub struct RucioBehaviour {
     pub gossipsub: Toggle<gossipsub::Behaviour>,
     pub transfer: Toggle<TransferBehaviour>,
     pub manifest: Toggle<ManifestBehaviour>,
+    pub outboard: Toggle<OutboardBehaviour>,
     pub pinset: Toggle<PinsetBehaviour>,
     pub have: Toggle<HaveBehaviour>,
     /// Circuit relay server: lets other (LowID) peers make reservations so
@@ -302,6 +311,13 @@ impl RucioBehaviour {
             )
         });
 
+        let outboard = cfg.outboard.then(|| {
+            request_response::Behaviour::new(
+                vec![(OutboardProtocol, request_response::ProtocolSupport::Full)],
+                request_response::Config::default(),
+            )
+        });
+
         let pinset = cfg.pinset.then(|| {
             request_response::Behaviour::new(
                 vec![(PinsetProtocol, request_response::ProtocolSupport::Full)],
@@ -336,6 +352,7 @@ impl RucioBehaviour {
             gossipsub: Toggle::from(gossipsub),
             transfer: Toggle::from(transfer),
             manifest: Toggle::from(manifest),
+            outboard: Toggle::from(outboard),
             pinset: Toggle::from(pinset),
             have: Toggle::from(have),
             relay: Toggle::from(relay),
@@ -402,6 +419,8 @@ pub type TransferRequest = ChunkRequest;
 pub type TransferResponse = ChunkResponse;
 pub type ManifestReq = ManifestRequest;
 pub type ManifestResp = ManifestResponse;
+pub type OutboardReq = OutboardRequest;
+pub type OutboardResp = OutboardResponse;
 pub use rucio_core::protocol::have::{HaveRequest, HaveResponse};
 
 #[cfg(test)]

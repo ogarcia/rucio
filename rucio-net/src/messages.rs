@@ -6,6 +6,7 @@ use rucio_core::protocol::{
     have::{HaveRequest, HaveResponse},
     manifest::{ManifestRequest, ManifestResponse},
     node::{NodeClass, Reachability},
+    outboard::{OutboardRequest, OutboardResponse},
     pinset::{PinsetRequest, PinsetResponse},
     search::{SearchQuery, SearchResult},
     transfer::{ChunkRequest, ChunkResponse},
@@ -61,6 +62,17 @@ pub enum NodeCmd {
     RespondManifest {
         channel_id: u64,
         response: ManifestResponse,
+    },
+    /// Request the full outboard for a file from a remote peer.
+    RequestOutboard {
+        peer: PeerId,
+        request: OutboardRequest,
+        id_tx: oneshot::Sender<OutboundRequestId>,
+    },
+    /// Send an outboard response back to a peer that requested it.
+    RespondOutboard {
+        channel_id: u64,
+        response: OutboardResponse,
     },
     /// Ask a peer for its pin-set (cooperative pinning).
     RequestPinset {
@@ -201,6 +213,18 @@ pub enum NodeEvent {
     ManifestRequested {
         peer: PeerId,
         request: ManifestRequest,
+        channel_id: u64,
+    },
+    /// An outboard response arrived for a request we sent.
+    OutboardReceived {
+        request_id: OutboundRequestId,
+        peer: PeerId,
+        response: OutboardResponse,
+    },
+    /// A remote peer sent us an outboard request — we must respond.
+    OutboardRequested {
+        peer: PeerId,
+        request: OutboardRequest,
         channel_id: u64,
     },
     /// A peer answered our pin-set request.

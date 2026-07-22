@@ -1444,6 +1444,12 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                     Some(node::messages::NodeEvent::ManifestRequested { peer, request, channel_id }) => {
                         engine.serve_manifest(peer, request, channel_id).await;
                     }
+                    Some(node::messages::NodeEvent::OutboardReceived { response, .. }) => {
+                        engine.on_outboard_received(response).await;
+                    }
+                    Some(node::messages::NodeEvent::OutboardRequested { peer, request, channel_id }) => {
+                        engine.serve_outboard(peer, request, channel_id).await;
+                    }
                     Some(node::messages::NodeEvent::HaveRequested { peer, request, channel_id }) => {
                         engine.serve_have(peer, request, channel_id).await;
                     }
