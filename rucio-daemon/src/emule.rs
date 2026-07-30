@@ -645,8 +645,7 @@ pub async fn start_kad_task(config: &Config) -> Result<KadHandle> {
     let our_id = KadId::random();
     // Our persistent eMule user hash: published as the Kad source owner ID so
     // downloaders can key TCP obfuscation to us (separate from the node KadId).
-    let user_hash = crate::emule_identity::load_or_create(&crate::emule_identity::path(config))
-        .unwrap_or([0u8; 16]);
+    let user_hash = crate::emule_identity::load_or_create(&crate::emule_identity::path(config));
     let task_cfg = KadTaskConfig {
         tcp_port: config.emule.tcp_port,
         initial_external_ip: config
@@ -890,8 +889,7 @@ pub async fn run_ed2k_download(
     // Our persistent eMule user hash, advertised in the download HELLO so a peer
     // sees the same identity whether it uploads to or downloads from us. Stored
     // on disk next to identity.key (see crate::emule_identity), not in the DB.
-    let our_user_hash = crate::emule_identity::load_or_create(&crate::emule_identity::path(config))
-        .unwrap_or([0u8; 16]);
+    let our_user_hash = crate::emule_identity::load_or_create(&crate::emule_identity::path(config));
     let our_nick = config.emule.nick.clone();
 
     // ADD path: rebuild a missing/incoherent `.part.met` from the bytes on disk

@@ -563,8 +563,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         // next to identity.key (see emule_identity) — never in the DB, which is
         // reconstructible.
         let emule_id_path = crate::emule_identity::path(&config);
-        let emule_user_hash =
-            crate::emule_identity::load_or_create(&emule_id_path).unwrap_or([0u8; 16]);
+        let emule_user_hash = crate::emule_identity::load_or_create(&emule_id_path);
         let tcp_port = config.emule.tcp_port;
         match crate::emule::start_emule_tcp_listener(&config).await {
             Ok(listener) => {
