@@ -12,7 +12,7 @@
 //!
 //! For ed2k file transfers the relevant opcodes are:
 //! - `0x01` HELLO — exchange client IDs.
-//! - `0x4f` HELLOANSWER — response to HELLO.
+//! - `0x4c` HELLOANSWER — response to HELLO.
 //! - `0x58` FILEREQUEST — request a file by hash.
 //! - `0x59` FILEREQUEST_ANSWER — server confirms it has the file.
 //! - `0x4b` STARTUPLOAD_REQ — ask peer to start sending.
@@ -173,11 +173,29 @@ const ET_COMPRESSION: u8 = 0x20;
 /// eMule integer tag value type (`TAGTYPE_UINT32`), used when serialising tags
 /// the way eMule's `CTag::WriteTagToFile` does for a named integer.
 const TAGTYPE_UINT32: u8 = 0x03;
+/// eMule string tag value type (`TAGTYPE_STRING`), the counterpart of
+/// [`TAGTYPE_UINT32`] for a named string (e.g. `ET_MOD_VERSION`).
+const TAGTYPE_STRING: u8 = 0x02;
 /// Data-compression protocol version we advertise (eMule `ET_COMPRESSION`
 /// value): `1` = zlib, the only scheme eMule defines. Advertising it lets peers
 /// send us zlib-packed blocks (OP_COMPRESSEDPART) — smaller on the wire for
 /// compressible data — instead of raw OP_SENDINGPART.
 const DATA_COMPRESSION_VERSION: u32 = 1;
+/// eMule mod-version tag carried in OP_EMULEINFO (`ET_MOD_VERSION`, same id as
+/// `CT_MOD_VERSION`). Announcing a mod string here identifies us honestly as
+/// "Rucio" so cooperative peers and anti-leech shields recognise us as a named
+/// client instead of false-flagging our otherwise near-vanilla fingerprint.
+///
+/// It rides in OP_EMULEINFO, *not* the HELLO, on purpose: it must travel with
+/// our version byte so the receiver's client-version string is "eMule v0.27"
+/// (not the bare "eMule" it sees at HELLO time). eMuleAI's shield punishes a
+/// readable mod string paired with a bare-"eMule" version as a leecher, and
+/// eMule's `CheckForGPLEvilDoer` only punishes the `LH`/`LIO`/`PLUS PLUS`
+/// prefixes — none of which "Rucio" is.
+const ET_MOD_VERSION: u8 = 0x55;
+/// The mod string we advertise (see [`ET_MOD_VERSION`]). Kept to plain letters:
+/// eMuleAI's mod-name scheme validator rejects punctuation/stray digits.
+const MOD_VERSION: &str = "Rucio";
 
 // ── Framing ───────────────────────────────────────────────────────────────────
 
@@ -195,16 +213,21 @@ fn build_message_proto(proto: u8, opcode: u8, payload: &[u8]) -> Vec<u8> {
 }
 
 /// Build the `OP_EMULEINFO`/`OP_EMULEINFOANSWER` payload: our advertised client
-/// version, the extended-protocol version, and a one-entry tag list announcing
-/// the single eMule capability we honour — data compression (`ET_COMPRESSION`).
-/// This makes peers send us zlib-packed data blocks (`OP_COMPRESSEDPART`)
-/// instead of raw `OP_SENDINGPART`. Other eMule features (UDP reask, source
-/// exchange, …) are deliberately omitted because we do not implement them.
+/// version, the extended-protocol version, and a tag list announcing the one
+/// eMule capability we honour — data compression (`ET_COMPRESSION`) — plus our
+/// mod string (`ET_MOD_VERSION` = "Rucio"). The compression tag makes peers send
+/// us zlib-packed data blocks (`OP_COMPRESSEDPART`) instead of raw
+/// `OP_SENDINGPART`; the mod string identifies us as Rucio (see
+/// [`ET_MOD_VERSION`]). Other eMule features (UDP reask, source exchange, …) are
+/// deliberately omitted because we do not implement them.
+///
+/// Tags are ordered by ascending tag id (`ET_COMPRESSION` 0x20 before
+/// `ET_MOD_VERSION` 0x55) to avoid any wrong-tag-order heuristics.
 fn build_emule_info() -> Vec<u8> {
-    let mut p = Vec::with_capacity(14);
+    let mut p = Vec::new();
     p.push(EMULE_VERSION_SHORT);
     p.push(EMULE_PROTOCOL_VERSION);
-    p.extend_from_slice(&1u32.to_le_bytes()); // tag count = 1
+    p.extend_from_slice(&2u32.to_le_bytes()); // tag count = 2
     // ET_COMPRESSION = 1, serialised the way eMule's `CTag::WriteTagToFile`
     // writes a named integer tag: type byte, 16-bit name length, 1-byte name
     // id, then the 32-bit LE value.
@@ -212,6 +235,14 @@ fn build_emule_info() -> Vec<u8> {
     p.extend_from_slice(&1u16.to_le_bytes()); // name length = 1
     p.push(ET_COMPRESSION);
     p.extend_from_slice(&DATA_COMPRESSION_VERSION.to_le_bytes());
+    // ET_MOD_VERSION = "Rucio", a named string tag: type byte, 16-bit name
+    // length, 1-byte name id, then the 16-bit LE string length and its bytes.
+    let mod_bytes = MOD_VERSION.as_bytes();
+    p.push(TAGTYPE_STRING);
+    p.extend_from_slice(&1u16.to_le_bytes()); // name length = 1
+    p.push(ET_MOD_VERSION);
+    p.extend_from_slice(&(mod_bytes.len() as u16).to_le_bytes());
+    p.extend_from_slice(mod_bytes);
     p
 }
 
@@ -391,6 +422,13 @@ fn parse_file_status(payload: &[u8], file_hash: &[u8], num_parts: usize) -> Opti
 /// accordingly. Emitting the prefix on a HELLOANSWER shifts every field by one
 /// byte, so the peer misparses the answer and abandons the transfer (it never
 /// sends the file request) — pass `false` when answering an incoming HELLO.
+///
+/// We deliberately do NOT carry a `CT_MOD_VERSION` tag here. Our client-version
+/// string is unknown at HELLO time (we announce it later in `OP_EMULEINFO`), so
+/// eMuleAI's shield sees it as the bare string "eMule"; pairing that with a
+/// readable mod string trips its `BAD_MOD_NAME` leecher check (`ClientVer ==
+/// "eMule"`). The mod string rides in `OP_EMULEINFO` instead (see
+/// [`build_emule_info`]), where our version travels with it.
 fn build_hello(our_hash: &[u8; 16], tcp_port: u16, nick: &str, include_hash_size: bool) -> Vec<u8> {
     let mut p = Vec::new();
     if include_hash_size {
@@ -2440,15 +2478,22 @@ mod tests {
 
     #[test]
     fn emule_info_payload() {
-        // version + EMULE_PROTOCOL + tagcount(1) + one ET_COMPRESSION tag:
-        // recognised as eMule and advertising zlib data compression.
+        // version + EMULE_PROTOCOL + tagcount(2) + ET_COMPRESSION tag +
+        // ET_MOD_VERSION tag: recognised as eMule, advertising zlib data
+        // compression and identifying us as the "Rucio" mod.
         let info = build_emule_info();
         let mut expected = vec![EMULE_VERSION_SHORT, EMULE_PROTOCOL_VERSION];
-        expected.extend_from_slice(&1u32.to_le_bytes()); // tag count = 1
+        expected.extend_from_slice(&2u32.to_le_bytes()); // tag count = 2
         expected.push(TAGTYPE_UINT32);
         expected.extend_from_slice(&1u16.to_le_bytes()); // name length = 1
         expected.push(ET_COMPRESSION);
         expected.extend_from_slice(&DATA_COMPRESSION_VERSION.to_le_bytes());
+        // ET_MOD_VERSION string tag, ordered after ET_COMPRESSION (0x20 < 0x55).
+        expected.push(TAGTYPE_STRING);
+        expected.extend_from_slice(&1u16.to_le_bytes()); // name length = 1
+        expected.push(ET_MOD_VERSION);
+        expected.extend_from_slice(&(MOD_VERSION.len() as u16).to_le_bytes());
+        expected.extend_from_slice(MOD_VERSION.as_bytes());
         assert_eq!(info, expected);
     }
 
