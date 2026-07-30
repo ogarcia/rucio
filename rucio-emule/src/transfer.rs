@@ -1133,10 +1133,11 @@ impl Session {
         // How many times we re-enter the queue after the peer withdraws our slot
         // (OP_OUTOFPARTREQS) before giving up on this connection. Unlike the
         // initial handshake's short "knock and move on" budget, a peer that has
-        // already granted us once is worth waiting for: staying queued lets our
-        // score climb until we win a contested slot. Each cycle is a queue-rank
-        // re-ask (5 s sleep + up to op_timeout read), so this bounds a bumped
-        // connection to a few minutes before we reconnect from scratch.
+        // already granted us once is worth waiting for: staying queued (silently —
+        // the uploader re-queues and re-ranks us on its own) lets our score climb
+        // until we win a contested slot, without ever re-asking. Each cycle is a
+        // patient wait bounded by `wait_requeued_slot`'s MAX_WAIT, so a bumped
+        // connection lingers a few minutes before we reconnect from scratch.
         const MAX_REQUEUE_WAITS: usize = 8;
         // Files over 4 GiB need 64-bit-offset request/data opcodes; the 32-bit
         // fields would overflow past 4 GiB (the download would stall there).
@@ -1567,16 +1568,24 @@ where
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Send `OP_STARTUPLOAD_REQ` and wait for the peer to grant an upload slot
-/// (`OP_ACCEPTUPLOAD_REQ`), tolerating up to `max_queue_waits` queue-rank
-/// re-asks (sleeping 5 s and re-sending the request between each). Emits
-/// [`DownloadEvent::Queued`] for every rank update and [`DownloadEvent::Started`]
-/// once granted.
+/// Send `OP_STARTUPLOAD_REQ` **once** and wait for the peer to grant an upload
+/// slot (`OP_ACCEPTUPLOAD_REQ`), tolerating up to `max_queue_waits` queue-rank
+/// updates before giving up. Emits [`DownloadEvent::Queued`] for every rank
+/// update and [`DownloadEvent::Started`] once granted.
+///
+/// Critically, we do **not** re-send `OP_STARTUPLOAD_REQ` while queued: eMule's
+/// uploader sends ranking updates on its own (`SendRankingInfo`), and re-asking
+/// the same file before `MIN_REQUESTTIME` (10 min) while not being served trips
+/// its anti-leecher counter (`CUpDownClient::AddRequestCount`, `badrequests`),
+/// which bans us at `BADCLIENTBAN` (4 bad reasks). Stock eMule sends the request
+/// exactly once and simply sits in `DS_ONQUEUE`; we mirror that.
 ///
 /// This is the *initial-contact* wait: a peer whose queue is full is abandoned
-/// after `max_queue_waits` re-asks so the caller can try (or re-knock) another
-/// source. Once we have actually held a slot and been rotated off it, use
-/// [`wait_requeued_slot`] instead, which waits patiently on the same connection.
+/// after `max_queue_waits` rank updates (or an idle timeout) so the caller can
+/// try another source — but the re-knock must respect the reask cooldown, never
+/// reconnecting the same peer within `MIN_REQUESTTIME`. Once we have actually
+/// held a slot and been rotated off it, use [`wait_requeued_slot`] instead,
+/// which waits patiently on the same connection.
 async fn wait_for_upload_slot<F>(
     stream: &mut TcpStream,
     ciphers: &mut ObfCiphers,
@@ -1594,7 +1603,7 @@ where
 
     let mut queue_waits = 0;
     loop {
-        let (_proto, opcode, payload) = timeout(op_timeout, read_frame(stream, ciphers))
+        let (proto, opcode, payload) = timeout(op_timeout, read_frame(stream, ciphers))
             .await
             .context("ACCEPTUPLOAD timeout")?
             .context("read ACCEPTUPLOAD")?;
@@ -1603,21 +1612,26 @@ where
                 on_event(DownloadEvent::Started);
                 return Ok(());
             }
-            OP_QUEUE_RANK => {
-                let rank = if payload.len() >= 4 {
-                    u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]])
-                } else {
-                    0
+            // A rank update — classic eDonkey `OP_QUEUE_RANK` (u32) or eMule's
+            // extended `OP_QUEUERANKING` (u16 + padding). We only *listen*: the
+            // peer keeps ranking us on its own, so we never re-send the request
+            // (that would trip its reask-abuse ban). Move on after
+            // `max_queue_waits` updates so a deep queue doesn't pin this worker.
+            OP_QUEUE_RANK | OP_QUEUERANKING => {
+                let rank = match opcode {
+                    OP_QUEUERANKING if proto == PROTO_EMULE && payload.len() >= 2 => {
+                        u16::from_le_bytes([payload[0], payload[1]]) as u32
+                    }
+                    _ if payload.len() >= 4 => {
+                        u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]])
+                    }
+                    _ => 0,
                 };
                 on_event(DownloadEvent::Queued { rank });
                 queue_waits += 1;
                 if queue_waits > max_queue_waits {
                     bail!("exceeded max queue waits ({rank})");
                 }
-                tokio::time::sleep(Duration::from_secs(5)).await;
-                write_frame(stream, ciphers, OP_STARTUPLOAD_REQ, hash.as_bytes())
-                    .await
-                    .context("re-send STARTUPLOAD_REQ")?;
             }
             OP_QUEUE_FULL => bail!("peer queue is full"),
             _ => debug!("skipping opcode 0x{opcode:02x} waiting for ACCEPTUPLOAD"),
@@ -1631,16 +1645,21 @@ where
 ///
 /// Unlike [`wait_for_upload_slot`]'s knock-and-move-on, this is patient: it waits
 /// as long as the peer keeps ranking us — via the classic `OP_QUEUE_RANK` or
-/// eMule's extended `OP_QUEUERANKING` — and only re-asks when the peer falls
-/// silent for a whole read window. A busy source can take minutes to reach the
-/// top of its queue, and reconnecting is actively worse (the peer often refuses a
-/// fresh connection for a while). We give up (so the caller reconnects as a last
-/// resort) only after `MAX_WAIT` total, or a run of silent windows with no reply.
+/// eMule's extended `OP_QUEUERANKING`. It **never re-sends** `OP_STARTUPLOAD_REQ`:
+/// on `OP_OUTOFPARTREQS` the uploader re-queues us itself (`UploadClient.cpp`:
+/// `SendOutOfPartReqsAndAddToWaitingQueue` → `AddClientToQueue`), so it keeps
+/// ranking and will re-grant on the same connection with no prompting from us. A
+/// reask here would be a fresh upload request that trips the peer's reask-abuse
+/// counter (see [`wait_for_upload_slot`]). A busy source can take minutes to reach
+/// the top of its queue, and reconnecting is actively worse (the peer often
+/// refuses a fresh connection for a while). We give up (so the caller reconnects
+/// as a last resort, respecting the reask cooldown) only after `MAX_WAIT` total,
+/// or a run of silent windows with no reply.
 async fn wait_requeued_slot<F>(
     stream: &mut TcpStream,
     ciphers: &mut ObfCiphers,
     op_timeout: Duration,
-    hash: &Ed2kHash,
+    _hash: &Ed2kHash,
     on_event: &mut F,
 ) -> Result<()>
 where
@@ -1649,11 +1668,8 @@ where
     const MAX_WAIT: Duration = Duration::from_secs(600);
     const MAX_SILENT_WINDOWS: usize = 4;
 
-    // Prompt the peer that we are (still) here and waiting for a slot.
-    write_frame(stream, ciphers, OP_STARTUPLOAD_REQ, hash.as_bytes())
-        .await
-        .context("send STARTUPLOAD_REQ (re-queue)")?;
-
+    // No STARTUPLOAD_REQ here: the peer already re-queued us when it sent
+    // OP_OUTOFPARTREQS and keeps ranking us on its own. We only listen.
     let started = Instant::now();
     let mut silent = 0usize;
     loop {
@@ -1661,16 +1677,14 @@ where
             bail!("no upload slot re-granted after {MAX_WAIT:?} waiting in the queue");
         }
         match timeout(op_timeout, read_frame(stream, ciphers)).await {
-            // Silent window: nudge the peer so it keeps us on its radar. Enough
-            // consecutive silences means the connection is effectively dead.
+            // Silent window: the peer went quiet. We do NOT nudge it (a reask
+            // would count against us); enough consecutive silences just means the
+            // connection is effectively dead and we give up.
             Err(_elapsed) => {
                 silent += 1;
                 if silent > MAX_SILENT_WINDOWS {
                     bail!("peer stopped responding while we waited in its queue");
                 }
-                write_frame(stream, ciphers, OP_STARTUPLOAD_REQ, hash.as_bytes())
-                    .await
-                    .context("re-send STARTUPLOAD_REQ (re-queue)")?;
             }
             Ok(frame) => {
                 let (proto, opcode, payload) = frame.context("read ACCEPTUPLOAD (re-queue)")?;
@@ -2683,9 +2697,11 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
 
-        // Peer: on the first REQUESTPARTS, bump us (OP_OUTOFPARTREQS). Then, when
-        // we re-ask for the slot (STARTUPLOAD_REQ), grant it (ACCEPTUPLOAD_REQ)
-        // and serve the whole range on the following REQUESTPARTS.
+        // Peer: on the first REQUESTPARTS, bump us (OP_OUTOFPARTREQS). Like real
+        // eMule (`SendOutOfPartReqsAndAddToWaitingQueue` → `AddClientToQueue`),
+        // the uploader re-queues us itself and re-ranks/re-grants spontaneously —
+        // the downloader must NOT re-send STARTUPLOAD_REQ (that would trip the
+        // reask-abuse ban), so the peer never waits for one here.
         let peer_data = data.clone();
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
@@ -2697,8 +2713,6 @@ mod tests {
                 .await
                 .unwrap();
 
-            let (_p, opcode, _payload) = read_frame(&mut stream, &mut ciphers).await.unwrap();
-            assert_eq!(opcode, OP_STARTUPLOAD_REQ, "downloader re-enters the queue");
             // Rank the downloader on the extended protocol (OP_QUEUERANKING),
             // as the failing peer does, before finally granting the slot. The
             // downloader must recognise 0x60 as "still queued", not skip it.

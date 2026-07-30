@@ -705,6 +705,20 @@ const MAX_SOURCE_ATTEMPTS: u32 = 3;
 /// is skipped there.
 const CONNECT_RETRY_BACKOFF_SECS: u64 = 3;
 
+/// Minimum interval between two `OP_STARTUPLOAD_REQ`s to the *same* peer for the
+/// same file while it has us queued (not actively uploading). eMule's uploader
+/// tracks reask timing per file (`CUpDownClient::AddRequestCount`): a fresh
+/// upload request sooner than `MIN_REQUESTTIME` (10 min) while we are not being
+/// served increments a `badrequests` counter, and at `BADCLIENTBAN` (4) the peer
+/// bans us for "repeated upload request / reask abuse". We already send the
+/// request only once per connection (see [`rucio_emule`]'s `wait_for_upload_slot`);
+/// this gate is the across-reconnect half, matching eMule's own 29-minute
+/// `FILEREASKTIME` so a peer we were queued at is not re-knocked too soon — even
+/// across re-search rounds (the cooldown map lives for the whole download). Only
+/// peers that actually queued us are cooled; a peer that grants a slot or fails
+/// the TCP connect is not, so transient failures retry normally.
+const REASK_COOLDOWN: Duration = Duration::from_secs(29 * 60);
+
 /// Exponential back-off for source-search retries.
 /// Sequence: 30 s, 60 s, 2 min, 4 min, 8 min, 16 min, 30 min (cap), …
 fn retry_delay_secs(attempt: u32) -> u64 {
@@ -884,6 +898,14 @@ pub async fn run_ed2k_download(
     // once we hold a root-verified hashset. Latched so it runs at most once for
     // the whole download (across re-search rounds), never on a normal resume.
     let reconciled = Arc::new(AtomicBool::new(false));
+
+    // Last time we sent an upload request to a peer that then queued us, keyed by
+    // address. Enforces `REASK_COOLDOWN` so we never re-knock a queued source
+    // sooner than eMule's reask window and trip its anti-leecher ban. Held for
+    // the whole download — not per round — so the pacing survives re-search
+    // rounds that re-add the same sources with a fresh attempt count.
+    let last_ask: Arc<Mutex<HashMap<std::net::SocketAddrV4, Instant>>> =
+        Arc::new(Mutex::new(HashMap::new()));
 
     loop {
         // Check for user-requested stop (cancel / pause) before doing any work.
@@ -1282,6 +1304,7 @@ pub async fn run_ed2k_download(
             let cancel_w = cancel.clone();
             let pool = source_pool.clone();
             let qranks = queue_ranks.clone();
+            let last_ask_w = last_ask.clone();
             let nick_w = our_nick.clone();
             let min_speed = min_speed_bytes;
             let part_hashes_w = part_hashes.clone();
@@ -1298,17 +1321,56 @@ pub async fn run_ed2k_download(
                     if cancel_w.load(Ordering::Relaxed) {
                         break;
                     }
-                    // Take the next source from the shared pool.
-                    let (source, attempts) = match pool.lock().unwrap().pop_front() {
-                        Some(pair) => pair,
-                        None => break, // no sources left — worker done
+                    // Take the next source from the shared pool, skipping any peer
+                    // still inside its reask cooldown (we were queued there too
+                    // recently to re-knock without risking an anti-leecher ban).
+                    // If every remaining source is cooling, sleep out the shortest
+                    // remaining window rather than busy-spin, then look again.
+                    let (source, attempts) = 'pick: loop {
+                        if cancel_w.load(Ordering::Relaxed) {
+                            break 'sources;
+                        }
+                        let mut min_wait: Option<Duration> = None;
+                        {
+                            let mut p = pool.lock().unwrap();
+                            let n = p.len();
+                            if n == 0 {
+                                break 'sources; // no sources left — worker done
+                            }
+                            for _ in 0..n {
+                                let (s, a) = p.pop_front().unwrap();
+                                let addr = std::net::SocketAddrV4::new(s.ip, s.tcp_port);
+                                let rem = last_ask_w
+                                    .lock()
+                                    .unwrap()
+                                    .get(&addr)
+                                    .map(|t| REASK_COOLDOWN.saturating_sub(t.elapsed()))
+                                    .unwrap_or(Duration::ZERO);
+                                if rem.is_zero() {
+                                    break 'pick (s, a); // ready to ask
+                                }
+                                min_wait = Some(min_wait.map_or(rem, |m| m.min(rem)));
+                                p.push_back((s, a));
+                            }
+                        }
+                        // All sources cooling: wait the shortest remaining window.
+                        let secs = min_wait.map(|w| w.as_secs().max(1)).unwrap_or(1);
+                        debug!(
+                            dl = download_id, secs,
+                            "All eMule sources within reask cooldown — waiting"
+                        );
+                        sleep_or_cancel(secs, &cancel_w).await;
                     };
                     let peer = std::net::SocketAddrV4::new(source.ip, source.tcp_port);
                     let opts = DownloadOptions {
                         timeout: Duration::from_secs(3600),
                         op_timeout: Duration::from_secs(30),
-                        // Short queue wait per knock (~10 s): when a peer's slots
-                        // are full we move on and re-knock it later via the pool.
+                        // Knock and move on: tolerate a couple of queue-rank
+                        // updates, then leave to try another source. We never
+                        // re-send the request on the connection (that trips the
+                        // reask ban); a re-knock via the pool is gated by
+                        // REASK_COOLDOWN so the same queued peer is not hit again
+                        // sooner than eMule's reask window.
                         max_queue_waits: 2,
                         file_size,
                         hash,
@@ -1326,6 +1388,7 @@ pub async fn run_ed2k_download(
                     // twice per attempt — plain then the obfuscated retry), so
                     // they stay at debug; only an actual transfer start is info.
                     let qr_cb = qranks.clone();
+                    let la_cb = last_ask_w.clone();
                     // Separate handle for the handshake hashset event: the closure
                     // is `move`, but `part_hashes_w` is still needed by the
                     // post-slot fallback below.
@@ -1338,6 +1401,10 @@ pub async fn run_ed2k_download(
                             // Record our queue position at this peer so the UI can
                             // show "queued at N sources (best rank M)".
                             qr_cb.lock().unwrap().insert(peer, rank);
+                            // Stamp the reask clock: this peer just queued us in
+                            // response to our upload request, so it must not be
+                            // re-knocked until REASK_COOLDOWN elapses.
+                            la_cb.lock().unwrap().insert(peer, Instant::now());
                             debug!(dl = download_id, %peer, rank, "Queued at eMule peer")
                         }
                         DownloadEvent::Started => {
