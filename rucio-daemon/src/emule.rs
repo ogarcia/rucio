@@ -709,6 +709,32 @@ const STALL_AFTER_ROUNDS: u32 = 5;
 /// whole round on the first failure.
 const MAX_SOURCE_ATTEMPTS: u32 = 3;
 
+/// How many trailing slices trigger endgame mode. When this few (or fewer)
+/// slices remain unfinished — all in-flight, possibly on a slow source — a worker
+/// whose source has nothing fresh in the queue re-requests one of them in
+/// parallel (racing the current holder) instead of leaving, so the fastest source
+/// finishes the tail. Losing copies are discarded (see the `is_race` path). Kept
+/// small so duplication only ever happens on the last few slices, never
+/// mid-download.
+const ENDGAME_THRESHOLD: usize = 4;
+
+/// Pick an unfinished slice this source can serve to race in endgame, or `None`
+/// when endgame does not apply. `done[i]` marks completed slices; `has_part(i)`
+/// reports whether this source holds slice `i`. Endgame engages only when between
+/// 1 and `threshold` slices remain unfinished, so duplicate fetches happen only
+/// on the tail, never mid-download.
+fn endgame_pick(
+    done: &[bool],
+    threshold: usize,
+    has_part: impl Fn(usize) -> bool,
+) -> Option<usize> {
+    let unfinished = done.iter().filter(|&&d| !d).count();
+    if unfinished == 0 || unfinished > threshold {
+        return None;
+    }
+    (0..done.len()).find(|&i| !done[i] && has_part(i))
+}
+
 /// Pause before re-attempting a source that just refused or failed to connect,
 /// when it is the only source left to try. Retrying instantly would hammer a
 /// single peer in a tight loop (~60 ms per attempt), and eMule tracks rapid
@@ -1597,12 +1623,31 @@ pub async fn run_ed2k_download(
                         // leaving them in the queue for a source that has them
                         // (eMule silently ignores requests for parts a peer does
                         // not have, which would otherwise stall us for 30 s).
-                        let (slice_idx, slice_start, slice_end) = {
+                        let fresh = {
                             let mut q = work.lock().unwrap();
-                            match q.iter().position(|&(idx, _, _)| session.has_part(idx)) {
-                                Some(pos) => q.remove(pos).unwrap(),
-                                // Nothing left that this source can serve — move on.
-                                None => break 'sources,
+                            q.iter()
+                                .position(|&(idx, _, _)| session.has_part(idx))
+                                .map(|pos| q.remove(pos).unwrap())
+                        };
+                        let (slice_idx, slice_start, slice_end, is_race) = match fresh {
+                            Some((i, s, e)) => (i, s, e, false),
+                            // Nothing fresh in the queue for this source. Endgame: if
+                            // only a few slices remain (all in-flight, maybe on a slow
+                            // source), race one this source holds so the fastest source
+                            // finishes the tail. Otherwise move on.
+                            None => {
+                                let race = {
+                                    let d = done.lock().unwrap();
+                                    endgame_pick(&d, ENDGAME_THRESHOLD, |i| session.has_part(i))
+                                };
+                                match race {
+                                    Some(i) => {
+                                        let s = i as u64 * CHUNK_SIZE as u64;
+                                        let e = (s + CHUNK_SIZE as u64).min(file_size);
+                                        (i, s, e, true)
+                                    }
+                                    None => break 'sources,
+                                }
                             }
                         };
 
@@ -1636,8 +1681,18 @@ pub async fn run_ed2k_download(
                         // instead of competing with the persisted (DB) figure.
                         let metrics_cb = metrics_w.clone();
                         let progress_cb = progress_w.clone();
+                        let done_cb = done.clone();
                         let mut on_progress = move |ev: DownloadEvent| match ev {
                             DownloadEvent::Progress { bytes_received, .. } => {
+                                // Endgame racers don't own the slice's progress and
+                                // their bytes are discarded if they lose, so they touch
+                                // neither the shared total nor the session rate. The
+                                // owner also stops the moment any worker completes the
+                                // slice (a racer won), so its final reconcile to
+                                // slice_len can't be undone by a late Progress event.
+                                if is_race || done_cb.lock().unwrap()[slice_idx] {
+                                    return;
+                                }
                                 // bytes_received is an absolute file offset; subtract
                                 // slice_start for the bytes fetched within this slice.
                                 let cur = bytes_received.saturating_sub(slice_start);
@@ -1687,11 +1742,24 @@ pub async fn run_ed2k_download(
                         {
                             Ok(_) => {
                                 info!(dl = download_id, %peer, slice = slice_idx, "Slice downloaded successfully");
-                                // Mark slice as done and persist progress.
+                                // Mark the slice done via compare-and-set: in endgame
+                                // several workers may finish the same slice, but only
+                                // the first finalises it (progress, sidecar, DB). A
+                                // loser discards its identical copy without
+                                // double-counting and grabs the next slice.
                                 let snapshot = {
                                     let mut d = done.lock().unwrap();
-                                    d[slice_idx] = true;
-                                    d.clone()
+                                    if d[slice_idx] {
+                                        None
+                                    } else {
+                                        d[slice_idx] = true;
+                                        Some(d.clone())
+                                    }
+                                };
+                                let Some(snapshot) = snapshot else {
+                                    debug!(dl = download_id, %peer, slice = slice_idx,
+                                        "Endgame: slice already completed by a faster source — discarding");
+                                    continue;
                                 };
                                 // Reconcile the shared total to the exact slice
                                 // length — the last Progress event may have stopped
@@ -1755,6 +1823,11 @@ pub async fn run_ed2k_download(
                                 warn!(dl = download_id, %peer, slice = slice_idx,
                                     attempt = attempts + 1,
                                     "Part failed MD4 verification — corrupt data, will retry");
+                                // An endgame racer's copy owns neither the slice's
+                                // progress nor its queue slot — just drop this source.
+                                if is_race {
+                                    continue 'sources;
+                                }
                                 {
                                     let mut p = progress_w.lock().unwrap();
                                     let prev = p.per_slice[slice_idx];
@@ -1770,6 +1843,14 @@ pub async fn run_ed2k_download(
                             Err(e) => {
                                 let too_slow =
                                     e.is::<rucio_emule::transfer::SlowPeer>();
+                                // An endgame racer owns neither the slice's progress
+                                // nor its queue slot: drop it without re-queuing (the
+                                // owner still holds it, or another racer will win).
+                                if is_race {
+                                    debug!(dl = download_id, %peer, slice = slice_idx, too_slow,
+                                        "Endgame racer failed/slow — dropping");
+                                    continue 'sources;
+                                }
                                 // Roll back this slice's partial progress: it will
                                 // be re-fetched from the start, so its bytes must
                                 // not linger in the shared total.
@@ -2284,6 +2365,55 @@ pub async fn bootstrap_nodes_dat(path: &std::path::Path, url: &str) -> Result<us
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod endgame_tests {
+    use super::{ENDGAME_THRESHOLD, endgame_pick};
+
+    #[test]
+    fn no_endgame_when_many_slices_remain() {
+        // More than the threshold left → work the queue normally, don't race.
+        let done = vec![false; ENDGAME_THRESHOLD + 2];
+        assert_eq!(endgame_pick(&done, ENDGAME_THRESHOLD, |_| true), None);
+    }
+
+    #[test]
+    fn none_when_all_done() {
+        assert_eq!(
+            endgame_pick(&[true, true, true], ENDGAME_THRESHOLD, |_| true),
+            None
+        );
+    }
+
+    #[test]
+    fn boundary_exactly_threshold_engages() {
+        // Exactly `threshold` unfinished still engages (inclusive bound).
+        let done = vec![false; ENDGAME_THRESHOLD];
+        assert_eq!(endgame_pick(&done, ENDGAME_THRESHOLD, |_| true), Some(0));
+    }
+
+    #[test]
+    fn races_first_unfinished_slice_the_source_holds() {
+        let done = vec![true, false, true, false];
+        assert_eq!(endgame_pick(&done, ENDGAME_THRESHOLD, |_| true), Some(1));
+    }
+
+    #[test]
+    fn skips_unfinished_slices_the_source_lacks() {
+        // Slice 1 is unfinished but not held; slice 3 is held → pick 3.
+        let done = vec![true, false, true, false];
+        assert_eq!(endgame_pick(&done, ENDGAME_THRESHOLD, |i| i == 3), Some(3));
+    }
+
+    #[test]
+    fn none_when_source_holds_no_unfinished_slice() {
+        let done = vec![true, false, true, false];
+        assert_eq!(
+            endgame_pick(&done, ENDGAME_THRESHOLD, |i| i == 0 || i == 2),
+            None
+        );
+    }
+}
 
 #[cfg(test)]
 mod admission_tests {
