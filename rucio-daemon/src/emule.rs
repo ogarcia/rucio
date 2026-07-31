@@ -709,30 +709,58 @@ const STALL_AFTER_ROUNDS: u32 = 5;
 /// whole round on the first failure.
 const MAX_SOURCE_ATTEMPTS: u32 = 3;
 
-/// How many trailing slices trigger endgame mode. When this few (or fewer)
-/// slices remain unfinished — all in-flight, possibly on a slow source — a worker
-/// whose source has nothing fresh in the queue re-requests one of them in
-/// parallel (racing the current holder) instead of leaving, so the fastest source
-/// finishes the tail. Losing copies are discarded (see the `is_race` path). Kept
-/// small so duplication only ever happens on the last few slices, never
-/// mid-download.
-const ENDGAME_THRESHOLD: usize = 4;
+/// Floor for the dynamic endgame window (see `endgame_window` in the download
+/// loop): even a low-parallelism download races at least its last few slices.
+const ENDGAME_MIN_WINDOW: usize = 4;
 
 /// Pick an unfinished slice this source can serve to race in endgame, or `None`
-/// when endgame does not apply. `done[i]` marks completed slices; `has_part(i)`
-/// reports whether this source holds slice `i`. Endgame engages only when between
-/// 1 and `threshold` slices remain unfinished, so duplicate fetches happen only
-/// on the tail, never mid-download.
+/// when endgame does not apply. Endgame engages only when 1..=`window` slices
+/// remain unfinished, so duplicate fetches happen only on the tail. `done[i]`
+/// marks completed slices; `in_flight[i]` is how many workers are already
+/// fetching slice `i`; `has_part(i)` whether this source holds it.
+///
+/// Among the slices this source can still serve it returns the one with the
+/// FEWEST workers on it, spreading the spare capacity across the whole tail — so
+/// every remaining slice, including one stuck behind a slow owner, gets extra
+/// help — instead of piling every racer onto the same (lowest-index) slice.
 fn endgame_pick(
     done: &[bool],
-    threshold: usize,
+    in_flight: &[u16],
+    window: usize,
     has_part: impl Fn(usize) -> bool,
 ) -> Option<usize> {
     let unfinished = done.iter().filter(|&&d| !d).count();
-    if unfinished == 0 || unfinished > threshold {
+    if unfinished == 0 || unfinished > window {
         return None;
     }
-    (0..done.len()).find(|&i| !done[i] && has_part(i))
+    (0..done.len())
+        .filter(|&i| !done[i] && has_part(i))
+        .min_by_key(|&i| in_flight[i])
+}
+
+/// Tracks how many workers are currently fetching each slice, so [`endgame_pick`]
+/// can spread racers across the tail. Increments on creation and decrements on
+/// drop, so every download exit path (success, loss, error) is covered.
+struct InFlight {
+    counts: Arc<Mutex<Vec<u16>>>,
+    idx: usize,
+}
+
+impl InFlight {
+    fn enter(counts: &Arc<Mutex<Vec<u16>>>, idx: usize) -> Self {
+        counts.lock().unwrap()[idx] += 1;
+        Self {
+            counts: counts.clone(),
+            idx,
+        }
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        let mut g = self.counts.lock().unwrap();
+        g[self.idx] = g[self.idx].saturating_sub(1);
+    }
 }
 
 /// Pause before re-attempting a source that just refused or failed to connect,
@@ -1157,6 +1185,9 @@ pub async fn run_ed2k_download(
 
         let work_queue = Arc::new(Mutex::new(remaining));
         let done_vec = Arc::new(Mutex::new(done_slices));
+        // Per-slice count of workers currently fetching it, so endgame can spread
+        // racers across the tail rather than pile onto one slice (see InFlight).
+        let in_flight = Arc::new(Mutex::new(vec![0u16; num_slices]));
 
         // Coherent, shared progress across workers (see ProgressState). Seeded
         // from the slices already on disk so the running total starts correct.
@@ -1190,11 +1221,19 @@ pub async fn run_ed2k_download(
             .min(valid_sources.len())
             .min(num_remaining);
 
+        // Race the tail once idle capacity appears: with N parallel workers, once
+        // N or fewer slices remain some workers have nothing fresh to pull, so
+        // they race outstanding slices instead of leaving. Scaling the window with
+        // the download's parallelism (rather than a fixed 4) is what keeps a
+        // big-fan-out download's tail fast; floored so small downloads still race.
+        let endgame_window = max_workers.max(ENDGAME_MIN_WINDOW);
+
         info!(
             dl = download_id,
             workers = max_workers,
             remaining_slices = num_remaining,
             sources = valid_sources.len(),
+            endgame_window,
             "Starting parallel eMule download"
         );
 
@@ -1335,6 +1374,8 @@ pub async fn run_ed2k_download(
         for _ in 0..max_workers {
             let work = work_queue.clone();
             let done = done_vec.clone();
+            let in_flight_w = in_flight.clone();
+            let endgame_window_w = endgame_window;
             let met = met_path.clone();
             let part = part_path.clone();
             let db_w = db.clone();
@@ -1641,7 +1682,10 @@ pub async fn run_ed2k_download(
                             None => {
                                 let race = {
                                     let d = done.lock().unwrap();
-                                    endgame_pick(&d, ENDGAME_THRESHOLD, |i| session.has_part(i))
+                                    let f = in_flight_w.lock().unwrap();
+                                    endgame_pick(&d, &f, endgame_window_w, |i| {
+                                        session.has_part(i)
+                                    })
                                 };
                                 match race {
                                     Some(i) => {
@@ -1653,6 +1697,10 @@ pub async fn run_ed2k_download(
                                 }
                             }
                         };
+                        // Count this worker against the slice while we fetch it, so
+                        // endgame spreads other idle workers onto less-covered
+                        // slices. Decrements on every exit path (Drop).
+                        let _flight = InFlight::enter(&in_flight_w, slice_idx);
 
                         // Open the part file for writing. It is pre-created once
                         // before workers spawn, so we deliberately do NOT pass
@@ -2374,49 +2422,79 @@ pub async fn bootstrap_nodes_dat(path: &std::path::Path, url: &str) -> Result<us
 
 #[cfg(test)]
 mod endgame_tests {
-    use super::{ENDGAME_THRESHOLD, endgame_pick};
+    use super::{ENDGAME_MIN_WINDOW, endgame_pick};
+
+    // No worker in flight anywhere — the common "just started racing" state.
+    fn idle(n: usize) -> Vec<u16> {
+        vec![0u16; n]
+    }
 
     #[test]
-    fn no_endgame_when_many_slices_remain() {
-        // More than the threshold left → work the queue normally, don't race.
-        let done = vec![false; ENDGAME_THRESHOLD + 2];
-        assert_eq!(endgame_pick(&done, ENDGAME_THRESHOLD, |_| true), None);
+    fn no_endgame_when_more_than_window_remain() {
+        // More than the window left → work the queue normally, don't race.
+        let done = vec![false; ENDGAME_MIN_WINDOW + 2];
+        let f = idle(done.len());
+        assert_eq!(endgame_pick(&done, &f, ENDGAME_MIN_WINDOW, |_| true), None);
     }
 
     #[test]
     fn none_when_all_done() {
         assert_eq!(
-            endgame_pick(&[true, true, true], ENDGAME_THRESHOLD, |_| true),
+            endgame_pick(&[true, true, true], &idle(3), ENDGAME_MIN_WINDOW, |_| true),
             None
         );
     }
 
     #[test]
-    fn boundary_exactly_threshold_engages() {
-        // Exactly `threshold` unfinished still engages (inclusive bound).
-        let done = vec![false; ENDGAME_THRESHOLD];
-        assert_eq!(endgame_pick(&done, ENDGAME_THRESHOLD, |_| true), Some(0));
-    }
-
-    #[test]
-    fn races_first_unfinished_slice_the_source_holds() {
-        let done = vec![true, false, true, false];
-        assert_eq!(endgame_pick(&done, ENDGAME_THRESHOLD, |_| true), Some(1));
+    fn boundary_exactly_window_engages() {
+        // Exactly `window` unfinished still engages (inclusive bound).
+        let done = vec![false; ENDGAME_MIN_WINDOW];
+        let f = idle(done.len());
+        assert_eq!(
+            endgame_pick(&done, &f, ENDGAME_MIN_WINDOW, |_| true),
+            Some(0)
+        );
     }
 
     #[test]
     fn skips_unfinished_slices_the_source_lacks() {
         // Slice 1 is unfinished but not held; slice 3 is held → pick 3.
         let done = vec![true, false, true, false];
-        assert_eq!(endgame_pick(&done, ENDGAME_THRESHOLD, |i| i == 3), Some(3));
+        assert_eq!(
+            endgame_pick(&done, &idle(4), ENDGAME_MIN_WINDOW, |i| i == 3),
+            Some(3)
+        );
     }
 
     #[test]
     fn none_when_source_holds_no_unfinished_slice() {
         let done = vec![true, false, true, false];
         assert_eq!(
-            endgame_pick(&done, ENDGAME_THRESHOLD, |i| i == 0 || i == 2),
+            endgame_pick(&done, &idle(4), ENDGAME_MIN_WINDOW, |i| i == 0 || i == 2),
             None
+        );
+    }
+
+    #[test]
+    fn spreads_to_the_least_covered_slice() {
+        // Two unfinished slices (1 and 3); slice 1 already has a racer, slice 3
+        // has none → a free worker should join slice 3, not pile onto slice 1.
+        let done = vec![true, false, true, false];
+        let in_flight = vec![0u16, 1, 0, 0];
+        assert_eq!(
+            endgame_pick(&done, &in_flight, ENDGAME_MIN_WINDOW, |_| true),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn ties_break_to_lowest_index() {
+        // Equal coverage → deterministic lowest index.
+        let done = vec![false, false, false];
+        let in_flight = vec![1u16, 1, 1];
+        assert_eq!(
+            endgame_pick(&done, &in_flight, ENDGAME_MIN_WINDOW, |_| true),
+            Some(0)
         );
     }
 }
