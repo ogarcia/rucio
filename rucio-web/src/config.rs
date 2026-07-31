@@ -101,6 +101,7 @@ pub fn ConfigModal(
     compact: RwSignal<bool>,
     on_close: impl Fn() + Copy + 'static,
 ) -> impl IntoView {
+    crate::overlays::close_on_escape(on_close);
     let tab = RwSignal::new(ConfigTab::Network);
     // The on-disk snapshot we edit (pending if any, else current). Kept whole so
     // a save preserves sections this modal doesn't expose.

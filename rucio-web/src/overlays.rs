@@ -24,6 +24,20 @@ async fn api_fetch_emule_status() -> Option<EmuleStatusResponse> {
         .ok()
 }
 
+/// Close a modal / overlay / panel when the user presses Escape. Call once in the
+/// component body. Each of these surfaces is mounted only while it is open (via
+/// `<Show>` or an `Option::map`), so the global keydown listener is registered on
+/// mount and removed on unmount — only the visible surface reacts. Modals still
+/// ignore backdrop clicks; Escape and the buttons/X are the only ways to close.
+pub fn close_on_escape(on_close: impl Fn() + 'static) {
+    let handle = window_event_listener(leptos::ev::keydown, move |e| {
+        if e.key() == "Escape" {
+            on_close();
+        }
+    });
+    on_cleanup(move || handle.remove());
+}
+
 /// (label, css class) for the eMule connectivity badge, reusing node-class styles.
 fn emule_conn_badge(c: EmuleConnectivity) -> (String, &'static str) {
     match c {
@@ -45,6 +59,7 @@ pub fn NodeStatusPanel(
     active_panel: RwSignal<Option<super::Panel>>,
 ) -> impl IntoView {
     let close = move || active_panel.set(None);
+    close_on_escape(close);
 
     // Fetch the eMule/Kad2 status once when the panel opens. Guard the signal
     // write with `alive` so a late response after the modal closes can't write
@@ -165,6 +180,7 @@ pub fn NodeStatusPanel(
 #[component]
 pub fn StatsPanel(active_panel: RwSignal<Option<super::Panel>>) -> impl IntoView {
     let close = move || active_panel.set(None);
+    close_on_escape(close);
     let metrics: RwSignal<Option<MetricsResponse>> = RwSignal::new(None);
 
     let alive = Arc::new(AtomicBool::new(true));
@@ -269,6 +285,7 @@ pub fn AddressesPanel(
     active_panel: RwSignal<Option<super::Panel>>,
 ) -> impl IntoView {
     let close = move || active_panel.set(None);
+    close_on_escape(close);
     view! {
         <div class="overlay-backdrop">
             <div class="overlay" on:click=move |e| e.stop_propagation()>
@@ -312,6 +329,7 @@ pub fn AddressesPanel(
 #[component]
 pub fn PeersPanel(active_panel: RwSignal<Option<super::Panel>>) -> impl IntoView {
     let close = move || active_panel.set(None);
+    close_on_escape(close);
     let peers: RwSignal<Option<Vec<PeerInfo>>> = RwSignal::new(None);
 
     let alive = Arc::new(AtomicBool::new(true));
@@ -423,6 +441,7 @@ pub fn AboutPanel(
     active_panel: RwSignal<Option<super::Panel>>,
 ) -> impl IntoView {
     let close = move || active_panel.set(None);
+    close_on_escape(close);
     const REPO: &str = "https://github.com/ogarcia/rucio";
 
     view! {

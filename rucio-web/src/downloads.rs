@@ -1052,6 +1052,7 @@ fn AddModal(
     categories: RwSignal<Vec<Category>>,
     on_close: impl Fn() + Copy + 'static,
 ) -> impl IntoView {
+    crate::overlays::close_on_escape(on_close);
     let text = RwSignal::new(String::new());
     let busy = RwSignal::new(false);
     // Lines the daemon couldn't accept; shown so the user can fix them.
@@ -1183,6 +1184,7 @@ fn BulkEditOverlay(
     downloads: RwSignal<Vec<DownloadResponse>>,
     on_close: impl Fn() + Copy + 'static,
 ) -> impl IntoView {
+    crate::overlays::close_on_escape(on_close);
     // Snapshot the selection at open time so the applied set is stable even if
     // the live list refreshes underneath us.
     let ids: Vec<i64> = selected_ids.get_untracked().into_iter().collect();
@@ -1316,6 +1318,7 @@ fn DownloadInfoOverlay(
     downloads: RwSignal<Vec<DownloadResponse>>,
     on_close: impl Fn() + Copy + 'static,
 ) -> impl IntoView {
+    crate::overlays::close_on_escape(on_close);
     let id = detail.id;
     // Current category, editable: changing it PUTs and refreshes the list badge.
     let cur_cat: RwSignal<Option<i64>> = RwSignal::new(detail.category_id);

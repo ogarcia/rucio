@@ -802,6 +802,7 @@ fn PinCollectionModal(
     on_pin: Callback<(PinTargets, Option<String>)>,
     on_close: impl Fn() + Copy + 'static,
 ) -> impl IntoView {
+    crate::overlays::close_on_escape(on_close);
     let collection = RwSignal::new(String::new());
     let count = targets.len();
     let targets = StoredValue::new(targets);
@@ -874,6 +875,7 @@ fn ShareInfoOverlay(
     emule_active: bool,
     on_close: impl Fn() + Copy + 'static,
 ) -> impl IntoView {
+    crate::overlays::close_on_escape(on_close);
     // Which link was just copied ("rucio" | "ed2k"), for the transient hint.
     let copied: RwSignal<Option<&'static str>> = RwSignal::new(None);
     // Guard the reset timer from firing after the overlay is closed/unmounted.
@@ -1042,6 +1044,7 @@ fn AddDirModal(
     on_added: impl Fn() + Copy + 'static,
     on_close: impl Fn() + Copy + 'static,
 ) -> impl IntoView {
+    crate::overlays::close_on_escape(on_close);
     let path = RwSignal::new(String::new());
     let busy = RwSignal::new(false);
     let error: RwSignal<Option<String>> = RwSignal::new(None);
@@ -1133,6 +1136,7 @@ fn EditDirModal(
     on_saved: impl Fn() + Copy + 'static,
     on_close: impl Fn() + Copy + 'static,
 ) -> impl IntoView {
+    crate::overlays::close_on_escape(on_close);
     let recursive = RwSignal::new(dir.filter.recursive);
     let ext_mode = RwSignal::new(dir.filter.ext_mode);
     let extensions = RwSignal::new(dir.filter.extensions.clone().unwrap_or_default());

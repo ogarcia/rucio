@@ -406,6 +406,7 @@ fn UnsubscribeModal(
     on_done: impl Fn() + Copy + 'static,
     on_close: impl Fn() + Copy + 'static,
 ) -> impl IntoView {
+    crate::overlays::close_on_escape(on_close);
     let peer = StoredValue::new(peer);
     let busy = RwSignal::new(false);
 
@@ -471,6 +472,7 @@ fn AddSubscriptionModal(
     on_added: impl Fn() + Copy + 'static,
     on_close: impl Fn() + Copy + 'static,
 ) -> impl IntoView {
+    crate::overlays::close_on_escape(on_close);
     let peer = RwSignal::new(String::new());
     let quota = RwSignal::new(String::new());
     let unit = RwSignal::new("GB".to_string());
@@ -568,6 +570,7 @@ fn SubscriptionInfoModal(
     on_saved: impl Fn() + Copy + Send + Sync + 'static,
     on_close: impl Fn() + Copy + Send + Sync + 'static,
 ) -> impl IntoView {
+    crate::overlays::close_on_escape(on_close);
     let files: RwSignal<Vec<MirrorFile>> = RwSignal::new(vec![]);
     let loaded = RwSignal::new(false);
     // Poll the mirror file list while the modal is open so the rows stay live —

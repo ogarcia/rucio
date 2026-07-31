@@ -268,6 +268,7 @@ fn SetCollectionModal(
     on_saved: impl Fn() + Copy + 'static,
     on_close: impl Fn() + Copy + 'static,
 ) -> impl IntoView {
+    crate::overlays::close_on_escape(on_close);
     let collection = RwSignal::new(current.unwrap_or_default());
     let hash = StoredValue::new(hash);
     let busy = RwSignal::new(false);
@@ -331,6 +332,7 @@ fn AddPinModal(
     on_added: impl Fn() + Copy + 'static,
     on_close: impl Fn() + Copy + 'static,
 ) -> impl IntoView {
+    crate::overlays::close_on_escape(on_close);
     let magnet = RwSignal::new(String::new());
     let collection = RwSignal::new(String::new());
     let busy = RwSignal::new(false);
