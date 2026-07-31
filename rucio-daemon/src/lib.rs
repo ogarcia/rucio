@@ -8,6 +8,7 @@ pub mod emule;
 #[cfg(feature = "emule-compat")]
 pub mod emule_identity;
 mod fsutil;
+pub mod index_guard;
 pub mod live_stats;
 pub mod metrics;
 pub mod notifier;
@@ -403,6 +404,10 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
     // sampling the count) so a batch that starts and finishes between two ticks
     // — e.g. a single small file — still fires the "indexing complete" event.
     let indexing_seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // Lets a completion path (e.g. a finished eMule download) tell the watcher
+    // "I'm already indexing this file" so it isn't hashed twice — once here and
+    // once by inotify — for a (often multi-GB) file landing in a watched dir.
+    let index_guard = crate::index_guard::IndexGuard::default();
     let (watcher, watcher_task) = watcher::spawn(
         db.clone(),
         handle.cmd_tx.clone(),
@@ -410,6 +415,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         Arc::clone(&excluded_index_dirs),
         config.storage.outboard_dir.clone(),
         ed2k_index.clone(),
+        index_guard.clone(),
     );
 
     // Register all known shared dirs with the watcher (including download_dir
@@ -439,6 +445,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         let indexing_seen = Arc::clone(&indexing_seen);
         let outboard_dir = config.storage.outboard_dir.clone();
         let trigger = Arc::clone(&reconcile_trigger);
+        let index_guard = index_guard.clone();
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(24 * 3600));
             tick.tick().await; // consume the immediate first fire
@@ -451,6 +458,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                     &outboard_dir,
                     ed2k_tx.as_ref(),
                     &indexing_seen,
+                    &index_guard,
                 )
                 .await;
                 // Prune cached outboards of shares removed since the last sweep
@@ -790,6 +798,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                 let notif = notifier.clone();
                 let node_tx = handle.cmd_tx.clone();
                 let ac = Arc::clone(&auto_clear);
+                let ig = index_guard.clone();
                 tokio::spawn(async move {
                     if let Err(e) = crate::emule::run_ed2k_download(
                         &row.ed2k_link,
@@ -809,6 +818,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                         ac,
                         // Resume: trust the DB and the `.part.met` sidecar.
                         false,
+                        ig,
                     )
                     .await
                     {
@@ -1283,6 +1293,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                                             let notif = notifier.clone();
                                             let node_tx = handle.cmd_tx.clone();
                                             let ac = Arc::clone(&auto_clear);
+                                            let ig = index_guard.clone();
                                             tokio::spawn(async move {
                                                 if let Err(e) = crate::emule::run_ed2k_download(
                                                     &link, download_id, &config, &db, &kad, &ad,
@@ -1290,6 +1301,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                                                     reg, ac,
                                                     // Add path: adopt a pre-existing `.part`.
                                                     true,
+                                                    ig,
                                                 )
                                                 .await
                                                 {

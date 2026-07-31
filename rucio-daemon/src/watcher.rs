@@ -92,6 +92,7 @@ pub fn spawn(
     excluded: Arc<Vec<PathBuf>>,
     outboard_dir: PathBuf,
     ed2k_tx: Option<crate::ed2k_index::Ed2kIndex>,
+    index_guard: crate::index_guard::IndexGuard,
 ) -> (WatcherHandle, tokio::task::JoinHandle<()>) {
     let (cmd_tx, cmd_rx) = mpsc::channel::<WatcherCmd>(64);
 
@@ -104,6 +105,7 @@ pub fn spawn(
             excluded,
             outboard_dir,
             ed2k_tx,
+            index_guard,
         )
         .await
         {
@@ -118,6 +120,7 @@ pub fn spawn(
 // Internal service loop
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 async fn run(
     db: Db,
     node_tx: mpsc::Sender<NodeCmd>,
@@ -126,6 +129,7 @@ async fn run(
     excluded: Arc<Vec<PathBuf>>,
     outboard_dir: PathBuf,
     ed2k_tx: Option<crate::ed2k_index::Ed2kIndex>,
+    index_guard: crate::index_guard::IndexGuard,
 ) -> Result<()> {
     // Bridge: notify (sync) → tokio (async)
     let (ev_tx, mut ev_rx) = mpsc::channel::<notify::Result<Event>>(256);
@@ -197,6 +201,7 @@ async fn run(
                     &indexing_count,
                     &outboard_dir,
                     ed2k_tx.as_ref(),
+                    &index_guard,
                 ).await;
             }
         }
@@ -339,6 +344,7 @@ async fn handle_event(
 }
 
 /// Process all pending upserts whose debounce window has expired.
+#[allow(clippy::too_many_arguments)]
 async fn flush_pending(
     pending: &mut HashMap<PathBuf, Instant>,
     debounce_dur: Duration,
@@ -347,11 +353,17 @@ async fn flush_pending(
     indexing_count: &AtomicUsize,
     outboard_dir: &Path,
     ed2k_tx: Option<&crate::ed2k_index::Ed2kIndex>,
+    index_guard: &crate::index_guard::IndexGuard,
 ) {
     let now = Instant::now();
     let ready: Vec<PathBuf> = pending
         .iter()
         .filter(|(_, ts)| now.duration_since(**ts) >= debounce_dur)
+        // Skip a file a completion path is already indexing (e.g. a just-finished
+        // eMule download): it hashes the file itself, so re-indexing it here would
+        // be a redundant second full read and would race on UNIQUE(path). Once its
+        // row lands, on_file_upsert's own "unchanged?" check keeps skipping it.
+        .filter(|(p, _)| !index_guard.is_marked(p))
         .map(|(p, _)| p.clone())
         .collect();
 
@@ -540,6 +552,7 @@ pub async fn reconcile_shares(
     outboard_dir: &Path,
     ed2k_tx: Option<&crate::ed2k_index::Ed2kIndex>,
     indexing_seen: &AtomicBool,
+    index_guard: &crate::index_guard::IndexGuard,
 ) {
     let rows = match db::shared_dirs::list(db).await {
         Ok(d) => d,
@@ -637,7 +650,12 @@ pub async fn reconcile_shares(
     }
     indexing_count.fetch_add(to_upsert.len(), Ordering::Relaxed);
     for path in &to_upsert {
-        on_file_upsert(path, db, node_tx, outboard_dir, ed2k_tx).await;
+        // Skip a file a completion path is already indexing (see IndexGuard): it
+        // hashes and inserts the row itself, so re-indexing here is redundant and
+        // would race it. The count is still balanced (add above, sub below).
+        if !index_guard.is_marked(path) {
+            on_file_upsert(path, db, node_tx, outboard_dir, ed2k_tx).await;
+        }
         indexing_count.fetch_sub(1, Ordering::Relaxed);
     }
 

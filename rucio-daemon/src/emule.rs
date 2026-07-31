@@ -822,6 +822,9 @@ pub async fn run_ed2k_download(
     // the slices that check out — instead of re-downloading them. A normal
     // resume passes `false` and trusts the sidecar as before.
     adopt_from_disk: bool,
+    // Marks the finished file's path while we index it so the filesystem watcher
+    // skips it — the completed download is hashed once here, not again by inotify.
+    index_guard: crate::index_guard::IndexGuard,
 ) -> Result<()> {
     // Deregister from the cancel registry on every exit path (the flag was
     // inserted by the spawn site before this task started).
@@ -2087,7 +2090,10 @@ pub async fn run_ed2k_download(
     // libp2p DHT immediately (rather than only after a restart's reconcile sees
     // it as "added"). This re-reads the file to compute the canonical BLAKE3
     // root hash — the real Rucio id — which we then report. eMule downloads are
-    // often large, so persist the outboard eagerly (Some outboard_dir).
+    // often large, so persist the outboard eagerly (Some outboard_dir). Mark the
+    // path first so the watcher (inotify saw the file land in a watched dir)
+    // skips it: it is hashed once here, not a second time by the watcher.
+    let _index_mark = index_guard.marking(&final_path);
     let rucio_root_hex =
         match crate::api::shares::index_file(db, &final_path, Some(&config.storage.outboard_dir))
             .await
