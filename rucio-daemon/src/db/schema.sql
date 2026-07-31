@@ -237,14 +237,19 @@ CREATE INDEX IF NOT EXISTS idx_dl_chunks_status ON download_chunks(download_id, 
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS emule_shared_files (
     id          INTEGER PRIMARY KEY,
-    ed2k_hash   BLOB    NOT NULL UNIQUE,  -- 16 bytes MD4, canonical identifier
+    ed2k_hash   BLOB    NOT NULL,         -- 16 bytes MD4, content id (NOT unique: identical content may live at several paths)
     name        TEXT    NOT NULL,
     size        INTEGER NOT NULL,
-    path        TEXT    NOT NULL,         -- absolute path of the final file on disk
+    path        TEXT    NOT NULL UNIQUE,  -- absolute path of the final file on disk, the per-row key
     mtime       INTEGER NOT NULL,         -- file mtime in Unix seconds (change signal)
     hashset     BLOB    NOT NULL DEFAULT X'',  -- ed2k part-hash set, 16 bytes per part (empty for single-part files)
     added_at    INTEGER NOT NULL
 );
+
+-- Look up seeded files by content hash (get_by_hash, the republish sweep).
+-- ed2k_hash is no longer UNIQUE, so it needs its own index; the per-path lookups
+-- (backfill join, watcher) use the implicit unique index on path.
+CREATE INDEX IF NOT EXISTS idx_emule_shared_files_ed2k_hash ON emule_shared_files(ed2k_hash);
 
 -- ---------------------------------------------------------------------------
 -- metrics

@@ -195,7 +195,7 @@ pub async fn load_shared_files(db: &Db, active_downloads: &ActiveDownloads) {
         let unchanged =
             disk_size == row.size && crate::api::shares::file_mtime_secs(&path) == row.mtime;
         if !unchanged {
-            let _ = crate::db::emule_shared_files::delete_by_hash(db, &row.ed2k_hash).await;
+            let _ = crate::db::emule_shared_files::delete_by_path(db, &row.path).await;
             dropped += 1;
             continue;
         }
@@ -291,8 +291,12 @@ pub fn spawn_shared_files_watcher(
                 if unchanged {
                     continue; // genuine no-op (or our own completion) — keep sharing
                 }
-                let _ = crate::db::emule_shared_files::delete_by_hash(&db, &row.ed2k_hash).await;
-                if let Ok(hash) = <[u8; 16]>::try_from(row.ed2k_hash.as_slice()) {
+                // Drop just this path; only stop serving the content if no other
+                // copy still seeds it.
+                let was_last = crate::db::emule_shared_files::delete_by_path(&db, &path_str)
+                    .await
+                    .unwrap_or(false);
+                if was_last && let Ok(hash) = <[u8; 16]>::try_from(row.ed2k_hash.as_slice()) {
                     active_downloads.write().await.remove(&hash);
                 }
                 info!(path = %path.display(), "eMule shared file changed/removed — stopped sharing");
@@ -326,8 +330,13 @@ async fn handle_emule_rename(
 
     if !unchanged {
         // Content changed alongside the rename → stop seeding the stale file.
-        let _ = crate::db::emule_shared_files::delete_by_hash(db, &row.ed2k_hash).await;
-        active_downloads.write().await.remove(&hash);
+        // Only forget the content if this was its last seeded copy.
+        let was_last = crate::db::emule_shared_files::delete_by_path(db, &old_str)
+            .await
+            .unwrap_or(false);
+        if was_last {
+            active_downloads.write().await.remove(&hash);
+        }
         info!(path = %new.display(), "eMule shared file changed on rename — stopped sharing");
         return;
     }
@@ -424,10 +433,16 @@ pub fn spawn_source_republisher(
                     count = files.len(),
                     "Republishing eMule shared files as Kad sources"
                 );
+                // Identical content seeded from several paths shares one hash;
+                // publish each hash once per round.
+                let mut published = std::collections::HashSet::new();
                 for row in files {
                     let Ok(bytes) = <[u8; 16]>::try_from(row.ed2k_hash.as_slice()) else {
                         continue;
                     };
+                    if !published.insert(bytes) {
+                        continue;
+                    }
                     let hash = rucio_emule::ed2k::Ed2kHash::from_bytes(bytes);
                     let stored = kad.publish_source(hash, row.size.max(0) as u64).await;
                     debug!(

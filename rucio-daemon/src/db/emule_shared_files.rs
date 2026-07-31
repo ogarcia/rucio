@@ -42,11 +42,14 @@ pub async fn upsert(
     hashset: &[u8],
     now: u64,
 ) -> Result<()> {
+    // Keyed by path (one row per file): identical content at two paths gets two
+    // rows, both seeded. Re-seeding the same path refreshes it (the content there
+    // may have changed, so ed2k_hash is updated too).
     sqlx::query(
         "INSERT INTO emule_shared_files (ed2k_hash, name, size, path, mtime, hashset, added_at) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
-         ON CONFLICT(ed2k_hash) DO UPDATE SET \
-             name = excluded.name, size = excluded.size, path = excluded.path, \
+         ON CONFLICT(path) DO UPDATE SET \
+             ed2k_hash = excluded.ed2k_hash, name = excluded.name, size = excluded.size, \
              mtime = excluded.mtime, hashset = excluded.hashset",
     )
     .bind(ed2k_hash.as_slice())
@@ -132,20 +135,40 @@ pub async fn rename_path(db: &Db, old_path: &str, new_path: &str, new_name: &str
     Ok(affected > 0)
 }
 
-/// Remove a shared file by its ed2k hash. Returns `true` if a row was deleted.
-pub async fn delete_by_hash(db: &Db, ed2k_hash: &[u8]) -> Result<bool> {
-    let res = sqlx::query("DELETE FROM emule_shared_files WHERE ed2k_hash = ?1")
-        .bind(ed2k_hash)
+/// Stop seeding the file at exactly `path`. Returns `true` when that was the
+/// **last** path holding the content (no other row shares its ed2k hash), so the
+/// caller also drops it from the upload whitelist / lets its Kad source expire —
+/// a duplicate copy elsewhere keeps it seeded.
+pub async fn delete_by_path(db: &Db, path: &str) -> Result<bool> {
+    let row = sqlx::query("SELECT ed2k_hash FROM emule_shared_files WHERE path = ?1")
+        .bind(path)
+        .fetch_optional(db)
+        .await?;
+
+    let Some(hash) = row.map(|r| r.get::<Vec<u8>, _>("ed2k_hash")) else {
+        return Ok(false);
+    };
+
+    sqlx::query("DELETE FROM emule_shared_files WHERE path = ?1")
+        .bind(path)
         .execute(db)
         .await?;
-    Ok(res.rows_affected() > 0)
+
+    let remaining: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM emule_shared_files WHERE ed2k_hash = ?1")
+            .bind(hash.as_slice())
+            .fetch_one(db)
+            .await?;
+    Ok(remaining == 0)
 }
 
 /// Look up a shared file by its ed2k hash — used to warn the user that content
-/// they're about to download is already present (and where).
+/// they're about to download is already present (and where). Content can be
+/// seeded from several paths; returns the oldest row deterministically.
 pub async fn get_by_hash(db: &Db, ed2k_hash: &[u8]) -> Result<Option<EmuleSharedFile>> {
     let row = sqlx::query(
-        "SELECT ed2k_hash, name, size, path, mtime, hashset FROM emule_shared_files WHERE ed2k_hash = ?1",
+        "SELECT ed2k_hash, name, size, path, mtime, hashset FROM emule_shared_files \
+         WHERE ed2k_hash = ?1 ORDER BY id ASC LIMIT 1",
     )
     .bind(ed2k_hash)
     .fetch_optional(db)
@@ -319,5 +342,32 @@ mod tests {
         let cands = list_backfill_candidates(&db, 10).await.unwrap();
         assert_eq!(cands.len(), 1);
         assert_eq!(cands[0].path, "/tmp/b.bin");
+    }
+
+    #[tokio::test]
+    async fn duplicate_content_at_two_paths_seeds_once() {
+        let (db, _dir) = test_db().await;
+        let hash = [5u8; 16];
+        // Same content, two paths: both seed (no UNIQUE(ed2k_hash) collision, no
+        // path ping-pong).
+        upsert(&db, &hash, "dup", 10, "/dl/a", 1, b"", 1)
+            .await
+            .unwrap();
+        upsert(&db, &hash, "dup", 10, "/dl/b", 1, b"", 2)
+            .await
+            .unwrap();
+        assert_eq!(list(&db).await.unwrap().len(), 2);
+        // get_by_hash resolves deterministically to the oldest row.
+        assert_eq!(
+            get_by_hash(&db, &hash).await.unwrap().unwrap().path,
+            "/dl/a"
+        );
+
+        // Removing one copy is not the last → keep seeding the content.
+        assert!(!delete_by_path(&db, "/dl/a").await.unwrap());
+        assert!(get_by_hash(&db, &hash).await.unwrap().is_some());
+        // Removing the last copy → caller should stop serving it.
+        assert!(delete_by_path(&db, "/dl/b").await.unwrap());
+        assert!(get_by_hash(&db, &hash).await.unwrap().is_none());
     }
 }
