@@ -103,7 +103,10 @@ pub struct UpdateSharedDirRequest {
 /// Response to POST /api/v1/shares
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct AddShareResponse {
-    /// Number of files queued for indexing.
+    /// Files queued for indexing at response time. Always 0 now: the directory
+    /// is walked and indexed in the background so the request returns
+    /// immediately — track progress via `GET /api/v1/shares/indexing` or the
+    /// `IndexingCount` WebSocket event.
     pub queued: usize,
     /// Paths that could not be read (permission errors, broken symlinks…).
     pub errors: Vec<String>,

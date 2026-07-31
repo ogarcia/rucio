@@ -72,21 +72,31 @@ pub fn hash_file(path: &Path) -> anyhow::Result<FileHash> {
 /// Recursively collect all regular non-hidden files under `root`.
 pub fn collect_files(root: &Path) -> std::io::Result<Vec<std::path::PathBuf>> {
     let mut out = Vec::new();
-    collect_recursive(root, &mut out)?;
+    // Resolve the root once (following a symlink to a dir/file, matching the old
+    // is_file()/is_dir() behaviour). Everything below is classified straight from
+    // the directory enumeration via `DirEntry::file_type`, which is free on
+    // Windows — avoiding a per-file `stat` that Defender and network shares make
+    // very slow (a large tree could otherwise take minutes just to walk).
+    let md = std::fs::metadata(root)?;
+    if md.is_file() {
+        out.push(root.to_path_buf());
+    } else if md.is_dir() {
+        collect_dir(root, &mut out)?;
+    }
     Ok(out)
 }
 
-fn collect_recursive(path: &Path, out: &mut Vec<std::path::PathBuf>) -> std::io::Result<()> {
-    if path.is_file() {
-        out.push(path.to_path_buf());
-    } else if path.is_dir() {
-        for entry in std::fs::read_dir(path)? {
-            let entry = entry?;
-            let ft = entry.file_type()?;
-            if ft.is_symlink() {
-                continue;
-            }
-            collect_recursive(&entry.path(), out)?;
+fn collect_dir(dir: &Path, out: &mut Vec<std::path::PathBuf>) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let ft = entry.file_type()?;
+        if ft.is_symlink() {
+            continue; // never index or descend into symlinks
+        }
+        if ft.is_file() {
+            out.push(entry.path());
+        } else if ft.is_dir() {
+            collect_dir(&entry.path(), out)?;
         }
     }
     Ok(())

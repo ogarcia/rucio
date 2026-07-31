@@ -394,52 +394,60 @@ pub async fn add_share(
         ));
     }
 
-    // Collect every file under the directory, then keep only the ones its filter
-    // shares (recursive flag + extensions), resolved against the most-specific
-    // shared directory so nested shares with their own filters are respected.
-    let mut paths = collect_files(&root).map_err(|e| {
-        tracing::error!("Failed to collect files under {}: {e}", root.display());
-        (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": e.to_string() })),
-        )
-    })?;
-    let dirs = db::shared_dirs::list(&state.db).await.unwrap_or_default();
-    paths.retain(|p| db::shared_dirs::dirs_share(&dirs, p));
-    let total = paths.len();
-
-    // Notify the watcher about the new directory
+    // Notify the watcher about the new directory (sets up inotify for live
+    // events). The initial index of the files already on disk happens in the
+    // background task below.
     let _ = state
         .watcher_cmd
         .send(WatcherCmd::Watch(root.clone()))
         .await;
 
-    if total == 0 {
-        return Ok((
-            StatusCode::ACCEPTED,
-            Json(AddShareResponse {
-                queued: 0,
-                errors: vec![],
-            }),
-        ));
-    }
-
-    // Spawn background task so the HTTP response returns immediately
+    // Everything expensive — walking the tree and hashing its files — runs in a
+    // detached task so the HTTP response returns immediately. The directory walk
+    // itself is the slow part on Windows (per-file `stat` + Defender + network
+    // shares can make it take minutes), so it must never block the response.
+    // Progress is surfaced live through the indexing count (WS / status
+    // endpoint); `queued` in the response is 0 because the walk is deferred.
     let db = state.db.clone();
     let cmd_tx = state.node_cmd.clone();
     let indexing_count = state.indexing_count.clone();
+    let indexing_seen = state.indexing_seen.clone();
     let outboard_dir = state.config.storage.outboard_dir.clone();
     // Forward each indexed file to the eMule ed2k indexer too — the share
     // watcher never sees this inline indexing, so without this a freshly added
     // directory wouldn't get eMule links until the next reconcile/restart.
     #[cfg(feature = "emule-compat")]
     let ed2k_index = state.ed2k_index.clone();
-    indexing_count.fetch_add(total, Ordering::Relaxed);
-    // Latch so the main loop fires an "indexing complete" notification once this
-    // batch drains, even if it finishes between two ws ticks.
-    state.indexing_seen.store(true, Ordering::Relaxed);
     tokio::spawn(async move {
-        let mut errors: Vec<String> = vec![];
+        // The recursive walk is blocking and stat-heavy: run it off the async
+        // worker pool so it can't stall other tasks.
+        let walk_root = root.clone();
+        let walk = tokio::task::spawn_blocking(move || collect_files(&walk_root)).await;
+        let mut paths = match walk {
+            Ok(Ok(paths)) => paths,
+            Ok(Err(e)) => {
+                tracing::warn!("Failed to collect files under {}: {e}", root.display());
+                return;
+            }
+            Err(e) => {
+                tracing::warn!("Directory walk task for {} failed: {e}", root.display());
+                return;
+            }
+        };
+        // Keep only the files this directory's filter shares (recursive flag +
+        // extensions), resolved against the most-specific shared directory so
+        // nested shares with their own filters are respected.
+        let dirs = db::shared_dirs::list(&db).await.unwrap_or_default();
+        paths.retain(|p| db::shared_dirs::dirs_share(&dirs, p));
+        if paths.is_empty() {
+            return;
+        }
+
+        indexing_count.fetch_add(paths.len(), Ordering::Relaxed);
+        // Latch so the main loop fires an "indexing complete" notification once
+        // this batch drains, even if it finishes between two ws ticks.
+        indexing_seen.store(true, Ordering::Relaxed);
+        let mut errors = 0usize;
         for path in paths {
             match index_file(&db, &path, Some(&outboard_dir)).await {
                 Ok(root_hash) => {
@@ -459,20 +467,20 @@ pub async fn add_share(
                 }
                 Err(e) => {
                     tracing::warn!("Failed to index {}: {e}", path.display());
-                    errors.push(path.display().to_string());
+                    errors += 1;
                 }
             }
             indexing_count.fetch_sub(1, Ordering::Relaxed);
         }
-        if !errors.is_empty() {
-            tracing::warn!("{} file(s) failed to index", errors.len());
+        if errors > 0 {
+            tracing::warn!("{errors} file(s) failed to index");
         }
     });
 
     Ok((
         StatusCode::ACCEPTED,
         Json(AddShareResponse {
-            queued: total,
+            queued: 0,
             errors: vec![],
         }),
     ))
