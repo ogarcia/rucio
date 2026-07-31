@@ -207,18 +207,26 @@ pub async fn list_page(
 /// which only needs the hashes: no `chunks` join, no metadata columns. Matters
 /// on very large libraries where the re-provide runs over every file.
 pub async fn list_root_hashes(db: &Db) -> Result<Vec<Vec<u8>>> {
-    let rows = sqlx::query("SELECT root_hash FROM shared_files")
+    // DISTINCT: the same content can be shared at several paths, but the DHT only
+    // needs one announce per hash.
+    let rows = sqlx::query("SELECT DISTINCT root_hash FROM shared_files")
         .fetch_all(db)
         .await?;
     Ok(rows.iter().map(|r| r.get("root_hash")).collect())
 }
 
 /// Fetch a single shared file by its root hash. Returns `None` if not found.
+///
+/// The same content can be indexed at several paths; this returns one row
+/// deterministically (the oldest by `id`) so serving-by-hash and the "you
+/// already have this" check are stable.
 pub async fn get_by_hash(db: &Db, root_hash: &[u8; 32]) -> Result<Option<SharedFileRow>> {
     let row = sqlx::query(
         "SELECT id, root_hash, name, size, mime_type, path, chunk_size, added_at, mtime
          FROM shared_files
-         WHERE root_hash = ?1",
+         WHERE root_hash = ?1
+         ORDER BY id ASC
+         LIMIT 1",
     )
     .bind(root_hash.as_slice())
     .fetch_optional(db)
@@ -258,22 +266,32 @@ pub async fn delete_by_hash(db: &Db, root_hash: &[u8; 32]) -> Result<bool> {
 /// equality, so it uses the `path` index (O(log n)) instead of the table scan
 /// `delete_by_path_prefix` incurs — the difference between O(n) and O(n²) when
 /// the watcher rescans a large share file by file.
+/// Returns the root hash only when this was the **last** path holding that
+/// content, so the caller de-publishes (`StopProviding`) exactly when the node
+/// no longer has the content at all — a duplicate copy elsewhere keeps it shared.
 pub async fn delete_by_path(db: &Db, path: &str) -> Result<Option<Vec<u8>>> {
     let row = sqlx::query("SELECT root_hash FROM shared_files WHERE path = ?1")
         .bind(path)
         .fetch_optional(db)
         .await?;
 
-    let hash: Option<Vec<u8>> = row.map(|r| r.get("root_hash"));
+    let Some(hash) = row.map(|r| r.get::<Vec<u8>, _>("root_hash")) else {
+        return Ok(None);
+    };
 
-    if hash.is_some() {
-        sqlx::query("DELETE FROM shared_files WHERE path = ?1")
-            .bind(path)
-            .execute(db)
+    sqlx::query("DELETE FROM shared_files WHERE path = ?1")
+        .bind(path)
+        .execute(db)
+        .await?;
+
+    // Only surface the hash for StopProviding if no other path still has it.
+    let remaining: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM shared_files WHERE root_hash = ?1")
+            .bind(hash.as_slice())
+            .fetch_one(db)
             .await?;
-    }
 
-    Ok(hash)
+    Ok((remaining == 0).then_some(hash))
 }
 
 /// Look up a shared file by its exact on-disk path (uses the `path` index).
@@ -321,8 +339,10 @@ pub async fn rename_path(db: &Db, old_path: &str, new_path: &str, new_name: &str
 
 /// Delete all shared files whose `path` starts with `prefix`.
 ///
-/// Use this to remove a whole directory tree: pass the directory path.
-/// Returns the root hashes of the deleted files.
+/// Use this to remove a whole directory tree: pass the directory path. Returns
+/// the root hashes that are **fully** unshared by this removal — i.e. no copy of
+/// that content remains at any other path — so the caller de-publishes only
+/// content the node no longer has (a duplicate outside the tree keeps it shared).
 pub async fn delete_by_path_prefix(db: &Db, prefix: &str) -> Result<Vec<Vec<u8>>> {
     // Ensure the prefix ends with the path separator so we don't accidentally
     // match "/home/user/movies-extra" when asked to remove "/home/user/movies".
@@ -332,14 +352,12 @@ pub async fn delete_by_path_prefix(db: &Db, prefix: &str) -> Result<Vec<Vec<u8>>
         format!("{prefix}{}%", std::path::MAIN_SEPARATOR)
     };
 
-    // Fetch hashes first, then delete.
+    // Fetch the (distinct) hashes under the prefix first, then delete.
     let rows = sqlx::query("SELECT root_hash FROM shared_files WHERE path = ?1 OR path LIKE ?2")
         .bind(prefix)
         .bind(&pattern)
         .fetch_all(db)
         .await?;
-
-    let hashes: Vec<Vec<u8>> = rows.iter().map(|r| r.get("root_hash")).collect();
 
     sqlx::query("DELETE FROM shared_files WHERE path = ?1 OR path LIKE ?2")
         .bind(prefix)
@@ -347,7 +365,24 @@ pub async fn delete_by_path_prefix(db: &Db, prefix: &str) -> Result<Vec<Vec<u8>>
         .execute(db)
         .await?;
 
-    Ok(hashes)
+    // Keep only the hashes with no surviving copy elsewhere — those are the ones
+    // to StopProviding. Dedup first so we check (and return) each hash once.
+    let mut seen = std::collections::HashSet::new();
+    let mut gone = Vec::new();
+    for hash in rows.iter().map(|r| r.get::<Vec<u8>, _>("root_hash")) {
+        if !seen.insert(hash.clone()) {
+            continue;
+        }
+        let remaining: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM shared_files WHERE root_hash = ?1")
+                .bind(hash.as_slice())
+                .fetch_one(db)
+                .await?;
+        if remaining == 0 {
+            gone.push(hash);
+        }
+    }
+    Ok(gone)
 }
 
 /// Count the shared files under `prefix` (a directory) and sum their sizes.
@@ -433,6 +468,45 @@ mod tests {
         // chunk_count is derived as ceil(size / chunk_size), not counted from
         // the chunks table — 12288 / 4096 = 3.
         assert_eq!(rows[0].chunk_count, 3);
+    }
+
+    #[tokio::test]
+    async fn duplicate_content_at_two_paths_shares_once() {
+        let (db, _dir) = test_db().await;
+        let hash = dummy_hash(7);
+        let mk = |path: &'static str| NewSharedFile {
+            root_hash: &hash,
+            name: "dup.nfo",
+            size: 10,
+            mime_type: None,
+            path,
+            chunk_size: 4096,
+            added_at: 1_000_000,
+            mtime: 0,
+        };
+
+        // Same content, two paths: both index (no UNIQUE(root_hash) failure).
+        insert(&db, mk("/share/a/dup.nfo")).await.unwrap();
+        insert(&db, mk("/share/b/dup.nfo")).await.unwrap();
+
+        // The DHT only needs one announce for the shared content.
+        assert_eq!(list_root_hashes(&db).await.unwrap().len(), 1);
+        // Serving-by-hash resolves to the oldest row deterministically.
+        assert_eq!(
+            get_by_hash(&db, &hash).await.unwrap().unwrap().path,
+            "/share/a/dup.nfo"
+        );
+
+        // Removing the first copy must NOT StopProviding — the content remains.
+        assert_eq!(delete_by_path(&db, "/share/a/dup.nfo").await.unwrap(), None);
+        assert!(get_by_hash(&db, &hash).await.unwrap().is_some());
+
+        // Removing the last copy returns the hash so the caller de-publishes it.
+        assert_eq!(
+            delete_by_path(&db, "/share/b/dup.nfo").await.unwrap(),
+            Some(hash.to_vec())
+        );
+        assert!(get_by_hash(&db, &hash).await.unwrap().is_none());
     }
 
     #[tokio::test]

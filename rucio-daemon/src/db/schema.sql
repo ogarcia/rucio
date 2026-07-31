@@ -25,20 +25,21 @@ CREATE TABLE IF NOT EXISTS shared_dirs (
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS shared_files (
     id          INTEGER PRIMARY KEY,
-    root_hash   BLOB    NOT NULL UNIQUE,   -- 32 bytes, canonical file id
+    root_hash   BLOB    NOT NULL,          -- 32 bytes, content id (NOT unique: identical content may live at several paths)
     name        TEXT    NOT NULL,
     size        INTEGER NOT NULL,          -- bytes
     mime_type   TEXT,
-    path        TEXT    NOT NULL,          -- absolute path on disk
+    path        TEXT    NOT NULL UNIQUE,   -- absolute path on disk, the per-row key
     chunk_size  INTEGER NOT NULL DEFAULT 4194304,  -- 4 MiB
     added_at    INTEGER NOT NULL,          -- Unix seconds
     mtime       INTEGER NOT NULL DEFAULT 0 -- file mtime in Unix seconds, change signal for the rescan
 );
 
--- Look up a share by its on-disk path. The watcher and the startup rescan do
--- this once per file (to re-index or drop it). Without the index each lookup
--- is a full table scan, making a rescan of a large share O(files squared).
-CREATE INDEX IF NOT EXISTS idx_shared_files_path ON shared_files(path);
+-- Look up shares by content hash (get_by_hash, delete_by_hash, the re-announce
+-- sweep, and the pins LEFT JOIN). root_hash is no longer UNIQUE, so it needs its
+-- own index. The per-path lookups (watcher / rescan, one per file) are served by
+-- the implicit unique index on path.
+CREATE INDEX IF NOT EXISTS idx_shared_files_root_hash ON shared_files(root_hash);
 
 -- No per-chunk hash table: with bao verified streaming a chunk is verified as
 -- a slice against the file's root_hash, and chunk_count is derived as
