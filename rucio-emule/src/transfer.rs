@@ -535,6 +535,22 @@ impl std::fmt::Display for SlowPeer {
 
 impl std::error::Error for SlowPeer {}
 
+/// Returned by [`Session::download_range`] when the caller's `superseded`
+/// predicate reports that another worker has already completed this slice
+/// (endgame). It stops at a clean message boundary, so the session stays
+/// reusable for the next slice. Not a failure — the caller simply discards this
+/// (redundant) copy.
+#[derive(Debug)]
+pub struct Superseded;
+
+impl std::fmt::Display for Superseded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "slice already completed by another source")
+    }
+}
+
+impl std::error::Error for Superseded {}
+
 /// Returned by `download_range` when a downloaded part's MD4 does not match the
 /// expected hash from the ed2k hashset — the data is corrupt (or the peer is
 /// malicious). The caller should re-fetch the part from a different source and
@@ -1117,17 +1133,25 @@ impl Session {
     ///
     /// Emits [`DownloadEvent::Progress`] and [`DownloadEvent::ChunkVerified`]
     /// (or [`DownloadEvent::ChunkFailed`]) via `on_event`.
-    pub async fn download_range<W, F>(
+    ///
+    /// `superseded` is polled at each request-window boundary (a point where the
+    /// stream is drained, so the session stays reusable): when it returns `true`
+    /// — another worker has already completed this slice in endgame — the
+    /// download stops cleanly with [`Superseded`] instead of fetching more. Pass
+    /// `|| false` for a plain single-slice download.
+    pub async fn download_range<W, F, S>(
         &mut self,
         start: u64,
         end: u64,
         expected_part_hash: Option<[u8; 16]>,
         out_writer: &mut W,
         on_event: &mut F,
+        superseded: S,
     ) -> Result<u64>
     where
         W: tokio::io::AsyncWrite + tokio::io::AsyncSeek + Unpin,
         F: FnMut(DownloadEvent),
+        S: Fn() -> bool,
     {
         const PART_WINDOW: u64 = 180 * 1024;
         // How many times we re-enter the queue after the peer withdraws our slot
@@ -1273,6 +1297,13 @@ impl Session {
                     });
 
                     if bytes_received >= batch_end && total_filled < end - start {
+                        // Clean window boundary: the whole requested batch has
+                        // arrived, so the stream is drained. If another worker has
+                        // already completed this slice (endgame), stop here — the
+                        // session stays reusable for the next slice.
+                        if superseded() {
+                            return Err(anyhow::Error::new(Superseded));
+                        }
                         send_request_parts(
                             &mut self.stream,
                             &mut self.ciphers,
@@ -1361,6 +1392,13 @@ impl Session {
                     });
 
                     if bytes_received >= batch_end && total_filled < end - start {
+                        // Clean window boundary: the whole requested batch has
+                        // arrived, so the stream is drained. If another worker has
+                        // already completed this slice (endgame), stop here — the
+                        // session stays reusable for the next slice.
+                        if superseded() {
+                            return Err(anyhow::Error::new(Superseded));
+                        }
                         send_request_parts(
                             &mut self.stream,
                             &mut self.ciphers,
@@ -1560,6 +1598,8 @@ where
             None,
             &mut out_writer,
             &mut on_event,
+            // Single-peer: no other worker can supersede this slice.
+            || false,
         )
         .await?;
     on_event(DownloadEvent::Done);
@@ -2764,7 +2804,7 @@ mod tests {
 
         let mut out = tokio::fs::File::from_std(tempfile::tempfile().unwrap());
         let received = session
-            .download_range(0, len, None, &mut out, &mut |_| {})
+            .download_range(0, len, None, &mut out, &mut |_| {}, || false)
             .await
             .expect("download must recover from OP_OUTOFPARTREQS and complete");
         assert_eq!(received, len);
@@ -2776,6 +2816,65 @@ mod tests {
         assert_eq!(got, data, "recovered transfer must reproduce the data");
 
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn download_range_stops_cleanly_when_superseded() {
+        // File spans more than one request batch (3 * 180 KiB), so there is a
+        // window boundary where `superseded` is polled.
+        let batch = 3 * 180 * 1024usize;
+        let len = (batch + 60_000) as u64;
+        let data = sample_payload(len as usize);
+        let hash = [0u8; 16];
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let peer_data = data.clone();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut ciphers = ObfCiphers::default();
+            let (_p, opcode, _payload) = read_frame(&mut stream, &mut ciphers).await.unwrap();
+            assert_eq!(
+                opcode, OP_REQUESTPARTS,
+                "downloader asks for the first batch"
+            );
+            // Serve exactly the first batch, then go quiet. A superseded downloader
+            // must stop at the boundary and never ask for the rest.
+            let mut part = Vec::with_capacity(24 + batch);
+            part.extend_from_slice(&hash);
+            part.extend_from_slice(&0u32.to_le_bytes());
+            part.extend_from_slice(&(batch as u32).to_le_bytes());
+            part.extend_from_slice(&peer_data[..batch]);
+            write_frame(&mut stream, &mut ciphers, OP_SENDINGPART, &part)
+                .await
+                .unwrap();
+        });
+
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let mut session = Session {
+            peer: "127.0.0.1:0".parse().unwrap(),
+            download_id: 0,
+            stream,
+            op_timeout: Duration::from_secs(5),
+            hash: Ed2kHash::from_bytes(hash),
+            file_size: len,
+            ciphers: ObfCiphers::default(),
+            min_speed_bytes_per_sec: 0,
+            plain_bytes: 0,
+            compressed_file_bytes: 0,
+            compressed_wire_bytes: 0,
+            part_status: None,
+        };
+
+        let mut out = tokio::fs::File::from_std(tempfile::tempfile().unwrap());
+        // `superseded` reports another worker already finished this slice: the
+        // download must stop at the first window boundary with `Superseded`.
+        let err = session
+            .download_range(0, len, None, &mut out, &mut |_| {}, || true)
+            .await
+            .expect_err("download must stop when superseded");
+        assert!(err.is::<Superseded>(), "expected Superseded, got: {err}");
+        server.abort();
     }
 
     // ── PackedReassembler ──────────────────────────────────────────────────

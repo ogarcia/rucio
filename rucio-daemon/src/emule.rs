@@ -1730,6 +1730,13 @@ pub async fn run_ed2k_download(
                             .as_ref()
                             .and_then(|h| h.get(slice_idx).copied());
 
+                        // Stop this download the moment another worker completes the
+                        // slice (endgame): a racer that has lost, or a slow owner a
+                        // racer has overtaken. Checked only at request-window
+                        // boundaries, so the session stays reusable for the next slice.
+                        let done_sup = done.clone();
+                        let superseded = move || done_sup.lock().unwrap()[slice_idx];
+
                         match session
                             .download_range(
                                 slice_start,
@@ -1737,6 +1744,7 @@ pub async fn run_ed2k_download(
                                 expected,
                                 &mut file,
                                 &mut on_progress,
+                                superseded,
                             )
                             .await
                         {
@@ -1810,6 +1818,16 @@ pub async fn run_ed2k_download(
                                     .await;
                                 });
                                 // Keep the session; fetch the next slice over it.
+                            }
+                            Err(e) if e.is::<rucio_emule::transfer::Superseded>() => {
+                                // Endgame: another (faster) source finished this slice
+                                // first. We stopped at a clean window boundary, so the
+                                // connection is intact — keep it and grab the next
+                                // slice. Progress/queue untouched (we never owned this
+                                // slice's completion).
+                                debug!(dl = download_id, %peer, slice = slice_idx,
+                                    "Endgame: slice completed elsewhere — cancelled, reusing session");
+                                continue;
                             }
                             Err(e) if e.is::<rucio_emule::transfer::ChunkHashMismatch>() => {
                                 // A completed part whose MD4 doesn't match the
