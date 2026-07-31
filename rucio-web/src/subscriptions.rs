@@ -419,7 +419,7 @@ fn UnsubscribeModal(
     };
 
     view! {
-        <div class="modal-backdrop" on:click=move |_| on_close()>
+        <div class="modal-backdrop">
             <div class="modal" on:click=move |e| e.stop_propagation()>
                 <div class="modal-header">
                     <span class="modal-title">{t!("sub.unsub_title")}</span>
@@ -502,7 +502,7 @@ fn AddSubscriptionModal(
     };
 
     view! {
-        <div class="modal-backdrop" on:click=move |_| on_close()>
+        <div class="modal-backdrop">
             <div class="modal" on:click=move |e| e.stop_propagation()>
                 <div class="modal-header">
                     <span class="modal-title">{t!("sub.add_modal_title")}</span>
@@ -777,7 +777,7 @@ fn SubscriptionInfoModal(
     };
 
     view! {
-        <div class="modal-backdrop" on:click=move |_| on_close()>
+        <div class="modal-backdrop">
             <div class="modal modal-wide" on:click=move |e| e.stop_propagation()>
                 <div class="modal-header">
                     <span class="modal-title">{t!("sub.info_title")}</span>

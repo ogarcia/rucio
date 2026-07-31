@@ -1085,7 +1085,7 @@ fn AddModal(
     };
 
     view! {
-        <div class="modal-backdrop" on:click=move |_| on_close()>
+        <div class="modal-backdrop">
             <div class="modal" on:click=move |e| e.stop_propagation()>
                 <div class="modal-header">
                     <span class="modal-title">{t!("download.add_modal.title")}</span>
@@ -1234,7 +1234,7 @@ fn BulkEditOverlay(
     };
 
     view! {
-        <div class="modal-backdrop" on:click=move |_| on_close()>
+        <div class="modal-backdrop">
             <div class="modal" on:click=move |e| e.stop_propagation()>
                 <div class="modal-header">
                     <span class="modal-title">{t!("download.bulk.title", n = count)}</span>
@@ -1349,7 +1349,7 @@ fn DownloadInfoOverlay(
     let best_queue_rank = detail.best_queue_rank;
 
     view! {
-        <div class="overlay-backdrop" on:click=move |_| on_close()>
+        <div class="overlay-backdrop">
             <div class="overlay overlay-wide" on:click=move |e| e.stop_propagation()>
                 <div class="overlay-header">
                     <span class="overlay-title">{move || display_name.get()}</span>

@@ -343,7 +343,7 @@ pub fn ConfigModal(
     let em_locked = move || !f_em_enabled.get();
 
     view! {
-        <div class="modal-backdrop" on:click=move |_| on_close()>
+        <div class="modal-backdrop">
             <div class="modal modal-config" on:click=move |e| e.stop_propagation()>
                 <div class="modal-header">
                     <span class="modal-title">{t!("config.title")}</span>

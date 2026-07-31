@@ -815,7 +815,7 @@ fn PinCollectionModal(
     };
 
     view! {
-        <div class="modal-backdrop" on:click=move |_| on_close()>
+        <div class="modal-backdrop">
             <div class="modal" on:click=move |e| e.stop_propagation()>
                 <div class="modal-header">
                     <span class="modal-title">
@@ -897,7 +897,7 @@ fn ShareInfoOverlay(
     let ed2k = file.ed2k.clone();
 
     view! {
-        <div class="overlay-backdrop" on:click=move |_| on_close()>
+        <div class="overlay-backdrop">
             <div class="overlay" on:click=move |e| e.stop_propagation()>
                 <div class="overlay-header">
                     <span class="overlay-title">{file.name.clone()}</span>
@@ -1087,7 +1087,7 @@ fn AddDirModal(
     };
 
     view! {
-        <div class="modal-backdrop" on:click=move |_| on_close()>
+        <div class="modal-backdrop">
             <div class="modal" on:click=move |e| e.stop_propagation()>
                 <div class="modal-header">
                     <span class="modal-title">{t!("share.add_title")}</span>
@@ -1161,7 +1161,7 @@ fn EditDirModal(
     };
 
     view! {
-        <div class="modal-backdrop" on:click=move |_| on_close()>
+        <div class="modal-backdrop">
             <div class="modal" on:click=move |e| e.stop_propagation()>
                 <div class="modal-header">
                     <span class="modal-title">{t!("share.edit_title")}</span>

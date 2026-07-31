@@ -62,7 +62,7 @@ pub fn NodeStatusPanel(
     });
 
     view! {
-        <div class="overlay-backdrop" on:click=move |_| close()>
+        <div class="overlay-backdrop">
             <div class="overlay" on:click=move |e| e.stop_propagation()>
                 <div class="overlay-header">
                     <span class="overlay-title">{t!("overlay.node.title")}</span>
@@ -192,7 +192,7 @@ pub fn StatsPanel(active_panel: RwSignal<Option<super::Panel>>) -> impl IntoView
     });
 
     view! {
-        <div class="overlay-backdrop" on:click=move |_| close()>
+        <div class="overlay-backdrop">
             <div class="overlay" on:click=move |e| e.stop_propagation()>
                 <div class="overlay-header">
                     <span class="overlay-title">{t!("overlay.stats.title")}</span>
@@ -270,7 +270,7 @@ pub fn AddressesPanel(
 ) -> impl IntoView {
     let close = move || active_panel.set(None);
     view! {
-        <div class="overlay-backdrop" on:click=move |_| close()>
+        <div class="overlay-backdrop">
             <div class="overlay" on:click=move |e| e.stop_propagation()>
                 <div class="overlay-header">
                     <span class="overlay-title">{t!("overlay.addr.title")}</span>
@@ -339,7 +339,7 @@ pub fn PeersPanel(active_panel: RwSignal<Option<super::Panel>>) -> impl IntoView
     });
 
     view! {
-        <div class="overlay-backdrop" on:click=move |_| close()>
+        <div class="overlay-backdrop">
             <div class="overlay" on:click=move |e| e.stop_propagation()>
                 <div class="overlay-header">
                     <span class="overlay-title">{t!("overlay.peers.title")}</span>
@@ -426,7 +426,7 @@ pub fn AboutPanel(
     const REPO: &str = "https://github.com/ogarcia/rucio";
 
     view! {
-        <div class="overlay-backdrop" on:click=move |_| close()>
+        <div class="overlay-backdrop">
             <div class="overlay" on:click=move |e| e.stop_propagation()>
                 <div class="overlay-header">
                     <span class="overlay-title">{t!("overlay.about.title")}</span>
