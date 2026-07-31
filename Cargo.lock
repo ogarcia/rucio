@@ -6244,7 +6244,6 @@ dependencies = [
  "igd-next 0.17.1",
  "infer 0.22.0",
  "libp2p",
- "md4",
  "notify",
  "postcard",
  "reqwest",

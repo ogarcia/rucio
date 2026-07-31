@@ -1904,9 +1904,13 @@ pub async fn run_ed2k_download(
             });
         }
 
-        // Wait for all workers to finish, but abort them promptly if the user
-        // pauses/cancels mid-round. Aborting mid-slice is safe: an unfinished
-        // slice is never marked done in .part.met, so it is simply re-fetched.
+        // Wait for all workers to finish, but abort them promptly on two events:
+        // the user pauses/cancels, OR every slice is now done. Without the latter,
+        // a worker still parked in a peer's upload queue (`wait_requeued_slot`, up
+        // to MAX_WAIT) or grinding a slow transfer would keep the round — and thus
+        // finalisation — waiting for minutes even though the file is already 100%
+        // on disk. Aborting mid-slice is safe: a slice is marked done in .part.met
+        // only once fully verified, so anything unfinished is simply re-fetched.
         loop {
             tokio::select! {
                 res = join_set.join_next() => {
@@ -1915,7 +1919,12 @@ pub async fn run_ed2k_download(
                     }
                 }
                 _ = async {
-                    while !cancel.load(Ordering::Relaxed) {
+                    loop {
+                        let stop = cancel.load(Ordering::Relaxed)
+                            || done_vec.lock().unwrap().iter().all(|&d| d);
+                        if stop {
+                            break;
+                        }
                         tokio::time::sleep(Duration::from_millis(200)).await;
                     }
                 } => {
@@ -2055,40 +2064,13 @@ pub async fn run_ed2k_download(
     // Clean up progress file.
     let _ = tokio::fs::remove_file(&met_path).await;
 
-    // Single pass over the finished file to compute the ed2k per-chunk MD4
-    // hashes (for the Kad hashset we serve to eMule peers). The Rucio identity
-    // is *not* a flat BLAKE3 of the file — it is the canonical merkle-flat root
-    // hash, computed separately by `index_file` below — so we no longer hash
-    // BLAKE3 here.
-    let path_clone = final_path.clone();
-    let chunk_hashes = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<[u8; 16]>> {
-        use md4::{Digest, Md4};
-        use std::io::Read;
-        let mut file = std::fs::File::open(&path_clone)?;
-        let mut chunk_hashes: Vec<[u8; 16]> = Vec::new();
-        let mut buf = vec![0u8; CHUNK_SIZE];
-        loop {
-            // Fill a full CHUNK_SIZE block (or up to EOF).
-            let mut filled = 0usize;
-            while filled < CHUNK_SIZE {
-                match file.read(&mut buf[filled..])? {
-                    0 => break,
-                    n => filled += n,
-                }
-            }
-            if filled == 0 {
-                break;
-            }
-            chunk_hashes.push(Md4::digest(&buf[..filled]).into());
-            if filled < CHUNK_SIZE {
-                break;
-            }
-        }
-        Ok(chunk_hashes)
-    })
-    .await
-    .context("spawn_blocking for ed2k chunk hashing")?
-    .with_context(|| format!("hashing {}", final_path.display()))?;
+    // The per-chunk MD4 hashset we serve to eMule peers is exactly the hashset we
+    // already obtained from a source and verified against the ed2k root during the
+    // download (and checked every slice against). No need to re-read the whole
+    // (often multi-GB) file to recompute it. `part_hashes` is guaranteed present:
+    // a multi-part round bails without a verified hashset, and a single-part
+    // download seeds it with the ed2k hash itself.
+    let chunk_hashes = part_hashes.lock().unwrap().clone().unwrap_or_default();
 
     // ed2k hashset to serve on OP_HASHSETREQUEST (empty for single-part files or
     // if no convention reproduces the known ed2k hash — then we serve none).
