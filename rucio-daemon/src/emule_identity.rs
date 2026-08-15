@@ -56,7 +56,7 @@ pub fn load_or_create(path: &Path) -> [u8; 16] {
     }
 
     // Missing — create it exclusively so concurrent callers converge on one hash.
-    warn!(path = %path.display(), "eMule identity file not found — generating new user hash");
+    info!(path = %path.display(), "eMule identity file not found — generating new user hash");
     let hash = random_user_hash();
     match write_hash(&hash, path, true) {
         Ok(()) => {

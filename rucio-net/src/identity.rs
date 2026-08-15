@@ -7,7 +7,7 @@
 use anyhow::{Context, Result};
 use libp2p::identity::{Keypair, ed25519};
 use std::path::Path;
-use tracing::{info, warn};
+use tracing::info;
 
 /// Load the keypair from `path`, creating it if the file does not exist.
 pub fn load_or_create(path: &Path) -> Result<Keypair> {
@@ -19,7 +19,7 @@ pub fn load_or_create(path: &Path) -> Result<Keypair> {
         info!(peer_id = %keypair.public().to_peer_id(), "Loaded identity from disk");
         Ok(keypair)
     } else {
-        warn!(path = %path.display(), "Identity file not found — generating new keypair");
+        info!(path = %path.display(), "Identity file not found — generating new keypair");
         let secret = ed25519::SecretKey::generate();
         let keypair = Keypair::from(ed25519::Keypair::from(secret));
         persist(&keypair, path)?;
