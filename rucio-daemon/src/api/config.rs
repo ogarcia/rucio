@@ -75,7 +75,11 @@ pub async fn get_config(State(state): State<AppState>) -> Json<ConfigResponse> {
             ))
         });
 
-    Json(ConfigResponse { current, pending })
+    Json(ConfigResponse {
+        current,
+        pending,
+        locked: Config::env_locked_keys(),
+    })
 }
 
 fn build_snapshot(
@@ -155,53 +159,118 @@ pub async fn put_config(
 ) -> StatusCode {
     let c = req.current;
 
+    // Fields pinned by an environment variable are read-only: the environment
+    // wins over the panel, and its values must never be written to the file (or
+    // clearing the variable would leave the override baked in). We recompute the
+    // lock set here and ignore whatever the client sent for those fields —
+    // never trusting the request to police itself.
+    let locked = Config::env_locked_keys();
+    let is_locked = |key: &str| locked.iter().any(|k| k == key);
+
     // Apply bandwidth limits immediately via BandwidthState, which recomputes
     // the effective rate (honouring the temporary-limit toggle) and pushes it
-    // to the running token buckets.
-    state
-        .bandwidth
-        .set_base(c.network.upload_limit_kbps, c.network.download_limit_kbps);
-    state.bandwidth.set_temp(
-        c.network.temp_upload_limit_kbps,
-        c.network.temp_download_limit_kbps,
-    );
+    // to the running token buckets. Env-locked limits keep their current live
+    // value instead of taking the request's.
+    let up = if is_locked("network.upload_limit_kbps") {
+        state.bandwidth.base_upload_kbps()
+    } else {
+        c.network.upload_limit_kbps
+    };
+    let down = if is_locked("network.download_limit_kbps") {
+        state.bandwidth.base_download_kbps()
+    } else {
+        c.network.download_limit_kbps
+    };
+    let temp_up = if is_locked("network.temp_upload_limit_kbps") {
+        state.bandwidth.temp_upload_kbps()
+    } else {
+        c.network.temp_upload_limit_kbps
+    };
+    let temp_down = if is_locked("network.temp_download_limit_kbps") {
+        state.bandwidth.temp_download_kbps()
+    } else {
+        c.network.temp_download_limit_kbps
+    };
+    state.bandwidth.set_base(up, down);
+    state.bandwidth.set_temp(temp_up, temp_down);
 
-    // Build a new Config from the request and persist it.
-    // Start from the latest on-disk config, not the startup snapshot, so fields
-    // this endpoint doesn't touch but that are changed at runtime through their
-    // own endpoints — notably `notifications` (webhooks + toggles via
+    // Build a new Config from the request and persist it. Start from the raw
+    // on-disk config (env overrides NOT applied), so env-locked fields we skip
+    // below retain their file value rather than the environment's. Runtime
+    // fields this endpoint doesn't touch but that are changed through their own
+    // endpoints — notably `notifications` (webhooks + toggles via
     // PUT /config/notifications/...) — are preserved instead of reverted.
     let mut new_cfg =
-        Config::load(state.config_path.as_deref()).unwrap_or_else(|_| (*state.config).clone());
-    new_cfg.node.listen_addrs = c.node.listen_addrs;
-    new_cfg.network.bootstrap_peers = c.network.bootstrap_peers;
-    new_cfg.network.upload_limit_kbps = c.network.upload_limit_kbps;
-    new_cfg.network.download_limit_kbps = c.network.download_limit_kbps;
-    new_cfg.network.temp_upload_limit_kbps = c.network.temp_upload_limit_kbps;
-    new_cfg.network.temp_download_limit_kbps = c.network.temp_download_limit_kbps;
-    new_cfg.network.max_upload_tasks = c.network.max_upload_tasks.max(1);
+        Config::load_raw(state.config_path.as_deref()).unwrap_or_else(|_| (*state.config).clone());
+    if !is_locked("node.listen_addrs") {
+        new_cfg.node.listen_addrs = c.node.listen_addrs;
+    }
+    if !is_locked("network.bootstrap_peers") {
+        new_cfg.network.bootstrap_peers = c.network.bootstrap_peers;
+    }
+    if !is_locked("network.upload_limit_kbps") {
+        new_cfg.network.upload_limit_kbps = c.network.upload_limit_kbps;
+    }
+    if !is_locked("network.download_limit_kbps") {
+        new_cfg.network.download_limit_kbps = c.network.download_limit_kbps;
+    }
+    if !is_locked("network.temp_upload_limit_kbps") {
+        new_cfg.network.temp_upload_limit_kbps = c.network.temp_upload_limit_kbps;
+    }
+    if !is_locked("network.temp_download_limit_kbps") {
+        new_cfg.network.temp_download_limit_kbps = c.network.temp_download_limit_kbps;
+    }
+    if !is_locked("network.max_upload_tasks") {
+        new_cfg.network.max_upload_tasks = c.network.max_upload_tasks.max(1);
+    }
     new_cfg.network.exclusive_bootstrap = c.network.exclusive_bootstrap;
-    new_cfg.network.upnp = c.network.upnp;
-    new_cfg.storage.download_dir = c.storage.download_dir.into();
-    new_cfg.storage.temp_dir = c.storage.temp_dir.into();
+    if !is_locked("network.upnp") {
+        new_cfg.network.upnp = c.network.upnp;
+    }
+    if !is_locked("storage.download_dir") {
+        new_cfg.storage.download_dir = c.storage.download_dir.into();
+    }
+    if !is_locked("storage.temp_dir") {
+        new_cfg.storage.temp_dir = c.storage.temp_dir.into();
+    }
     // outboard_dir and pin_dir were added later (serde default ""); an older
     // client that doesn't send them must not blank the configured value.
-    if !c.storage.outboard_dir.trim().is_empty() {
+    if !is_locked("storage.outboard_dir") && !c.storage.outboard_dir.trim().is_empty() {
         new_cfg.storage.outboard_dir = c.storage.outboard_dir.into();
     }
-    if !c.storage.pin_dir.trim().is_empty() {
+    if !is_locked("storage.pin_dir") && !c.storage.pin_dir.trim().is_empty() {
         new_cfg.storage.pin_dir = c.storage.pin_dir.into();
     }
-    new_cfg.emule.enabled = c.emule.enabled;
-    new_cfg.emule.temp_dir = c.emule.temp_dir.into();
-    new_cfg.emule.udp_port = c.emule.udp_port;
-    new_cfg.emule.tcp_port = c.emule.tcp_port;
-    new_cfg.emule.external_ip = c.emule.external_ip.and_then(|s| s.parse().ok());
-    new_cfg.emule.download_slots_per_file = c.emule.download_slots_per_file.clamp(1, 50);
-    new_cfg.emule.max_upload_slots = c.emule.max_upload_slots.clamp(1, 50);
-    new_cfg.emule.max_concurrent_downloads = c.emule.max_concurrent_downloads.clamp(1, 50);
-    new_cfg.emule.nick = c.emule.nick.trim().to_string();
-    new_cfg.emule.min_source_speed_kib_s = c.emule.min_source_speed_kib_s;
+    if !is_locked("emule.enabled") {
+        new_cfg.emule.enabled = c.emule.enabled;
+    }
+    if !is_locked("emule.temp_dir") {
+        new_cfg.emule.temp_dir = c.emule.temp_dir.into();
+    }
+    if !is_locked("emule.udp_port") {
+        new_cfg.emule.udp_port = c.emule.udp_port;
+    }
+    if !is_locked("emule.tcp_port") {
+        new_cfg.emule.tcp_port = c.emule.tcp_port;
+    }
+    if !is_locked("emule.external_ip") {
+        new_cfg.emule.external_ip = c.emule.external_ip.and_then(|s| s.parse().ok());
+    }
+    if !is_locked("emule.download_slots_per_file") {
+        new_cfg.emule.download_slots_per_file = c.emule.download_slots_per_file.clamp(1, 50);
+    }
+    if !is_locked("emule.max_upload_slots") {
+        new_cfg.emule.max_upload_slots = c.emule.max_upload_slots.clamp(1, 50);
+    }
+    if !is_locked("emule.max_concurrent_downloads") {
+        new_cfg.emule.max_concurrent_downloads = c.emule.max_concurrent_downloads.clamp(1, 50);
+    }
+    if !is_locked("emule.nick") {
+        new_cfg.emule.nick = c.emule.nick.trim().to_string();
+    }
+    if !is_locked("emule.min_source_speed_kib_s") {
+        new_cfg.emule.min_source_speed_kib_s = c.emule.min_source_speed_kib_s;
+    }
     // node.identity_path, emule.identity_path and api.listen intentionally not
     // writable at runtime
 

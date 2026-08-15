@@ -355,6 +355,7 @@ config:
   title: "Configuración"
   loading: "Cargando…"
   pending: "Hay cambios guardados a la espera de reiniciar el demonio."
+  env_locked: "Solo lectura: definido por una variable de entorno, que tiene prioridad sobre el panel."
   interface:
     hint: "Estas preferencias se guardan en este navegador, no en el demonio."
     theme: "Tema"

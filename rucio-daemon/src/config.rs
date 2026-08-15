@@ -648,19 +648,30 @@ impl Config {
     /// After loading the file (or defaults), environment variable overrides are
     /// applied on top.  See [`Config::apply_env_overrides`].
     pub fn load(path: Option<&std::path::Path>) -> Result<Self> {
+        let mut config = Self::load_raw(path)?;
+        config.apply_env_overrides();
+        Ok(config)
+    }
+
+    /// Load configuration from disk (or defaults) **without** applying
+    /// environment-variable overrides.
+    ///
+    /// This is the value that belongs in `config.toml`: the environment always
+    /// wins at runtime, but its values must never be persisted back to the file,
+    /// or removing the variable would leave the override silently baked in. The
+    /// save path (`PUT /config`) starts from this raw view and only writes the
+    /// fields that are *not* env-locked (see [`Config::env_locked_keys`]).
+    pub fn load_raw(path: Option<&std::path::Path>) -> Result<Self> {
         let resolved = path
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| default_config_dir().join("config.toml"));
 
-        let mut config = if resolved.exists() {
+        if resolved.exists() {
             let contents = std::fs::read_to_string(&resolved)?;
-            toml::from_str(&contents)?
+            Ok(toml::from_str(&contents)?)
         } else {
-            Config::default()
-        };
-
-        config.apply_env_overrides();
-        Ok(config)
+            Ok(Config::default())
+        }
     }
 
     /// Override config fields from environment variables.
@@ -890,6 +901,69 @@ impl Config {
         }
     }
 
+    /// Returns the dotted keys of the config fields currently pinned by an
+    /// environment variable, matching [`Config::apply_env_overrides`] and the
+    /// field paths exposed in [`crate::api`]'s `ConfigSnapshot`.
+    ///
+    /// A field is reported as locked when its variable is present and non-empty
+    /// — the same gate every override checks — so the panel can render it
+    /// read-only and `PUT /config` can refuse to persist it. The environment
+    /// always wins over the file and the panel, so these values must never be
+    /// baked back into `config.toml`.
+    pub fn env_locked_keys() -> Vec<String> {
+        // (variable, dotted ConfigSnapshot key). Only fields that surface in the
+        // panel are listed; read-only fields (identity paths, api.listen) are
+        // already non-editable and need no lock marker.
+        const ENV_LOCK_MAP: &[(&str, &str)] = &[
+            ("RUCIOD_P2P_LISTEN", "node.listen_addrs"),
+            ("RUCIOD_BOOTSTRAP_PEERS", "network.bootstrap_peers"),
+            ("RUCIOD_UPLOAD_LIMIT_KBPS", "network.upload_limit_kbps"),
+            ("RUCIOD_DOWNLOAD_LIMIT_KBPS", "network.download_limit_kbps"),
+            (
+                "RUCIOD_TEMP_UPLOAD_LIMIT_KBPS",
+                "network.temp_upload_limit_kbps",
+            ),
+            (
+                "RUCIOD_TEMP_DOWNLOAD_LIMIT_KBPS",
+                "network.temp_download_limit_kbps",
+            ),
+            ("RUCIOD_MAX_UPLOAD_TASKS", "network.max_upload_tasks"),
+            ("RUCIOD_UPNP", "network.upnp"),
+            ("RUCIOD_DOWNLOAD_DIR", "storage.download_dir"),
+            ("RUCIOD_TEMP_DIR", "storage.temp_dir"),
+            ("RUCIOD_OUTBOARD_DIR", "storage.outboard_dir"),
+            ("RUCIOD_PIN_DIR", "storage.pin_dir"),
+            ("RUCIOD_EMULE_ENABLED", "emule.enabled"),
+            ("RUCIOD_EMULE_TEMP_DIR", "emule.temp_dir"),
+            ("RUCIOD_EMULE_UDP_PORT", "emule.udp_port"),
+            ("RUCIOD_EMULE_TCP_PORT", "emule.tcp_port"),
+            ("RUCIOD_EXTERNAL_IP", "emule.external_ip"),
+            ("RUCIOD_EMULE_NICK", "emule.nick"),
+            (
+                "RUCIOD_EMULE_DOWNLOAD_SLOTS_PER_FILE",
+                "emule.download_slots_per_file",
+            ),
+            ("RUCIOD_EMULE_MAX_UPLOAD_SLOTS", "emule.max_upload_slots"),
+            (
+                "RUCIOD_EMULE_MAX_CONCURRENT_DOWNLOADS",
+                "emule.max_concurrent_downloads",
+            ),
+            (
+                "RUCIOD_EMULE_MIN_SOURCE_SPEED_KIB_S",
+                "emule.min_source_speed_kib_s",
+            ),
+        ];
+        ENV_LOCK_MAP
+            .iter()
+            .filter(|(var, _)| {
+                std::env::var(var)
+                    .map(|v| !v.trim().is_empty())
+                    .unwrap_or(false)
+            })
+            .map(|(_, key)| (*key).to_string())
+            .collect()
+    }
+
     /// Returns the bootstrap peers to use at startup.
     ///
     /// By default the configured `[network] bootstrap_peers` are **added** to
@@ -1048,6 +1122,28 @@ mod tests {
         cfg.apply_env_overrides();
         unsafe { std::env::remove_var("RUCIOD_API_LISTEN") };
         assert_eq!(cfg.api.listen, "0.0.0.0:8080");
+    }
+
+    #[test]
+    #[serial]
+    fn env_locked_keys_reports_present_vars() {
+        unsafe {
+            std::env::set_var("RUCIOD_DOWNLOAD_DIR", "/data/dl");
+            std::env::set_var("RUCIOD_UPLOAD_LIMIT_KBPS", "500");
+            // Present-but-empty must NOT count as locked.
+            std::env::set_var("RUCIOD_PIN_DIR", "");
+        }
+        let locked = Config::env_locked_keys();
+        unsafe {
+            std::env::remove_var("RUCIOD_DOWNLOAD_DIR");
+            std::env::remove_var("RUCIOD_UPLOAD_LIMIT_KBPS");
+            std::env::remove_var("RUCIOD_PIN_DIR");
+        }
+        assert!(locked.iter().any(|k| k == "storage.download_dir"));
+        assert!(locked.iter().any(|k| k == "network.upload_limit_kbps"));
+        assert!(!locked.iter().any(|k| k == "storage.pin_dir"));
+        // A variable that isn't set at all stays unlocked.
+        assert!(!locked.iter().any(|k| k == "storage.temp_dir"));
     }
 
     #[test]

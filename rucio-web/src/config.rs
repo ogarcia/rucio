@@ -73,6 +73,17 @@ fn notif_pill_class(on: bool, master_enabled: bool) -> &'static str {
     }
 }
 
+/// Class for a plain on/off pill that may be pinned by an environment variable.
+/// When locked it drops `toggle-clickable` (no pointer) and shows as disabled.
+fn toggle_pill_class(on: bool, locked: bool) -> &'static str {
+    match (on, locked) {
+        (true, false) => "toggle-pill toggle-on toggle-clickable",
+        (false, false) => "toggle-pill toggle-clickable",
+        (true, true) => "toggle-pill toggle-on toggle-disabled",
+        (false, true) => "toggle-pill toggle-disabled",
+    }
+}
+
 /// Split a textarea value into a list, dropping blank lines.
 fn lines_to_vec(s: &str) -> Vec<String> {
     s.lines()
@@ -111,6 +122,10 @@ pub fn ConfigModal(
     let loaded = RwSignal::new(false);
     // Whether the daemon was built with eMule support; gates the eMule tab.
     let emule_available = RwSignal::new(false);
+    // Dotted keys of fields pinned by an environment variable (server-computed).
+    // These render read-only with an explanatory tooltip; the daemon ignores any
+    // change to them on save.
+    let locked: RwSignal<Vec<String>> = RwSignal::new(vec![]);
 
     // Network fields.
     let f_dl = RwSignal::new(String::new());
@@ -166,6 +181,7 @@ pub fn ConfigModal(
             }
             if let Some(resp) = api_get_config().await {
                 has_pending.set(resp.pending.is_some());
+                locked.set(resp.locked.clone());
                 // Edit the on-disk state so we don't clobber pending changes.
                 let snap = resp.pending.map(|b| *b).unwrap_or(resp.current);
                 f_dl.set(snap.network.download_limit_kbps.to_string());
@@ -317,6 +333,8 @@ pub fn ConfigModal(
             let ok = api_put_config(&ConfigResponse {
                 current: snap,
                 pending: None,
+                // Server recomputes the lock set and ignores what we send.
+                locked: vec![],
             })
             .await;
             saving.set(false);
@@ -342,6 +360,20 @@ pub fn ConfigModal(
     // eMule fields are read-only until eMule is enabled (the toggle itself stays
     // editable so you can turn it on).
     let em_locked = move || !f_em_enabled.get();
+    // A field pinned by an environment variable is read-only regardless of tab.
+    let is_locked = move |key: &str| locked.get().iter().any(|k| k == key);
+    // Tooltip shown on hover over an env-locked control (empty when unlocked, so
+    // the browser shows no tooltip at all).
+    let lock_title = move |key: &str| {
+        if is_locked(key) {
+            t!("config.env_locked").to_string()
+        } else {
+            String::new()
+        }
+    };
+    // eMule numeric/text fields are disabled when eMule is off OR the field is
+    // env-pinned.
+    let em_field_locked = move |key: &str| em_locked() || is_locked(key);
 
     view! {
         <div class="modal-backdrop">
@@ -457,24 +489,36 @@ pub fn ConfigModal(
                                     <div class="config-field">
                                         <label class="config-label">{t!("config.network.download_limit")}</label>
                                         <input class="config-input" type="text"
+                                            class:config-input-locked=move || is_locked("network.download_limit_kbps")
+                                            prop:readonly=move || is_locked("network.download_limit_kbps")
+                                            title=move || lock_title("network.download_limit_kbps")
                                             prop:value=move || f_dl.get()
                                             on:input=move |e| f_dl.set(event_target_value(&e))/>
                                     </div>
                                     <div class="config-field">
                                         <label class="config-label">{t!("config.network.upload_limit")}</label>
                                         <input class="config-input" type="text"
+                                            class:config-input-locked=move || is_locked("network.upload_limit_kbps")
+                                            prop:readonly=move || is_locked("network.upload_limit_kbps")
+                                            title=move || lock_title("network.upload_limit_kbps")
                                             prop:value=move || f_ul.get()
                                             on:input=move |e| f_ul.set(event_target_value(&e))/>
                                     </div>
                                     <div class="config-field">
                                         <label class="config-label">{t!("config.network.temp_download")}</label>
                                         <input class="config-input" type="text"
+                                            class:config-input-locked=move || is_locked("network.temp_download_limit_kbps")
+                                            prop:readonly=move || is_locked("network.temp_download_limit_kbps")
+                                            title=move || lock_title("network.temp_download_limit_kbps")
                                             prop:value=move || f_tdl.get()
                                             on:input=move |e| f_tdl.set(event_target_value(&e))/>
                                     </div>
                                     <div class="config-field">
                                         <label class="config-label">{t!("config.network.temp_upload")}</label>
                                         <input class="config-input" type="text"
+                                            class:config-input-locked=move || is_locked("network.temp_upload_limit_kbps")
+                                            prop:readonly=move || is_locked("network.temp_upload_limit_kbps")
+                                            title=move || lock_title("network.temp_upload_limit_kbps")
                                             prop:value=move || f_tul.get()
                                             on:input=move |e| f_tul.set(event_target_value(&e))/>
                                     </div>
@@ -483,6 +527,9 @@ pub fn ConfigModal(
                                     <div class="config-field config-field-col">
                                         <label class="config-label">{t!("config.network.bootstrap")}</label>
                                         <textarea class="config-textarea" rows="3"
+                                            class:config-input-locked=move || is_locked("network.bootstrap_peers")
+                                            prop:readonly=move || is_locked("network.bootstrap_peers")
+                                            title=move || lock_title("network.bootstrap_peers")
                                             prop:value=move || f_boot.get()
                                             on:input=move |e| f_boot.set(event_target_value(&e))/>
                                     </div>
@@ -502,12 +549,9 @@ pub fn ConfigModal(
                                     <div class="config-field config-field-keep">
                                         <label class="config-label">{t!("config.network.upnp")}</label>
                                         <span
-                                            class=move || if f_upnp.get() {
-                                                "toggle-pill toggle-on toggle-clickable"
-                                            } else {
-                                                "toggle-pill toggle-clickable"
-                                            }
-                                            on:click=move |_| f_upnp.update(|v| *v = !*v)
+                                            class=move || toggle_pill_class(f_upnp.get(), is_locked("network.upnp"))
+                                            title=move || lock_title("network.upnp")
+                                            on:click=move |_| if !is_locked("network.upnp") { f_upnp.update(|v| *v = !*v) }
                                         >
                                             {move || if f_upnp.get() { t!("common.on") } else { t!("common.off") }}
                                         </span>
@@ -515,12 +559,18 @@ pub fn ConfigModal(
                                     <div class="config-field config-field-col">
                                         <label class="config-label">{t!("config.network.listen")}</label>
                                         <textarea class="config-textarea" rows="2"
+                                            class:config-input-locked=move || is_locked("node.listen_addrs")
+                                            prop:readonly=move || is_locked("node.listen_addrs")
+                                            title=move || lock_title("node.listen_addrs")
                                             prop:value=move || f_listen.get()
                                             on:input=move |e| f_listen.set(event_target_value(&e))/>
                                     </div>
                                     <div class="config-field">
                                         <label class="config-label">{t!("config.network.max_tasks")}</label>
                                         <input class="config-input config-input-sm" type="text"
+                                            class:config-input-locked=move || is_locked("network.max_upload_tasks")
+                                            prop:readonly=move || is_locked("network.max_upload_tasks")
+                                            title=move || lock_title("network.max_upload_tasks")
                                             prop:value=move || f_tasks.get()
                                             on:input=move |e| f_tasks.set(event_target_value(&e))/>
                                     </div>
@@ -532,24 +582,36 @@ pub fn ConfigModal(
                                     <div class="config-field">
                                         <label class="config-label">{t!("config.storage.download_dir")}</label>
                                         <input class="config-input" type="text"
+                                            class:config-input-locked=move || is_locked("storage.download_dir")
+                                            prop:readonly=move || is_locked("storage.download_dir")
+                                            title=move || lock_title("storage.download_dir")
                                             prop:value=move || f_st_dl.get()
                                             on:input=move |e| f_st_dl.set(event_target_value(&e))/>
                                     </div>
                                     <div class="config-field">
                                         <label class="config-label">{t!("config.storage.pin_dir")}</label>
                                         <input class="config-input" type="text"
+                                            class:config-input-locked=move || is_locked("storage.pin_dir")
+                                            prop:readonly=move || is_locked("storage.pin_dir")
+                                            title=move || lock_title("storage.pin_dir")
                                             prop:value=move || f_st_pin.get()
                                             on:input=move |e| f_st_pin.set(event_target_value(&e))/>
                                     </div>
                                     <div class="config-field">
                                         <label class="config-label">{t!("config.storage.temp_dir")}</label>
                                         <input class="config-input" type="text"
+                                            class:config-input-locked=move || is_locked("storage.temp_dir")
+                                            prop:readonly=move || is_locked("storage.temp_dir")
+                                            title=move || lock_title("storage.temp_dir")
                                             prop:value=move || f_st_tmp.get()
                                             on:input=move |e| f_st_tmp.set(event_target_value(&e))/>
                                     </div>
                                     <div class="config-field">
                                         <label class="config-label">{t!("config.storage.outboard_dir")}</label>
                                         <input class="config-input" type="text"
+                                            class:config-input-locked=move || is_locked("storage.outboard_dir")
+                                            prop:readonly=move || is_locked("storage.outboard_dir")
+                                            title=move || lock_title("storage.outboard_dir")
                                             prop:value=move || f_st_outboard.get()
                                             on:input=move |e| f_st_outboard.set(event_target_value(&e))/>
                                     </div>
@@ -565,12 +627,9 @@ pub fn ConfigModal(
                                     <div class="config-field config-field-keep">
                                         <label class="config-label">{t!("config.emule.enabled")}</label>
                                         <span
-                                            class=move || if f_em_enabled.get() {
-                                                "toggle-pill toggle-on toggle-clickable"
-                                            } else {
-                                                "toggle-pill toggle-clickable"
-                                            }
-                                            on:click=move |_| f_em_enabled.update(|v| *v = !*v)
+                                            class=move || toggle_pill_class(f_em_enabled.get(), is_locked("emule.enabled"))
+                                            title=move || lock_title("emule.enabled")
+                                            on:click=move |_| if !is_locked("emule.enabled") { f_em_enabled.update(|v| *v = !*v) }
                                         >
                                             {move || if f_em_enabled.get() { t!("common.on") } else { t!("common.off") }}
                                         </span>
@@ -581,63 +640,72 @@ pub fn ConfigModal(
                                     <div class="config-field">
                                         <label class="config-label">{t!("config.emule.nickname")}</label>
                                         <input class="config-input" type="text"
-                                            disabled=em_locked
+                                            disabled=move || em_field_locked("emule.nick")
+                                            title=move || lock_title("emule.nick")
                                             prop:value=move || f_em_nick.get()
                                             on:input=move |e| f_em_nick.set(event_target_value(&e))/>
                                     </div>
                                     <div class="config-field">
                                         <label class="config-label">{t!("config.emule.temp_dir")}</label>
                                         <input class="config-input" type="text"
-                                            disabled=em_locked
+                                            disabled=move || em_field_locked("emule.temp_dir")
+                                            title=move || lock_title("emule.temp_dir")
                                             prop:value=move || f_em_temp.get()
                                             on:input=move |e| f_em_temp.set(event_target_value(&e))/>
                                     </div>
                                     <div class="config-field">
                                         <label class="config-label">{t!("config.emule.external_ip")}</label>
                                         <input class="config-input" type="text"
-                                            disabled=em_locked
+                                            disabled=move || em_field_locked("emule.external_ip")
+                                            title=move || lock_title("emule.external_ip")
                                             prop:value=move || f_em_extip.get()
                                             on:input=move |e| f_em_extip.set(event_target_value(&e))/>
                                     </div>
                                     <div class="config-field">
                                         <label class="config-label">{t!("config.emule.tcp_port")}</label>
                                         <input class="config-input config-input-sm" type="text"
-                                            disabled=em_locked
+                                            disabled=move || em_field_locked("emule.tcp_port")
+                                            title=move || lock_title("emule.tcp_port")
                                             prop:value=move || f_em_tcp.get()
                                             on:input=move |e| f_em_tcp.set(event_target_value(&e))/>
                                     </div>
                                     <div class="config-field">
                                         <label class="config-label">{t!("config.emule.udp_port")}</label>
                                         <input class="config-input config-input-sm" type="text"
-                                            disabled=em_locked
+                                            disabled=move || em_field_locked("emule.udp_port")
+                                            title=move || lock_title("emule.udp_port")
                                             prop:value=move || f_em_udp.get()
                                             on:input=move |e| f_em_udp.set(event_target_value(&e))/>
                                     </div>
                                     <div class="config-field">
                                         <label class="config-label">{t!("config.emule.slots_per_file")}</label>
                                         <input class="config-input config-input-sm" type="text"
-                                            disabled=em_locked
+                                            disabled=move || em_field_locked("emule.download_slots_per_file")
+                                            title=move || lock_title("emule.download_slots_per_file")
                                             prop:value=move || f_em_slots.get()
                                             on:input=move |e| f_em_slots.set(event_target_value(&e))/>
                                     </div>
                                     <div class="config-field">
                                         <label class="config-label">{t!("config.emule.max_upload_slots")}</label>
                                         <input class="config-input config-input-sm" type="text"
-                                            disabled=em_locked
+                                            disabled=move || em_field_locked("emule.max_upload_slots")
+                                            title=move || lock_title("emule.max_upload_slots")
                                             prop:value=move || f_em_upslots.get()
                                             on:input=move |e| f_em_upslots.set(event_target_value(&e))/>
                                     </div>
                                     <div class="config-field">
                                         <label class="config-label">{t!("config.emule.max_concurrent")}</label>
                                         <input class="config-input config-input-sm" type="text"
-                                            disabled=em_locked
+                                            disabled=move || em_field_locked("emule.max_concurrent_downloads")
+                                            title=move || lock_title("emule.max_concurrent_downloads")
                                             prop:value=move || f_em_maxconc.get()
                                             on:input=move |e| f_em_maxconc.set(event_target_value(&e))/>
                                     </div>
                                     <div class="config-field">
                                         <label class="config-label">{t!("config.emule.min_speed")}</label>
                                         <input class="config-input config-input-sm" type="text"
-                                            disabled=em_locked
+                                            disabled=move || em_field_locked("emule.min_source_speed_kib_s")
+                                            title=move || lock_title("emule.min_source_speed_kib_s")
                                             prop:value=move || f_em_minspeed.get()
                                             on:input=move |e| f_em_minspeed.set(event_target_value(&e))/>
                                     </div>

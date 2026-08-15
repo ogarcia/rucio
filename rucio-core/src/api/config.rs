@@ -42,6 +42,14 @@ pub struct ConfigResponse {
     /// Absent when there are no pending changes.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub pending: Option<Box<ConfigSnapshot>>,
+    /// Dotted keys of the fields currently pinned by an environment variable
+    /// (e.g. `"storage.download_dir"`, `"network.upload_limit_kbps"`).
+    /// Environment variables take precedence over both the config file and the
+    /// panel, so these fields are read-only in the UI and any attempt to change
+    /// them via `PUT` is ignored. Recomputed server-side on every request; the
+    /// value a client sends back is never trusted.
+    #[serde(default)]
+    pub locked: Vec<String>,
 }
 
 /// A point-in-time snapshot of the full daemon configuration.

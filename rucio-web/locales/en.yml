@@ -357,6 +357,7 @@ config:
   title: "Configuration"
   loading: "Loading…"
   pending: "There are saved changes waiting for a daemon restart."
+  env_locked: "Read-only: set by an environment variable, which takes precedence over the panel."
   interface:
     hint: "These preferences are stored in this browser, not on the daemon."
     theme: "Theme"

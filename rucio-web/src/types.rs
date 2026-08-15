@@ -686,6 +686,10 @@ pub struct ConfigResponse {
     pub current: ConfigSnapshot,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub pending: Option<Box<ConfigSnapshot>>,
+    /// Dotted keys of fields pinned by an environment variable (server-computed).
+    /// These render read-only; the daemon ignores any change to them on PUT.
+    #[serde(default)]
+    pub locked: Vec<String>,
 }
 
 // ── Searches ─────────────────────────────────────────────────────────────────
