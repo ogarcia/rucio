@@ -12,6 +12,7 @@ pub mod index_guard;
 pub mod live_stats;
 pub mod metrics;
 pub mod notifier;
+pub mod petname;
 pub mod pinset;
 pub mod throttle;
 pub mod transfer;
@@ -110,7 +111,25 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         "rucio_daemon=info,rucio_core=info,rucio_emule=info,rucio_net=info",
     );
 
-    let config = Arc::new(config::Config::load(config_path)?);
+    let mut config = config::Config::load(config_path)?;
+    // First-run only: give the eMule identity a unique, friendly nickname
+    // ("<Adjective> <Adjective> Rucio") so users who never pick one aren't all
+    // an identical "rucio" in peers' transfer lists. Generated once, persisted,
+    // and never regenerated; a user-set nick or RUCIOD_EMULE_NICK (both
+    // non-empty) leaves this untouched.
+    if config.emule.nick.trim().is_empty() {
+        let nick = crate::petname::random_nick();
+        config.emule.nick = nick.clone();
+        // Persist from the raw on-disk view so environment overrides aren't
+        // baked into the file (see Config::load_raw); only the nick is written.
+        let mut raw = config::Config::load_raw(config_path).unwrap_or_default();
+        raw.emule.nick = nick;
+        match raw.save(config_path) {
+            Ok(()) => info!("Generated eMule nickname: {}", config.emule.nick),
+            Err(e) => warn!("could not persist the generated eMule nickname: {e}"),
+        }
+    }
+    let config = Arc::new(config);
     let stored_config_path = config_path.map(|p| p.to_path_buf());
     info!("Starting Rucio daemon v{}", env!("CARGO_PKG_VERSION"));
 

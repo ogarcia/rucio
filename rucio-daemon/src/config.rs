@@ -337,7 +337,10 @@ pub struct EmuleConfig {
 
     /// Nickname advertised to eMule peers — the name shown in their transfer
     /// lists ("downloading from <nick>"). Cosmetic; the credit identity is the
-    /// separate user hash. Default: "rucio". Override via `RUCIOD_EMULE_NICK`.
+    /// separate user hash. Defaults to empty, which the daemon replaces on first
+    /// run with a generated "<Adjective> <Adjective> Rucio" name (persisted, so
+    /// it never changes afterwards). Override via `RUCIOD_EMULE_NICK` or the
+    /// panel; a non-empty value is always kept as-is.
     #[serde(default = "EmuleConfig::default_nick")]
     pub nick: String,
 
@@ -357,8 +360,11 @@ impl EmuleConfig {
         true
     }
 
+    /// Empty by design: the daemon fills this in on first run with a generated
+    /// pet-name and persists it (see `petname::random_nick`). Keeping the
+    /// default empty is what lets it detect "not yet generated".
     fn default_nick() -> String {
-        "rucio".to_string()
+        String::new()
     }
 
     fn default_tcp_port() -> u16 {
