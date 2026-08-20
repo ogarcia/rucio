@@ -227,7 +227,7 @@ fn classify_connectivity(
 /// `storage.nodes_dat_path` configured in the daemon.
 ///
 /// If `storage.nodes_dat_path` is not set, the file is saved to the default
-/// location (`$XDG_DATA_HOME/rucio/nodes.dat`).
+/// location (`$XDG_CACHE_HOME/rucio/kad/nodes.dat`).
 ///
 /// Returns `501 Not Implemented` when the `emule-compat` feature is not compiled in.
 #[utoipa::path(

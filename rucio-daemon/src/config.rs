@@ -1039,8 +1039,8 @@ fn default_config_dir() -> PathBuf {
         .join("rucio")
 }
 
-/// Directory holding the database and eMule routing caches (`nodes.dat`,
-/// `kad_cache.dat`).
+/// Directory holding the database (`rucio.db`) — real, non-regenerable app
+/// state that must survive a cache wipe.
 pub(crate) fn default_data_dir() -> PathBuf {
     if let Some(base) = base_dir_override() {
         return base;
@@ -1048,6 +1048,21 @@ pub(crate) fn default_data_dir() -> PathBuf {
     dirs::data_local_dir()
         .unwrap_or_else(|| home_dir().join(".local").join("share"))
         .join("rucio")
+}
+
+/// Default directory for the eMule Kad routing caches (`nodes.dat`,
+/// `kad_cache.dat`): `<cache>/rucio/kad`. Both files are regenerable —
+/// `kad_cache.dat` is rewritten on every shutdown, and `nodes.dat` can be
+/// re-downloaded with `rucio emule bootstrap` — so they belong in the cache
+/// dir, not next to the database. Honours portable mode.
+pub(crate) fn default_kad_dir() -> PathBuf {
+    if let Some(base) = base_dir_override() {
+        return base.join("kad");
+    }
+    dirs::cache_dir()
+        .unwrap_or_else(|| home_dir().join(".cache"))
+        .join("rucio")
+        .join("kad")
 }
 
 /// Default temporary directory for in-progress (`.part`) downloads.
@@ -1459,7 +1474,7 @@ mod tests {
         // SAFETY: single-threaded test context.
         unsafe { std::env::set_var("RUCIOD_BASE_DIR", &base) };
         let cfg = Config::default();
-        let nodes = crate::config::default_data_dir().join("nodes.dat");
+        let nodes = crate::config::default_kad_dir().join("nodes.dat");
         unsafe { std::env::remove_var("RUCIOD_BASE_DIR") };
 
         assert_eq!(cfg.node.identity_path, base.join("identity.key"));
@@ -1468,7 +1483,7 @@ mod tests {
         assert_eq!(cfg.storage.download_dir, base.join("downloads"));
         assert_eq!(cfg.storage.temp_dir, base.join("tmp"));
         assert_eq!(cfg.storage.outboard_dir, base.join("outboards"));
-        assert_eq!(nodes, base.join("nodes.dat"));
+        assert_eq!(nodes, base.join("kad").join("nodes.dat"));
     }
 
     #[test]
