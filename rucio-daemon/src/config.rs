@@ -601,25 +601,41 @@ fn default_emule_temp_dir() -> PathBuf {
 
 // --- Well-known bootstrap nodes ----------------------------------------------
 //
-// These are the hardcoded fallback bootstrap peers used when the user has not
-// configured any in [network] bootstrap_peers.
+// The built-in bootstrap peers used when the user has not configured any in
+// [network] bootstrap_peers. All entries are dialled (additively), so the
+// `/dnsaddr` entry and the raw-IP entries complement each other.
 //
-// TODO: populate this list once we have funded infrastructure.
+// The `/dnsaddr` entry is the live, rotatable seed: libp2p's DNS transport
+// (`with_dns`) resolves it by querying the TXT records at
+// `_dnsaddr.bootstrap.rucio.ogarcia.me`, each of the form
+// `dnsaddr=/ip4/.../tcp/4321/p2p/<PeerId>`. It carries NO trailing `/p2p/`
+// component on purpose: libp2p only keeps resolved addresses that end with the
+// suffix following the `/dnsaddr/<host>` (see libp2p-dns), so pinning a PeerId
+// here would discard every TXT entry advertising a different node. With no
+// suffix, every TXT entry is accepted — so the node's identity can be rotated,
+// or more nodes added, by editing that TXT record alone, with no new release.
+// The binary therefore references a *name*, never a specific identity; the
+// per-node PeerId is pinned in each TXT leaf instead.
+//
+// The raw `/ip4` and `/ip6` entries DO pin a PeerId: they are a frozen
+// last-resort fallback for hosts whose DNS is blocked or broken, and also the
+// anchor that keeps a DNS hijack from silently eclipsing us. They point at the
+// same node the TXT record currently advertises; once infrastructure is rotated
+// they become best-effort and are refreshed on the next release.
 //
 // Format:
-//   IPv4:  "/ip4/1.2.3.4/tcp/4321/p2p/12D3KooWXXXXXXXX..."
-//   IPv6:  "/ip6/2001:db8::1/tcp/4321/p2p/12D3KooWXXXXXXXX..."
+//   dnsaddr: "/dnsaddr/<host>"                    (no /p2p — accepts all leaves)
+//   IPv4:    "/ip4/1.2.3.4/tcp/4321/p2p/12D3KooWXXXXXXXX..."
+//   IPv6:    "/ip6/2001:db8::1/tcp/4321/p2p/12D3KooWXXXXXXXX..."
 //
 // How to obtain the PeerId of a node:
 //   Run `ruciod` once to generate a persistent identity key, then run
 //   `rucio status` — it prints the PeerId and the full multiaddrs ready
-//   to paste here or into a client's config.toml bootstrap_peers list.
-//
-// Example entries (not real nodes):
-//   "/ip4/203.0.113.10/tcp/4321/p2p/12D3KooWXXXXXXXX...",
-//   "/ip6/2001:db8:cafe::1/tcp/4321/p2p/12D3KooWXXXXXXXX...",
+//   to paste here, into a `_dnsaddr` TXT leaf, or into a client's config.toml
+//   bootstrap_peers list.
 //
 const BUILTIN_BOOTSTRAP_PEERS: &[&str] = &[
+    "/dnsaddr/bootstrap.rucio.ogarcia.me",
     "/ip4/208.85.21.46/tcp/4321/p2p/12D3KooWHXm58uGjv3fta4v8mYHS5jwbaSgw6LBqVVY9rcguaCko",
     "/ip6/2a05:f480:2800:2731:5400:6ff:fe31:8080/tcp/4321/p2p/12D3KooWHXm58uGjv3fta4v8mYHS5jwbaSgw6LBqVVY9rcguaCko",
 ];
