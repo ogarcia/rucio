@@ -5,6 +5,17 @@ use sqlx::Row;
 
 use super::Db;
 
+/// Drop learned peers not seen for this long. `known_peers` is only a warm-start
+/// hint cache — a peer unseen for months has almost certainly changed address,
+/// so dialling it wastes time. Kept generous on purpose: while the network is
+/// sparse, a short horizon would empty the cache faster than it can refill, and
+/// the real bootstrap anchors live in `BUILTIN_BOOTSTRAP_PEERS` (not the DB), so
+/// even an empty table still boots.
+const MAX_PEER_AGE_SECS: i64 = 60 * 24 * 60 * 60;
+/// Hard cap on rows kept, newest-`last_seen` first. Warm-start only reads the
+/// top ~50, so this is comfortably above what boot needs while bounding growth.
+const MAX_PEERS: i64 = 1000;
+
 #[derive(Debug, Clone)]
 pub struct PeerRow {
     pub id: i64,
@@ -44,6 +55,30 @@ pub async fn upsert(
     .bind(now as i64)
     .bind(high_id as i64)
     .bind(agent_version)
+    .execute(db)
+    .await?;
+
+    // Bound the hint cache on the write path (no background reaper): first drop
+    // anything too stale to be a useful dial target, then hard-cap the rest.
+    prune(db, now).await?;
+    Ok(())
+}
+
+/// Evict stale and excess rows from the hint cache. Runs after every `upsert`,
+/// so retention is bounded by the insert path, not by the schema or a poller.
+async fn prune(db: &Db, now: u64) -> Result<()> {
+    let cutoff = (now as i64).saturating_sub(MAX_PEER_AGE_SECS);
+    sqlx::query("DELETE FROM known_peers WHERE last_seen < ?1")
+        .bind(cutoff)
+        .execute(db)
+        .await?;
+    sqlx::query(
+        "DELETE FROM known_peers
+         WHERE id NOT IN (
+             SELECT id FROM known_peers ORDER BY last_seen DESC LIMIT ?1
+         )",
+    )
+    .bind(MAX_PEERS)
     .execute(db)
     .await?;
     Ok(())
@@ -134,5 +169,55 @@ mod tests {
         // mDNS rediscovery (no agent) refreshes last_seen but keeps the agent.
         upsert(&db, pid, "[]", 300, true, None).await.unwrap();
         assert_eq!(agent_of(&db, pid).await.as_deref(), Some(agent));
+    }
+
+    /// A peer whose `last_seen` is older than the retention horizon is dropped
+    /// on the next upsert; a fresh one survives.
+    #[tokio::test]
+    async fn stale_peers_are_pruned_by_age() {
+        let (db, _dir) = test_db().await;
+        let now = 10 * MAX_PEER_AGE_SECS as u64; // far enough that cutoff is positive
+
+        // An old peer, then a fresh peer that triggers the prune.
+        upsert(
+            &db,
+            "old",
+            "[]",
+            now - MAX_PEER_AGE_SECS as u64 - 1,
+            true,
+            None,
+        )
+        .await
+        .unwrap();
+        upsert(&db, "fresh", "[]", now, true, None).await.unwrap();
+
+        let ids: Vec<String> = list_recent(&db, 10)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| r.peer_id)
+            .collect();
+        assert_eq!(ids, vec!["fresh".to_string()]);
+    }
+
+    /// Within the age window the table is still hard-capped to `MAX_PEERS`,
+    /// keeping the most recently seen rows.
+    #[tokio::test]
+    async fn peers_are_hard_capped_by_count() {
+        let (db, _dir) = test_db().await;
+        let now = 10 * MAX_PEER_AGE_SECS as u64;
+        // Insert MAX_PEERS + 5 peers, each with a distinct, increasing last_seen.
+        let total = MAX_PEERS as u64 + 5;
+        for i in 0..total {
+            upsert(&db, &format!("peer-{i:04}"), "[]", now + i, true, None)
+                .await
+                .unwrap();
+        }
+        let rows = list_recent(&db, MAX_PEERS as u32 + 100).await.unwrap();
+        assert_eq!(rows.len(), MAX_PEERS as usize);
+        // The oldest 5 must have been evicted; the newest is still present.
+        let kept: std::collections::HashSet<String> = rows.into_iter().map(|r| r.peer_id).collect();
+        assert!(kept.contains(&format!("peer-{:04}", total - 1)));
+        assert!(!kept.contains("peer-0000"));
     }
 }
