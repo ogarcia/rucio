@@ -409,6 +409,10 @@ config:
 download:
   none: "No downloads"
   already_have: "You already have this."
+  dup:
+    already_shared: "You already have this — \"%{name}\" is in your shared files."
+    already_completed: "You already downloaded this — \"%{name}\" is in your completed downloads."
+    already_downloading: "This is already downloading — \"%{name}\"."
   state:
     finding_providers: "Finding peers"
     queued: "Queued"

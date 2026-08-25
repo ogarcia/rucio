@@ -407,6 +407,10 @@ config:
 download:
   none: "No hay descargas"
   already_have: "Ya tienes esto."
+  dup:
+    already_shared: "Ya tienes esto — «%{name}» está en tus archivos compartidos."
+    already_completed: "Ya descargaste esto — «%{name}» está en tus descargas completadas."
+    already_downloading: "Esto ya se está descargando — «%{name}»."
   state:
     finding_providers: "Buscando pares"
     queued: "En cola"

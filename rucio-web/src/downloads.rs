@@ -379,11 +379,37 @@ async fn post_link(url: &str, body: &serde_json::Value) -> LinkOutcome {
     match req.send().await {
         Ok(resp) if resp.status() == 202 => LinkOutcome::Accepted,
         Ok(resp) if resp.status() == 409 => {
-            let msg = resp
-                .json::<serde_json::Value>()
-                .await
-                .ok()
-                .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(String::from))
+            let body = resp.json::<serde_json::Value>().await.ok();
+            // Prefer the machine-readable reason + name so we can localize the
+            // message; fall back to the daemon's English `error` (older daemon),
+            // then to a generic notice.
+            let msg = body
+                .as_ref()
+                .and_then(|v| {
+                    let name = v.get("name").and_then(|n| n.as_str()).unwrap_or_default();
+                    v.get("reason")
+                        .and_then(|r| r.as_str())
+                        .map(|reason| match reason {
+                            "already_shared" => {
+                                t!("download.dup.already_shared", name = name).to_string()
+                            }
+                            "already_completed" => {
+                                t!("download.dup.already_completed", name = name).to_string()
+                            }
+                            "already_downloading" => {
+                                t!("download.dup.already_downloading", name = name).to_string()
+                            }
+                            _ => v
+                                .get("error")
+                                .and_then(|e| e.as_str())
+                                .unwrap_or_default()
+                                .to_string(),
+                        })
+                })
+                .or_else(|| {
+                    body.as_ref()
+                        .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(String::from))
+                })
                 .unwrap_or_else(|| t!("download.already_have").to_string());
             LinkOutcome::Duplicate(msg)
         }

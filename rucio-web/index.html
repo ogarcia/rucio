@@ -1433,11 +1433,14 @@
         .reach-hint { margin-left: 0.5rem; font-size: 0.75rem; }
         .loading { color: var(--text-3); font-size: 0.8125rem; padding: 1rem 0; }
         .error-msg { color: var(--sf-fg); font-size: 0.8125rem; }
-        /* "You already have this" notices in the add-downloads modal. */
+        /* "You already have this" notices in the add-downloads modal. A long
+           unbroken file name (dots, no spaces) would otherwise overflow the
+           modal to the right, so allow breaking anywhere within it. */
         .dup-notice {
             margin: 0.25rem 0 0; padding-left: 1.1rem;
             font-size: 0.8125rem; color: var(--text-2);
             display: flex; flex-direction: column; gap: 0.25rem;
+            overflow-wrap: anywhere;
         }
     </style>
     <script>

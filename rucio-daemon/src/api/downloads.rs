@@ -475,6 +475,26 @@ pub(crate) fn eta_secs(size: u64, bytes_done: u64, speed_bps: u64) -> Option<u64
     Some((size - bytes_done) / speed_bps)
 }
 
+/// Build a `409 Conflict` for a link the user already has. Carries a
+/// machine-readable `reason` + `name` so a localized client (the web UI) can
+/// compose its own translated message, plus a composed English `error` string
+/// as a fallback for non-localized consumers (the CLI). `reason` is one of
+/// `already_shared`, `already_completed`, `already_downloading`.
+fn duplicate_conflict(reason: &str, name: &str) -> (StatusCode, Json<serde_json::Value>) {
+    let error = match reason {
+        "already_shared" => format!("You already have this — \"{name}\" is in your shared files."),
+        "already_completed" => {
+            format!("You already downloaded this — \"{name}\" is in your completed downloads.")
+        }
+        // already_downloading
+        _ => format!("This is already downloading — \"{name}\"."),
+    };
+    (
+        StatusCode::CONFLICT,
+        Json(serde_json::json!({ "error": error, "reason": reason, "name": name })),
+    )
+}
+
 /// Start a download
 ///
 /// Queues a file for download identified by a magnet link.
@@ -516,13 +536,7 @@ pub async fn start_download(
     // history but still on disk and provided)? It's already local — tell the user
     // where, and don't re-fetch it.
     if let Ok(Some(share)) = crate::db::shares::get_by_hash(&state.db, &info.root_hash).await {
-        return err(
-            StatusCode::CONFLICT,
-            format!(
-                "You already have this — \"{}\" is in your shared files.",
-                share.name
-            ),
-        );
+        return duplicate_conflict("already_shared", &share.name);
     }
 
     // Synchronous dedup feedback. The engine dedups authoritatively (and never
@@ -532,19 +546,10 @@ pub async fn start_download(
     {
         match row.status.as_str() {
             "completed" => {
-                return err(
-                    StatusCode::CONFLICT,
-                    format!(
-                        "You already downloaded this — \"{}\" is in your completed downloads.",
-                        row.name
-                    ),
-                );
+                return duplicate_conflict("already_completed", &row.name);
             }
             "finding_providers" | "queued" | "downloading" | "stalled" => {
-                return err(
-                    StatusCode::CONFLICT,
-                    format!("This is already downloading — \"{}\".", row.name),
-                );
+                return duplicate_conflict("already_downloading", &row.name);
             }
             // cancelled / error → reactivable, fall through and re-queue.
             _ => {}
@@ -1177,13 +1182,7 @@ pub async fn start_ed2k_download(
         if let Ok(Some(shared)) =
             crate::db::emule_shared_files::get_by_hash(&state.db, link.hash.as_bytes()).await
         {
-            return Err(err(
-                StatusCode::CONFLICT,
-                format!(
-                    "You already have this — \"{}\" is in your shared files.",
-                    shared.name
-                ),
-            ));
+            return Err(duplicate_conflict("already_shared", &shared.name));
         }
 
         // A given category must exist before we file the download under it.
@@ -1221,20 +1220,11 @@ pub async fn start_ed2k_download(
         match result {
             CreateResult::AlreadyCompleted(id) => {
                 tracing::info!(id, name = %link.name, "eMule download already completed");
-                Err(err(
-                    StatusCode::CONFLICT,
-                    format!(
-                        "You already downloaded this — \"{}\" is in your completed downloads.",
-                        link.name
-                    ),
-                ))
+                Err(duplicate_conflict("already_completed", &link.name))
             }
             CreateResult::AlreadyActive(id) => {
                 tracing::info!(id, name = %link.name, "eMule download already active");
-                Err(err(
-                    StatusCode::CONFLICT,
-                    format!("This is already downloading — \"{}\".", link.name),
-                ))
+                Err(duplicate_conflict("already_downloading", &link.name))
             }
             CreateResult::Inserted(id) | CreateResult::Reactivated(id) => {
                 // New or reactivated row — send to the engine to spawn the task.
