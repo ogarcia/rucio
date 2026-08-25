@@ -759,12 +759,14 @@ pub struct Session {
     part_status: Option<Vec<bool>>,
 }
 
-impl Drop for Session {
-    /// Log a one-line compression summary when the session with a peer ends, so
-    /// the real benefit of data compression is visible: how much of the file
-    /// arrived packed and how many wire bytes that saved. Skipped for sessions
-    /// that never transferred file data (queued or handshake-only).
-    fn drop(&mut self) {
+impl Session {
+    /// Log a one-line compression summary for the file just transferred, so the
+    /// real benefit of data compression is visible: how much of the file arrived
+    /// packed and how many wire bytes that saved. Skipped when no file data moved
+    /// (queued or handshake-only). Called both from `Drop` (last file of the
+    /// connection) and from `request_file` (before switching to the next file on
+    /// a reused connection), so each file gets its own summary line.
+    fn log_transfer_summary(&self) {
         let file_bytes = self.plain_bytes + self.compressed_file_bytes;
         if file_bytes == 0 {
             return;
@@ -783,6 +785,12 @@ impl Drop for Session {
             to_mib(saved),
             saved_pct,
         );
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        self.log_transfer_summary();
     }
 }
 
@@ -862,10 +870,8 @@ impl Session {
             .context("connect to peer")?;
         on_event(DownloadEvent::Connected);
 
-        let part_status =
-            Self::do_handshake(peer, &mut stream, &mut ciphers, opts, &our_hash, on_event).await?;
-
-        Ok(Self {
+        Self::connection_handshake(peer, &mut stream, &mut ciphers, opts, &our_hash).await?;
+        let mut session = Self {
             peer,
             download_id: opts.download_id,
             stream,
@@ -877,8 +883,12 @@ impl Session {
             plain_bytes: 0,
             compressed_file_bytes: 0,
             compressed_wire_bytes: 0,
-            part_status,
-        })
+            part_status: None,
+        };
+        session
+            .request_file(opts.hash, opts.file_size, opts.max_queue_waits, on_event)
+            .await?;
+        Ok(session)
     }
 
     /// Attempt an RC4-obfuscated TCP connection and handshake.
@@ -937,10 +947,8 @@ impl Session {
         // send key = our recv key): SYNC[4] + method[1] + pad_len[1] + padding.
         Self::read_obf_response(&mut stream, &mut ciphers, opts.op_timeout).await?;
 
-        let part_status =
-            Self::do_handshake(peer, &mut stream, &mut ciphers, opts, &our_hash, on_event).await?;
-
-        Ok(Self {
+        Self::connection_handshake(peer, &mut stream, &mut ciphers, opts, &our_hash).await?;
+        let mut session = Self {
             peer,
             download_id: opts.download_id,
             stream,
@@ -952,8 +960,12 @@ impl Session {
             plain_bytes: 0,
             compressed_file_bytes: 0,
             compressed_wire_bytes: 0,
-            part_status,
-        })
+            part_status: None,
+        };
+        session
+            .request_file(opts.hash, opts.file_size, opts.max_queue_waits, on_event)
+            .await?;
+        Ok(session)
     }
 
     /// Read the peer's obfuscation-negotiation response and verify the sync magic
@@ -991,24 +1003,21 @@ impl Session {
         Ok(())
     }
 
-    /// Shared handshake logic (HELLO → FILEREQUEST → STARTUPLOAD), used by
-    /// both plain and obfuscated paths.  Returns a `PeerClosedBeforeHello`
-    /// sentinel if the peer closes before HELLOANSWER.
+    /// Per-connection half of the handshake: HELLO → EMULEINFO. Runs once per TCP
+    /// stream, before any file is requested, and is independent of which file we
+    /// go on to download — so a connection can later serve several files (A4AF).
     ///
-    /// On success returns the peer's per-part availability: `Some(v)` for a
-    /// partial source (`v[i]` = holds part `i`), `None` for a complete source or
-    /// one that reported no status.
-    async fn do_handshake<F>(
+    /// Returns a `PeerClosedBeforeHello` sentinel if the peer closes before
+    /// HELLOANSWER (the signal that drives the plain→obfuscation retry in
+    /// [`Session::connect`]); that error is raised here, before any file request,
+    /// so the fallback still works.
+    async fn connection_handshake(
         peer: SocketAddrV4,
         stream: &mut TcpStream,
         ciphers: &mut ObfCiphers,
         opts: &DownloadOptions,
         our_hash: &[u8; 16],
-        on_event: &mut F,
-    ) -> Result<Option<Vec<bool>>>
-    where
-        F: FnMut(DownloadEvent),
-    {
+    ) -> Result<()> {
         // ── HELLO ────────────────────────────────────────────────────────────
         let hello_payload = build_hello(
             our_hash,
@@ -1064,35 +1073,76 @@ impl Session {
         .await
         .context("send OP_EMULEINFO")?;
 
+        Ok(())
+    }
+
+    /// Request a (new) file on this already-open, already-HELLO'd connection:
+    /// FILEREQUEST (+ SETREQFILEID) → FILEREQUEST_ANSWER/FILESTATUS → (multi-part)
+    /// HASHSETREQUEST → STARTUPLOAD_REQ. Resets all per-file state so the session
+    /// cleanly serves the new file, and flushes the previous file's compression
+    /// summary first. Used both on initial connect and when switching files on a
+    /// reused connection (see [`Session::switch_file`]).
+    async fn request_file<F>(
+        &mut self,
+        hash: Ed2kHash,
+        file_size: u64,
+        max_queue_waits: usize,
+        on_event: &mut F,
+    ) -> Result<()>
+    where
+        F: FnMut(DownloadEvent),
+    {
+        // Flush the previous file's summary (no-op on a fresh connect), then
+        // reset every per-file field so nothing from the prior file bleeds in.
+        self.log_transfer_summary();
+        self.hash = hash;
+        self.file_size = file_size;
+        self.part_status = None;
+        self.plain_bytes = 0;
+        self.compressed_file_bytes = 0;
+        self.compressed_wire_bytes = 0;
+
+        let op_timeout = self.op_timeout;
+
         // ── FILEREQUEST (+ SETREQFILEID) ──────────────────────────────────────
         // Ask for the file (a name answer confirms the peer shares it) and, for
         // multi-part files, also for its part-availability status. eMule batches
         // these, answering 0x59 (name) then 0x50 (status); the status is captured
         // in whichever read loop sees it (here or the hashset loop below).
         const ED2K_PART_SIZE: u64 = 9_728_000;
-        let multi_part = opts.file_size > ED2K_PART_SIZE;
-        let num_parts = opts.file_size.div_ceil(ED2K_PART_SIZE) as usize;
-        let mut part_status: Option<Vec<bool>> = None;
+        let multi_part = file_size > ED2K_PART_SIZE;
+        let num_parts = file_size.div_ceil(ED2K_PART_SIZE) as usize;
 
-        write_frame(stream, ciphers, OP_FILEREQUEST, opts.hash.as_bytes())
-            .await
-            .context("send FILEREQUEST")?;
+        write_frame(
+            &mut self.stream,
+            &mut self.ciphers,
+            OP_FILEREQUEST,
+            hash.as_bytes(),
+        )
+        .await
+        .context("send FILEREQUEST")?;
         if multi_part {
-            write_frame(stream, ciphers, OP_SETREQFILEID, opts.hash.as_bytes())
-                .await
-                .context("send OP_SETREQFILEID")?;
+            write_frame(
+                &mut self.stream,
+                &mut self.ciphers,
+                OP_SETREQFILEID,
+                hash.as_bytes(),
+            )
+            .await
+            .context("send OP_SETREQFILEID")?;
         }
 
         loop {
-            let (_proto, opcode, payload) = timeout(opts.op_timeout, read_frame(stream, ciphers))
-                .await
-                .context("FILEREQUEST_ANSWER timeout")?
-                .context("read FILEREQUEST_ANSWER")?;
+            let (_proto, opcode, payload) =
+                timeout(op_timeout, read_frame(&mut self.stream, &mut self.ciphers))
+                    .await
+                    .context("FILEREQUEST_ANSWER timeout")?
+                    .context("read FILEREQUEST_ANSWER")?;
             match opcode {
                 OP_FILEREQUEST_ANSWER => break,
                 OP_FILENOTFOUND => bail!("peer does not have the file"),
                 OP_FILESTATUS => {
-                    part_status = parse_file_status(&payload, opts.hash.as_bytes(), num_parts)
+                    self.part_status = parse_file_status(&payload, hash.as_bytes(), num_parts)
                 }
                 _ => debug!("skipping opcode 0x{opcode:02x} during file request"),
             }
@@ -1102,31 +1152,39 @@ impl Session {
         // eMule requests the MD4 hashset here — after the file-request answer,
         // before STARTUPLOADREQ — and the peer serves it without an upload slot.
         // Emitting it as an event means we capture it even from peers that go on
-        // to queue us (so connect() later returns Err): the daemon already has the
-        // hashset by then. Single-part files have no hashset (ed2k hash == part).
+        // to queue us. Single-part files have no hashset (ed2k hash == part).
         // The OP_FILESTATUS answer to our SETREQFILEID arrives in this window too
         // (before the hashset answer, since we asked for it first), so grab it here.
         if multi_part {
-            write_frame(stream, ciphers, OP_HASHSETREQUEST, opts.hash.as_bytes())
-                .await
-                .context("send OP_HASHSETREQUEST")?;
+            write_frame(
+                &mut self.stream,
+                &mut self.ciphers,
+                OP_HASHSETREQUEST,
+                hash.as_bytes(),
+            )
+            .await
+            .context("send OP_HASHSETREQUEST")?;
             for _ in 0..16 {
-                let (_p, opcode, payload) =
-                    match timeout(opts.op_timeout, read_frame(stream, ciphers)).await {
-                        Ok(Ok(f)) => f,
-                        // Timeout or read error: don't fail the handshake — the peer
-                        // is still a usable source once another supplies the hashset.
-                        _ => break,
-                    };
+                let (_p, opcode, payload) = match timeout(
+                    op_timeout,
+                    read_frame(&mut self.stream, &mut self.ciphers),
+                )
+                .await
+                {
+                    Ok(Ok(f)) => f,
+                    // Timeout or read error: don't fail the handshake — the peer
+                    // is still a usable source once another supplies the hashset.
+                    _ => break,
+                };
                 match opcode {
                     OP_HASHSETANSWER => {
-                        if let Some(parts) = parse_hashset_answer(&payload, opts.hash.as_bytes()) {
+                        if let Some(parts) = parse_hashset_answer(&payload, hash.as_bytes()) {
                             on_event(DownloadEvent::Hashset(parts));
                         }
                         break;
                     }
-                    OP_FILESTATUS if part_status.is_none() => {
-                        part_status = parse_file_status(&payload, opts.hash.as_bytes(), num_parts);
+                    OP_FILESTATUS if self.part_status.is_none() => {
+                        self.part_status = parse_file_status(&payload, hash.as_bytes(), num_parts);
                     }
                     // skip unrelated interleaved opcode and keep scanning
                     _ => {}
@@ -1136,16 +1194,39 @@ impl Session {
 
         // ── STARTUPLOAD_REQ ──────────────────────────────────────────────────
         wait_for_upload_slot(
-            stream,
-            ciphers,
-            opts.op_timeout,
-            &opts.hash,
-            opts.max_queue_waits,
+            &mut self.stream,
+            &mut self.ciphers,
+            op_timeout,
+            &hash,
+            max_queue_waits,
             on_event,
         )
         .await?;
 
-        Ok(part_status)
+        Ok(())
+    }
+
+    /// Reuse this **warm** connection for a different file without tearing down
+    /// the TCP connection (no new HELLO). Because the connection — and the peer's
+    /// upload slot / queue position — is preserved, eMule treats this as A4AF
+    /// ("asked for another file"): an already-downloading client that requests
+    /// another file is granted `OP_ACCEPTUPLOADREQ` immediately, and the new
+    /// file's reask timer starts fresh — so this is **not** a reask and carries no
+    /// ban risk. Precondition: the connection must still hold the slot (only a
+    /// slot-granted session is ever kept warm), which the pool guarantees by
+    /// handing it over synchronously before the slot lapses.
+    pub async fn switch_file<F>(
+        &mut self,
+        hash: Ed2kHash,
+        file_size: u64,
+        max_queue_waits: usize,
+        on_event: &mut F,
+    ) -> Result<()>
+    where
+        F: FnMut(DownloadEvent),
+    {
+        self.request_file(hash, file_size, max_queue_waits, on_event)
+            .await
     }
 
     /// Ask the peer for the file's ed2k hashset (OP_HASHSETREQUEST) and return the
@@ -2911,6 +2992,143 @@ mod tests {
         out.read_to_end(&mut got).await.unwrap();
         assert_eq!(got, data, "recovered transfer must reproduce the data");
 
+        server.await.unwrap();
+    }
+
+    /// A4AF: after downloading file A, `switch_file` must fetch a *different*
+    /// file B over the SAME connection (no new HELLO), resetting all per-file
+    /// state. Mirrors eMule's instant re-accept for an already-downloading client
+    /// that asks for another file (UploadQueue.cpp).
+    #[tokio::test]
+    async fn switch_file_serves_two_files_on_one_connection() {
+        let data_a = sample_payload(50_000);
+        let data_b = sample_payload(70_000);
+        let (len_a, len_b) = (data_a.len() as u64, data_b.len() as u64);
+        let hash_a = [0x0au8; 16];
+        let hash_b = [0x0bu8; 16];
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accepts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let accepts_srv = accepts.clone();
+        let (da, db) = (data_a.clone(), data_b.clone());
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            accepts_srv.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let mut ciphers = ObfCiphers::default();
+
+            let send_part = |part_hash: &[u8; 16], payload: &[u8]| {
+                let mut p = Vec::with_capacity(24 + payload.len());
+                p.extend_from_slice(part_hash);
+                p.extend_from_slice(&0u32.to_le_bytes()); // range start
+                p.extend_from_slice(&(payload.len() as u32).to_le_bytes()); // range end
+                p.extend_from_slice(payload);
+                p
+            };
+
+            // File A: answer the parts request.
+            let (_p, op, _) = read_frame(&mut stream, &mut ciphers).await.unwrap();
+            assert_eq!(op, OP_REQUESTPARTS, "downloads A first");
+            write_frame(
+                &mut stream,
+                &mut ciphers,
+                OP_SENDINGPART,
+                &send_part(&hash_a, &da),
+            )
+            .await
+            .unwrap();
+
+            // switch_file(B): FILEREQUEST(B) → ANSWER, STARTUPLOAD(B) → ACCEPT.
+            let (_p, op, payload) = read_frame(&mut stream, &mut ciphers).await.unwrap();
+            assert_eq!(op, OP_FILEREQUEST, "switch_file asks for the new file");
+            assert_eq!(&payload, &hash_b, "FILEREQUEST carries B's hash");
+            write_frame(&mut stream, &mut ciphers, OP_FILEREQUEST_ANSWER, &hash_b)
+                .await
+                .unwrap();
+            let (_p, op, payload) = read_frame(&mut stream, &mut ciphers).await.unwrap();
+            assert_eq!(
+                op, OP_STARTUPLOAD_REQ,
+                "switch_file requests the slot for B"
+            );
+            assert_eq!(&payload, &hash_b, "STARTUPLOAD carries B's hash");
+            write_frame(&mut stream, &mut ciphers, OP_ACCEPTUPLOAD_REQ, &[])
+                .await
+                .unwrap();
+
+            // File B: answer the parts request on the same stream.
+            let (_p, op, _) = read_frame(&mut stream, &mut ciphers).await.unwrap();
+            assert_eq!(op, OP_REQUESTPARTS, "downloads B on the reused connection");
+            write_frame(
+                &mut stream,
+                &mut ciphers,
+                OP_SENDINGPART,
+                &send_part(&hash_b, &db),
+            )
+            .await
+            .unwrap();
+        });
+
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let mut session = Session {
+            peer: "127.0.0.1:0".parse().unwrap(),
+            download_id: 0,
+            stream,
+            op_timeout: Duration::from_secs(5),
+            hash: Ed2kHash::from_bytes(hash_a),
+            file_size: len_a,
+            ciphers: ObfCiphers::default(),
+            min_speed_bytes_per_sec: 0,
+            plain_bytes: 0,
+            compressed_file_bytes: 0,
+            compressed_wire_bytes: 0,
+            part_status: None,
+        };
+
+        let mut out_a = tokio::fs::File::from_std(tempfile::tempfile().unwrap());
+        assert_eq!(
+            session
+                .download_range(0, len_a, None, &mut out_a, &mut |_| {}, || false)
+                .await
+                .unwrap(),
+            len_a
+        );
+
+        // Switch to file B on the SAME connection.
+        session
+            .switch_file(Ed2kHash::from_bytes(hash_b), len_b, 2, &mut |_| {})
+            .await
+            .expect("switch_file must ready file B on the warm connection");
+
+        // Per-file state must have been reset by the switch.
+        assert_eq!(session.hash.as_bytes(), &hash_b, "hash switched to B");
+        assert_eq!(session.file_size, len_b, "file_size switched to B");
+        assert!(session.part_status.is_none(), "part_status reset");
+
+        let mut out_b = tokio::fs::File::from_std(tempfile::tempfile().unwrap());
+        assert_eq!(
+            session
+                .download_range(0, len_b, None, &mut out_b, &mut |_| {}, || false)
+                .await
+                .unwrap(),
+            len_b
+        );
+        // Byte counters are per-file: only B's bytes remain (A's were reset), so a
+        // stale accumulation from A would show up here.
+        assert_eq!(session.plain_bytes, len_b, "byte counters reset on switch");
+
+        out_b.seek(std::io::SeekFrom::Start(0)).await.unwrap();
+        let mut got_b = Vec::new();
+        out_b.read_to_end(&mut got_b).await.unwrap();
+        assert_eq!(
+            got_b, data_b,
+            "file B reproduced intact over the reused connection"
+        );
+
+        assert_eq!(
+            accepts.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "both files served over a single accepted connection"
+        );
         server.await.unwrap();
     }
 
