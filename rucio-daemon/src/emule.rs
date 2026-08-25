@@ -2140,6 +2140,18 @@ pub async fn run_ed2k_download(
     )
     .await;
 
+    // Auto-clear: drop the history row *now*, before the slow post-processing
+    // below (indexing re-hashes the whole file — seconds for a large download).
+    // If we deferred this to the end, the WS active→idle edge would fire during
+    // indexing while the row still exists as "completed"; the panel would show
+    // Completed, and by the time the row was finally deleted there would be no
+    // further edge to announce the removal — so with a single download (nothing
+    // else keeping the stream busy) the entry stayed stuck. Seeding is decoupled
+    // (emule_shared_files, registered below), so the file keeps being served.
+    if auto_clear.load(Ordering::Relaxed) {
+        let _ = crate::db::emule_downloads::delete(db, download_id).await;
+    }
+
     // Index the finished file into the Rucio share so it is announced to the
     // libp2p DHT immediately (rather than only after a restart's reconcile sees
     // it as "added"). This re-reads the file to compute the canonical BLAKE3
@@ -2221,13 +2233,6 @@ pub async fn run_ed2k_download(
     }
     live_stats.write().await.remove(&live_key);
 
-    // Auto-clear: drop the just-completed entry from the history if the user
-    // opted in. Seeding is decoupled from the downloads list (it lives in
-    // emule_shared_files, registered above), so the file keeps being served —
-    // only the history row goes, exactly like a manual clear.
-    if auto_clear.load(Ordering::Relaxed) {
-        let _ = crate::db::emule_downloads::delete(db, download_id).await;
-    }
     Ok(())
 }
 

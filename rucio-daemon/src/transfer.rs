@@ -1908,6 +1908,16 @@ impl DownloadEngine {
                             {
                                 warn!("set_status completed error: {e}");
                             }
+                            // Auto-clear: drop the just-completed entry from the
+                            // history if the user opted in, *before* the notify
+                            // below, so the row is already gone when the WS
+                            // active→idle edge fires and the panel refreshes —
+                            // otherwise a lone completed download can linger in the
+                            // list (no later edge announces the deferred removal).
+                            // The file (now shared) and its outboard are untouched.
+                            if self.auto_clear.load(std::sync::atomic::Ordering::Relaxed) {
+                                let _ = db::downloads::delete(&self.db, dl_id).await;
+                            }
                             info!(root_hash = %hash_hex, "Download completed");
                             self.notifier
                                 .notify(
@@ -1917,13 +1927,6 @@ impl DownloadEngine {
                                     Some(hash_hex),
                                 )
                                 .await;
-                            // Auto-clear: drop the just-completed entry from the
-                            // history if the user opted in. The file (now shared)
-                            // and its outboard are untouched — only the download
-                            // row goes, exactly like a manual clear.
-                            if self.auto_clear.load(std::sync::atomic::Ordering::Relaxed) {
-                                let _ = db::downloads::delete(&self.db, dl_id).await;
-                            }
                         }
                         Err(e) => {
                             warn!(
