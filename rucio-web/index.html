@@ -1435,12 +1435,15 @@
         .error-msg { color: var(--sf-fg); font-size: 0.8125rem; }
         /* "You already have this" notices in the add-downloads modal. A long
            unbroken file name (dots, no spaces) would otherwise overflow the
-           modal to the right, so allow breaking anywhere within it. */
+           modal to the right, so allow breaking anywhere within it. With several
+           duplicate links the list itself can grow taller than the viewport
+           (the modal is centred and can't scroll), so cap it and scroll here. */
         .dup-notice {
-            margin: 0.25rem 0 0; padding-left: 1.1rem;
+            margin: 0.25rem 0 0; padding-left: 1.1rem; padding-right: 0.25rem;
             font-size: 0.8125rem; color: var(--text-2);
             display: flex; flex-direction: column; gap: 0.25rem;
             overflow-wrap: anywhere;
+            max-height: 30vh; overflow-y: auto;
         }
     </style>
     <script>
