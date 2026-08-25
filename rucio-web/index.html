@@ -1438,8 +1438,11 @@
            modal to the right, so allow breaking anywhere within it. With several
            duplicate links the list itself can grow taller than the viewport
            (the modal is centred and can't scroll), so cap it and scroll here. */
+        /* Negative right margin cancels the modal-body's right padding so the
+           scrollbar sits flush against the modal edge; padding-right then keeps
+           the text clear of the scrollbar instead of running under it. */
         .dup-notice {
-            margin: 0.25rem 0 0; padding-left: 1.1rem; padding-right: 0.25rem;
+            margin: 0.25rem -1.25rem 0 0; padding-left: 1.1rem; padding-right: 1rem;
             font-size: 0.8125rem; color: var(--text-2);
             display: flex; flex-direction: column; gap: 0.25rem;
             overflow-wrap: anywhere;
