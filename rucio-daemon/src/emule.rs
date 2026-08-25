@@ -1937,10 +1937,14 @@ pub async fn run_ed2k_download(
                                     // Deliberately drop this source: another one
                                     // will serve the slice faster. (Only reached
                                     // when >1 source exists — see `min_speed_bytes`.)
+                                    // Log `obfuscated` so a systematic obfuscated-vs-plain
+                                    // transfer difference is measurable in the field.
                                     info!(dl = download_id, %peer, error = %e,
+                                        obfuscated = session.is_obfuscated(),
                                         "Source too slow — dropped in favour of another");
                                 } else {
                                     debug!(dl = download_id, %peer, slice = slice_idx, error = %e,
+                                        obfuscated = session.is_obfuscated(),
                                         "Slice download failed — dropping connection, will retry");
                                     // The connection is broken; the source may have just
                                     // glitched, so retry it later unless exhausted, then

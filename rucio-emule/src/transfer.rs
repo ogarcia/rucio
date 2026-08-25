@@ -2874,6 +2874,95 @@ mod tests {
         server.await.unwrap();
     }
 
+    /// End-to-end proof of the *obfuscated data path*: a peer that speaks RC4 in
+    /// both directions (as a real eMule does once the handshake agrees a key)
+    /// must deliver OP_SENDINGPART bytes that decrypt intact. The handshake is
+    /// already covered by the round-trip tests; this guards the transfer itself,
+    /// where the keystream must stay aligned across a large, multi-block payload.
+    #[tokio::test]
+    async fn download_range_transfers_over_obfuscation() {
+        let data = sample_payload(200_000); // spans several 10 KiB blocks
+        let len = data.len() as u64;
+        let hash = [0u8; 16];
+
+        // Both sides derive the same two keys from a shared peer hash + rand and
+        // discard the first 1024 keystream bytes, exactly like connect_obfuscated.
+        // The peer's send key is the downloader's recv key, and vice versa.
+        let peer_hash = [0x33u8; 16];
+        let rand = [0x01u8, 0x02, 0x03, 0x04];
+        let req_key = tcp_obf_rc4_key(&peer_hash, MAGIC_REQUESTER, &rand);
+        let srv_key = tcp_obf_rc4_key(&peer_hash, MAGIC_SERVER, &rand);
+        // Fresh keystream from key bytes, with eMule's 1024-byte TCP discard.
+        fn stream_from(key: &[u8; 16]) -> Rc4 {
+            let mut c = Rc4::new(key);
+            c.discard(1024);
+            c
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let peer_data = data.clone();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            // Peer side: send with the server key, receive with the requester key.
+            let mut ciphers = ObfCiphers {
+                send: Some(stream_from(&srv_key)),
+                recv: Some(stream_from(&req_key)),
+            };
+            let (_p, opcode, _payload) = read_frame(&mut stream, &mut ciphers).await.unwrap();
+            assert_eq!(opcode, OP_REQUESTPARTS, "downloader asks for parts first");
+            let mut part = Vec::with_capacity(24 + peer_data.len());
+            part.extend_from_slice(&hash);
+            part.extend_from_slice(&0u32.to_le_bytes()); // range start
+            part.extend_from_slice(&(peer_data.len() as u32).to_le_bytes()); // range end
+            part.extend_from_slice(&peer_data);
+            write_frame(&mut stream, &mut ciphers, OP_SENDINGPART, &part)
+                .await
+                .unwrap();
+        });
+
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let mut session = Session {
+            peer: "127.0.0.1:0".parse().unwrap(),
+            download_id: 0,
+            stream,
+            op_timeout: Duration::from_secs(5),
+            hash: Ed2kHash::from_bytes(hash),
+            file_size: len,
+            // Downloader side: send with the requester key, receive with the server key.
+            ciphers: ObfCiphers {
+                send: Some(stream_from(&req_key)),
+                recv: Some(stream_from(&srv_key)),
+            },
+            min_speed_bytes_per_sec: 0,
+            plain_bytes: 0,
+            compressed_file_bytes: 0,
+            compressed_wire_bytes: 0,
+            part_status: None,
+        };
+        assert!(
+            session.is_obfuscated(),
+            "test must exercise the obfuscated path"
+        );
+
+        let mut out = tokio::fs::File::from_std(tempfile::tempfile().unwrap());
+        let received = session
+            .download_range(0, len, None, &mut out, &mut |_| {}, || false)
+            .await
+            .expect("obfuscated transfer must complete");
+        assert_eq!(received, len);
+
+        out.seek(std::io::SeekFrom::Start(0)).await.unwrap();
+        let mut got = Vec::new();
+        out.read_to_end(&mut got).await.unwrap();
+        assert_eq!(
+            got, data,
+            "obfuscated transfer must reproduce the data exactly"
+        );
+
+        server.await.unwrap();
+    }
+
     #[tokio::test]
     async fn download_range_stops_cleanly_when_superseded() {
         // File spans more than one request batch (3 * 180 KiB), so there is a
