@@ -2578,6 +2578,91 @@ async fn run_upload_session(
     Ok(())
 }
 
+// ── Test support ────────────────────────────────────────────────────────────
+
+/// A minimal in-process eMule uploader for tests. Lives here (not in a test
+/// module) so sibling modules — e.g. the connection pool's tests — can drive a
+/// real `Session` handshake against it while still reaching this crate's private
+/// framing helpers. Compiled only under `cfg(test)`.
+#[cfg(test)]
+pub(crate) mod mock {
+    use super::*;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::net::TcpListener;
+
+    /// Accept up to `max_conns` connections; on each, complete the HELLO
+    /// handshake then serve any requested (single-part) file from `files`
+    /// (hash → data), granting the upload slot immediately and handling A4AF
+    /// file switches, until the peer disconnects. `accepts` counts connections
+    /// accepted (to assert a warm connection was reused, not reconnected).
+    pub async fn serve(
+        listener: TcpListener,
+        files: HashMap<[u8; 16], Vec<u8>>,
+        max_conns: usize,
+        accepts: Arc<AtomicUsize>,
+    ) {
+        for _ in 0..max_conns {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            accepts.fetch_add(1, Ordering::Relaxed);
+            let mut ciphers = ObfCiphers::default();
+
+            // HELLO → HELLOANSWER (the requester ignores the answer's body).
+            loop {
+                match read_frame(&mut stream, &mut ciphers).await {
+                    Ok((_p, OP_HELLO, _)) => break,
+                    Ok(_) => {}
+                    Err(_) => return,
+                }
+            }
+            let answer = build_hello(&[0u8; 16], 4662, 4672, "mock", false);
+            if write_frame(&mut stream, &mut ciphers, OP_HELLOANSWER, &answer)
+                .await
+                .is_err()
+            {
+                return;
+            }
+
+            // Serve file requests / part requests until the peer disconnects.
+            loop {
+                let (_proto, op, payload) = match read_frame(&mut stream, &mut ciphers).await {
+                    Ok(f) => f,
+                    Err(_) => break,
+                };
+                match op {
+                    OP_FILEREQUEST => {
+                        let _ =
+                            write_frame(&mut stream, &mut ciphers, OP_FILEREQUEST_ANSWER, &payload)
+                                .await;
+                    }
+                    OP_STARTUPLOAD_REQ => {
+                        let _ =
+                            write_frame(&mut stream, &mut ciphers, OP_ACCEPTUPLOAD_REQ, &[]).await;
+                    }
+                    OP_REQUESTPARTS if payload.len() >= 16 => {
+                        let mut h = [0u8; 16];
+                        h.copy_from_slice(&payload[..16]);
+                        if let Some(data) = files.get(&h) {
+                            let mut part = Vec::with_capacity(24 + data.len());
+                            part.extend_from_slice(&h);
+                            part.extend_from_slice(&0u32.to_le_bytes()); // range start
+                            part.extend_from_slice(&(data.len() as u32).to_le_bytes()); // range end
+                            part.extend_from_slice(data);
+                            let _ =
+                                write_frame(&mut stream, &mut ciphers, OP_SENDINGPART, &part).await;
+                        }
+                    }
+                    // OP_EMULEINFO / OP_SETREQFILEID / anything else: no reply needed.
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

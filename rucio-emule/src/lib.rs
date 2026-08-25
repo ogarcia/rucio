@@ -10,6 +10,7 @@
 
 pub mod ed2k;
 pub mod kad;
+pub mod pool;
 pub mod progress;
 pub mod transfer;
 
