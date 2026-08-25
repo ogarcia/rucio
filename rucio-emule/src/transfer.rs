@@ -203,6 +203,27 @@ const MOD_VERSION: &str = "Rucio";
 /// read us as `KadPort=0`, which — besides being non-conformant — excluded us
 /// from the Kad/NAT-T exemption in eMuleAI's aggressive-reask detector.
 const CT_EMULE_UDPPORTS: u8 = 0xf9;
+/// HELLO tag carrying eMule "misc options #2" (`CT_EMULE_MISCOPTIONS2`), a
+/// bitfield. Crucially it holds the crypt-layer flags: bit 7 supports, bit 8
+/// requests, bit 9 requires obfuscation. eMule clears these before parsing a
+/// HELLO ("a client may not send a particular emule tag any longer"), so
+/// omitting the tag made peers record us as *not* supporting obfuscation — they
+/// then reconnected to us in plaintext and re-advertised us to the swarm (source
+/// exchange) as plain, contradicting the `TAG_ENCRYPTION` we publish in Kad. We
+/// set the same capabilities we truly have: obfuscation supported + requested
+/// (not required), Kad v9 (as in our Kad traffic), and large-file (>4 GiB, I64
+/// opcodes) support. Every other feature bit stays 0.
+const CT_EMULE_MISCOPTIONS2: u8 = 0xfe;
+/// Value for [`CT_EMULE_MISCOPTIONS2`]. Bit layout mirrors eMule's
+/// `SendHelloTypePacket`: `KadVersion` in bits 0-3, `SupportsLargeFiles` bit 4,
+/// `SupportsCryptLayer` bit 7, `RequestsCryptLayer` bit 8.
+const HELLO_MISC_OPTIONS2: u32 = (KAD_VERSION_HELLO)   // bits 0-3
+    | (1 << 4)   // SupportsLargeFiles
+    | (1 << 7)   // SupportsCryptLayer
+    | (1 << 8); // RequestsCryptLayer (prefer, not require)
+/// Kad protocol version we advertise in the HELLO, taken from the same constant
+/// our Kad2 traffic uses so the two never drift.
+const KAD_VERSION_HELLO: u32 = crate::kad::packet::KAD_VERSION as u32;
 
 // ── Framing ───────────────────────────────────────────────────────────────────
 
@@ -455,12 +476,13 @@ fn build_hello(
     p.extend_from_slice(&0u32.to_le_bytes()); // client ID = 0 (low-ID until server assigns one)
     p.extend_from_slice(&tcp_port.to_le_bytes());
 
-    // Tags. We always advertise CT_EMULE_UDPPORTS (our Kad UDP port) and add
-    // CT_NAME when we have a nick to show. Ordered by ascending tag id
-    // (CT_NAME 0x01 before CT_EMULE_UDPPORTS 0xf9), matching eMule's own HELLO
-    // order so no wrong-tag-order heuristic is tripped.
+    // Tags. We always advertise CT_EMULE_UDPPORTS (our Kad UDP port) and
+    // CT_EMULE_MISCOPTIONS2 (crypt-layer + capability flags), and add CT_NAME
+    // when we have a nick to show. Ordered by ascending tag id (CT_NAME 0x01,
+    // CT_EMULE_UDPPORTS 0xf9, CT_EMULE_MISCOPTIONS2 0xfe), matching eMule's own
+    // HELLO order so no wrong-tag-order heuristic is tripped.
     let nick: String = nick.trim().chars().take(60).collect();
-    let tag_count: u32 = 1 + u32::from(!nick.is_empty());
+    let tag_count: u32 = 2 + u32::from(!nick.is_empty());
     p.extend_from_slice(&tag_count.to_le_bytes());
 
     // CT_NAME string tag, universal new-ed2k form:
@@ -483,6 +505,13 @@ fn build_hello(
     p.push(TAGTYPE_UINT32 | 0x80);
     p.push(CT_EMULE_UDPPORTS);
     p.extend_from_slice(&udp_ports.to_le_bytes());
+
+    // CT_EMULE_MISCOPTIONS2 integer tag, same special new-ed2k form. Advertises
+    // obfuscation support so peers keep talking to us encrypted and re-share us
+    // as crypt-capable (see CT_EMULE_MISCOPTIONS2).
+    p.push(TAGTYPE_UINT32 | 0x80);
+    p.push(CT_EMULE_MISCOPTIONS2);
+    p.extend_from_slice(&HELLO_MISC_OPTIONS2.to_le_bytes());
 
     p.extend_from_slice(&0u32.to_le_bytes()); // server IP (unused)
     p.extend_from_slice(&0u16.to_le_bytes()); // server port (unused)
@@ -2597,26 +2626,33 @@ mod tests {
 
     #[test]
     fn test_build_hello_length() {
-        // No nickname → only the CT_EMULE_UDPPORTS tag. Base (no tags) is
-        //   1+16+4+2 + 4(tagcount) + 4(ip) + 2(port) = 33; the 6-byte UDP-ports
-        //   tag ([0x83][0xf9][u32]) brings it to 39.
+        // No nickname → CT_EMULE_UDPPORTS + CT_EMULE_MISCOPTIONS2. Base (no tags)
+        //   is 1+16+4+2 + 4(tagcount) + 4(ip) + 2(port) = 33; the two 6-byte
+        //   integer tags ([0x83][id][u32]) bring it to 45.
         let h = build_hello(&[0u8; 16], 0, 4672, "", true);
-        assert_eq!(h.len(), 39);
+        assert_eq!(h.len(), 45);
         assert_eq!(h[0], 16u8);
-        assert_eq!(&h[23..27], &1u32.to_le_bytes()); // tag count = 1
+        assert_eq!(&h[23..27], &2u32.to_le_bytes()); // tag count = 2
         // CT_EMULE_UDPPORTS: Kad port in the high 16 bits, client-UDP 0 low.
         assert_eq!(h[27], TAGTYPE_UINT32 | 0x80);
         assert_eq!(h[28], CT_EMULE_UDPPORTS);
         assert_eq!(&h[29..33], &(4672u32 << 16).to_le_bytes());
+        // CT_EMULE_MISCOPTIONS2: crypt-supported (7) + requested (8) + large
+        // files (4) + Kad v9 → 0x199.
+        assert_eq!(h[33], TAGTYPE_UINT32 | 0x80);
+        assert_eq!(h[34], CT_EMULE_MISCOPTIONS2);
+        assert_eq!(&h[35..39], &HELLO_MISC_OPTIONS2.to_le_bytes());
+        assert_eq!(HELLO_MISC_OPTIONS2, 0x199);
+        assert_eq!((HELLO_MISC_OPTIONS2 >> 7) & 1, 1, "SupportsCryptLayer set");
     }
 
     #[test]
     fn test_build_hello_name_tag() {
-        // With a nickname: CT_NAME (ascending tag id) then CT_EMULE_UDPPORTS.
-        //   base 33 + CT_NAME(1+1+2+5=9) + UDP-ports(6) = 48.
+        // With a nickname: CT_NAME (ascending id), CT_EMULE_UDPPORTS, MISCOPTIONS2.
+        //   base 33 + CT_NAME(1+1+2+5=9) + 6 + 6 = 54.
         let h = build_hello(&[0u8; 16], 0, 4672, "rucio", true);
-        assert_eq!(h.len(), 48);
-        assert_eq!(&h[23..27], &2u32.to_le_bytes()); // tag count = 2
+        assert_eq!(h.len(), 54);
+        assert_eq!(&h[23..27], &3u32.to_le_bytes()); // tag count = 3
         // CT_NAME first.
         assert_eq!(h[27], TAGTYPE_STRING | 0x80); // special 1-byte name
         assert_eq!(h[28], 0x01); // CT_NAME
@@ -2626,6 +2662,10 @@ mod tests {
         assert_eq!(h[36], TAGTYPE_UINT32 | 0x80);
         assert_eq!(h[37], CT_EMULE_UDPPORTS);
         assert_eq!(&h[38..42], &(4672u32 << 16).to_le_bytes());
+        // CT_EMULE_MISCOPTIONS2 last.
+        assert_eq!(h[42], TAGTYPE_UINT32 | 0x80);
+        assert_eq!(h[43], CT_EMULE_MISCOPTIONS2);
+        assert_eq!(&h[44..48], &HELLO_MISC_OPTIONS2.to_le_bytes());
     }
 
     #[test]
