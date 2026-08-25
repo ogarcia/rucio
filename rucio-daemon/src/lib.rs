@@ -609,6 +609,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                     slots: emule_upload_slots.clone(),
                     temp_dir: config.emule.temp_dir.clone(),
                     tcp_port,
+                    kad_udp_port: config.emule.udp_port,
                     user_hash: emule_user_hash,
                     nick: config.emule.nick.clone(),
                     downloads: active_downloads.clone(),

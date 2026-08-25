@@ -1329,6 +1329,7 @@ pub async fn run_ed2k_download(
         let mut join_set: JoinSet<()> = JoinSet::new();
 
         let our_tcp_port = config.emule.tcp_port;
+        let our_kad_udp_port = config.emule.udp_port;
 
         // Minimum sustained per-source speed (bytes/sec). Only enforced when
         // there is more than one source: dropping a slow peer only helps if
@@ -1460,6 +1461,7 @@ pub async fn run_ed2k_download(
                         start_offset: 0,
                         peer_hash: Some(source.user_hash),
                         our_tcp_port,
+                        our_kad_udp_port,
                         our_user_hash,
                         our_nick: nick_w.clone(),
                         min_speed_bytes_per_sec: min_speed,

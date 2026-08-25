@@ -196,6 +196,13 @@ const ET_MOD_VERSION: u8 = 0x55;
 /// The mod string we advertise (see [`ET_MOD_VERSION`]). Kept to plain letters:
 /// eMuleAI's mod-name scheme validator rejects punctuation/stray digits.
 const MOD_VERSION: &str = "Rucio";
+/// HELLO tag carrying our UDP ports (`CT_EMULE_UDPPORTS`). eMule packs it as a
+/// single u32: `(kad_udp_port << 16) | emule_client_udp_port`. Every real eMule
+/// advertises this in its HELLO; the receiver splits it back into `m_nKadPort`
+/// and `m_nUDPPort` (see eMule `ProcessHelloTypePacket`). Omitting it made peers
+/// read us as `KadPort=0`, which — besides being non-conformant — excluded us
+/// from the Kad/NAT-T exemption in eMuleAI's aggressive-reask detector.
+const CT_EMULE_UDPPORTS: u8 = 0xf9;
 
 // ── Framing ───────────────────────────────────────────────────────────────────
 
@@ -429,7 +436,17 @@ fn parse_file_status(payload: &[u8], file_hash: &[u8], num_parts: usize) -> Opti
 /// readable mod string trips its `BAD_MOD_NAME` leecher check (`ClientVer ==
 /// "eMule"`). The mod string rides in `OP_EMULEINFO` instead (see
 /// [`build_emule_info`]), where our version travels with it.
-fn build_hello(our_hash: &[u8; 16], tcp_port: u16, nick: &str, include_hash_size: bool) -> Vec<u8> {
+///
+/// `kad_udp_port` is our Kad2 UDP port, advertised in `CT_EMULE_UDPPORTS` so
+/// peers see us as a Kad-capable client (see [`CT_EMULE_UDPPORTS`]). Pass 0 only
+/// when we genuinely have no Kad endpoint.
+fn build_hello(
+    our_hash: &[u8; 16],
+    tcp_port: u16,
+    kad_udp_port: u16,
+    nick: &str,
+    include_hash_size: bool,
+) -> Vec<u8> {
     let mut p = Vec::new();
     if include_hash_size {
         p.push(16u8);
@@ -437,21 +454,36 @@ fn build_hello(our_hash: &[u8; 16], tcp_port: u16, nick: &str, include_hash_size
     p.extend_from_slice(our_hash);
     p.extend_from_slice(&0u32.to_le_bytes()); // client ID = 0 (low-ID until server assigns one)
     p.extend_from_slice(&tcp_port.to_le_bytes());
-    // Tags: advertise our nickname (CT_NAME) so peers display a name for us.
-    // Cap to a sane char length and keep UTF-8 boundaries intact.
+
+    // Tags. We always advertise CT_EMULE_UDPPORTS (our Kad UDP port) and add
+    // CT_NAME when we have a nick to show. Ordered by ascending tag id
+    // (CT_NAME 0x01 before CT_EMULE_UDPPORTS 0xf9), matching eMule's own HELLO
+    // order so no wrong-tag-order heuristic is tripped.
     let nick: String = nick.trim().chars().take(60).collect();
-    if nick.is_empty() {
-        p.extend_from_slice(&0u32.to_le_bytes()); // tag count = 0
-    } else {
-        p.extend_from_slice(&1u32.to_le_bytes()); // tag count = 1
-        // CT_NAME string tag, universal new-ed2k form:
-        //   [TAGTYPE_STRING(0x02) | 0x80 special-name][name=CT_NAME(0x01)][len u16 LE][bytes]
+    let tag_count: u32 = 1 + u32::from(!nick.is_empty());
+    p.extend_from_slice(&tag_count.to_le_bytes());
+
+    // CT_NAME string tag, universal new-ed2k form:
+    //   [TAGTYPE_STRING(0x02) | 0x80 special-name][name=CT_NAME(0x01)][len u16 LE][bytes]
+    if !nick.is_empty() {
         let bytes = nick.as_bytes();
-        p.push(0x02 | 0x80);
+        p.push(TAGTYPE_STRING | 0x80);
         p.push(0x01); // CT_NAME
         p.extend_from_slice(&(bytes.len() as u16).to_le_bytes());
         p.extend_from_slice(bytes);
     }
+
+    // CT_EMULE_UDPPORTS integer tag, same special new-ed2k form:
+    //   [TAGTYPE_UINT32(0x03) | 0x80 special-name][name=CT_EMULE_UDPPORTS(0xf9)][u32 LE]
+    // Value = (kad_udp_port << 16) | emule_client_udp_port. We serve Kad2 on the
+    // high half; the low half stays 0 because we do not answer the eMule
+    // client-UDP protocol (reask ping / UDP source exchange), so peers fall back
+    // to TCP — exactly what they already do today.
+    let udp_ports: u32 = u32::from(kad_udp_port) << 16;
+    p.push(TAGTYPE_UINT32 | 0x80);
+    p.push(CT_EMULE_UDPPORTS);
+    p.extend_from_slice(&udp_ports.to_le_bytes());
+
     p.extend_from_slice(&0u32.to_le_bytes()); // server IP (unused)
     p.extend_from_slice(&0u16.to_le_bytes()); // server port (unused)
     p
@@ -597,6 +629,9 @@ pub struct DownloadOptions {
     /// Our listening TCP port to advertise in HELLO packets.
     /// Set to 0 if not listening (Low-ID mode).
     pub our_tcp_port: u16,
+    /// Our Kad2 UDP port, advertised in `CT_EMULE_UDPPORTS` so peers see us as a
+    /// Kad-capable client. `0` only when we have no Kad endpoint at all.
+    pub our_kad_udp_port: u16,
     /// Our persistent eMule user hash (credit identity) to advertise in HELLO.
     pub our_user_hash: [u8; 16],
     /// Our nickname (CT_NAME) to advertise in HELLO. Empty = no name tag.
@@ -621,6 +656,7 @@ impl Default for DownloadOptions {
             start_offset: 0,
             peer_hash: None,
             our_tcp_port: 0,
+            our_kad_udp_port: 0,
             our_user_hash: [0u8; 16],
             our_nick: String::new(),
             min_speed_bytes_per_sec: 0,
@@ -945,7 +981,13 @@ impl Session {
         F: FnMut(DownloadEvent),
     {
         // ── HELLO ────────────────────────────────────────────────────────────
-        let hello_payload = build_hello(our_hash, opts.our_tcp_port, &opts.our_nick, true);
+        let hello_payload = build_hello(
+            our_hash,
+            opts.our_tcp_port,
+            opts.our_kad_udp_port,
+            &opts.our_nick,
+            true,
+        );
         write_frame(stream, ciphers, OP_HELLO, &hello_payload)
             .await
             .context("send HELLO")?;
@@ -1949,6 +1991,8 @@ pub struct UploadContext {
     pub temp_dir: PathBuf,
     /// Our TCP port to advertise in HELLO packets.
     pub tcp_port: u16,
+    /// Our Kad2 UDP port, advertised in `CT_EMULE_UDPPORTS` on the HELLOANSWER.
+    pub kad_udp_port: u16,
     /// Our persistent eMule user hash (credit identity) advertised in HELLO.
     pub user_hash: [u8; 16],
     /// Our nickname (CT_NAME) advertised in HELLO. Empty = no name tag.
@@ -2112,7 +2156,7 @@ async fn handle_incoming(mut stream: TcpStream, peer: SocketAddr, ctx: Arc<Uploa
                     .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "hello timeout"))??;
             if opcode == OP_HELLO {
                 // HELLOANSWER carries no hash-size prefix (see build_hello).
-                let answer = build_hello(&our_hash, ctx.tcp_port, &ctx.nick, false);
+                let answer = build_hello(&our_hash, ctx.tcp_port, ctx.kad_udp_port, &ctx.nick, false);
                 write_frame(&mut stream, &mut ciphers, OP_HELLOANSWER, &answer).await?;
                 debug!(%peer, "eMule HELLO done; awaiting file request");
                 break;
@@ -2553,23 +2597,35 @@ mod tests {
 
     #[test]
     fn test_build_hello_length() {
-        // No nickname → no tags: 1+16+4+2 + 4(tagcount) + 4(ip) + 2(port) = 33.
-        let h = build_hello(&[0u8; 16], 0, "", true);
-        assert_eq!(h.len(), 33);
+        // No nickname → only the CT_EMULE_UDPPORTS tag. Base (no tags) is
+        //   1+16+4+2 + 4(tagcount) + 4(ip) + 2(port) = 33; the 6-byte UDP-ports
+        //   tag ([0x83][0xf9][u32]) brings it to 39.
+        let h = build_hello(&[0u8; 16], 0, 4672, "", true);
+        assert_eq!(h.len(), 39);
         assert_eq!(h[0], 16u8);
+        assert_eq!(&h[23..27], &1u32.to_le_bytes()); // tag count = 1
+        // CT_EMULE_UDPPORTS: Kad port in the high 16 bits, client-UDP 0 low.
+        assert_eq!(h[27], TAGTYPE_UINT32 | 0x80);
+        assert_eq!(h[28], CT_EMULE_UDPPORTS);
+        assert_eq!(&h[29..33], &(4672u32 << 16).to_le_bytes());
     }
 
     #[test]
     fn test_build_hello_name_tag() {
-        // With a nickname, one CT_NAME string tag is appended:
-        //   [0x82][0x01][len u16 LE][bytes]  ("rucio" = 5 bytes → +9 bytes).
-        let h = build_hello(&[0u8; 16], 0, "rucio", true);
-        assert_eq!(h.len(), 33 + 1 + 1 + 2 + 5);
-        assert_eq!(&h[23..27], &1u32.to_le_bytes()); // tag count = 1
-        assert_eq!(h[27], 0x02 | 0x80); // TAGTYPE_STRING, special 1-byte name
+        // With a nickname: CT_NAME (ascending tag id) then CT_EMULE_UDPPORTS.
+        //   base 33 + CT_NAME(1+1+2+5=9) + UDP-ports(6) = 48.
+        let h = build_hello(&[0u8; 16], 0, 4672, "rucio", true);
+        assert_eq!(h.len(), 48);
+        assert_eq!(&h[23..27], &2u32.to_le_bytes()); // tag count = 2
+        // CT_NAME first.
+        assert_eq!(h[27], TAGTYPE_STRING | 0x80); // special 1-byte name
         assert_eq!(h[28], 0x01); // CT_NAME
         assert_eq!(&h[29..31], &5u16.to_le_bytes()); // string length
         assert_eq!(&h[31..36], b"rucio");
+        // CT_EMULE_UDPPORTS follows.
+        assert_eq!(h[36], TAGTYPE_UINT32 | 0x80);
+        assert_eq!(h[37], CT_EMULE_UDPPORTS);
+        assert_eq!(&h[38..42], &(4672u32 << 16).to_le_bytes());
     }
 
     #[test]
@@ -2578,8 +2634,8 @@ mod tests {
         // does; including it shifts every field by one and the peer abandons the
         // upload without ever sending a file request.
         let hash = [0xabu8; 16];
-        let hello = build_hello(&hash, 4662, "", true);
-        let answer = build_hello(&hash, 4662, "", false);
+        let hello = build_hello(&hash, 4662, 4672, "", true);
+        let answer = build_hello(&hash, 4662, 4672, "", false);
         assert_eq!(hello.len(), answer.len() + 1);
         assert_eq!(hello[0], 16u8); // HELLO keeps the size prefix
         assert_eq!(&answer[..16], &hash); // ANSWER starts at the user hash
@@ -2682,7 +2738,7 @@ mod tests {
             send: Some(send),
             recv: Some(recv),
         };
-        let hello = build_hello(&[0x11u8; 16], 4662, "tester", true);
+        let hello = build_hello(&[0x11u8; 16], 4662, 4672, "tester", true);
         write_frame(&mut stream, &mut ciphers, OP_HELLO, &hello)
             .await
             .unwrap();
@@ -2715,7 +2771,7 @@ mod tests {
 
         let mut stream = TcpStream::connect(addr).await.unwrap();
         let mut ciphers = ObfCiphers::default();
-        let hello = build_hello(&[0u8; 16], 4662, "", true);
+        let hello = build_hello(&[0u8; 16], 4662, 4672, "", true);
         write_frame(&mut stream, &mut ciphers, OP_HELLO, &hello)
             .await
             .unwrap();
