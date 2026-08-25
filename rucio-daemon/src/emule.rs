@@ -12,7 +12,7 @@ use rucio_emule::kad::packet::KadId;
 use rucio_emule::kad::search::KadSource;
 use rucio_emule::kad::task::{KadHandle, KadTaskConfig};
 use rucio_emule::progress::{load_progress, save_progress};
-use rucio_emule::transfer::{ActiveDownloads, DownloadEvent, DownloadOptions, Session, UploadInfo};
+use rucio_emule::transfer::{ActiveDownloads, DownloadEvent, DownloadOptions, UploadInfo};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -773,19 +773,16 @@ impl Drop for InFlight {
 /// is skipped there.
 const CONNECT_RETRY_BACKOFF_SECS: u64 = 3;
 
-/// Minimum interval between two `OP_STARTUPLOAD_REQ`s to the *same* peer for the
-/// same file while it has us queued (not actively uploading). eMule's uploader
-/// tracks reask timing per file (`CUpDownClient::AddRequestCount`): a fresh
-/// upload request sooner than `MIN_REQUESTTIME` (10 min) while we are not being
-/// served increments a `badrequests` counter, and at `BADCLIENTBAN` (4) the peer
-/// bans us for "repeated upload request / reask abuse". We already send the
-/// request only once per connection (see [`rucio_emule`]'s `wait_for_upload_slot`);
-/// this gate is the across-reconnect half, matching eMule's own 29-minute
-/// `FILEREASKTIME` so a peer we were queued at is not re-knocked too soon — even
-/// across re-search rounds (the cooldown map lives for the whole download). Only
-/// peers that actually queued us are cooled; a peer that grants a slot or fails
-/// the TCP connect is not, so transient failures retry normally.
-const REASK_COOLDOWN: Duration = Duration::from_secs(29 * 60);
+/// Backoff before making a fresh *cold* TCP connection to a peer that just
+/// failed to grant us a slot (connect error, or queued past `max_queue_waits`).
+///
+/// Warm connections held by the shared [`rucio_emule::pool::PeerConnPool`] never
+/// reask — they hold the slot and switch files in place (A4AF) — so the old
+/// 29-minute per-file reask ban no longer gates the common path. This shorter
+/// backoff only paces *cold reconnects* to a peer that wouldn't serve us, so we
+/// don't hammer it; it is stamped only on the cold-connect failure path, never
+/// when a peer merely queues a warm connection.
+const RECONNECT_BACKOFF: Duration = Duration::from_secs(60);
 
 /// Exponential back-off for source-search retries.
 /// Sequence: 30 s, 60 s, 2 min, 4 min, 8 min, 16 min, 30 min (cap), …
@@ -836,6 +833,7 @@ pub async fn run_ed2k_download(
     kad: &KadHandle,
     active_downloads: &ActiveDownloads,
     download_slots: &Arc<PriorityAdmission>,
+    conn_pool: &Arc<rucio_emule::pool::PeerConnPool>,
     live_stats: &crate::live_stats::LiveStatsMap,
     metrics: &Arc<crate::metrics::Metrics>,
     download_throttle: &Arc<crate::throttle::TokenBucket>,
@@ -1387,6 +1385,7 @@ pub async fn run_ed2k_download(
             let throttle_w = download_throttle.clone();
             let cancel_w = cancel.clone();
             let pool = source_pool.clone();
+            let conn_pool_w = conn_pool.clone();
             let qranks = queue_ranks.clone();
             let last_ask_w = last_ask.clone();
             let nick_w = our_nick.clone();
@@ -1406,11 +1405,12 @@ pub async fn run_ed2k_download(
                         break;
                     }
                     // Take the next source from the shared pool, skipping any peer
-                    // still inside its reask cooldown (we were queued there too
-                    // recently to re-knock without risking an anti-leecher ban).
-                    // If every remaining source is cooling, sleep out the shortest
-                    // remaining window rather than busy-spin, then look again.
-                    let (source, attempts) = 'pick: loop {
+                    // still inside its reconnect backoff (it just refused us) or
+                    // currently held by another download's worker (the shared
+                    // connection pool serialises per peer). On a free, ready peer
+                    // we check out its warm/cold connection here. If every source
+                    // is cooling or busy, sleep briefly rather than busy-spin.
+                    let (source, attempts, mut lease) = 'pick: loop {
                         if cancel_w.load(Ordering::Relaxed) {
                             break 'sources;
                         }
@@ -1428,20 +1428,28 @@ pub async fn run_ed2k_download(
                                     .lock()
                                     .unwrap()
                                     .get(&addr)
-                                    .map(|t| REASK_COOLDOWN.saturating_sub(t.elapsed()))
+                                    .map(|t| RECONNECT_BACKOFF.saturating_sub(t.elapsed()))
                                     .unwrap_or(Duration::ZERO);
-                                if rem.is_zero() {
-                                    break 'pick (s, a); // ready to ask
+                                if !rem.is_zero() {
+                                    min_wait = Some(min_wait.map_or(rem, |m| m.min(rem)));
+                                    p.push_back((s, a));
+                                    continue;
                                 }
-                                min_wait = Some(min_wait.map_or(rem, |m| m.min(rem)));
-                                p.push_back((s, a));
+                                // Ready to ask. Grab an exclusive lease on this
+                                // peer's shared connection; if another worker holds
+                                // it, skip to the next source.
+                                match conn_pool_w.try_checkout(addr) {
+                                    Some(lease) => break 'pick (s, a, lease),
+                                    None => p.push_back((s, a)),
+                                }
                             }
                         }
-                        // All sources cooling: wait the shortest remaining window.
+                        // All sources cooling or busy: wait the shortest cooling
+                        // window, or a short beat if they were merely all busy.
                         let secs = min_wait.map(|w| w.as_secs().max(1)).unwrap_or(1);
                         debug!(
                             dl = download_id, secs,
-                            "All eMule sources within reask cooldown — waiting"
+                            "All eMule sources cooling or busy — waiting"
                         );
                         sleep_or_cancel(secs, &cancel_w).await;
                     };
@@ -1473,7 +1481,6 @@ pub async fn run_ed2k_download(
                     // twice per attempt — plain then the obfuscated retry), so
                     // they stay at debug; only an actual transfer start is info.
                     let qr_cb = qranks.clone();
-                    let la_cb = last_ask_w.clone();
                     // Separate handle for the handshake hashset event: the closure
                     // is `move`, but `part_hashes_w` is still needed by the
                     // post-slot fallback below.
@@ -1484,12 +1491,12 @@ pub async fn run_ed2k_download(
                         }
                         DownloadEvent::Queued { rank } => {
                             // Record our queue position at this peer so the UI can
-                            // show "queued at N sources (best rank M)".
+                            // show "queued at N sources (best rank M)". No reask
+                            // cooldown stamp: a warm pooled connection holds the
+                            // queue position and switches files without reasking, so
+                            // the backoff only applies to a *failed cold connect*
+                            // (stamped on the error path below).
                             qr_cb.lock().unwrap().insert(peer, rank);
-                            // Stamp the reask clock: this peer just queued us in
-                            // response to our upload request, so it must not be
-                            // re-knocked until REASK_COOLDOWN elapses.
-                            la_cb.lock().unwrap().insert(peer, Instant::now());
                             debug!(dl = download_id, %peer, rank, "Queued at eMule peer")
                         }
                         DownloadEvent::Started => {
@@ -1511,49 +1518,53 @@ pub async fn run_ed2k_download(
                         }
                         _ => {}
                     };
-                    let connect_result = Session::connect(peer, &opts, &mut on_connect).await;
+                    // Ready the peer's connection for our file: reuse the warm one
+                    // (A4AF switch_file, granting an instant slot) or connect cold.
+                    let acq = lease.acquire_for_file(&opts, &mut on_connect).await;
                     // The attempt resolved (slot granted or giving up): we are no
                     // longer waiting in this peer's queue either way.
                     qranks.lock().unwrap().remove(&peer);
-                    let mut session = match connect_result {
-                        Ok(s) => {
-                            // Log whether this is a partial source (and how many
-                            // parts it holds) so a peer serving only some parts is
-                            // visible — we will request only the parts it has.
-                            match s.part_availability() {
-                                Some((have, total)) => info!(
-                                    dl = download_id, %peer,
-                                    obfuscated = s.is_obfuscated(), have, total,
-                                    "Peer granted upload slot — partial source ({have}/{total} parts)"
-                                ),
-                                None => info!(
-                                    dl = download_id, %peer,
-                                    obfuscated = s.is_obfuscated(),
-                                    "Peer granted upload slot — transfer starting"
-                                ),
-                            }
-                            s
+                    if let Err(e) = acq {
+                        debug!(dl = download_id, %peer, error = %e,
+                            "Peer unavailable — trying another source");
+                        // A cold connect that failed / queued past max_queue_waits:
+                        // back off this peer before another cold attempt.
+                        last_ask_w.lock().unwrap().insert(peer, Instant::now());
+                        // It may be momentarily full — retry later unless exhausted.
+                        // If it is the only source left, pace ourselves before
+                        // looping so we don't hammer a peer that just refused us.
+                        let retry_alone = if attempts + 1 < MAX_SOURCE_ATTEMPTS {
+                            let mut p = pool.lock().unwrap();
+                            p.push_back((source, attempts + 1));
+                            p.len() <= 1
+                        } else {
+                            false
+                        };
+                        // Drop the lease so the (cold) connection isn't parked; the
+                        // peer's slot in the pool is freed for another attempt.
+                        drop(lease);
+                        if retry_alone {
+                            sleep_or_cancel(CONNECT_RETRY_BACKOFF_SECS, &cancel_w).await;
                         }
-                        Err(e) => {
-                            debug!(dl = download_id, %peer, error = %e,
-                                "Peer unavailable — trying another source");
-                            // It may be momentarily full — retry later unless exhausted.
-                            // If it is the only source left, pace ourselves before
-                            // looping so we don't hammer a peer that just refused us
-                            // (see CONNECT_RETRY_BACKOFF_SECS).
-                            let retry_alone = if attempts + 1 < MAX_SOURCE_ATTEMPTS {
-                                let mut p = pool.lock().unwrap();
-                                p.push_back((source, attempts + 1));
-                                p.len() <= 1
-                            } else {
-                                false
-                            };
-                            if retry_alone {
-                                sleep_or_cancel(CONNECT_RETRY_BACKOFF_SECS, &cancel_w).await;
-                            }
-                            continue 'sources;
-                        }
+                        continue 'sources;
+                    }
+                    // Log whether this is a partial source (and how many parts it
+                    // holds) so a peer serving only some parts is visible — we will
+                    // request only the parts it has.
+                    let (avail, obf) = {
+                        let s = lease.session_ref();
+                        (s.part_availability(), s.is_obfuscated())
                     };
+                    match avail {
+                        Some((have, total)) => info!(
+                            dl = download_id, %peer, obfuscated = obf, have, total,
+                            "Peer granted upload slot — partial source ({have}/{total} parts)"
+                        ),
+                        None => info!(
+                            dl = download_id, %peer, obfuscated = obf,
+                            "Peer granted upload slot — transfer starting"
+                        ),
+                    }
 
                     // Multi-part files: before accepting any data we need the
                     // verified per-part hashset. If nobody has it yet, ask this
@@ -1561,7 +1572,7 @@ pub async fn run_ed2k_download(
                     // ed2k root hash (verify_part_hashes), so a lying peer cannot
                     // poison verification for the whole round.
                     if !single_part && part_hashes_w.lock().unwrap().is_none() {
-                        match session.request_hashset().await {
+                        match lease.session().request_hashset().await {
                             Ok(hs)
                                 if hs.len() >= num_slices
                                     && rucio_emule::ed2k::verify_part_hashes(&hs, &hash) =>
@@ -1672,7 +1683,7 @@ pub async fn run_ed2k_download(
                         let fresh = {
                             let mut q = work.lock().unwrap();
                             q.iter()
-                                .position(|&(idx, _, _)| session.has_part(idx))
+                                .position(|&(idx, _, _)| lease.session_ref().has_part(idx))
                                 .map(|pos| q.remove(pos).unwrap())
                         };
                         let (slice_idx, slice_start, slice_end, is_race) = match fresh {
@@ -1686,7 +1697,7 @@ pub async fn run_ed2k_download(
                                     let d = done.lock().unwrap();
                                     let f = in_flight_w.lock().unwrap();
                                     endgame_pick(&d, &f, endgame_window_w, |i| {
-                                        session.has_part(i)
+                                        lease.session_ref().has_part(i)
                                     })
                                 };
                                 match race {
@@ -1790,7 +1801,8 @@ pub async fn run_ed2k_download(
                         let done_sup = done.clone();
                         let superseded = move || done_sup.lock().unwrap()[slice_idx];
 
-                        match session
+                        match lease
+                            .session()
                             .download_range(
                                 slice_start,
                                 slice_end,
@@ -1939,16 +1951,19 @@ pub async fn run_ed2k_download(
                                     // when >1 source exists — see `min_speed_bytes`.)
                                     // Log `obfuscated` so a systematic obfuscated-vs-plain
                                     // transfer difference is measurable in the field.
+                                    // The TCP is fine and still holds the slot — leave
+                                    // it warm so another download can A4AF-switch to it.
                                     info!(dl = download_id, %peer, error = %e,
-                                        obfuscated = session.is_obfuscated(),
+                                        obfuscated = lease.session_ref().is_obfuscated(),
                                         "Source too slow — dropped in favour of another");
                                 } else {
                                     debug!(dl = download_id, %peer, slice = slice_idx, error = %e,
-                                        obfuscated = session.is_obfuscated(),
+                                        obfuscated = lease.session_ref().is_obfuscated(),
                                         "Slice download failed — dropping connection, will retry");
-                                    // The connection is broken; the source may have just
-                                    // glitched, so retry it later unless exhausted, then
-                                    // reconnect (to it or another source).
+                                    // A real transport failure: the connection is
+                                    // broken, so discard it (don't park a dead socket
+                                    // in the pool) and let a later attempt reconnect.
+                                    lease.discard();
                                     if attempts + 1 < MAX_SOURCE_ATTEMPTS {
                                         pool.lock().unwrap().push_back((source, attempts + 1));
                                     }

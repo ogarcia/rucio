@@ -227,6 +227,17 @@ impl PeerLease {
             .session
     }
 
+    /// Shared `&` to the ready session, for the read-only queries (`has_part`,
+    /// `is_obfuscated`, …) the worker needs inside `Fn` closures. Same panic
+    /// contract as [`Self::session`].
+    pub fn session_ref(&self) -> &Session {
+        &self
+            .guard
+            .as_ref()
+            .expect("session_ref() on a cold lease; call acquire_for_file first")
+            .session
+    }
+
     /// Mark the connection dead (a real transport error). The next checkout will
     /// reconnect from scratch instead of trusting the broken stream.
     pub fn discard(&mut self) {

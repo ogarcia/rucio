@@ -527,6 +527,15 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         config.emule.max_concurrent_downloads.clamp(1, 50),
     ));
 
+    // Shared per-peer warm-connection pool (A4AF): downloads sharing a source
+    // reuse one connection, so a fast peer freed by a finished download is handed
+    // to the next one instantly (switch_file) instead of waiting out a reask
+    // cooldown. The reaper closes connections left idle so we never squat a slot.
+    #[cfg(feature = "emule-compat")]
+    let emule_conn_pool = rucio_emule::pool::PeerConnPool::new(std::time::Duration::from_secs(60));
+    #[cfg(feature = "emule-compat")]
+    rucio_emule::pool::spawn_reaper(emule_conn_pool.clone());
+
     // Registry of running eMule download tasks (download_id → stop flag), so
     // pause/cancel can stop a task promptly and the spawn site never launches a
     // duplicate task for an id that is already running.
@@ -685,6 +694,8 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         #[cfg(feature = "emule-compat")]
         emule_download_slots: emule_download_slots.clone(),
         #[cfg(feature = "emule-compat")]
+        emule_conn_pool: emule_conn_pool.clone(),
+        #[cfg(feature = "emule-compat")]
         emule_inbound_connections: emule_inbound_connections.clone(),
         #[cfg(feature = "emule-compat")]
         emule_last_inbound_at: emule_last_inbound_at.clone(),
@@ -811,6 +822,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                 let kad = kad_handle.clone();
                 let ad = active_downloads.clone();
                 let slots = emule_download_slots.clone();
+                let pool = emule_conn_pool.clone();
                 let ls = live_stats.clone();
                 let met = Arc::clone(&session_metrics);
                 let dt = Arc::clone(&download_throttle);
@@ -828,6 +840,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                         &kad,
                         &ad,
                         &slots,
+                        &pool,
                         &ls,
                         &met,
                         &dt,
@@ -1306,6 +1319,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                                             let kad = kad_handle.clone();
                                             let ad = active_downloads.clone();
                                             let slots = emule_download_slots.clone();
+                                            let pool = emule_conn_pool.clone();
                                             let ls = live_stats.clone();
                                             let met = Arc::clone(&session_metrics);
                                             let dt = Arc::clone(&download_throttle);
@@ -1317,8 +1331,8 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                                             tokio::spawn(async move {
                                                 if let Err(e) = crate::emule::run_ed2k_download(
                                                     &link, download_id, &config, &db, &kad, &ad,
-                                                    &slots, &ls, &met, &dt, &notif, node_tx, cancel,
-                                                    reg, ac,
+                                                    &slots, &pool, &ls, &met, &dt, &notif, node_tx,
+                                                    cancel, reg, ac,
                                                     // Add path: adopt a pre-existing `.part`.
                                                     true,
                                                     ig,

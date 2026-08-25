@@ -95,6 +95,8 @@ async fn test_state() -> (
         #[cfg(feature = "emule-compat")]
         emule_download_slots: Arc::new(crate::emule::PriorityAdmission::new(3)),
         #[cfg(feature = "emule-compat")]
+        emule_conn_pool: rucio_emule::pool::PeerConnPool::new(std::time::Duration::from_secs(60)),
+        #[cfg(feature = "emule-compat")]
         emule_inbound_connections: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         #[cfg(feature = "emule-compat")]
         emule_last_inbound_at: Arc::new(std::sync::atomic::AtomicU64::new(0)),

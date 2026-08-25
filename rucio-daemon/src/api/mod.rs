@@ -483,6 +483,10 @@ pub struct AppState {
     /// slot; the download tasks hold the same gate to acquire/release slots.
     #[cfg(feature = "emule-compat")]
     pub emule_download_slots: Arc<crate::emule::PriorityAdmission>,
+    /// Shared per-peer warm-connection pool (A4AF): downloads sharing a source
+    /// reuse one connection so a freed fast peer is handed over instantly.
+    #[cfg(feature = "emule-compat")]
+    pub emule_conn_pool: Arc<rucio_emule::pool::PeerConnPool>,
     /// Counter of inbound eMule TCP connections accepted since startup.
     #[cfg(feature = "emule-compat")]
     pub emule_inbound_connections: Arc<std::sync::atomic::AtomicU64>,
