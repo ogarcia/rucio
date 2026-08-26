@@ -22,6 +22,8 @@ pub struct Config {
     pub indexer: IndexerConfig,
     #[serde(default)]
     pub stats: StatsConfig,
+    #[serde(default)]
+    pub api: ApiConfig,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -45,11 +47,6 @@ pub struct IndexerConfig {
     pub enabled: bool,
     /// SQLite database path.
     pub db: Option<PathBuf>,
-    /// REST API bind address.
-    #[serde(default = "default_api_listen")]
-    pub api_listen: SocketAddr,
-    /// Bearer token for admin endpoints. `None` disables them.
-    pub api_token: Option<String>,
     /// Drop records not refreshed within this many days.
     #[serde(default = "default_retention_days")]
     pub retention_days: i64,
@@ -76,6 +73,17 @@ pub struct StatsConfig {
     /// Drop samples older than this many days.
     #[serde(default = "default_stats_retention_days")]
     pub retention_days: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ApiConfig {
+    /// Address the shared HTTP server (indexer web/API + stats panel) binds to.
+    /// Only used when a web-capable role is built and enabled.
+    #[serde(default = "default_api_listen")]
+    pub listen: SocketAddr,
+    /// Bearer token guarding admin endpoints (currently the indexer's). `None`
+    /// disables them.
+    pub token: Option<String>,
 }
 
 // ── serde defaults ────────────────────────────────────────────────────────────
@@ -123,11 +131,18 @@ impl Default for IndexerConfig {
         Self {
             enabled: default_indexer_enabled(),
             db: None,
-            api_listen: default_api_listen(),
-            api_token: None,
             retention_days: default_retention_days(),
             enrich: default_enrich(),
             identity_count: 0,
+        }
+    }
+}
+
+impl Default for ApiConfig {
+    fn default() -> Self {
+        Self {
+            listen: default_api_listen(),
+            token: None,
         }
     }
 }
@@ -250,6 +265,16 @@ listen = ["/ip4/0.0.0.0/tcp/4321", "/ip6/::/tcp/4321"]
 # Example: bootstrap_peers = ["/ip4/1.2.3.4/tcp/4321/p2p/12D3Koo..."]
 bootstrap_peers = []
 
+[api]
+# Shared HTTP server for the web roles below (indexer search UI/API and the
+# stats panel). One port, one address; each role adds its own endpoints. Only
+# used when a web-capable role is built and enabled.
+listen = "127.0.0.1:3003"
+
+# Bearer token for admin endpoints (currently /api/v1/admin/*). Unset = admin
+# disabled.
+# token = "change-me"
+
 [indexer]
 # Run the passive DHT indexer role. With an `indexer`-feature build it runs by
 # default; set this to false (or pass --no-index) for a plain bootstrap node.
@@ -257,12 +282,6 @@ enabled = true
 
 # SQLite database path.
 db = "{db}"
-
-# REST API bind address (env: RUCIO_BOOTSTRAP_API_LISTEN).
-api_listen = "127.0.0.1:3003"
-
-# Bearer token for /api/v1/admin/* endpoints. Unset = admin disabled.
-# api_token = "change-me"
 
 # Prune records not refreshed within this many days.
 retention_days = 30

@@ -22,6 +22,9 @@
 
 mod config;
 
+#[cfg(any(feature = "indexer", feature = "stats-web"))]
+mod http;
+
 #[cfg(feature = "indexer")]
 mod indexer;
 
@@ -91,14 +94,14 @@ struct Args {
     #[arg(long, env = "RUCIO_BOOTSTRAP_INDEX_DB")]
     index_db: Option<PathBuf>,
 
-    /// Address the indexer REST API binds to. Overrides `indexer.api_listen`.
-    #[cfg(feature = "indexer")]
+    /// Address the shared HTTP server (indexer web/API + stats panel) binds to.
+    /// Overrides `api.listen`.
+    #[cfg(any(feature = "indexer", feature = "stats-web"))]
     #[arg(long, env = "RUCIO_BOOTSTRAP_API_LISTEN")]
     api_listen: Option<std::net::SocketAddr>,
 
-    /// Bearer token guarding the indexer admin endpoints. Overrides
-    /// `indexer.api_token`.
-    #[cfg(feature = "indexer")]
+    /// Bearer token guarding admin endpoints. Overrides `api.token`.
+    #[cfg(any(feature = "indexer", feature = "stats-web"))]
     #[arg(long, env = "RUCIO_BOOTSTRAP_API_TOKEN")]
     api_token: Option<String>,
 
@@ -217,12 +220,6 @@ async fn main() -> Result<()> {
         if let Some(db) = args.index_db {
             cfg.indexer.db = Some(db);
         }
-        if let Some(al) = args.api_listen {
-            cfg.indexer.api_listen = al;
-        }
-        if args.api_token.is_some() {
-            cfg.indexer.api_token = args.api_token;
-        }
         if let Some(days) = args.retention_days {
             cfg.indexer.retention_days = days;
         }
@@ -244,6 +241,16 @@ async fn main() -> Result<()> {
         }
         if let Some(days) = args.stats_retention_days {
             cfg.stats.retention_days = days;
+        }
+    }
+
+    #[cfg(any(feature = "indexer", feature = "stats-web"))]
+    {
+        if let Some(al) = args.api_listen {
+            cfg.api.listen = al;
+        }
+        if args.api_token.is_some() {
+            cfg.api.token = args.api_token;
         }
     }
 
@@ -297,8 +304,6 @@ async fn main() -> Result<()> {
         Some(
             indexer::Indexer::start(indexer::IndexerOpts {
                 db_path,
-                api_listen: cfg.indexer.api_listen,
-                token: cfg.indexer.api_token,
                 retention_days: cfg.indexer.retention_days,
                 enrich,
                 // Only the primary swarm carries the manifest protocol.
@@ -404,6 +409,28 @@ async fn main() -> Result<()> {
     } else {
         None
     };
+
+    // ── Shared HTTP server ────────────────────────────────────────────────────
+    // One listener for every enabled web role: the indexer's search UI/API and
+    // the stats panel each contribute their routes and OpenAPI spec.
+    #[cfg(any(feature = "indexer", feature = "stats-web"))]
+    {
+        let mut api = http::Api::new();
+        #[cfg(feature = "indexer")]
+        if let Some(ix) = indexer.as_ref() {
+            api.merge_role(
+                ix.api_router(cfg.api.token.clone()),
+                indexer::Indexer::api_doc(),
+            );
+        }
+        #[cfg(feature = "stats-web")]
+        if let Some(st) = stats.as_ref() {
+            api.merge_role(st.api_router(), stats::Stats::api_doc());
+        }
+        if api.has_roles() {
+            api.serve(cfg.api.listen, std::time::Instant::now()).await?;
+        }
+    }
 
     // ── Main event loop ───────────────────────────────────────────────────────
     // Connection count per peer (a peer may hold several connections, e.g. TCP

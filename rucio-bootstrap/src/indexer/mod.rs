@@ -56,10 +56,9 @@ mod db;
 mod web;
 
 use std::collections::{HashMap, HashSet};
-use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use libp2p::PeerId;
@@ -73,9 +72,6 @@ use rucio_net::NodeCmd;
 /// Runtime options for the indexer role.
 pub struct IndexerOpts {
     pub db_path: PathBuf,
-    pub api_listen: SocketAddr,
-    /// Bearer token for the admin endpoints; `None` disables them.
-    pub token: Option<String>,
     pub retention_days: i64,
     /// Resolve file name/size from each announcing peer's manifest.
     pub enrich: bool,
@@ -83,10 +79,12 @@ pub struct IndexerOpts {
     pub node_cmd: mpsc::Sender<NodeCmd>,
 }
 
-/// A running indexer: owns the DB pool and drives the API + retention tasks.
+/// A running indexer: owns the DB pool and drives enrichment + retention. Its
+/// HTTP routes are mounted onto the shared server (see [`Indexer::api_router`]).
 pub struct Indexer {
     db: db::Db,
     enrich: bool,
+    retention_days: i64,
     node_cmd: mpsc::Sender<NodeCmd>,
     /// Outstanding manifest requests, mapping the request id back to the hash
     /// being enriched.
@@ -97,7 +95,8 @@ pub struct Indexer {
 }
 
 impl Indexer {
-    /// Open the DB, start the REST API server and the daily retention sweep.
+    /// Open the DB and start the daily retention sweep. The HTTP API is served
+    /// by the shared server (see [`Indexer::api_router`] / [`Indexer::api_doc`]).
     pub async fn start(opts: IndexerOpts) -> Result<Self> {
         let db = db::open(&opts.db_path)
             .await
@@ -108,23 +107,6 @@ impl Indexer {
             enrich = opts.enrich,
             "Indexer enabled"
         );
-
-        let state = api::AppState {
-            db: db.clone(),
-            token: opts.token,
-            started_at: Instant::now(),
-            retention_days: opts.retention_days,
-        };
-        let app = api::router(state);
-        let listener = tokio::net::TcpListener::bind(opts.api_listen)
-            .await
-            .with_context(|| format!("binding index API on {}", opts.api_listen))?;
-        info!(listen = %opts.api_listen, "Index API listening (docs at /api/docs)");
-        tokio::spawn(async move {
-            if let Err(e) = axum::serve(listener, app).await {
-                warn!("Index API server stopped: {e}");
-            }
-        });
 
         // Retention sweep: prune once at startup (interval's first tick is
         // immediate) then once a day.
@@ -145,10 +127,26 @@ impl Indexer {
         Ok(Self {
             db,
             enrich: opts.enrich,
+            retention_days: opts.retention_days,
             node_cmd: opts.node_cmd,
             pending: Mutex::new(HashMap::new()),
             inflight: Mutex::new(HashSet::new()),
         })
+    }
+
+    /// The indexer's HTTP routes (web UI + JSON API), ready to merge onto the
+    /// shared server. `token` guards the admin endpoints (`None` disables them).
+    pub fn api_router(&self, token: Option<String>) -> axum::Router {
+        api::router(api::AppState {
+            db: self.db.clone(),
+            token,
+            retention_days: self.retention_days,
+        })
+    }
+
+    /// The indexer's OpenAPI spec, for the shared server's merged docs.
+    pub fn api_doc() -> utoipa::openapi::OpenApi {
+        api::openapi()
     }
 
     /// Close the SQLite pool cleanly on shutdown so SQLite checkpoints and

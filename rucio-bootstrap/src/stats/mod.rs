@@ -28,6 +28,15 @@ use sqlx::SqlitePool;
 use sqlx::sqlite::SqliteConnectOptions;
 use tracing::{info, warn};
 
+// Web role: the panel + JSON API, mounted onto the shared HTTP server. Pulled in
+// only with the `stats-web` feature (the extra `axum`/`utoipa` deps).
+#[cfg(feature = "stats-web")]
+mod api;
+#[cfg(feature = "stats-web")]
+mod query;
+#[cfg(feature = "stats-web")]
+mod web;
+
 /// Kernel clock ticks per second (`sysconf(_SC_CLK_TCK)`). This is 100 on every
 /// mainstream Linux target; `/proc` CPU times are expressed in these ticks.
 const USER_HZ: u64 = 100;
@@ -128,6 +137,21 @@ impl Stats {
         self.db.close().await;
     }
 
+    /// The stats panel + JSON API routes, ready to merge onto the shared server.
+    /// The data is public (resource usage, not sensitive), so there is no token.
+    #[cfg(feature = "stats-web")]
+    pub fn api_router(&self) -> axum::Router {
+        api::router(api::AppState {
+            db: self.db.clone(),
+        })
+    }
+
+    /// The stats role's OpenAPI spec, for the shared server's merged docs.
+    #[cfg(feature = "stats-web")]
+    pub fn api_doc() -> utoipa::openapi::OpenApi {
+        api::openapi()
+    }
+
     /// Take one snapshot: the caller supplies the live peer/connection counts and
     /// the churn accumulated since the previous call; everything else is read
     /// from `/proc`. Counters (CPU, traffic) are stored as the delta over the
@@ -218,7 +242,7 @@ async fn open(path: &Path) -> Result<Db> {
     Ok(pool)
 }
 
-fn now_unix() -> i64 {
+pub(crate) fn now_unix() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)

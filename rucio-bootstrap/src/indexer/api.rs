@@ -1,8 +1,8 @@
-//! REST API for the DHT indexer — same stack as the daemon (axum + utoipa +
-//! scalar). Public read endpoints live under `/api/v1`; admin endpoints require
-//! a bearer token and are disabled when none is configured.
-
-use std::time::Instant;
+//! REST API for the DHT indexer — same stack as the daemon (axum + utoipa).
+//! Public read endpoints live under `/api/v1`; admin endpoints require a bearer
+//! token and are disabled when none is configured. The router and its OpenAPI
+//! spec are composed with the other roles' onto one server by [`crate::http`],
+//! which owns the listener, the `/health` probe and the merged Scalar docs.
 
 use axum::{
     Json, Router,
@@ -14,7 +14,6 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{IntoParams, Modify, OpenApi, ToSchema};
-use utoipa_scalar::{Scalar, Servable as _};
 
 use super::db::{self, Db, HashRow, Stats};
 
@@ -24,27 +23,8 @@ pub struct AppState {
     pub db: Db,
     /// Bearer token guarding the admin endpoints. `None` disables them.
     pub token: Option<String>,
-    pub started_at: Instant,
     pub retention_days: i64,
 }
-
-const SCALAR_HTML: &str = r#"<!doctype html>
-<html>
-  <head>
-    <title>Rucio Index API</title>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-  </head>
-  <body>
-    <script
-      id="api-reference"
-      type="application/json"
-      data-configuration='{"operationTitleSource":"path"}'
-    >$spec</script>
-    <script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference"></script>
-  </body>
-</html>
-"#;
 
 #[derive(OpenApi)]
 #[openapi(
@@ -66,16 +46,20 @@ peers. This API exposes that index:
 Timestamps are Unix seconds. Pagination is `limit` (1–500, default 50) plus \
 `offset` (default 0)."
     ),
-    paths(get_health, search_records, list_records, admin_stats, admin_prune),
-    components(schemas(HashRow, Stats, HealthResponse, RecordsResponse, PruneResponse)),
+    paths(search_records, list_records, admin_stats, admin_prune),
+    components(schemas(HashRow, Stats, RecordsResponse, PruneResponse)),
     modifiers(&SecurityAddon),
     tags(
-        (name = "Status", description = "Liveness and health checks"),
         (name = "Search", description = "Query the provider-record index"),
         (name = "Admin", description = "Maintenance endpoints (bearer token required)")
     )
 )]
 struct ApiDoc;
+
+/// The indexer's OpenAPI spec, for merging into the shared server's docs.
+pub fn openapi() -> utoipa::openapi::OpenApi {
+    ApiDoc::openapi()
+}
 
 /// Registers the `bearer_token` security scheme referenced by the admin paths.
 struct SecurityAddon;
@@ -97,32 +81,18 @@ pub fn router(state: AppState) -> Router {
         // Server-rendered search front-end (no JS): landing + results pages.
         .route("/", routing::get(super::web::landing))
         .route("/search", routing::get(super::web::search_page))
-        .route("/health", routing::get(get_health))
-        .merge(Scalar::with_url("/api/docs", ApiDoc::openapi()).custom_html(SCALAR_HTML))
-        .nest("/api/v1", v1_router())
+        // JSON API. Explicit full paths (rather than a nested wildcard) so this
+        // router merges cleanly with the other roles' `/api/v1/*` routes.
+        .route("/api/v1/search", routing::get(search_records))
+        .route("/api/v1/records", routing::get(list_records))
+        .route("/api/v1/admin/stats", routing::get(admin_stats))
+        .route("/api/v1/admin/prune", routing::post(admin_prune))
         .with_state(state)
-}
-
-fn v1_router() -> Router<AppState> {
-    Router::new()
-        .route("/search", routing::get(search_records))
-        .route("/records", routing::get(list_records))
-        .route("/admin/stats", routing::get(admin_stats))
-        .route("/admin/prune", routing::post(admin_prune))
 }
 
 // ---------------------------------------------------------------------------
 // DTOs
 // ---------------------------------------------------------------------------
-
-/// Liveness probe payload.
-#[derive(Serialize, ToSchema)]
-pub struct HealthResponse {
-    /// Always `"ok"` while the node is serving.
-    pub status: String,
-    /// Seconds since the indexer API started.
-    pub uptime_secs: u64,
-}
 
 /// A page of indexed hashes.
 #[derive(Serialize, ToSchema)]
@@ -210,23 +180,6 @@ fn reject_admin(state: &AppState, headers: &HeaderMap) -> Option<Response> {
     } else {
         Some((StatusCode::UNAUTHORIZED, "invalid or missing bearer token").into_response())
     }
-}
-
-/// Liveness check.
-///
-/// Returns `200` with the node status and uptime as long as the API is
-/// serving. Unauthenticated; outside the `/api/v1` prefix so it can double as a
-/// container/load-balancer health probe.
-#[utoipa::path(
-    get, path = "/health",
-    tag = "Status",
-    responses((status = 200, description = "Node is alive", body = HealthResponse))
-)]
-async fn get_health(State(s): State<AppState>) -> Json<HealthResponse> {
-    Json(HealthResponse {
-        status: "ok".to_string(),
-        uptime_secs: s.started_at.elapsed().as_secs(),
-    })
 }
 
 /// Search the index by hash prefix or file name.

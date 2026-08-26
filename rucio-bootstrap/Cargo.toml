@@ -31,6 +31,17 @@ indexer = [
 # `--no-stats`. Resource figures come from Linux /proc (NULL on other hosts).
 stats = ["dep:sqlx"]
 
+# Add the stats web panel + JSON API (on the shared HTTP server). Pulls the same
+# web stack the indexer uses; independent of it, so a plain bootstrap node can
+# serve the panel without running the DHT indexer.
+stats-web = [
+    "stats",
+    "dep:axum",
+    "dep:utoipa",
+    "dep:utoipa-scalar",
+    "dep:serde_json",
+]
+
 [dependencies]
 rucio-net   = { path = "../rucio-net" }
 rucio-core  = { path = "../rucio-core" }
