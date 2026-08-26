@@ -52,11 +52,22 @@ does not exist and the node is always a plain bootstrap.
 |---|---|---|
 | `enabled` | `true` | Run the indexer at startup (on an `indexer`-feature build). Set to `false`, or pass `--no-index`, for a plain bootstrap node. |
 | `db` | `~/.local/share/rucio-bootstrap/index.db` | SQLite database path. Created automatically. |
-| `api_listen` | `127.0.0.1:3003` | Bind address for the REST search API. Change to `0.0.0.0:3003` to expose it on the network. |
-| `api_token` | *(unset)* | Bearer token protecting the `/api/v1/admin/*` endpoints. **Admin endpoints are disabled when this is unset.** |
 | `retention_days` | `30` | Delete records not refreshed within this many days. 0 = keep forever. |
 | `enrich` | `true` | Contact announcing peers to resolve file name and size. Disable with `false` or `--no-enrich` to index hashes only. |
 | `identity_count` | `0` | Number of **additional** Kademlia identities to spawn. See [Multi-identity](#multi-identity). |
+
+### `[api]` section
+
+The HTTP server is **shared** across the node's web roles — the indexer's
+search UI and REST API, plus the [stats panel](03-stats.md) when the node is
+built with `stats-web`. It binds **one** address and port, and each role adds
+its own routes under it. The bind address therefore lives here, not under
+`[indexer]`.
+
+| Key | Default | Description |
+|---|---|---|
+| `listen` | `127.0.0.1:3003` | Bind address for the HTTP server. Change to `0.0.0.0:3003` to expose it on the network. |
+| `token` | *(unset)* | Bearer token protecting the `/api/v1/admin/*` endpoints. **Admin endpoints are disabled when this is unset.** |
 
 #### Generating an API token
 
@@ -73,7 +84,7 @@ head -c 32 /dev/urandom | base64
 Prefer passing it through the `RUCIO_BOOTSTRAP_API_TOKEN` environment variable
 (or a secrets manager) over writing it into `config.toml`, so it never lands in
 a file or backup in clear text. To rotate it, set a new value and restart the
-node. Treat the admin API as private regardless: keep `api_listen` on a trusted
+node. Treat the admin API as private regardless: keep `api.listen` on a trusted
 network rather than the public internet.
 
 ### Full example
@@ -83,11 +94,13 @@ network rather than the public internet.
 identity = "/var/lib/rucio-bootstrap/identity.key"
 listen   = ["/ip4/0.0.0.0/tcp/4321", "/ip6/::/tcp/4321"]
 
+[api]
+listen = "0.0.0.0:3003"
+token  = "change-me"
+
 [indexer]
 enabled        = true
 db             = "/var/lib/rucio-bootstrap/index.db"
-api_listen     = "0.0.0.0:3003"
-api_token      = "change-me"
 retention_days = 30
 enrich         = true
 identity_count = 3
@@ -99,8 +112,8 @@ identity_count = 3
 |---|---|---|
 | `--no-index` | — | `indexer.enabled` (forces off) |
 | `--index-db <PATH>` | `RUCIO_BOOTSTRAP_INDEX_DB` | `indexer.db` |
-| `--api-listen <ADDR>` | `RUCIO_BOOTSTRAP_API_LISTEN` | `indexer.api_listen` |
-| `--api-token <TOKEN>` | `RUCIO_BOOTSTRAP_API_TOKEN` | `indexer.api_token` |
+| `--api-listen <ADDR>` | `RUCIO_BOOTSTRAP_API_LISTEN` | `api.listen` (shared server) |
+| `--api-token <TOKEN>` | `RUCIO_BOOTSTRAP_API_TOKEN` | `api.token` (shared server) |
 | `--retention-days <N>` | `RUCIO_BOOTSTRAP_RETENTION_DAYS` | `indexer.retention_days` |
 | `--no-enrich` | — | forces `indexer.enrich = false` |
 | `--identity-count <N>` | `RUCIO_BOOTSTRAP_IDENTITY_COUNT` | `indexer.identity_count` |
@@ -110,7 +123,7 @@ identity_count = 3
 ## Web search interface
 
 When the indexer is running it also serves a small, human-facing search site
-on the same `api_listen` address — a search engine for the network, much like
+on the same `api.listen` address — a search engine for the network, much like
 DuckDuckGo or Google:
 
 - **`/`** — a landing page with the Rucio logo and a search box.
@@ -126,18 +139,18 @@ It is **server-rendered with no JavaScript** and reuses the very same query as
 [`GET /api/v1/search`](#get-apiv1search), so the page and the API never drift
 apart. The site and the public API need no authentication (only the
 `/api/v1/admin/*` endpoints do), so it is safe to expose read-only — point a
-browser at `http://<api_listen>/`.
+browser at `http://<api.listen>/`.
 
-To make it a public search portal, bind `api_listen` to `0.0.0.0:3003` (or put
+To make it a public search portal, bind `api.listen` to `0.0.0.0:3003` (or put
 a reverse proxy with TLS in front of it). Keep it on a trusted network only if
-you also set an `api_token`, since the admin endpoints share the port.
+you also set an `api.token`, since the admin endpoints share the port.
 
 ---
 
 ## REST API
 
 The indexer exposes a REST API when running.  Interactive API documentation
-is available at `http://<api_listen>/api/docs`.
+is available at `http://<api.listen>/api/docs`.
 
 ### `GET /health`
 

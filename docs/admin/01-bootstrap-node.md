@@ -12,7 +12,8 @@ becomes valuable when you want:
 - A reliable, always-on entry point independent of end-user nodes going
   offline.
 - A server that does not consume bandwidth serving files or running the API.
-- A foundation for the optional [DHT indexer](02-indexer.md).
+- A foundation for the optional [DHT indexer](02-indexer.md) and
+  [resource statistics](03-stats.md) roles.
 
 `rucio-bootstrap` is the dedicated binary for this role.
 
@@ -43,8 +44,8 @@ chmod +x /usr/local/bin/rucio-bootstrap
 
 ```sh
 cargo install --path rucio-bootstrap --locked
-# or, to include the optional indexer role:
-cargo install --path rucio-bootstrap --features indexer --locked
+# or, to include the optional roles (DHT indexer + resource statistics):
+cargo install --path rucio-bootstrap --features indexer,stats-web --locked
 ```
 
 ### Container image
@@ -53,9 +54,11 @@ cargo install --path rucio-bootstrap --features indexer --locked
 podman pull ghcr.io/ogarcia/rucio:latest-bootstrap
 ```
 
-The `latest-bootstrap` image is compiled with `--features indexer` so the
-indexer role is available at runtime — it is just disabled until you enable
-it in the config. See [below](#container-deployment) for a full example.
+The `latest-bootstrap` image is compiled with `--features indexer,stats-web` so
+the optional [DHT indexer](02-indexer.md) and [resource statistics](03-stats.md)
+roles are available at runtime. Stats recording runs by default; the indexer is
+disabled until you enable it in the config. See
+[below](#container-deployment) for a full example.
 
 ---
 
@@ -259,8 +262,11 @@ podman run -d \
   ghcr.io/ogarcia/rucio:latest-bootstrap
 ```
 
-> The container image already includes the `indexer` feature compiled in.
-> To activate the indexer see [DHT indexer](02-indexer.md).
+> The container image already includes the `indexer` and `stats-web` features
+> compiled in. To activate the indexer see [DHT indexer](02-indexer.md); the
+> [resource statistics](03-stats.md) role records by default. Both are served on
+> port 3003 — publish it (`-p 3003:3003`) to reach the search site, stats panel
+> or API.
 
 ---
 
