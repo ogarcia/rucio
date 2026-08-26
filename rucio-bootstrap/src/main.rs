@@ -25,6 +25,9 @@ mod config;
 #[cfg(feature = "indexer")]
 mod indexer;
 
+#[cfg(feature = "stats")]
+mod stats;
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -117,6 +120,24 @@ struct Args {
     #[cfg(feature = "indexer")]
     #[arg(long, env = "RUCIO_BOOTSTRAP_IDENTITY_COUNT")]
     identity_count: Option<u8>,
+
+    /// Disable recording resource-usage statistics. They run by default when
+    /// built with the `stats` feature; pass this to record nothing.
+    /// Overrides `stats.enabled`.
+    #[cfg(feature = "stats")]
+    #[arg(long)]
+    no_stats: bool,
+
+    /// SQLite path for the statistics database. Overrides `stats.db`.
+    #[cfg(feature = "stats")]
+    #[arg(long, env = "RUCIO_BOOTSTRAP_STATS_DB")]
+    stats_db: Option<PathBuf>,
+
+    /// Drop statistics samples older than this many days. Overrides
+    /// `stats.retention_days`.
+    #[cfg(feature = "stats")]
+    #[arg(long, env = "RUCIO_BOOTSTRAP_STATS_RETENTION_DAYS")]
+    stats_retention_days: Option<i64>,
 }
 
 /// Resolves on Ctrl-C / SIGINT, or SIGTERM (sent by a service manager like
@@ -210,6 +231,19 @@ async fn main() -> Result<()> {
         }
         if let Some(n) = args.identity_count {
             cfg.indexer.identity_count = n;
+        }
+    }
+
+    #[cfg(feature = "stats")]
+    {
+        if args.no_stats {
+            cfg.stats.enabled = false;
+        }
+        if let Some(db) = args.stats_db {
+            cfg.stats.db = Some(db);
+        }
+        if let Some(days) = args.stats_retention_days {
+            cfg.stats.retention_days = days;
         }
     }
 
@@ -352,10 +386,34 @@ async fn main() -> Result<()> {
         info!("No bootstrap peers configured — running as a seed node (listen only)");
     }
 
+    // ── Statistics recorder ───────────────────────────────────────────────────
+    #[cfg(feature = "stats")]
+    let mut stats = if cfg.stats.enabled {
+        let db_path = cfg
+            .stats
+            .db
+            .clone()
+            .unwrap_or_else(config::default_stats_db_path);
+        Some(
+            stats::Stats::start(stats::StatsOpts {
+                db_path,
+                retention_days: cfg.stats.retention_days,
+            })
+            .await?,
+        )
+    } else {
+        None
+    };
+
     // ── Main event loop ───────────────────────────────────────────────────────
     // Connection count per peer (a peer may hold several connections, e.g. TCP
     // and QUIC); the heartbeat reports the number of distinct connected peers.
     let mut peer_conns: HashMap<PeerId, usize> = HashMap::new();
+    // Connection churn accumulated since the last stats sample.
+    #[cfg(feature = "stats")]
+    let mut conns_opened: u64 = 0;
+    #[cfg(feature = "stats")]
+    let mut conns_closed: u64 = 0;
     let mut heartbeat = tokio::time::interval(Duration::from_secs(60));
     heartbeat.tick().await; // consume the immediate first tick
 
@@ -376,10 +434,28 @@ async fn main() -> Result<()> {
                 {
                     warn!("Timed out closing the indexer database on shutdown");
                 }
+                #[cfg(feature = "stats")]
+                if let Some(st) = stats.as_ref()
+                    && tokio::time::timeout(Duration::from_secs(5), st.close())
+                        .await
+                        .is_err()
+                {
+                    warn!("Timed out closing the stats database on shutdown");
+                }
                 break;
             }
             _ = heartbeat.tick() => {
                 info!(connected_peers = peer_conns.len(), "Bootstrap node alive");
+                #[cfg(feature = "stats")]
+                if let Some(st) = stats.as_mut() {
+                    let peers = peer_conns.len() as i64;
+                    let connections: i64 = peer_conns.values().map(|&n| n as i64).sum();
+                    if let Err(e) = st.sample(peers, connections, conns_opened, conns_closed).await {
+                        warn!("Recording stats sample failed: {e}");
+                    }
+                    conns_opened = 0;
+                    conns_closed = 0;
+                }
             }
             ev = fan_rx.recv() => {
                 let Some((swarm_idx, ev)) = ev else {
@@ -414,6 +490,10 @@ async fn main() -> Result<()> {
                     }
                     NodeEvent::PeerConnected { peer_id: pid } => {
                         *peer_conns.entry(pid).or_insert(0) += 1;
+                        #[cfg(feature = "stats")]
+                        {
+                            conns_opened += 1;
+                        }
                     }
                     NodeEvent::PeerDisconnected { peer_id: pid } => {
                         if let Some(n) = peer_conns.get_mut(&pid) {
@@ -421,6 +501,10 @@ async fn main() -> Result<()> {
                             if *n == 0 {
                                 peer_conns.remove(&pid);
                             }
+                        }
+                        #[cfg(feature = "stats")]
+                        {
+                            conns_closed += 1;
                         }
                     }
                     NodeEvent::FatalError(ref e) => {

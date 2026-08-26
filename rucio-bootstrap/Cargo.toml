@@ -25,6 +25,12 @@ indexer = [
     "dep:urlencoding",
 ]
 
+# Record periodic resource-usage snapshots (peers, CPU, memory, traffic, load)
+# into a small SQLite DB so operators can size the hardware a bootstrap node
+# needs. Off by default; runs by default once compiled in, disabled with
+# `--no-stats`. Resource figures come from Linux /proc (NULL on other hosts).
+stats = ["dep:sqlx"]
+
 [dependencies]
 rucio-net   = { path = "../rucio-net" }
 rucio-core  = { path = "../rucio-core" }

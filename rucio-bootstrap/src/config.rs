@@ -20,6 +20,8 @@ pub struct Config {
     pub node: NodeConfig,
     #[serde(default)]
     pub indexer: IndexerConfig,
+    #[serde(default)]
+    pub stats: StatsConfig,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -62,6 +64,20 @@ pub struct IndexerConfig {
     pub identity_count: u8,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct StatsConfig {
+    /// Record periodic resource-usage snapshots. Defaults to `true` when built
+    /// with the `stats` feature — the whole point of that build — so it is
+    /// turned off with `enabled = false` (or the `--no-stats` flag).
+    #[serde(default = "default_stats_enabled")]
+    pub enabled: bool,
+    /// SQLite database path.
+    pub db: Option<PathBuf>,
+    /// Drop samples older than this many days.
+    #[serde(default = "default_stats_retention_days")]
+    pub retention_days: i64,
+}
+
 // ── serde defaults ────────────────────────────────────────────────────────────
 
 fn default_listen() -> Vec<String> {
@@ -82,6 +98,14 @@ fn default_enrich() -> bool {
 
 fn default_indexer_enabled() -> bool {
     true
+}
+
+fn default_stats_enabled() -> bool {
+    true
+}
+
+fn default_stats_retention_days() -> i64 {
+    90
 }
 
 impl Default for NodeConfig {
@@ -108,6 +132,16 @@ impl Default for IndexerConfig {
     }
 }
 
+impl Default for StatsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_stats_enabled(),
+            db: None,
+            retention_days: default_stats_retention_days(),
+        }
+    }
+}
+
 // ── default paths ─────────────────────────────────────────────────────────────
 
 pub fn default_config_path() -> PathBuf {
@@ -129,6 +163,13 @@ pub fn default_index_db_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
         .join("rucio-bootstrap")
         .join("index.db")
+}
+
+pub fn default_stats_db_path() -> PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("rucio-bootstrap")
+        .join("stats.db")
 }
 
 #[cfg(feature = "indexer")]
@@ -183,13 +224,15 @@ pub fn write_template(path: &Path) -> Result<()> {
     }
     let identity = default_identity_path();
     let db = default_index_db_path();
-    std::fs::write(path, render_template(&identity, &db))
+    let stats_db = default_stats_db_path();
+    std::fs::write(path, render_template(&identity, &db, &stats_db))
         .with_context(|| format!("writing config template to {}", path.display()))
 }
 
-fn render_template(identity: &Path, db: &Path) -> String {
+fn render_template(identity: &Path, db: &Path, stats_db: &Path) -> String {
     let id = identity.to_string_lossy();
     let db = db.to_string_lossy();
+    let stats_db = stats_db.to_string_lossy();
     format!(
         r#"# rucio-bootstrap configuration
 # Example written by `rucio-bootstrap --init-config` — edit freely.
@@ -232,6 +275,20 @@ enrich = true
 # same peers as the primary.  Keys are stored as identity-1.key, identity-2.key, …
 # next to the primary identity key.  0 = single identity (default).
 identity_count = 0
+
+[stats]
+# Record periodic resource-usage snapshots (concurrent peers/connections, CPU,
+# memory, machine traffic, load) into SQLite so you can size the hardware a
+# bootstrap node needs. With a `stats`-feature build it runs by default; set
+# this to false (or pass --no-stats) to disable. Resource figures are read from
+# Linux /proc and are stored as NULL on other platforms.
+enabled = true
+
+# SQLite database path.
+db = "{stats_db}"
+
+# Drop samples older than this many days.
+retention_days = 90
 "#
     )
 }
