@@ -18,9 +18,12 @@
 #                 Point it at the daemon with RUCIO_API.
 #
 #   bootstrap  →  tag "master-bootstrap" / "0.1.0-bootstrap" / "latest-bootstrap"
-#                 rucio-bootstrap compiled with --features indexer: a stable DHT
-#                 entry point plus the passive DHT indexer (REST search API).
-#                 The indexer runs by default; disable it with --no-index.
+#                 rucio-bootstrap compiled with --features indexer,stats-web: a
+#                 stable DHT entry point plus the passive DHT indexer (REST
+#                 search API) and the resource-usage stats panel, both served on
+#                 one HTTP port. The indexer runs by default (disable with
+#                 --no-index); stats recording runs by default (disable with
+#                 --no-stats).
 #
 # Local build (compiles from source):
 #   podman build --target complete   -t rucio:dev            .
@@ -47,7 +50,8 @@
 #                              container; set to true only with --network=host)
 #   RUCIO_BOOTSTRAP_CONFIG     Path to the bootstrap config file — optional, defaults to
 #                              /var/lib/rucio/.config/rucio-bootstrap/config.toml
-#   RUCIO_BOOTSTRAP_API_LISTEN Indexer REST API bind address (default: 0.0.0.0:3003)
+#   RUCIO_BOOTSTRAP_API_LISTEN Shared HTTP server bind address — indexer search
+#                              UI/API + stats panel (default: 0.0.0.0:3003)
 #   RUCIO_BOOTSTRAP_LOG        Log filter for rucio-bootstrap (default: info)
 
 # ── Stage 1a: compile from source (default local path) ──────────────────────
@@ -88,7 +92,7 @@ RUN cd rucio-web && trunk build --release --public-url ./
 # Second pass recompiles only the fat `rucio` with the embedded web panel.
 # The first pass builds the workspace default-members, which already includes
 # the standalone rucio-cli — just copy it out alongside the daemon binaries.
-RUN cargo build --release --locked --features emule-compat,indexer && \
+RUN cargo build --release --locked --features emule-compat,indexer,stats-web && \
     cp target/release/ruciod          /usr/bin/ruciod          && \
     cp target/release/rucio-bootstrap /usr/bin/rucio-bootstrap && \
     cp target/release/rucio-cli       /usr/bin/rucio-cli       && \
@@ -209,7 +213,8 @@ ENV RUCIO_BOOTSTRAP_API_LISTEN=0.0.0.0:3003
 
 # DHT port (primary Kademlia identity).
 EXPOSE 4321/tcp
-# Indexer REST API (runs by default; disable with --no-index).
+# Shared HTTP server: indexer search UI/API (/, /search) + stats panel (/stats),
+# with the merged API docs at /api/docs.
 EXPOSE 3003/tcp
 
 ENTRYPOINT ["/usr/bin/rucio-bootstrap"]

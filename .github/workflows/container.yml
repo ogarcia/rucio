@@ -85,7 +85,7 @@ jobs:
       - name: Build (headless + bootstrap + cli, no web-ui)
         run: |
           cargo build --release --locked --target ${{ matrix.target }} \
-            --features emule-compat,indexer
+            --features emule-compat,indexer,stats-web
           mkdir -p dist/${{ matrix.arch }}
           cp target/${{ matrix.target }}/release/ruciod          dist/${{ matrix.arch }}/
           cp target/${{ matrix.target }}/release/rucio-bootstrap dist/${{ matrix.arch }}/
