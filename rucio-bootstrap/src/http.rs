@@ -217,7 +217,7 @@ footer{padding:1.25rem 1.5rem;padding-left:var(--indent);color:var(--text-3);fon
 .tab{padding:.4rem .9rem;border:1px solid var(--border);border-radius:999px;background:var(--surface);color:var(--text-2);font-size:.85rem;font-weight:600}
 .tab:hover{border-color:var(--accent);text-decoration:none}
 .tab.active{background:var(--accent);border-color:var(--accent);color:var(--accent-fg)}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:.9rem}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:.9rem;margin-bottom:1.25rem}
 .tile{background:var(--surface);border:1px solid var(--border);border-radius:.7rem;padding:.85rem .95rem}
 .tile .k{color:var(--text-3);font-size:.72rem;text-transform:uppercase;letter-spacing:.04em;margin-bottom:.3rem}
 .tile .v{font-size:1.35rem;font-weight:700;line-height:1.15;letter-spacing:-.01em}
