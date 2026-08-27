@@ -179,5 +179,27 @@ rucio share magnet --file /path/to/file.mkv   # offline, no daemon needed
 | Guide | Description |
 |---|---|
 | [User guide](docs/user/README.md) | Installation, configuration and everyday usage |
-| [Admin guide](docs/admin/README.md) | Running bootstrap nodes and the DHT indexer |
+| [Admin guide](docs/admin/README.md) | Running bootstrap nodes, the DHT indexer and resource statistics |
 | [Design docs](docs/design/README.md) | Architecture, protocols and implementation decisions |
+
+## Support the network
+
+Rucio is decentralized, but it still relies on a handful of stable, always-on
+**bootstrap nodes** so new clients can always find their way into the network.
+That infrastructure — not the developer — is what keeps the network reachable,
+and it is remarkably cheap to provide: a bootstrap node is tiny, using on the
+order of **~50 GB of traffic per month, ~35 MB of RAM and negligible CPU** — well
+within the smallest VPS, or a provider's free tier.
+
+There are two ways to help:
+
+- **Run a bootstrap node.** The most direct contribution: one more stable entry
+  point makes the network faster to join and more resilient. It is a single
+  small binary — see the [admin guide](docs/admin/README.md) to set one up.
+- **Sponsor the infrastructure.** If you or your company runs hosting, donating
+  a small always-on instance for a bootstrap node costs next to nothing and
+  directly strengthens the network. You can also chip in through
+  [GitHub Sponsors](https://github.com/sponsors/ogarcia) to help cover it.
+
+Sponsorship goes to keeping the network's infrastructure running, not to the
+author.
