@@ -245,7 +245,7 @@ pub async fn upsert_file(db: &Db, hash_hex: &str, name: &str, size: i64) -> Resu
 }
 
 /// Aggregate counters over the whole index.
-#[derive(Debug, Serialize, FromRow, ToSchema)]
+#[derive(Debug, Default, Serialize, FromRow, ToSchema)]
 pub struct Stats {
     pub total_records: i64,
     pub distinct_hashes: i64,

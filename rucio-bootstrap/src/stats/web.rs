@@ -1,13 +1,14 @@
-//! The stats dashboard: a server-rendered, no-JS panel at `GET /stats`.
+//! The node dashboard: a server-rendered, no-JS panel at `GET /stats`.
 //!
-//! It renders the same aggregates the JSON API serves ([`super::query`]) as a
-//! host card, a window selector and a grid of the numbers you size a bootstrap
-//! server from — plus a rough suggested-instance line for a sponsor pitch. The
-//! page shell, palette and helpers are shared with the other roles via
-//! [`crate::http`].
+//! It renders the same aggregates the JSON API serves ([`super::query`]) as the
+//! search-index counts (when the indexer runs), three metric cards with
+//! sparklines (from [`super::query::series`]), a compact facts strip and a rough
+//! suggested-instance line for a sponsor pitch. The page shell, palette, theme
+//! switch and helpers are shared with the other roles via [`crate::http`].
 
 use axum::{
     extract::{Query, State},
+    http::HeaderMap,
     response::Html,
 };
 use serde::Deserialize;
@@ -15,9 +16,10 @@ use serde::Deserialize;
 use crate::http;
 
 use super::api::AppState;
-use super::query::{self, HostInfo, Summary};
+use super::query::{self, HostInfo, SeriesPoint, Summary};
 
-/// Selectable aggregation windows: (label, seconds; `0` = all history).
+/// Selectable aggregation windows: (label, seconds; `0` = all history). "All"
+/// is hidden on mobile (see the `w-all` class), leaving the four fixed windows.
 const WINDOWS: [(&str, i64); 5] = [
     ("1h", 3_600),
     ("24h", 86_400),
@@ -26,141 +28,142 @@ const WINDOWS: [(&str, i64); 5] = [
     ("All", 0),
 ];
 
+/// Buckets requested for the sparklines.
+const SPARK_POINTS: i64 = 48;
+
 #[derive(Deserialize)]
 pub struct PanelQuery {
     #[serde(default)]
     w: Option<i64>,
 }
 
-/// `GET /stats` — the node dashboard for the selected window: the search index
-/// it serves (when the indexer role is on) and the resources it consumes.
-pub async fn panel(State(s): State<AppState>, Query(p): Query<PanelQuery>) -> Html<String> {
+/// `GET /stats` — the node dashboard for the selected window.
+pub async fn panel(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Query(p): Query<PanelQuery>,
+) -> Html<String> {
+    let theme = http::theme_from_cookies(&headers);
     let window = p.w.unwrap_or(86_400).max(0);
     let host = query::host_info(&s.db).await.ok().flatten();
 
-    // The search-index card, rendered only when the indexer is enabled — read
-    // from the shared pool, which carries the index tables on a `web` build.
+    // Search-index counts, read from the shared pool when the indexer runs.
     let index = if s.index_enabled {
-        index_card(crate::indexer::index_stats(&s.db).await.ok().as_ref())
+        crate::indexer::index_stats(&s.db).await.ok()
     } else {
-        String::new()
+        None
     };
-    let has_index = !index.is_empty();
+
+    let header = header_bar(theme, window, host.as_ref(), s.index_enabled);
 
     let body = match query::summary(&s.db, window).await {
-        Ok(sum) => format!(
-            "{head}{host}{index}{tabs}{grid}{sizing}{footer}",
-            head = head(has_index),
-            host = host_card(host.as_ref()),
-            tabs = tabs(window),
-            grid = stat_grid(&sum, host.as_ref()),
-            sizing = sizing_card(&sum, host.as_ref()),
-            footer = http::footer(),
-        ),
+        Ok(sum) => {
+            let series = query::series(&s.db, window, SPARK_POINTS)
+                .await
+                .map(|s| s.points)
+                .unwrap_or_default();
+            format!(
+                "{dhead}{metrics}{strip}{suggest}",
+                dhead = dhead(index.as_ref(), window),
+                metrics = metrics(&sum, host.as_ref(), &series),
+                strip = strip(&sum),
+                suggest = suggest(&sum, host.as_ref()),
+            )
+        }
         Err(_) => format!(
-            r#"{head}{index}<div class="card"><p class="empty">Resource statistics are unavailable.</p></div>{footer}"#,
-            head = head(has_index),
-            footer = http::footer(),
+            r#"{dhead}<div class="card"><p class="empty">Resource statistics are unavailable.</p></div>"#,
+            dhead = dhead(index.as_ref(), window),
         ),
     };
     http::html_page(
         "Rucio bootstrap — status",
-        &format!(r#"<div class="wrap">{body}</div>"#),
+        &format!("<div class=\"stick\">{header}</div><div class=\"wrap\">{body}</div>"),
+        theme,
     )
 }
 
-// ── Sections ────────────────────────────────────────────────────────────────
+// ── Header ───────────────────────────────────────────────────────────────────
 
-fn head(has_index: bool) -> String {
-    let (sub, search_link) = if has_index {
-        (
-            "The search index this node serves, and what it consumes to run",
-            r#"<p class="note"><a href="/">← Search the index</a></p>"#,
-        )
+fn header_bar(theme: http::Theme, window: i64, host: Option<&HostInfo>, index_on: bool) -> String {
+    let search = if index_on {
+        r#"<a class="navlink" href="/">Search the index →</a>"#
     } else {
-        (
-            "What this node consumes — to size the hardware it needs",
-            "",
-        )
+        ""
+    };
+    // The host summary sits inline right after the brand and wraps to the next
+    // line only when it does not fit.
+    let hs = host_summary(host);
+    let hostsum = if hs.is_empty() {
+        String::new()
+    } else {
+        format!(r#"<span class="hostsum">{hs}</span>"#)
     };
     format!(
-        r#"<div class="head">
-  <span class="logo">{logo}</span>
-  <div>
-    <h1>Bootstrap node</h1>
-    <p class="sub">{sub}</p>
-    {search_link}
-  </div>
-</div>"#,
-        logo = http::LOGO_SVG,
+        r#"<header class="bar dash"><div class="bar-in">{brand}{hostsum}<span class="spacer"></span>{search}<span class="tsw-wrap">{tsw}</span></div></header>"#,
+        brand = http::brand("Node status"),
+        tsw = http::theme_switch(theme, &format!("/stats?w={window}")),
     )
 }
 
-/// The search-index card: aggregate counters from the indexer, shown when this
-/// node also indexes the DHT. Frames the resource numbers below with what the
-/// node is actually storing and serving.
-fn index_card(stats: Option<&crate::indexer::Stats>) -> String {
-    let Some(st) = stats else {
-        return String::new();
-    };
-    let pct = if st.distinct_hashes > 0 {
-        format!(
-            "{:.0}%",
-            st.enriched_files as f64 / st.distinct_hashes as f64 * 100.0
-        )
-    } else {
-        dash()
-    };
-    let span = match (st.oldest, st.newest) {
-        (Some(o), Some(n)) if n >= o => fmt_duration(n - o),
-        _ => dash(),
-    };
-    format!(
-        r#"<div class="card">
-  <h2>Search index</h2>
-  <div class="facts">
-    <div><div class="k">Files indexed</div>{hashes}</div>
-    <div><div class="k">Enriched</div>{enriched} ({pct})</div>
-    <div><div class="k">Providers</div>{providers}</div>
-    <div><div class="k">Provider records</div>{records}</div>
-    <div><div class="k">History</div>{span}</div>
-  </div>
-</div>"#,
-        hashes = st.distinct_hashes,
-        enriched = st.enriched_files,
-        providers = st.distinct_providers,
-        records = st.total_records,
-    )
-}
-
-fn host_card(host: Option<&HostInfo>) -> String {
+/// One-line host summary for the header (`host · N vCPU · RAM · kernel`).
+fn host_summary(host: Option<&HostInfo>) -> String {
     let Some(h) = host else {
         return String::new();
     };
-    let cpus = h.num_cpus.map(|n| n.to_string()).unwrap_or_else(dash);
-    let ram = h
-        .mem_total_kb
-        .map(|kb| http::human_size(kb as u64 * 1024))
-        .unwrap_or_else(dash);
-    let hostname = h.hostname.as_deref().map(http::esc).unwrap_or_else(dash);
-    let kernel = h.kernel.as_deref().map(http::esc).unwrap_or_else(dash);
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(n) = h.hostname.as_deref().filter(|s| !s.is_empty()) {
+        parts.push(http::esc(n));
+    }
+    if let Some(c) = h.num_cpus {
+        parts.push(format!("{c} vCPU"));
+    }
+    if let Some(kb) = h.mem_total_kb {
+        parts.push(http::human_size(kb as u64 * 1024));
+    }
+    if let Some(k) = h.kernel.as_deref().filter(|s| !s.is_empty()) {
+        parts.push(http::esc(k));
+    }
+    parts.join(" · ")
+}
+
+// ── Dashboard head: index counts + window tabs ───────────────────────────────
+
+fn dhead(index: Option<&crate::indexer::Stats>, window: i64) -> String {
     format!(
-        r#"<div class="card">
-  <h2>Host</h2>
-  <div class="facts">
-    <div><div class="k">Hostname</div>{hostname}</div>
-    <div><div class="k">CPUs</div>{cpus}</div>
-    <div><div class="k">RAM</div>{ram}</div>
-    <div><div class="k">Kernel</div>{kernel}</div>
-  </div>
+        r#"<div class="dhead">{idx}{tabs}</div>"#,
+        idx = idxrow(index),
+        tabs = tabs(window),
+    )
+}
+
+/// Search-index counters, shown when the indexer runs and has records.
+fn idxrow(index: Option<&crate::indexer::Stats>) -> String {
+    let Some(st) = index.filter(|s| s.distinct_hashes > 0) else {
+        return r#"<div></div>"#.to_string();
+    };
+    let named = format!(
+        "{:.0}%",
+        st.enriched_files as f64 / st.distinct_hashes as f64 * 100.0
+    );
+    format!(
+        r#"<div class="idxrow">
+  <div><div class="k">Files indexed</div><div class="v">{files}</div></div>
+  <div><div class="k">Providers</div><div class="v">{providers}</div></div>
+  <div><div class="k">Named</div><div class="v">{named}</div></div>
 </div>"#,
+        files = http::group(st.distinct_hashes),
+        providers = http::group(st.distinct_providers),
     )
 }
 
 fn tabs(active: i64) -> String {
     let mut out = String::from(r#"<div class="tabs">"#);
     for (label, secs) in WINDOWS {
-        let cls = if secs == active { "tab active" } else { "tab" };
+        let mut cls = if secs == active { "pill on" } else { "pill" }.to_string();
+        // "All" (secs == 0) is dropped on mobile, leaving the four fixed windows.
+        if secs == 0 {
+            cls.push_str(" w-all");
+        }
         out.push_str(&format!(
             r#"<a class="{cls}" href="/stats?w={secs}">{label}</a>"#
         ));
@@ -169,127 +172,152 @@ fn tabs(active: i64) -> String {
     out
 }
 
-fn stat_grid(s: &Summary, host: Option<&HostInfo>) -> String {
+// ── Metric cards with sparklines ─────────────────────────────────────────────
+
+fn metrics(s: &Summary, host: Option<&HostInfo>, series: &[SeriesPoint]) -> String {
     if s.samples == 0 {
         return r#"<div class="card"><p class="empty">No samples in this window yet — the node records one per minute.</p></div>"#.to_string();
     }
-
     let cores = host.and_then(|h| h.num_cpus);
-    let total_ram = host.and_then(|h| h.mem_total_kb);
+
+    // Peers.
+    let peers_spark = sparkline(&series.iter().filter_map(|p| p.peers).collect::<Vec<_>>());
+    let peers = metric(
+        "Peers",
+        &format!(
+            r#"{}<small> peak</small>"#,
+            s.peak_peers.map(|n| n.to_string()).unwrap_or_else(dash)
+        ),
+        &format!("{} connections peak", opt_i(s.peak_connections)),
+        &peers_spark,
+    );
+
+    // CPU (percent of one core → core-equivalent).
+    let cpu_spark = sparkline(&series.iter().filter_map(|p| p.cpu_pct).collect::<Vec<_>>());
+    let cpu_v = match s.peak_cpu_pct {
+        Some(p) => {
+            let of = cores.map(|c| format!(" of {c}")).unwrap_or_default();
+            format!(r#"{:.2}<small> cores{of}</small>"#, p / 100.0)
+        }
+        None => dash(),
+    };
+    let cpu_sub = s
+        .avg_cpu_pct
+        .map(|a| format!("avg {a:.0} %/core"))
+        .unwrap_or_else(|| "Linux only".to_string());
+    let cpu = metric("CPU", &cpu_v, &cpu_sub, &cpu_spark);
+
+    // Traffic.
+    let traffic_spark = sparkline(
+        &series
+            .iter()
+            .filter_map(|p| p.traffic_bytes.map(|b| b as f64))
+            .collect::<Vec<_>>(),
+    );
     let (rx, tx) = (s.net_rx_bytes, s.net_tx_bytes);
-    let total_traffic = match (rx, tx) {
+    let total = match (rx, tx) {
         (Some(r), Some(t)) => Some(r + t),
         _ => None,
     };
-    let span_days = s.span_secs.map(|d| (d as f64 / 86_400.0).max(1.0 / 24.0));
-    let per_day = match (total_traffic, span_days) {
-        (Some(tot), Some(days)) if days > 0.0 => Some(tot as f64 / days),
+    let per_day = match (total, s.span_secs) {
+        (Some(tot), Some(span)) if span > 0 => {
+            Some(tot as f64 / (span as f64 / 86_400.0).max(1.0 / 24.0))
+        }
         _ => None,
     };
-
-    let mut tiles = String::new();
-
-    tiles.push_str(&tile(
-        "Peak peers",
-        &opt_i(s.peak_peers),
-        &format!("{} connections peak", opt_i(s.peak_connections)),
-    ));
-
-    // RSS peak, with what fraction of the box's RAM that is.
-    let rss_sub = match (s.peak_rss_kb, total_ram) {
-        (Some(rss), Some(tot)) if tot > 0 => {
-            format!(
-                "{:.0}% of {}",
-                rss as f64 / tot as f64 * 100.0,
-                http::human_size(tot as u64 * 1024)
-            )
-        }
-        _ => "process resident".to_string(),
-    };
-    tiles.push_str(&tile("Peak memory", &opt_kb(s.peak_rss_kb), &rss_sub));
-
-    // CPU peak as % of one core, plus the core-equivalent and the average.
-    let cpu_v = s
-        .peak_cpu_pct
-        .map(|p| format!(r#"{p:.0}<small> %/core</small>"#))
-        .unwrap_or_else(dash);
-    let cpu_sub = match (s.peak_cpu_pct, s.avg_cpu_pct) {
-        (Some(peak), Some(avg)) => {
-            let cores_txt = cores.map(|c| format!(" of {c}")).unwrap_or_default();
-            format!("{:.2} cores{} · avg {avg:.0}%", peak / 100.0, cores_txt)
-        }
-        _ => "Linux only".to_string(),
-    };
-    tiles.push_str(&tile("Peak CPU", &cpu_v, &cpu_sub));
-
-    // Traffic total + direction split.
-    let traffic_sub = match (rx, tx) {
-        (Some(r), Some(t)) => format!(
-            "↓ {} · ↑ {}",
+    let traffic_sub = match (rx, tx, per_day) {
+        (Some(r), Some(t), Some(pd)) => format!(
+            "↓ {} · ↑ {} · {}/day",
             http::human_size(r as u64),
-            http::human_size(t as u64)
+            http::human_size(t as u64),
+            http::human_size(pd as u64)
         ),
         _ => "Linux only".to_string(),
     };
-    tiles.push_str(&tile("Traffic", &opt_bytes(total_traffic), &traffic_sub));
+    let traffic = metric(
+        "Traffic",
+        &total
+            .map(|b| http::human_size(b as u64))
+            .unwrap_or_else(dash),
+        &traffic_sub,
+        &traffic_spark,
+    );
 
-    // Traffic per day + a rough monthly projection (what a VPS bills on).
-    let (perday_v, perday_sub) = match per_day {
-        Some(pd) => (
-            http::human_size(pd as u64),
-            format!("≈ {}/month", http::human_size((pd * 30.0) as u64)),
-        ),
-        None => (dash(), "Linux only".to_string()),
-    };
-    tiles.push_str(&tile("Traffic / day", &perday_v, &perday_sub));
-
-    tiles.push_str(&tile(
-        "Peak load",
-        &s.peak_load1.map(|l| format!("{l:.2}")).unwrap_or_else(dash),
-        "1-minute average",
-    ));
-    tiles.push_str(&tile(
-        "Peak open files",
-        &opt_i(s.peak_open_fds),
-        &format!("{} threads peak", opt_i(s.peak_threads)),
-    ));
-    tiles.push_str(&tile(
-        "Connections",
-        &opt_i(s.conns_opened),
-        &format!(
-            "{} opened · {} closed",
-            opt_i(s.conns_opened),
-            opt_i(s.conns_closed)
-        ),
-    ));
-
-    let span = s
-        .span_secs
-        .map(fmt_duration)
-        .unwrap_or_else(|| "—".to_string());
-    tiles.push_str(&tile(
-        "Samples",
-        &s.samples.to_string(),
-        &format!("over {span}"),
-    ));
-
-    format!(r#"<div class="grid">{tiles}</div>"#)
+    format!(r#"<div class="metrics">{peers}{cpu}{traffic}</div>"#)
 }
 
-/// A rough "what instance should I ask for" line — clearly heuristic, meant as
-/// a starting point for a sponsor conversation, not a guarantee.
-fn sizing_card(s: &Summary, host: Option<&HostInfo>) -> String {
+fn metric(k: &str, v: &str, sub: &str, spark: &str) -> String {
+    format!(
+        r#"<div class="metric"><div class="k">{k}</div><div class="v">{v}</div>{spark}<div class="sub">{sub}</div></div>"#
+    )
+}
+
+/// A polyline sparkline over the values, normalised to its own min/max. Fewer
+/// than two points renders nothing (no shape to draw).
+fn sparkline(vals: &[f64]) -> String {
+    if vals.len() < 2 {
+        return String::new();
+    }
+    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    for &v in vals {
+        lo = lo.min(v);
+        hi = hi.max(v);
+    }
+    let span = (hi - lo).max(f64::MIN_POSITIVE);
+    let n = vals.len() as f64;
+    let pts: Vec<String> = vals
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| {
+            let x = i as f64 / (n - 1.0) * 200.0;
+            let y = 36.0 - (v - lo) / span * 32.0; // 4..36, inverted (SVG y-down)
+            format!("{x:.1},{y:.1}")
+        })
+        .collect();
+    format!(
+        r#"<svg class="spark" viewBox="0 0 200 40" preserveAspectRatio="none" aria-hidden="true"><polyline points="{}"/></svg>"#,
+        pts.join(" ")
+    )
+}
+
+// ── Facts strip + suggested instance ─────────────────────────────────────────
+
+fn strip(s: &Summary) -> String {
     if s.samples == 0 {
         return String::new();
     }
-    // RAM: peak RSS with generous headroom (×2), rounded up to a whole GB.
+    let span = s.span_secs.map(fmt_duration).unwrap_or_else(|| "—".into());
+    let row = |k: &str, v: &str| {
+        format!(r#"<div class="srow"><span class="k">{k}</span><span class="v">{v}</span></div>"#)
+    };
+    format!(
+        r#"<div class="strip">{mem}{load}{fds}{threads}{conns}{samples}</div>"#,
+        mem = row("Memory", &opt_kb(s.peak_rss_kb)),
+        load = row(
+            "Load",
+            &s.peak_load1.map(|l| format!("{l:.2}")).unwrap_or_else(dash)
+        ),
+        fds = row("Open files", &opt_i(s.peak_open_fds)),
+        threads = row("Threads", &opt_i(s.peak_threads)),
+        conns = row(
+            "Connections",
+            &format!("{} / {}", opt_i(s.conns_opened), opt_i(s.conns_closed))
+        ),
+        samples = row("Samples", &format!("{} over {span}", s.samples)),
+    )
+}
+
+/// A rough "what instance should I ask for" banner — clearly heuristic, a
+/// starting point for a sponsor conversation, not a guarantee.
+fn suggest(s: &Summary, host: Option<&HostInfo>) -> String {
+    if s.samples == 0 {
+        return String::new();
+    }
     let ram = s.peak_rss_kb.map(|kb| {
         let gib = kb as f64 / 1024.0 / 1024.0;
         (gib * 2.0).ceil().max(1.0) as u64
     });
-    // Cores: ceil of the peak core-equivalent, at least 1.
     let cores = s.peak_cpu_pct.map(|p| (p / 100.0).ceil().max(1.0) as u64);
-    // Monthly traffic projection.
     let per_month = match (s.net_rx_bytes, s.net_tx_bytes, s.span_secs) {
         (Some(r), Some(t), Some(span)) if span > 0 => {
             let per_day = (r + t) as f64 / (span as f64 / 86_400.0).max(1.0 / 24.0);
@@ -297,20 +325,18 @@ fn sizing_card(s: &Summary, host: Option<&HostInfo>) -> String {
         }
         _ => None,
     };
-
-    let ram_txt = ram.map(|g| format!("{g} GB RAM")).unwrap_or_default();
-    let cores_txt = cores.map(|c| format!("{c} vCPU")).unwrap_or_default();
-    let traffic_txt = per_month
-        .map(|b| format!("~{}/month traffic", http::human_size(b)))
-        .unwrap_or_default();
-    let parts: Vec<String> = [cores_txt, ram_txt, traffic_txt]
-        .into_iter()
-        .filter(|p| !p.is_empty())
-        .collect();
+    let parts: Vec<String> = [
+        cores.map(|c| format!("{c} vCPU")),
+        ram.map(|g| format!("{g} GB RAM")),
+        per_month.map(|b| format!("~{}/month", http::human_size(b))),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     if parts.is_empty() {
         return String::new();
     }
-    let host_note = host
+    let measured = host
         .and_then(|h| match (h.num_cpus, h.mem_total_kb) {
             (Some(c), Some(m)) => Some(format!(
                 " Measured on {c} vCPU / {}.",
@@ -319,24 +345,13 @@ fn sizing_card(s: &Summary, host: Option<&HostInfo>) -> String {
             _ => None,
         })
         .unwrap_or_default();
-
     format!(
-        r#"<div class="card">
-  <h2>Suggested instance</h2>
-  <div class="tile"><div class="v">{joined}</div></div>
-  <p class="note">Rough heuristic from the peaks in this window (RAM = peak memory ×2, vCPU = peak core-equivalent, traffic projected to 30 days).{host_note}</p>
-</div>"#,
+        r#"<div class="suggest"><div class="suggest-head"><span class="k">Suggested instance</span><span class="v">{joined}</span><span class="sub">to sustain these peaks</span></div><p class="note">Rough heuristic from the peaks in this window (RAM = peak memory ×2, vCPU = peak core-equivalent, traffic projected to 30 days).{measured}</p></div>"#,
         joined = parts.join(" · "),
     )
 }
 
 // ── Small formatting helpers ────────────────────────────────────────────────
-
-fn tile(k: &str, v: &str, sub: &str) -> String {
-    format!(
-        r#"<div class="tile"><div class="k">{k}</div><div class="v">{v}</div><div class="sub">{sub}</div></div>"#
-    )
-}
 
 fn dash() -> String {
     "—".to_string()
@@ -351,22 +366,16 @@ fn opt_kb(kb: Option<i64>) -> String {
         .unwrap_or_else(dash)
 }
 
-fn opt_bytes(b: Option<i64>) -> String {
-    b.map(|n| http::human_size(n as u64)).unwrap_or_else(dash)
-}
-
 /// Coarse human duration for the sample span.
 fn fmt_duration(secs: i64) -> String {
     let secs = secs.max(0);
-    let days = secs / 86_400;
-    let hours = secs / 3_600;
-    let mins = secs / 60;
-    if days >= 1 {
-        format!("{days}d")
-    } else if hours >= 1 {
-        format!("{hours}h")
-    } else if mins >= 1 {
-        format!("{mins}m")
+    let (d, h, m) = (secs / 86_400, secs / 3_600, secs / 60);
+    if d >= 1 {
+        format!("{d}d")
+    } else if h >= 1 {
+        format!("{h}h")
+    } else if m >= 1 {
+        format!("{m}m")
     } else {
         format!("{secs}s")
     }
@@ -397,66 +406,70 @@ mod tests {
     }
 
     #[test]
-    fn grid_renders_key_numbers() {
-        let html = stat_grid(&summary(10), None);
-        assert!(html.contains("Peak peers"));
-        assert!(html.contains(">12<")); // peak peers value
-        assert!(html.contains("Peak CPU"));
-        assert!(html.contains("1.40 cores")); // 140% → 1.4 cores
+    fn metrics_render_the_three_cards() {
+        let html = metrics(&summary(10), None, &[]);
+        assert!(html.contains("Peers"));
+        assert!(html.contains(">12<")); // peak peers
+        assert!(html.contains("CPU"));
+        assert!(html.contains("1.40")); // 140% → 1.40 cores
+        assert!(html.contains("Traffic"));
     }
 
     #[test]
-    fn empty_window_shows_a_placeholder_not_tiles() {
-        let html = stat_grid(&summary(0), None);
+    fn empty_window_shows_a_placeholder_not_cards() {
+        let html = metrics(&summary(0), None, &[]);
         assert!(html.contains("No samples"));
-        assert!(!html.contains(r#"class="grid""#));
+        assert!(!html.contains(r#"class="metrics""#));
     }
 
     #[test]
-    fn sizing_suggests_cores_ram_and_traffic() {
-        let html = sizing_card(&summary(10), None);
+    fn sparkline_draws_a_polyline_for_two_or_more_points() {
+        assert!(sparkline(&[]).is_empty());
+        assert!(sparkline(&[5.0]).is_empty());
+        let svg = sparkline(&[1.0, 5.0, 3.0]);
+        assert!(svg.contains("<polyline"));
+        assert!(svg.contains("0.0,")); // first x at 0
+        assert!(svg.contains("200.0,")); // last x at 200
+    }
+
+    #[test]
+    fn suggest_names_cores_ram_and_traffic() {
+        let html = suggest(&summary(10), None);
         assert!(html.contains("2 vCPU")); // ceil(140% → 1.4) = 2
         assert!(html.contains("GB RAM"));
-        assert!(html.contains("month traffic"));
+        assert!(html.contains("/month"));
     }
 
     #[test]
-    fn sizing_is_empty_without_samples() {
-        assert!(sizing_card(&summary(0), None).is_empty());
+    fn suggest_is_empty_without_samples() {
+        assert!(suggest(&summary(0), None).is_empty());
     }
 
     #[test]
     fn tabs_mark_the_active_window() {
         let html = tabs(86_400);
-        assert!(html.contains(r#"class="tab active" href="/stats?w=86400""#));
-        assert!(html.contains(r#"class="tab" href="/stats?w=3600""#));
+        assert!(html.contains(r#"class="pill on" href="/stats?w=86400""#));
+        assert!(html.contains(r#"class="pill" href="/stats?w=3600""#));
     }
 
     #[test]
-    fn index_card_shows_counters_and_enriched_share() {
+    fn idxrow_shows_counts_and_named_share() {
         let st = crate::indexer::Stats {
             total_records: 100,
             distinct_hashes: 40,
             distinct_providers: 12,
             enriched_files: 20,
             oldest: Some(1_000),
-            newest: Some(1_000 + 3 * 86_400),
+            newest: Some(2_000),
         };
-        let html = index_card(Some(&st));
-        assert!(html.contains("Search index"));
-        assert!(html.contains(">40<")); // files indexed (distinct hashes)
-        assert!(html.contains("20 (50%)")); // 20 of 40 hashes enriched
-        assert!(html.contains("3d")); // oldest→newest span
+        let html = idxrow(Some(&st));
+        assert!(html.contains("Files indexed"));
+        assert!(html.contains(">40<")); // distinct hashes
+        assert!(html.contains(">50%<")); // 20 of 40 named
     }
 
     #[test]
-    fn index_card_is_empty_without_stats() {
-        assert!(index_card(None).is_empty());
-    }
-
-    #[test]
-    fn head_links_to_search_only_with_an_index() {
-        assert!(head(true).contains(r#"href="/""#));
-        assert!(!head(false).contains(r#"href="/""#));
+    fn idxrow_empty_without_index() {
+        assert!(!idxrow(None).contains("Files indexed"));
     }
 }

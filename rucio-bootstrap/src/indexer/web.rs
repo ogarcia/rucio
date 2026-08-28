@@ -1,17 +1,18 @@
 //! A minimal search front-end for the DHT indexer.
 //!
-//! Server-rendered, no JavaScript: `GET /` is a search box (Google/DuckDuckGo
-//! style) and `GET /search?q=…` renders results. It reuses the same
-//! [`super::db::search`] the JSON API uses, so the web UI and the API never
-//! drift apart. File names come from the untrusted network, so everything
-//! interpolated into HTML is escaped (via [`crate::http::esc`]). The page shell,
-//! palette and generic helpers are shared with the other web roles in
-//! [`crate::http`].
+//! Server-rendered, no JavaScript: `GET /` is a landing page with live index
+//! counts and a search box, `GET /search?q=…` renders results as cards. It
+//! reuses the same [`super::db::search`] the JSON API uses, so the web UI and
+//! the API never drift apart. File names come from the untrusted network, so
+//! everything interpolated into HTML is escaped (via [`crate::http::esc`]). The
+//! page shell, palette, theme switch and helpers are shared with the other web
+//! roles in [`crate::http`].
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::{
     extract::{Query, State},
+    http::HeaderMap,
     response::Html,
 };
 use serde::Deserialize;
@@ -35,35 +36,87 @@ pub struct WebQuery {
     offset: Option<i64>,
 }
 
-/// `GET /` — the landing page: logo + search box.
-pub async fn landing(State(s): State<AppState>) -> Html<String> {
-    let status_link = if s.stats_panel {
-        r#"<p class="note"><a href="/stats">Node status →</a></p>"#
+/// `GET /` — the landing page: header, a headline with live index counts and a
+/// search box.
+pub async fn landing(State(s): State<AppState>, headers: HeaderMap) -> Html<String> {
+    let theme = http::theme_from_cookies(&headers);
+    let st = db::stats(&s.db).await.unwrap_or_default();
+
+    // The landing header carries only the brand and nav — the search box lives
+    // in the hero below. The "Node status" link appears only here, on the home
+    // page (the results and dashboard pages do not repeat it).
+    let nav = if s.stats_panel {
+        r#"<a class="navlink" href="/stats">Node status</a><a class="navlink" href="/api/docs">API</a>"#
+    } else {
+        r#"<a class="navlink" href="/api/docs">API</a>"#
+    };
+    let header = format!(
+        r#"<header class="bar landing"><div class="bar-in">{brand}<span class="spacer"></span><span class="hdr-nav">{nav}</span><span class="tsw-wrap">{tsw}</span></div></header>"#,
+        brand = http::brand("Rucio"),
+        tsw = http::theme_switch(theme, "/"),
+    );
+
+    let (h1, lead) = if st.distinct_hashes > 0 {
+        (
+            format!(
+                "{} files announced by {} nodes",
+                http::group(st.distinct_hashes),
+                http::group(st.distinct_providers)
+            ),
+            "This node watches the DHT and remembers what flows through it — search by file name or content hash.",
+        )
+    } else {
+        (
+            "Search the Rucio network".to_string(),
+            "This node watches the DHT and remembers what flows through it — search by file name or content hash.",
+        )
+    };
+
+    let facts = if st.distinct_hashes > 0 {
+        format!(
+            r#"<div class="facts3">
+  <div><div class="n">{named}</div><div class="k">files named so far</div></div>
+  <div><div class="n">{last}</div><div class="k">since the last announcement</div></div>
+  <div><div class="n">{hist}</div><div class="k">of history in the index</div></div>
+</div>"#,
+            named = http::group(st.enriched_files),
+            last = st.newest.map(seen_ago).unwrap_or_else(|| "—".into()),
+            hist = match (st.oldest, st.newest) {
+                (Some(o), Some(n)) if n >= o => fmt_dur(n - o),
+                _ => "—".into(),
+            },
+        )
+    } else {
+        String::new()
+    };
+
+    // On mobile the header nav is hidden; the node-status link appears at the
+    // foot of the hero instead.
+    let hero_status = if s.stats_panel {
+        r#"<a class="navlink hero-status" href="/stats">Node status →</a>"#
     } else {
         ""
     };
     let body = format!(
-        r#"<div class="home">
-  <span class="logo">{logo}</span>
-  <h1>Rucio</h1>
-  <p class="tag">Search the decentralized network</p>
-  <form class="search" action="/search" method="get" role="search">
-    <input type="text" name="q" placeholder="Search files by name or hash…" autofocus aria-label="Search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
-    <select name="sort" aria-label="Sort order">{sort_opts}</select>
-    <button type="submit">Search</button>
-  </form>
-  {status_link}
-</div>
-{footer}"#,
-        logo = http::LOGO_SVG,
-        sort_opts = sort_options(db::Sort::default()),
-        footer = http::footer(),
+        r#"<div class="stick">{header}</div><div class="hero">
+  <h1>{h1}</h1>
+  <p class="lead">{lead}</p>
+  {search}
+  {facts}
+  {hero_status}
+</div>"#,
+        search = search_form_big(),
     );
-    http::html_page("Rucio — search", &body)
+    http::html_page("Rucio — search", &body, theme)
 }
 
 /// `GET /search?q=…` — results page with a compact header search box.
-pub async fn search_page(State(s): State<AppState>, Query(p): Query<WebQuery>) -> Html<String> {
+pub async fn search_page(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Query(p): Query<WebQuery>,
+) -> Html<String> {
+    let theme = http::theme_from_cookies(&headers);
     let q = p.q.unwrap_or_default();
     let q_trim = q.trim();
     let offset = p.offset.unwrap_or(0).max(0);
@@ -73,71 +126,120 @@ pub async fn search_page(State(s): State<AppState>, Query(p): Query<WebQuery>) -
         .await
         .unwrap_or_default();
 
+    let next = format!(
+        "/search?q={}&sort={}&offset={offset}",
+        urlencoding::encode(q_trim),
+        sort.as_param()
+    );
+    // Results header: brand + search + the sort pills (in-header on mobile, in
+    // the sub-bar on desktop) + theme switch (desktop only).
     let header = format!(
-        r#"<header class="bar"><div class="inner">
-  <a class="logo" href="/" title="Home">{logo}</a>
-  <form class="search" action="/search" method="get" role="search">
-    <input type="text" name="q" value="{q}" placeholder="Search files by name or hash…" aria-label="Search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
-    <select name="sort" aria-label="Sort order">{sort_opts}</select>
-    <button type="submit">Search</button>
-  </form>
-</div></header>"#,
-        logo = http::LOGO_SVG,
-        q = http::esc(&q),
-        sort_opts = sort_options(sort),
+        r#"<header class="bar results"><div class="bar-in">{brand}{search}<div class="sorts hdr-sorts">{pills}</div><span class="spacer"></span><span class="tsw-wrap">{tsw}</span></div></header>"#,
+        brand = http::brand("Rucio"),
+        search = search_box(q_trim),
+        pills = sort_pills(q_trim, sort),
+        tsw = http::theme_switch(theme, &next),
     );
 
-    let mut main = String::new();
-    if records.is_empty() {
-        main.push_str(if q_trim.is_empty() {
-            r#"<p class="empty">The index is empty — no records announced yet.</p>"#
+    // The header and sub-bar stay pinned at the top (`.stick`); only the results
+    // scroll under them.
+    let (subbar, results) = if records.is_empty() {
+        let msg = if q_trim.is_empty() {
+            "The index is empty — no records announced yet."
         } else {
-            r#"<p class="empty">No results.</p>"#
-        });
+            "No results."
+        };
+        (String::new(), format!(r#"<p class="empty">{msg}</p>"#))
     } else {
         let first = offset + 1;
         let last = offset + records.len() as i64;
-        main.push_str(&format!(
-            r#"<p class="count">Results {first}–{last}{more}</p>"#,
-            more = if records.len() as i64 == PAGE {
-                ""
-            } else {
-                " (end)"
-            },
-        ));
-        for r in &records {
-            main.push_str(&result_row(r));
+        let more = if records.len() as i64 == PAGE {
+            ""
+        } else {
+            " (end)"
+        };
+        let subbar = format!(
+            r#"<div class="subbar"><span class="count">Results {first}–{last}{more}</span><div class="sorts subbar-sorts"><span class="lbl">· sort by</span>{pills}</div></div>"#,
+            pills = sort_pills(q_trim, sort),
+        );
+        let mut r = String::new();
+        for rec in &records {
+            r.push_str(&result_row(rec));
         }
-        main.push_str(&pager(q_trim, sort, offset, records.len() as i64));
-    }
+        r.push_str(&pager(q_trim, sort, offset, records.len() as i64));
+        (subbar, r)
+    };
 
-    let body = format!(
-        "{header}<main>{main}</main>{footer}",
-        footer = http::footer()
-    );
+    let body =
+        format!(r#"<div class="stick">{header}{subbar}</div><main class="main">{results}</main>"#);
     let title = if q_trim.is_empty() {
         "Rucio — search".to_string()
     } else {
         format!("{} — Rucio search", http::esc(q_trim))
     };
-    http::html_page(&title, &body)
+    http::html_page(&title, &body, theme)
+}
+
+// ── Header / search box ──────────────────────────────────────────────────────
+
+/// The compact header search form (prefilled with the current query).
+fn search_box(q: &str) -> String {
+    format!(
+        r#"<form class="search sm" action="/search" method="get" role="search">
+  <input type="text" name="q" value="{q}" placeholder="File name or hash…" aria-label="Search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+  <button type="submit">Search</button>
+</form>"#,
+        q = http::esc(q),
+    )
+}
+
+/// The big landing search form: search row + no-JS sort pills (radio buttons
+/// styled as pills, so the chosen order submits with the GET form).
+fn search_form_big() -> String {
+    const OPTS: [(&str, &str, &str); 3] = [
+        ("newest", "so-new", "newest"),
+        ("providers", "so-prov", "most sources"),
+        ("size", "so-size", "largest"),
+    ];
+    let default = db::Sort::default().as_param();
+    let pills: String = OPTS
+        .iter()
+        .map(|(val, id, label)| {
+            let checked = if *val == default { " checked" } else { "" };
+            format!(
+                r#"<input type="radio" name="sort" id="{id}" value="{val}"{checked}><label class="pill" for="{id}">{label}</label>"#
+            )
+        })
+        .collect();
+    format!(
+        r#"<form class="search-hero" action="/search" method="get" role="search">
+  <div class="search">
+    <input type="text" name="q" placeholder="Search files by name or hash…" autofocus aria-label="Search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+    <button type="submit">Search</button>
+  </div>
+  <div class="sorts"><span class="lbl">sort by</span>{pills}</div>
+</form>"#,
+    )
 }
 
 // ── Rendering helpers ────────────────────────────────────────────────────────
 
-/// Render one search result. The title is the file name (or the hash when the
-/// record isn't enriched yet). The magnet is the canonical `rucio:` link.
+/// Render one search result as a card: an availability column (source count +
+/// coloured bar) beside the file name, meta and canonical `rucio:` magnet.
 fn result_row(r: &HashRow) -> String {
-    let title = match r.name.as_deref() {
-        Some(n) if !n.is_empty() => http::esc(n),
-        _ => http::esc(&r.hash),
+    let (band, pct) = avail_band(r.providers);
+    let count_label = if r.providers == 1 {
+        "source"
+    } else {
+        "sources"
     };
+    let named = r.name.as_deref().filter(|n| !n.is_empty());
 
     // Canonical magnet: enriched records carry name + size, bare ones are just
-    // the hash. magnet_from_parts URL-encodes the name, so the magnet string is
-    // already safe inside an href; it's HTML-escaped for the visible text too.
-    let magnet = match (r.name.as_deref(), r.size) {
-        (Some(n), Some(sz)) if !n.is_empty() && sz >= 0 => {
+    // the hash. magnet_from_parts URL-encodes the name, so the string is already
+    // safe inside an href; it is HTML-escaped for the visible text too.
+    let magnet = match (named, r.size) {
+        (Some(n), Some(sz)) if sz >= 0 => {
             rucio_core::protocol::search::SearchResult::magnet_from_parts(
                 &r.hash, n, sz as u64, None,
             )
@@ -146,105 +248,131 @@ fn result_row(r: &HashRow) -> String {
     };
     let magnet_e = http::esc(&magnet);
 
-    // Meta as chips. The provider chip is coloured by availability: a single
-    // source is poor (red), a handful is fair (amber), many is good (green).
-    let mut chips = String::new();
-    if let Some(sz) = r.size.filter(|&s| s > 0) {
-        chips.push_str(&format!(
-            r#"<span class="chip">{}</span>"#,
-            http::human_size(sz as u64)
+    let (title, title_cls) = match named {
+        Some(n) => (http::esc(n), "t"),
+        None => (http::esc(&r.hash), "t hash"),
+    };
+
+    let mut meta = String::new();
+    match r.size.filter(|&s| s > 0) {
+        Some(sz) => meta.push_str(&format!("<span>{}</span>", http::human_size(sz as u64))),
+        None if named.is_none() => meta.push_str("<span>unknown size</span>"),
+        None => {}
+    }
+    meta.push_str(&format!("<span>seen {}</span>", seen_ago(r.last_seen)));
+    if named.is_none() {
+        meta.push_str("<span>not named yet</span>");
+    } else {
+        meta.push_str(&format!(
+            "<span>first seen {}</span>",
+            seen_ago(r.first_seen)
         ));
     }
-    let plabel = if r.providers == 1 {
-        "1 provider".to_string()
+
+    // Only enriched records show the magnet line (a bare hash link is enough).
+    let magnet_html = if named.is_some() {
+        format!(r#"<code class="magnet">{magnet_e}</code>"#)
     } else {
-        format!("{} providers", r.providers)
+        String::new()
     };
-    chips.push_str(&format!(
-        r#"<span class="chip {}">{plabel}</span>"#,
-        provider_chip_class(r.providers)
-    ));
-    chips.push_str(&format!(
-        r#"<span class="chip">seen {}</span>"#,
-        seen_ago(r.last_seen)
-    ));
+    let bare = if named.is_some() { "" } else { " bare" };
 
     format!(
-        r#"<div class="hit">
-  <h2 class="hit-title"><a href="{magnet_e}">{title}</a></h2>
-  <div class="hit-meta">{chips}</div>
-  <code class="magnet">{magnet_e}</code>
+        r#"<div class="hit{bare}">
+  <div class="avail {band}"><span class="c">{providers}</span><span class="k">{count_label}</span><span class="track"><i style="width:{pct}%"></i></span></div>
+  <div class="hit-main"><a class="{title_cls}" href="{magnet_e}">{title}</a><div class="hit-meta">{meta}</div>{magnet_html}</div>
 </div>"#,
+        providers = r.providers,
     )
 }
 
-/// Colour band for the provider-count chip: availability at a glance.
-fn provider_chip_class(providers: i64) -> &'static str {
-    if providers >= 5 {
-        "chip-high"
+/// Availability band + bar width (%) for a provider count: a single source is
+/// poor (red), a handful fair (amber), many good (green).
+fn avail_band(providers: i64) -> (&'static str, u32) {
+    let pct = ((providers as f64 / 14.0) * 100.0).clamp(4.0, 100.0) as u32;
+    let band = if providers >= 5 {
+        "high"
     } else if providers >= 2 {
-        "chip-mid"
+        "mid"
     } else {
-        "chip-low"
-    }
+        "low"
+    };
+    (band, pct)
 }
 
-/// The sort `<option>`s, with the active one marked `selected`.
-fn sort_options(current: db::Sort) -> String {
-    // (value, label) — value must match db::Sort::parse / as_param. `oldest`
-    // exists in the API but isn't offered in the web UI (rarely what a human
-    // browsing for files wants).
+/// The sort pills for the results sub-bar: links that re-run the query in the
+/// chosen order.
+fn sort_pills(q: &str, current: db::Sort) -> String {
     const OPTS: [(&str, &str); 3] = [
-        ("newest", "Newest"),
-        ("providers", "Most sources"),
-        ("size", "Largest"),
+        ("newest", "newest"),
+        ("providers", "most sources"),
+        ("size", "largest"),
     ];
     let cur = current.as_param();
+    let qe = urlencoding::encode(q);
     OPTS.iter()
         .map(|(val, label)| {
-            let sel = if *val == cur { " selected" } else { "" };
-            format!(r#"<option value="{val}"{sel}>{label}</option>"#)
+            let cls = if *val == cur { "pill on" } else { "pill" };
+            format!(r#"<a class="{cls}" href="/search?q={qe}&sort={val}">{label}</a>"#)
         })
         .collect()
 }
 
-/// Previous/next links, preserving the query and sort order.
+/// Previous/next links (centred), preserving the query and sort order. Only the
+/// links that apply are rendered.
 fn pager(q: &str, sort: db::Sort, offset: i64, got: i64) -> String {
     let qe = urlencoding::encode(q);
     let sort = sort.as_param();
-    let prev = if offset > 0 {
+    let mut out = String::new();
+    if offset > 0 {
         let o = (offset - PAGE).max(0);
-        format!(r#"<a href="/search?q={qe}&sort={sort}&offset={o}">← Previous</a>"#)
-    } else {
-        "<span></span>".to_string()
-    };
-    let next = if got == PAGE {
+        out.push_str(&format!(
+            r#"<a href="/search?q={qe}&sort={sort}&offset={o}">← Previous</a>"#
+        ));
+    }
+    if got == PAGE {
         let o = offset + PAGE;
-        format!(r#"<a href="/search?q={qe}&sort={sort}&offset={o}">Next →</a>"#)
-    } else {
-        "<span></span>".to_string()
-    };
-    format!(r#"<div class="pager">{prev}{next}</div>"#)
+        out.push_str(&format!(
+            r#"<a href="/search?q={qe}&sort={sort}&offset={o}">Next 50 →</a>"#
+        ));
+    }
+    if out.is_empty() {
+        return String::new();
+    }
+    format!(r#"<div class="pager">{out}</div>"#)
 }
 
-/// Coarse "time since last announced", without pulling in a date library.
+/// Coarse "time since", without pulling in a date library.
 fn seen_ago(unix_secs: i64) -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
     let secs = (now - unix_secs).max(0);
-    let days = secs / 86_400;
-    let hours = secs / 3_600;
-    let mins = secs / 60;
-    if days >= 1 {
-        format!("{days}d ago")
-    } else if hours >= 1 {
-        format!("{hours}h ago")
-    } else if mins >= 1 {
-        format!("{mins}m ago")
+    let (d, h, m) = (secs / 86_400, secs / 3_600, secs / 60);
+    if d >= 1 {
+        format!("{d}d ago")
+    } else if h >= 1 {
+        format!("{h}h ago")
+    } else if m >= 1 {
+        format!("{m}m ago")
     } else {
         "just now".to_string()
+    }
+}
+
+/// Coarse duration for the index history span.
+fn fmt_dur(secs: i64) -> String {
+    let secs = secs.max(0);
+    let (d, h, m) = (secs / 86_400, secs / 3_600, secs / 60);
+    if d >= 1 {
+        format!("{d}d")
+    } else if h >= 1 {
+        format!("{h}h")
+    } else if m >= 1 {
+        format!("{m}m")
+    } else {
+        format!("{secs}s")
     }
 }
 
@@ -252,12 +380,12 @@ fn seen_ago(unix_secs: i64) -> String {
 mod tests {
     use super::*;
 
-    fn row(name: Option<&str>, size: Option<i64>) -> HashRow {
+    fn row(name: Option<&str>, size: Option<i64>, providers: i64) -> HashRow {
         HashRow {
             hash: "abc123".to_string(),
             name: name.map(String::from),
             size,
-            providers: 3,
+            providers,
             first_seen: 0,
             last_seen: 0,
         }
@@ -267,32 +395,35 @@ mod tests {
     fn result_row_neutralizes_a_malicious_name() {
         // File names come from the untrusted network — must never reach the
         // browser as live markup.
-        let html = result_row(&row(Some("<script>alert(1)</script>"), Some(1024)));
+        let html = result_row(&row(Some("<script>alert(1)</script>"), Some(1024), 3));
         assert!(!html.contains("<script>"), "raw script tag leaked: {html}");
         assert!(html.contains("&lt;script&gt;"));
         assert!(html.contains("rucio:abc123"));
     }
 
     #[test]
-    fn result_row_falls_back_to_hash_and_bare_magnet_when_unnamed() {
-        let html = result_row(&row(None, None));
+    fn result_row_falls_back_to_hash_when_unnamed() {
+        let html = result_row(&row(None, None, 1));
         assert!(html.contains("abc123"));
         assert!(html.contains("rucio:abc123"));
+        assert!(html.contains("hit bare")); // dashed card for a bare hash
+        assert!(html.contains("not named yet"));
     }
 
     #[test]
-    fn provider_chip_class_bands() {
-        assert_eq!(provider_chip_class(1), "chip-low");
-        assert_eq!(provider_chip_class(2), "chip-mid");
-        assert_eq!(provider_chip_class(4), "chip-mid");
-        assert_eq!(provider_chip_class(5), "chip-high");
-        assert_eq!(provider_chip_class(50), "chip-high");
+    fn avail_band_bands() {
+        assert_eq!(avail_band(1).0, "low");
+        assert_eq!(avail_band(2).0, "mid");
+        assert_eq!(avail_band(4).0, "mid");
+        assert_eq!(avail_band(5).0, "high");
+        assert_eq!(avail_band(50).0, "high");
     }
 
     #[test]
-    fn result_row_emits_colored_provider_chip() {
-        let html = result_row(&row(Some("x.mkv"), Some(1024)));
-        assert!(html.contains(r#"class="chip chip-mid""#)); // 3 providers → mid
-        assert!(html.contains("3 providers"));
+    fn result_row_shows_source_count_and_band() {
+        let html = result_row(&row(Some("x.mkv"), Some(1024), 3));
+        assert!(html.contains(r#"class="avail mid""#)); // 3 sources → mid
+        assert!(html.contains(">3</span>"));
+        assert!(html.contains("sources"));
     }
 }
