@@ -32,15 +32,26 @@ pub struct PanelQuery {
     w: Option<i64>,
 }
 
-/// `GET /stats` — the resource-usage dashboard for the selected window.
+/// `GET /stats` — the node dashboard for the selected window: the search index
+/// it serves (when the indexer role is on) and the resources it consumes.
 pub async fn panel(State(s): State<AppState>, Query(p): Query<PanelQuery>) -> Html<String> {
     let window = p.w.unwrap_or(86_400).max(0);
     let host = query::host_info(&s.db).await.ok().flatten();
 
+    // The search-index card, rendered only when this node also runs the indexer.
+    #[cfg(feature = "indexer")]
+    let index = match &s.index_db {
+        Some(db) => index_card(crate::indexer::index_stats(db).await.ok().as_ref()),
+        None => String::new(),
+    };
+    #[cfg(not(feature = "indexer"))]
+    let index = String::new();
+    let has_index = !index.is_empty();
+
     let body = match query::summary(&s.db, window).await {
         Ok(sum) => format!(
-            "{head}{host}{tabs}{grid}{sizing}{footer}",
-            head = head(),
+            "{head}{host}{index}{tabs}{grid}{sizing}{footer}",
+            head = head(has_index),
             host = host_card(host.as_ref()),
             tabs = tabs(window),
             grid = stat_grid(&sum, host.as_ref()),
@@ -48,29 +59,79 @@ pub async fn panel(State(s): State<AppState>, Query(p): Query<PanelQuery>) -> Ht
             footer = http::footer(),
         ),
         Err(_) => format!(
-            r#"{head}<div class="card"><p class="empty">Statistics are unavailable.</p></div>{footer}"#,
-            head = head(),
+            r#"{head}{index}<div class="card"><p class="empty">Resource statistics are unavailable.</p></div>{footer}"#,
+            head = head(has_index),
             footer = http::footer(),
         ),
     };
     http::html_page(
-        "Rucio bootstrap — resource usage",
+        "Rucio bootstrap — status",
         &format!(r#"<div class="wrap">{body}</div>"#),
     )
 }
 
 // ── Sections ────────────────────────────────────────────────────────────────
 
-fn head() -> String {
+fn head(has_index: bool) -> String {
+    let (sub, search_link) = if has_index {
+        (
+            "The search index this node serves, and what it consumes to run",
+            r#"<p class="note"><a href="/">← Search the index</a></p>"#,
+        )
+    } else {
+        (
+            "What this node consumes — to size the hardware it needs",
+            "",
+        )
+    };
     format!(
         r#"<div class="head">
   <span class="logo">{logo}</span>
   <div>
-    <h1>Bootstrap resource usage</h1>
-    <p class="sub">What this node consumes — to size the hardware it needs</p>
+    <h1>Bootstrap node</h1>
+    <p class="sub">{sub}</p>
+    {search_link}
   </div>
 </div>"#,
         logo = http::LOGO_SVG,
+    )
+}
+
+/// The search-index card: aggregate counters from the indexer role, shown when
+/// this node also indexes the DHT. Frames the resource numbers below with what
+/// the node is actually storing and serving.
+#[cfg(feature = "indexer")]
+fn index_card(stats: Option<&crate::indexer::Stats>) -> String {
+    let Some(st) = stats else {
+        return String::new();
+    };
+    let pct = if st.distinct_hashes > 0 {
+        format!(
+            "{:.0}%",
+            st.enriched_files as f64 / st.distinct_hashes as f64 * 100.0
+        )
+    } else {
+        dash()
+    };
+    let span = match (st.oldest, st.newest) {
+        (Some(o), Some(n)) if n >= o => fmt_duration(n - o),
+        _ => dash(),
+    };
+    format!(
+        r#"<div class="card">
+  <h2>Search index</h2>
+  <div class="facts">
+    <div><div class="k">Files indexed</div>{hashes}</div>
+    <div><div class="k">Enriched</div>{enriched} ({pct})</div>
+    <div><div class="k">Providers</div>{providers}</div>
+    <div><div class="k">Provider records</div>{records}</div>
+    <div><div class="k">History</div>{span}</div>
+  </div>
+</div>"#,
+        hashes = st.distinct_hashes,
+        enriched = st.enriched_files,
+        providers = st.distinct_providers,
+        records = st.total_records,
     )
 }
 
@@ -371,5 +432,35 @@ mod tests {
         let html = tabs(86_400);
         assert!(html.contains(r#"class="tab active" href="/stats?w=86400""#));
         assert!(html.contains(r#"class="tab" href="/stats?w=3600""#));
+    }
+
+    #[cfg(feature = "indexer")]
+    #[test]
+    fn index_card_shows_counters_and_enriched_share() {
+        let st = crate::indexer::Stats {
+            total_records: 100,
+            distinct_hashes: 40,
+            distinct_providers: 12,
+            enriched_files: 20,
+            oldest: Some(1_000),
+            newest: Some(1_000 + 3 * 86_400),
+        };
+        let html = index_card(Some(&st));
+        assert!(html.contains("Search index"));
+        assert!(html.contains(">40<")); // files indexed (distinct hashes)
+        assert!(html.contains("20 (50%)")); // 20 of 40 hashes enriched
+        assert!(html.contains("3d")); // oldest→newest span
+    }
+
+    #[cfg(feature = "indexer")]
+    #[test]
+    fn index_card_is_empty_without_stats() {
+        assert!(index_card(None).is_empty());
+    }
+
+    #[test]
+    fn head_links_to_search_only_with_an_index() {
+        assert!(head(true).contains(r#"href="/""#));
+        assert!(!head(false).contains(r#"href="/""#));
     }
 }

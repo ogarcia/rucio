@@ -55,6 +55,18 @@ mod api;
 mod db;
 mod web;
 
+// Re-exported so the shared stats panel (a different role) can render the index
+// counters alongside resource usage without reaching into `db` internals. Only
+// the `stats-web` panel consumes these, so they are gated to it.
+#[cfg(feature = "stats-web")]
+pub use db::{Db, Stats};
+
+/// Aggregate index counters, for the shared `/stats` panel to display.
+#[cfg(feature = "stats-web")]
+pub async fn index_stats(db: &Db) -> Result<Stats> {
+    db::stats(db).await
+}
+
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -136,17 +148,27 @@ impl Indexer {
 
     /// The indexer's HTTP routes (web UI + JSON API), ready to merge onto the
     /// shared server. `token` guards the admin endpoints (`None` disables them).
-    pub fn api_router(&self, token: Option<String>) -> axum::Router {
+    /// `stats_panel` tells the search pages whether to link to the `/stats`
+    /// panel served by the sibling stats role.
+    pub fn api_router(&self, token: Option<String>, stats_panel: bool) -> axum::Router {
         api::router(api::AppState {
             db: self.db.clone(),
             token,
             retention_days: self.retention_days,
+            stats_panel,
         })
     }
 
     /// The indexer's OpenAPI spec, for the shared server's merged docs.
     pub fn api_doc() -> utoipa::openapi::OpenApi {
         api::openapi()
+    }
+
+    /// A clone of the index DB pool, handed to the shared stats panel so it can
+    /// render the index counters alongside resource usage.
+    #[cfg(feature = "stats-web")]
+    pub fn db(&self) -> db::Db {
+        self.db.clone()
     }
 
     /// Close the SQLite pool cleanly on shutdown so SQLite checkpoints and

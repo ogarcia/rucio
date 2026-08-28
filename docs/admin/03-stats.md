@@ -115,6 +115,9 @@ With a `stats-web` build the node serves a small, no-JavaScript dashboard at
 (1h / 24h / 7d / 30d / All):
 
 - a **host card** — the machine's CPU count, RAM and kernel;
+- a **search index card** — when this node also runs the [indexer](02-indexer.md),
+  its counters (files indexed, enriched share, providers, provider records, and
+  how far back the index reaches);
 - **stat tiles** — the peaks that size hardware (peak concurrent peers and
   connections, peak memory and what fraction of RAM it is, peak/average CPU as a
   percentage of one core, total and per-day traffic with a monthly projection,
@@ -133,7 +136,12 @@ The same aggregates are available as JSON. Interactive documentation for every
 role on the node is at `http://<api.listen>/api/docs`; the generic
 `GET /health` probe is documented in the [indexer guide](02-indexer.md#get-health).
 
-### `GET /api/v1/stats/summary`
+All read-only statistics live under `/api/v1/stats/*`: resource usage
+(`/resources`, `/host`, below) and — when the indexer role is running — the
+search-index counters at
+[`/api/v1/stats/index`](02-indexer.md#get-apiv1statsindex).
+
+### `GET /api/v1/stats/resources`
 
 Public endpoint. Aggregate resource usage over a window.
 
@@ -143,7 +151,7 @@ Public endpoint. Aggregate resource usage over a window.
 
 ```sh
 # Last 24 hours
-curl "http://localhost:3003/api/v1/stats/summary?window=86400"
+curl "http://localhost:3003/api/v1/stats/resources?window=86400"
 ```
 
 ```json

@@ -49,8 +49,9 @@ impl Api {
     }
 
     /// Fold one role's routes and API spec into the composition. Paths must not
-    /// collide across roles (each role owns a distinct URL space: `/search`,
-    /// `/stats`, `/api/v1/…` vs `/api/v1/stats/…`).
+    /// collide across roles: each owns a distinct URL space, and where they
+    /// share the `/api/v1/stats/` prefix they take distinct leaves (the indexer
+    /// serves `/api/v1/stats/index`; the stats role `/resources` and `/host`).
     pub fn merge_role(&mut self, router: Router, doc: utoipa::openapi::OpenApi) {
         let base = std::mem::take(&mut self.router);
         self.router = base.merge(router);
@@ -97,11 +98,15 @@ HTTP API of a `rucio-bootstrap` node. The available endpoints depend on which \
 optional roles the node was built and started with:
 
 - **Indexer** (`indexer` feature) — a passive DHT search index: `/` and \
-  `/search` web UI plus `/api/v1/search` and `/api/v1/records`.
-- **Stats** (`stats-web` feature) — resource-usage panel for hardware sizing: \
-  `/stats` plus `/api/v1/stats/summary` and `/api/v1/stats/host`.
+  `/search` web UI, `/api/v1/search` and `/api/v1/records`, plus the index \
+  counters at `/api/v1/stats/index`. Only `/api/v1/admin/prune` needs a token.
+- **Stats** (`stats-web` feature) — the node dashboard at `/stats` (resource \
+  usage, and the index counters when the indexer is on) plus \
+  `/api/v1/stats/resources` and `/api/v1/stats/host`.
 
-Timestamps are Unix seconds."
+All read endpoints live under `/api/v1/stats/*` and need no auth; the only \
+token-guarded endpoint is the `/api/v1/admin/prune` mutation. Timestamps are \
+Unix seconds."
     ),
     paths(get_health),
     components(schemas(HealthResponse)),

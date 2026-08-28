@@ -67,7 +67,7 @@ its own routes under it. The bind address therefore lives here, not under
 | Key | Default | Description |
 |---|---|---|
 | `listen` | `127.0.0.1:3003` | Bind address for the HTTP server. Change to `0.0.0.0:3003` to expose it on the network. |
-| `token` | *(unset)* | Bearer token protecting the `/api/v1/admin/*` endpoints. **Admin endpoints are disabled when this is unset.** |
+| `token` | *(unset)* | Bearer token protecting the `/api/v1/admin/prune` endpoint (the only one that mutates the index). **The admin endpoint is disabled when this is unset.** |
 
 #### Generating an API token
 
@@ -138,8 +138,8 @@ DuckDuckGo or Google:
 It is **server-rendered with no JavaScript** and reuses the very same query as
 [`GET /api/v1/search`](#get-apiv1search), so the page and the API never drift
 apart. The site and the public API need no authentication (only the
-`/api/v1/admin/*` endpoints do), so it is safe to expose read-only — point a
-browser at `http://<api.listen>/`.
+`/api/v1/admin/prune` mutation does), so it is safe to expose read-only — point
+a browser at `http://<api.listen>/`.
 
 To make it a public search portal, bind `api.listen` to `0.0.0.0:3003` (or put
 a reverse proxy with TLS in front of it). Keep it on a trusted network only if
@@ -221,14 +221,15 @@ Public endpoint.  Returns all records in the index (most recent first),
 paginated.  Same parameters and response shape as `/api/v1/search` without
 the `q` filter.
 
-### `GET /api/v1/admin/stats`
+### `GET /api/v1/stats/index`
 
-**Requires `Authorization: Bearer <token>` header.**  Returns aggregate
-counters over the whole index.
+Public endpoint.  Returns aggregate counters over the whole index. These are
+an aggregate of records already exposed by `/api/v1/records`, so they need no
+token; when the [stats panel](03-stats.md) is also running it shows the same
+numbers as a card at `/stats`.
 
 ```sh
-curl -H "Authorization: Bearer change-me" \
-     http://localhost:3003/api/v1/admin/stats
+curl http://localhost:3003/api/v1/stats/index
 ```
 
 ```json

@@ -36,7 +36,12 @@ pub struct WebQuery {
 }
 
 /// `GET /` — the landing page: logo + search box.
-pub async fn landing() -> Html<String> {
+pub async fn landing(State(s): State<AppState>) -> Html<String> {
+    let status_link = if s.stats_panel {
+        r#"<p class="note"><a href="/stats">Node status →</a></p>"#
+    } else {
+        ""
+    };
     let body = format!(
         r#"<div class="home">
   <span class="logo">{logo}</span>
@@ -47,6 +52,7 @@ pub async fn landing() -> Html<String> {
     <select name="sort" aria-label="Sort order">{sort_opts}</select>
     <button type="submit">Search</button>
   </form>
+  {status_link}
 </div>
 {footer}"#,
         logo = http::LOGO_SVG,

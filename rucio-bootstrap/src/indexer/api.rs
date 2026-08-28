@@ -24,6 +24,9 @@ pub struct AppState {
     /// Bearer token guarding the admin endpoints. `None` disables them.
     pub token: Option<String>,
     pub retention_days: i64,
+    /// Whether the sibling `/stats` panel is also served, so the search pages
+    /// can link to it. Set from whether the stats role is running.
+    pub stats_panel: bool,
 }
 
 #[derive(OpenApi)]
@@ -39,19 +42,23 @@ records announced on the Kademlia DHT and stores each `(hash, provider)` pair, \
 optionally enriched with the file name and size resolved from announcing \
 peers. This API exposes that index:
 
-- **Public** endpoints under `/api/v1` (`/search`, `/records`) need no auth.
-- **Admin** endpoints under `/api/v1/admin` require a bearer token and are \
-  disabled entirely when the node has no `api_token` configured.
+- **Public** endpoints under `/api/v1` (`/search`, `/records`) and the index \
+  counters at `/api/v1/stats/index` need no auth.
+- The only **admin** endpoint, `/api/v1/admin/prune`, mutates the index and so \
+  requires a bearer token; it is disabled entirely when the node has no \
+  `api_token` configured.
 
 Timestamps are Unix seconds. Pagination is `limit` (1–500, default 50) plus \
 `offset` (default 0)."
     ),
-    paths(search_records, list_records, admin_stats, admin_prune),
+    paths(search_records, list_records, index_stats, admin_prune),
     components(schemas(HashRow, Stats, RecordsResponse, PruneResponse)),
     modifiers(&SecurityAddon),
     tags(
+        // The index counters share the "Stats" group with the resource-usage
+        // endpoints; that tag's description lives in the stats role's spec.
         (name = "Search", description = "Query the provider-record index"),
-        (name = "Admin", description = "Maintenance endpoints (bearer token required)")
+        (name = "Admin", description = "Index maintenance (bearer token required)")
     )
 )]
 struct ApiDoc;
@@ -85,7 +92,7 @@ pub fn router(state: AppState) -> Router {
         // router merges cleanly with the other roles' `/api/v1/*` routes.
         .route("/api/v1/search", routing::get(search_records))
         .route("/api/v1/records", routing::get(list_records))
-        .route("/api/v1/admin/stats", routing::get(admin_stats))
+        .route("/api/v1/stats/index", routing::get(index_stats))
         .route("/api/v1/admin/prune", routing::post(admin_prune))
         .with_state(state)
 }
@@ -233,21 +240,14 @@ async fn list_records(State(s): State<AppState>, Query(p): Query<PageParams>) ->
 ///
 /// Counts over the whole index: total records, distinct hashes and providers,
 /// how many hashes are enriched with a name/size, and the oldest/newest
-/// timestamps. Requires a bearer token (`Authorization: Bearer <token>`).
+/// timestamps. Public: these are aggregates of records already exposed by
+/// `/records`, and they also feed the node's `/stats` panel.
 #[utoipa::path(
-    get, path = "/api/v1/admin/stats",
-    tag = "Admin",
-    security(("bearer_token" = [])),
-    responses(
-        (status = 200, description = "Index counters", body = Stats),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Admin endpoints disabled (no token configured)")
-    )
+    get, path = "/api/v1/stats/index",
+    tag = "Stats",
+    responses((status = 200, description = "Index counters", body = Stats))
 )]
-async fn admin_stats(State(s): State<AppState>, headers: HeaderMap) -> Response {
-    if let Some(resp) = reject_admin(&s, &headers) {
-        return resp;
-    }
+async fn index_stats(State(s): State<AppState>) -> Response {
     match db::stats(&s.db).await {
         Ok(st) => Json(st).into_response(),
         Err(e) => internal(e),

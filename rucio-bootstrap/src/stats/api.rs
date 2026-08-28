@@ -19,13 +19,22 @@ use super::query::{self, HostInfo, Summary};
 #[derive(Clone)]
 pub struct AppState {
     pub db: Db,
+    /// The index DB, when the node also runs the indexer role. Lets the panel
+    /// render the search-index counters next to resource usage. `None` when the
+    /// indexer is disabled or not compiled in.
+    #[cfg(feature = "indexer")]
+    pub index_db: Option<crate::indexer::Db>,
 }
 
 #[derive(OpenApi)]
 #[openapi(
-    paths(get_summary, get_host),
+    paths(get_resources, get_host),
     components(schemas(Summary, HostInfo)),
-    tags((name = "Stats", description = "Bootstrap resource-usage statistics"))
+    tags((
+        name = "Stats",
+        description = "Bootstrap node statistics: resource usage and, when the \
+                       indexer role runs, the search-index counters"
+    ))
 )]
 struct ApiDoc;
 
@@ -39,7 +48,7 @@ pub fn router(state: AppState) -> Router {
         // Server-rendered dashboard.
         .route("/stats", get(super::web::panel))
         // JSON API (explicit full paths so they merge with the indexer's).
-        .route("/api/v1/stats/summary", get(get_summary))
+        .route("/api/v1/stats/resources", get(get_resources))
         .route("/api/v1/stats/host", get(get_host))
         .with_state(state)
 }
@@ -64,12 +73,12 @@ fn internal(e: anyhow::Error) -> Response {
 /// `NULL` until at least one sample exists; `/proc`-derived fields are `NULL` on
 /// non-Linux hosts.
 #[utoipa::path(
-    get, path = "/api/v1/stats/summary",
+    get, path = "/api/v1/stats/resources",
     tag = "Stats",
     params(WindowParam),
     responses((status = 200, description = "Windowed resource-usage summary", body = Summary))
 )]
-async fn get_summary(State(s): State<AppState>, Query(p): Query<WindowParam>) -> Response {
+async fn get_resources(State(s): State<AppState>, Query(p): Query<WindowParam>) -> Response {
     let window = p.window.unwrap_or(0).max(0);
     match query::summary(&s.db, window).await {
         Ok(sm) => Json(sm).into_response(),

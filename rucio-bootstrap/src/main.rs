@@ -418,14 +418,27 @@ async fn main() -> Result<()> {
         let mut api = http::Api::new();
         #[cfg(feature = "indexer")]
         if let Some(ix) = indexer.as_ref() {
+            // Whether the sibling stats panel is also served, for the cross-link.
+            #[cfg(feature = "stats-web")]
+            let stats_panel = stats.is_some();
+            #[cfg(not(feature = "stats-web"))]
+            let stats_panel = false;
             api.merge_role(
-                ix.api_router(cfg.api.token.clone()),
+                ix.api_router(cfg.api.token.clone(), stats_panel),
                 indexer::Indexer::api_doc(),
             );
         }
         #[cfg(feature = "stats-web")]
         if let Some(st) = stats.as_ref() {
-            api.merge_role(st.api_router(), stats::Stats::api_doc());
+            api.merge_role(
+                st.api_router(
+                    // When the indexer also runs, hand its DB to the panel so it
+                    // renders the search-index counters next to resource usage.
+                    #[cfg(feature = "indexer")]
+                    indexer.as_ref().map(|ix| ix.db()),
+                ),
+                stats::Stats::api_doc(),
+            );
         }
         if api.has_roles() {
             api.serve(cfg.api.listen, std::time::Instant::now()).await?;

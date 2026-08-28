@@ -139,10 +139,19 @@ impl Stats {
 
     /// The stats panel + JSON API routes, ready to merge onto the shared server.
     /// The data is public (resource usage, not sensitive), so there is no token.
+    ///
+    /// `index_db` (present only when the indexer role is also compiled in and
+    /// enabled) lets the panel render the search-index counters next to the
+    /// resource figures.
     #[cfg(feature = "stats-web")]
-    pub fn api_router(&self) -> axum::Router {
+    pub fn api_router(
+        &self,
+        #[cfg(feature = "indexer")] index_db: Option<crate::indexer::Db>,
+    ) -> axum::Router {
         api::router(api::AppState {
             db: self.db.clone(),
+            #[cfg(feature = "indexer")]
+            index_db,
         })
     }
 
