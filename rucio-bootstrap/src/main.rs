@@ -22,10 +22,10 @@
 
 mod config;
 
-#[cfg(any(feature = "indexer", feature = "stats-web"))]
+#[cfg(feature = "web")]
 mod http;
 
-#[cfg(feature = "indexer")]
+#[cfg(feature = "web")]
 mod indexer;
 
 #[cfg(feature = "stats")]
@@ -85,42 +85,42 @@ struct Args {
     /// Disable the passive DHT indexer role. It runs by default when built with
     /// the `indexer` feature; pass this to run as a plain bootstrap node.
     /// Overrides `indexer.enabled`.
-    #[cfg(feature = "indexer")]
+    #[cfg(feature = "web")]
     #[arg(long)]
     no_index: bool,
 
     /// SQLite path for the indexer database. Overrides `indexer.db`.
-    #[cfg(feature = "indexer")]
+    #[cfg(feature = "web")]
     #[arg(long, env = "RUCIO_BOOTSTRAP_INDEX_DB")]
     index_db: Option<PathBuf>,
 
     /// Address the shared HTTP server (indexer web/API + stats panel) binds to.
     /// Overrides `api.listen`.
-    #[cfg(any(feature = "indexer", feature = "stats-web"))]
+    #[cfg(feature = "web")]
     #[arg(long, env = "RUCIO_BOOTSTRAP_API_LISTEN")]
     api_listen: Option<std::net::SocketAddr>,
 
     /// Bearer token guarding admin endpoints. Overrides `api.token`.
-    #[cfg(any(feature = "indexer", feature = "stats-web"))]
+    #[cfg(feature = "web")]
     #[arg(long, env = "RUCIO_BOOTSTRAP_API_TOKEN")]
     api_token: Option<String>,
 
     /// Drop indexed announcements not refreshed within this many days.
     /// Overrides `indexer.retention_days`.
-    #[cfg(feature = "indexer")]
+    #[cfg(feature = "web")]
     #[arg(long, env = "RUCIO_BOOTSTRAP_RETENTION_DAYS")]
     retention_days: Option<i64>,
 
     /// Do not resolve file name/size from announcing peers (index hashes only).
     /// When set, overrides `indexer.enrich = true` in the config file.
-    #[cfg(feature = "indexer")]
+    #[cfg(feature = "web")]
     #[arg(long)]
     no_enrich: bool,
 
     /// Number of additional Kademlia identities to spawn (beyond the primary).
     /// Overrides `indexer.identity_count`.  Each extra identity listens on an
     /// ephemeral port and bootstraps from the same peers as the primary.
-    #[cfg(feature = "indexer")]
+    #[cfg(feature = "web")]
     #[arg(long, env = "RUCIO_BOOTSTRAP_IDENTITY_COUNT")]
     identity_count: Option<u8>,
 
@@ -212,7 +212,7 @@ async fn main() -> Result<()> {
         cfg.node.bootstrap_peers = args.bootstrap_peer;
     }
 
-    #[cfg(feature = "indexer")]
+    #[cfg(feature = "web")]
     {
         if args.no_index {
             cfg.indexer.enabled = false;
@@ -244,7 +244,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    #[cfg(any(feature = "indexer", feature = "stats-web"))]
+    #[cfg(feature = "web")]
     {
         if let Some(al) = args.api_listen {
             cfg.api.listen = al;
@@ -266,7 +266,7 @@ async fn main() -> Result<()> {
     };
 
     // Pre-compute extra identity paths before identity_path is moved.
-    #[cfg(feature = "indexer")]
+    #[cfg(feature = "web")]
     let extra_identity_paths: Vec<PathBuf> = (1..=(cfg.indexer.identity_count as usize))
         .map(|i| config::extra_identity_path(&identity_path, i))
         .collect();
@@ -277,15 +277,15 @@ async fn main() -> Result<()> {
     let peer_id = keypair.public().to_peer_id();
     info!(%peer_id, identity = %identity_path.display(), "Starting rucio-bootstrap");
 
-    #[cfg(feature = "indexer")]
+    #[cfg(feature = "web")]
     let enrich = cfg.indexer.enrich;
-    #[cfg(feature = "indexer")]
+    #[cfg(feature = "web")]
     let behaviour = if cfg.indexer.enabled {
         BehaviourConfig::indexer(enrich)
     } else {
         BehaviourConfig::dht_only()
     };
-    #[cfg(not(feature = "indexer"))]
+    #[cfg(not(feature = "web"))]
     let behaviour = BehaviourConfig::dht_only();
 
     let net_cfg = NetConfig {
@@ -298,7 +298,7 @@ async fn main() -> Result<()> {
         .context("starting the bootstrap node")?;
 
     // ── Indexer ───────────────────────────────────────────────────────────────
-    #[cfg(feature = "indexer")]
+    #[cfg(feature = "web")]
     let indexer = if cfg.indexer.enabled {
         let db_path = cfg.indexer.db.unwrap_or_else(config::default_index_db_path);
         Some(
@@ -338,7 +338,7 @@ async fn main() -> Result<()> {
     all_cmd_txs.push(handle.cmd_tx);
 
     // Extra indexer identities (each on an ephemeral port).
-    #[cfg(feature = "indexer")]
+    #[cfg(feature = "web")]
     if cfg.indexer.enabled {
         for (i, id_path) in extra_identity_paths.into_iter().enumerate() {
             let swarm_idx = i + 1;
@@ -413,30 +413,22 @@ async fn main() -> Result<()> {
     // ── Shared HTTP server ────────────────────────────────────────────────────
     // One listener for every enabled web role: the indexer's search UI/API and
     // the stats panel each contribute their routes and OpenAPI spec.
-    #[cfg(any(feature = "indexer", feature = "stats-web"))]
+    #[cfg(feature = "web")]
     {
         let mut api = http::Api::new();
-        #[cfg(feature = "indexer")]
         if let Some(ix) = indexer.as_ref() {
-            // Whether the sibling stats panel is also served, for the cross-link.
-            #[cfg(feature = "stats-web")]
+            // Whether the stats panel is also served, for the cross-link nav.
             let stats_panel = stats.is_some();
-            #[cfg(not(feature = "stats-web"))]
-            let stats_panel = false;
             api.merge_role(
                 ix.api_router(cfg.api.token.clone(), stats_panel),
                 indexer::Indexer::api_doc(),
             );
         }
-        #[cfg(feature = "stats-web")]
         if let Some(st) = stats.as_ref() {
+            // When the indexer runs, hand its DB to the panel so it renders the
+            // search-index counters next to resource usage.
             api.merge_role(
-                st.api_router(
-                    // When the indexer also runs, hand its DB to the panel so it
-                    // renders the search-index counters next to resource usage.
-                    #[cfg(feature = "indexer")]
-                    indexer.as_ref().map(|ix| ix.db()),
-                ),
+                st.api_router(indexer.as_ref().map(|ix| ix.db())),
                 stats::Stats::api_doc(),
             );
         }
@@ -466,7 +458,7 @@ async fn main() -> Result<()> {
                 }
                 // Close the indexer's SQLite pool cleanly so SQLite removes its
                 // -wal/-shm files. Bounded so a stuck query can't hang exit.
-                #[cfg(feature = "indexer")]
+                #[cfg(feature = "web")]
                 if let Some(ix) = indexer.as_ref()
                     && tokio::time::timeout(Duration::from_secs(5), ix.close())
                         .await
@@ -551,13 +543,13 @@ async fn main() -> Result<()> {
                         warn!(swarm = swarm_idx, "Fatal node error: {e}");
                         break;
                     }
-                    #[cfg(feature = "indexer")]
+                    #[cfg(feature = "web")]
                     NodeEvent::ProviderRecord { ref key, ref provider, .. } => {
                         if let Some(ix) = indexer.as_ref() {
                             ix.record(key, provider).await;
                         }
                     }
-                    #[cfg(feature = "indexer")]
+                    #[cfg(feature = "web")]
                     NodeEvent::ManifestReceived {
                         request_id,
                         ref response,

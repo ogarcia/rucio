@@ -18,10 +18,10 @@
 #                 Point it at the daemon with RUCIO_API.
 #
 #   bootstrap  →  tag "master-bootstrap" / "0.1.0-bootstrap" / "latest-bootstrap"
-#                 rucio-bootstrap compiled with --features indexer,stats-web: a
-#                 stable DHT entry point plus the passive DHT indexer (REST
-#                 search API) and the resource-usage stats panel, both served on
-#                 one HTTP port. The indexer runs by default (disable with
+#                 rucio-bootstrap compiled with --features web: a stable DHT
+#                 entry point plus the passive DHT indexer (REST search API) and
+#                 the resource-usage stats panel, both served on one HTTP port.
+#                 The indexer runs by default (disable with
 #                 --no-index); stats recording runs by default (disable with
 #                 --no-stats).
 #
@@ -92,7 +92,7 @@ RUN cd rucio-web && trunk build --release --public-url ./
 # Second pass recompiles only the fat `rucio` with the embedded web panel.
 # The first pass builds the workspace default-members, which already includes
 # the standalone rucio-cli — just copy it out alongside the daemon binaries.
-RUN cargo build --release --locked --features emule-compat,indexer,stats-web && \
+RUN cargo build --release --locked --features emule-compat,web && \
     cp target/release/ruciod          /usr/bin/ruciod          && \
     cp target/release/rucio-bootstrap /usr/bin/rucio-bootstrap && \
     cp target/release/rucio-cli       /usr/bin/rucio-cli       && \

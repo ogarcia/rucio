@@ -19,10 +19,9 @@ use super::query::{self, HostInfo, Series, SeriesPoint, Summary};
 #[derive(Clone)]
 pub struct AppState {
     pub db: Db,
-    /// The index DB, when the node also runs the indexer role. Lets the panel
+    /// The index DB when the indexer is enabled at runtime, letting the panel
     /// render the search-index counters next to resource usage. `None` when the
-    /// indexer is disabled or not compiled in.
-    #[cfg(feature = "indexer")]
+    /// indexer is disabled (`--no-index`).
     pub index_db: Option<crate::indexer::Db>,
 }
 

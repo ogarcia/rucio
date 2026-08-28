@@ -1,7 +1,7 @@
 # DHT indexer
 
 The **DHT indexer** is an optional role built into `rucio-bootstrap` (requires
-the `indexer` build feature, included in the `latest-bootstrap` container image).
+the `web` build feature, included in the `latest-bootstrap` container image).
 
 The node captures every `ADD_PROVIDER` announcement it receives from the
 Kademlia DHT — i.e. every time a peer publishes a file to the network — and
@@ -16,16 +16,16 @@ The indexer does not download, store, or serve any file content.
 
 ## Running the indexer
 
-When `rucio-bootstrap` is built with the `indexer` feature (as in the
+When `rucio-bootstrap` is built with the `web` feature (as in the
 `latest-bootstrap` container image), the indexer **runs by default** — that is
 the whole point of that build. On first run the SQLite database is created
 automatically at `~/.local/share/rucio-bootstrap/index.db`. There is nothing to
 turn on.
 
-### Running as a plain bootstrap node instead
+### Turning the indexer off instead
 
-To run an `indexer`-feature build as a plain bootstrap node (no capturing, no
-search API), disable the role:
+To disable capturing and the search API on a `web` build (the node still serves
+the stats panel and stays a DHT entry point), turn the role off:
 
 ```sh
 rucio-bootstrap --no-index
@@ -39,7 +39,7 @@ enabled = false
 ```
 
 The `--no-index` flag overrides `indexer.enabled` for that invocation only; the
-config file is not modified. On a build *without* the `indexer` feature the flag
+config file is not modified. On a build *without* the `web` feature the flag
 does not exist and the node is always a plain bootstrap.
 
 ---
@@ -50,7 +50,7 @@ does not exist and the node is always a plain bootstrap.
 
 | Key | Default | Description |
 |---|---|---|
-| `enabled` | `true` | Run the indexer at startup (on an `indexer`-feature build). Set to `false`, or pass `--no-index`, for a plain bootstrap node. |
+| `enabled` | `true` | Run the indexer at startup (on a `web`-feature build). Set to `false`, or pass `--no-index`, to disable capturing and search. |
 | `db` | `~/.local/share/rucio-bootstrap/index.db` | SQLite database path. Created automatically. |
 | `retention_days` | `30` | Delete records not refreshed within this many days. 0 = keep forever. |
 | `enrich` | `true` | Contact announcing peers to resolve file name and size. Disable with `false` or `--no-enrich` to index hashes only. |
@@ -59,10 +59,9 @@ does not exist and the node is always a plain bootstrap.
 ### `[api]` section
 
 The HTTP server is **shared** across the node's web roles — the indexer's
-search UI and REST API, plus the [stats panel](03-stats.md) when the node is
-built with `stats-web`. It binds **one** address and port, and each role adds
-its own routes under it. The bind address therefore lives here, not under
-`[indexer]`.
+search UI and REST API, plus the [stats panel](03-stats.md) — on a `web` build.
+It binds **one** address and port, and each role adds its own routes under it.
+The bind address therefore lives here, not under `[indexer]`.
 
 | Key | Default | Description |
 |---|---|---|
@@ -358,8 +357,8 @@ Environment=RUCIO_BOOTSTRAP_API_TOKEN=changeme
 Environment=RUCIO_BOOTSTRAP_INDEX_DB=/var/lib/rucio-bootstrap/index.db
 ```
 
-An `indexer`-feature build indexes by default, so `ExecStart` needs no flag;
-add `--no-index` if you want a plain bootstrap node instead. The environment
+A `web`-feature build indexes by default, so `ExecStart` needs no flag;
+add `--no-index` to turn capturing and search off. The environment
 variables (or the equivalent keys in `/etc/rucio-bootstrap/config.toml`)
 configure the REST API and database path.
 

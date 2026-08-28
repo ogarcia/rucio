@@ -44,8 +44,10 @@ chmod +x /usr/local/bin/rucio-bootstrap
 
 ```sh
 cargo install --path rucio-bootstrap --locked
-# or, to include the optional roles (DHT indexer + resource statistics):
-cargo install --path rucio-bootstrap --features indexer,stats-web --locked
+# lean headless flavour that also records resource stats (no web):
+cargo install --path rucio-bootstrap --features stats --locked
+# or the full node (DHT indexer + search + stats panel + REST API):
+cargo install --path rucio-bootstrap --features web --locked
 ```
 
 ### Container image
@@ -54,10 +56,10 @@ cargo install --path rucio-bootstrap --features indexer,stats-web --locked
 podman pull ghcr.io/ogarcia/rucio:latest-bootstrap
 ```
 
-The `latest-bootstrap` image is compiled with `--features indexer,stats-web` so
-the optional [DHT indexer](02-indexer.md) and [resource statistics](03-stats.md)
-roles are available at runtime. Stats recording runs by default; the indexer is
-disabled until you enable it in the config. See
+The `latest-bootstrap` image is compiled with `--features web` so the full
+[DHT indexer](02-indexer.md) + search and [resource statistics](03-stats.md)
+panel are available. Both the indexer and stats recording run by default;
+disable either at runtime with `--no-index` / `--no-stats`. See
 [below](#container-deployment) for a full example.
 
 ---
@@ -262,11 +264,11 @@ podman run -d \
   ghcr.io/ogarcia/rucio:latest-bootstrap
 ```
 
-> The container image already includes the `indexer` and `stats-web` features
-> compiled in. To activate the indexer see [DHT indexer](02-indexer.md); the
-> [resource statistics](03-stats.md) role records by default. Both are served on
-> port 3003 — publish it (`-p 3003:3003`) to reach the search site, stats panel
-> or API.
+> The container image is built with the `web` feature, so the
+> [DHT indexer](02-indexer.md) + search and the
+> [resource statistics](03-stats.md) panel both run by default (disable either
+> with `--no-index` / `--no-stats`). Both are served on port 3003 — publish it
+> (`-p 3003:3003`) to reach the search site, stats panel or API.
 
 ---
 

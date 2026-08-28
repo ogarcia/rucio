@@ -38,14 +38,11 @@ pub async fn panel(State(s): State<AppState>, Query(p): Query<PanelQuery>) -> Ht
     let window = p.w.unwrap_or(86_400).max(0);
     let host = query::host_info(&s.db).await.ok().flatten();
 
-    // The search-index card, rendered only when this node also runs the indexer.
-    #[cfg(feature = "indexer")]
+    // The search-index card, rendered only when the indexer is enabled.
     let index = match &s.index_db {
         Some(db) => index_card(crate::indexer::index_stats(db).await.ok().as_ref()),
         None => String::new(),
     };
-    #[cfg(not(feature = "indexer"))]
-    let index = String::new();
     let has_index = !index.is_empty();
 
     let body = match query::summary(&s.db, window).await {
@@ -97,10 +94,9 @@ fn head(has_index: bool) -> String {
     )
 }
 
-/// The search-index card: aggregate counters from the indexer role, shown when
-/// this node also indexes the DHT. Frames the resource numbers below with what
-/// the node is actually storing and serving.
-#[cfg(feature = "indexer")]
+/// The search-index card: aggregate counters from the indexer, shown when this
+/// node also indexes the DHT. Frames the resource numbers below with what the
+/// node is actually storing and serving.
 fn index_card(stats: Option<&crate::indexer::Stats>) -> String {
     let Some(st) = stats else {
         return String::new();
@@ -434,7 +430,6 @@ mod tests {
         assert!(html.contains(r#"class="tab" href="/stats?w=3600""#));
     }
 
-    #[cfg(feature = "indexer")]
     #[test]
     fn index_card_shows_counters_and_enriched_share() {
         let st = crate::indexer::Stats {
@@ -452,7 +447,6 @@ mod tests {
         assert!(html.contains("3d")); // oldest→newest span
     }
 
-    #[cfg(feature = "indexer")]
     #[test]
     fn index_card_is_empty_without_stats() {
         assert!(index_card(None).is_empty());

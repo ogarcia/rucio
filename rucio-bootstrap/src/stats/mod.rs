@@ -28,13 +28,14 @@ use sqlx::SqlitePool;
 use sqlx::sqlite::SqliteConnectOptions;
 use tracing::{info, warn};
 
-// Web role: the panel + JSON API, mounted onto the shared HTTP server. Pulled in
-// only with the `stats-web` feature (the extra `axum`/`utoipa` deps).
-#[cfg(feature = "stats-web")]
+// Panel + JSON API, mounted onto the shared HTTP server. Pulled in only with the
+// `web` feature (the extra `axum`/`utoipa` deps); the plain `stats` build records
+// to SQLite with no web surface.
+#[cfg(feature = "web")]
 mod api;
-#[cfg(feature = "stats-web")]
+#[cfg(feature = "web")]
 mod query;
-#[cfg(feature = "stats-web")]
+#[cfg(feature = "web")]
 mod web;
 
 /// Kernel clock ticks per second (`sysconf(_SC_CLK_TCK)`). This is 100 on every
@@ -140,23 +141,18 @@ impl Stats {
     /// The stats panel + JSON API routes, ready to merge onto the shared server.
     /// The data is public (resource usage, not sensitive), so there is no token.
     ///
-    /// `index_db` (present only when the indexer role is also compiled in and
-    /// enabled) lets the panel render the search-index counters next to the
-    /// resource figures.
-    #[cfg(feature = "stats-web")]
-    pub fn api_router(
-        &self,
-        #[cfg(feature = "indexer")] index_db: Option<crate::indexer::Db>,
-    ) -> axum::Router {
+    /// `index_db` (present only when the indexer is enabled at runtime) lets the
+    /// panel render the search-index counters next to the resource figures.
+    #[cfg(feature = "web")]
+    pub fn api_router(&self, index_db: Option<crate::indexer::Db>) -> axum::Router {
         api::router(api::AppState {
             db: self.db.clone(),
-            #[cfg(feature = "indexer")]
             index_db,
         })
     }
 
     /// The stats role's OpenAPI spec, for the shared server's merged docs.
-    #[cfg(feature = "stats-web")]
+    #[cfg(feature = "web")]
     pub fn api_doc() -> utoipa::openapi::OpenApi {
         api::openapi()
     }

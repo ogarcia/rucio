@@ -5,13 +5,15 @@ peers and connections, CPU, memory, machine traffic, load — into a small SQLit
 database, and (optionally) serves a web dashboard that turns those numbers into
 the hardware a bootstrap node needs.
 
-There are two build features:
+Two build features enable it:
 
-- **`stats`** — recording only. Pulls just SQLite; no web server. A headless
-  node writes a snapshot once a minute and nothing else.
-- **`stats-web`** — recording **plus** the `/stats` dashboard and its JSON API,
-  served on the [shared HTTP server](02-indexer.md#api-section). Included in the
-  `latest-bootstrap` container image.
+- **`stats`** — recording only. Pulls just SQLite; no web server. The lean,
+  headless flavour: a seed node that also writes a snapshot once a minute and
+  nothing else.
+- **`web`** — the full node. Recording **plus** the `/stats` dashboard and its
+  JSON API (and the DHT indexer + search), served on the
+  [shared HTTP server](02-indexer.md#api-section). Implies `stats` and shares
+  its SQLite database. Included in the `latest-bootstrap` container image.
 
 The stats role does not download, store, or serve any file content, and does not
 affect the DHT.
@@ -25,7 +27,7 @@ dependency is pulled in.
 
 ## Running it
 
-On a `stats`- or `stats-web`-feature build (as in the `latest-bootstrap` image)
+On a `stats`- or `web`-feature build (as in the `latest-bootstrap` image)
 recording **runs by default**. On first run the database is created
 automatically at `~/.local/share/rucio-bootstrap/stats.db`. There is nothing to
 turn on.
@@ -110,7 +112,7 @@ box the node ran on (CPU count, total RAM, kernel, hostname).
 
 ## Dashboard
 
-With a `stats-web` build the node serves a small, no-JavaScript dashboard at
+With a `web` build the node serves a small, no-JavaScript dashboard at
 **`/stats`** on the shared HTTP server. It shows, for a selectable time window
 (1h / 24h / 7d / 30d / All):
 

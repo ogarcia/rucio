@@ -187,7 +187,7 @@ pub fn default_stats_db_path() -> PathBuf {
         .join("stats.db")
 }
 
-#[cfg(feature = "indexer")]
+#[cfg(feature = "web")]
 /// Path for the i-th extra indexer identity, derived from the primary.
 ///
 /// `identity.key` → `identity-1.key`, `identity-2.key`, …

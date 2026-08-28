@@ -2,8 +2,8 @@
 //!
 //! Records the `ADD_PROVIDER` announcements captured by `rucio-net` (via
 //! [`NodeEvent::ProviderRecord`](rucio_net::NodeEvent)) into SQLite and exposes
-//! a search/admin REST API. Compiled in only with the `indexer` feature; when
-//! built that way it runs by default and is turned off with `--no-index`.
+//! a search/admin REST API. Compiled in only with the `web` feature; when built
+//! that way it runs by default and is turned off with `--no-index`.
 //!
 //! When enrichment is enabled, each newly seen hash is resolved to a file name
 //! and size by requesting the manifest from the announcing peer, so the search
@@ -55,14 +55,11 @@ mod api;
 mod db;
 mod web;
 
-// Re-exported so the shared stats panel (a different role) can render the index
-// counters alongside resource usage without reaching into `db` internals. Only
-// the `stats-web` panel consumes these, so they are gated to it.
-#[cfg(feature = "stats-web")]
+// Re-exported so the shared stats panel can render the index counters alongside
+// resource usage without reaching into `db` internals.
 pub use db::{Db, Stats};
 
 /// Aggregate index counters, for the shared `/stats` panel to display.
-#[cfg(feature = "stats-web")]
 pub async fn index_stats(db: &Db) -> Result<Stats> {
     db::stats(db).await
 }
@@ -166,7 +163,6 @@ impl Indexer {
 
     /// A clone of the index DB pool, handed to the shared stats panel so it can
     /// render the index counters alongside resource usage.
-    #[cfg(feature = "stats-web")]
     pub fn db(&self) -> db::Db {
         self.db.clone()
     }
