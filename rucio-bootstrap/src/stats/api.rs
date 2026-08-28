@@ -19,10 +19,10 @@ use super::query::{self, HostInfo, Series, SeriesPoint, Summary};
 #[derive(Clone)]
 pub struct AppState {
     pub db: Db,
-    /// The index DB when the indexer is enabled at runtime, letting the panel
-    /// render the search-index counters next to resource usage. `None` when the
-    /// indexer is disabled (`--no-index`).
-    pub index_db: Option<crate::indexer::Db>,
+    /// Whether the indexer runs at runtime. When set, the panel renders the
+    /// search-index counters (read from the shared pool `db`) next to resource
+    /// usage. `false` when the indexer is disabled (`--no-index`).
+    pub index_enabled: bool,
 }
 
 #[derive(OpenApi)]

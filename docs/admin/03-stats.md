@@ -29,8 +29,8 @@ dependency is pulled in.
 
 On a `stats`- or `web`-feature build (as in the `latest-bootstrap` image)
 recording **runs by default**. On first run the database is created
-automatically at `~/.local/share/rucio-bootstrap/stats.db`. There is nothing to
-turn on.
+automatically at `~/.local/share/rucio-bootstrap/bootstrap.db` (shared with the
+DHT index on a `web` build). There is nothing to turn on.
 
 To disable it for one invocation:
 
@@ -57,9 +57,12 @@ exist and nothing is recorded.
 
 | Key | Default | Description |
 |---|---|---|
-| `enabled` | `true` | Record snapshots at startup (on a `stats`-feature build). Set to `false`, or pass `--no-stats`, to record nothing. |
-| `db` | `~/.local/share/rucio-bootstrap/stats.db` | SQLite database path. Created automatically. |
+| `enabled` | `true` | Record snapshots at startup (on a `stats`- or `web`-feature build). Set to `false`, or pass `--no-stats`, to record nothing. |
 | `retention_days` | `90` | Delete samples older than this many days. Samples are tiny (one per minute), so a long history is cheap. |
+
+The database path is shared with the DHT index and lives under
+[`[storage]`](02-indexer.md#storage-section) (default
+`~/.local/share/rucio-bootstrap/bootstrap.db`), not here.
 
 The dashboard and JSON API are served on the shared HTTP server — its bind
 address and port are the [`[api]` section](02-indexer.md#api-section)
@@ -70,7 +73,7 @@ address and port are the [`[api]` section](02-indexer.md#api-section)
 | Flag | Env variable | Overrides |
 |---|---|---|
 | `--no-stats` | — | forces `stats.enabled = false` |
-| `--stats-db <PATH>` | `RUCIO_BOOTSTRAP_STATS_DB` | `stats.db` |
+| `--db <PATH>` | `RUCIO_BOOTSTRAP_DB` | `storage.db` (shared database) |
 | `--stats-retention-days <N>` | `RUCIO_BOOTSTRAP_STATS_RETENTION_DAYS` | `stats.retention_days` |
 
 ### Full example
@@ -80,12 +83,14 @@ address and port are the [`[api]` section](02-indexer.md#api-section)
 identity = "/var/lib/rucio-bootstrap/identity.key"
 listen   = ["/ip4/0.0.0.0/tcp/4321", "/ip6/::/tcp/4321"]
 
+[storage]
+db = "/var/lib/rucio-bootstrap/bootstrap.db"
+
 [api]
 listen = "0.0.0.0:3003"
 
 [stats]
 enabled        = true
-db             = "/var/lib/rucio-bootstrap/stats.db"
 retention_days = 90
 ```
 
@@ -241,7 +246,7 @@ less. After a representative period (a week is usually plenty), read the peaks:
 
 ```sh
 # Monthly machine traffic projection from the recorded samples
-sqlite3 ~/.local/share/rucio-bootstrap/stats.db "
+sqlite3 ~/.local/share/rucio-bootstrap/bootstrap.db "
   SELECT (SUM(net_rx_bytes + net_tx_bytes) * 1.0
           / (MAX(ts) - MIN(ts)) * 86400 * 30) / 1e9 AS gb_per_month
   FROM samples;"
@@ -279,7 +284,7 @@ The environment variables (or the equivalent config keys) extend the unit file
 from [01 — Bootstrap node](01-bootstrap-node.md):
 
 ```ini
-Environment=RUCIO_BOOTSTRAP_STATS_DB=/var/lib/rucio-bootstrap/stats.db
+Environment=RUCIO_BOOTSTRAP_DB=/var/lib/rucio-bootstrap/bootstrap.db
 ```
 
 Recording runs by default on a `stats`-feature build, so `ExecStart` needs no
@@ -300,7 +305,7 @@ The stats are stored in a single SQLite file in WAL journal mode.
 
 ```sh
 # Peak concurrent peers and RSS over the last day
-sqlite3 ~/.local/share/rucio-bootstrap/stats.db "
+sqlite3 ~/.local/share/rucio-bootstrap/bootstrap.db "
   SELECT MAX(connected_peers) AS peak_peers,
          MAX(peak_rss_kb)     AS peak_rss_kb,
          MAX(load1)           AS peak_load1
@@ -312,6 +317,6 @@ sqlite3 ~/.local/share/rucio-bootstrap/stats.db "
 
 ```sh
 # Online backup (safe while the node is running)
-sqlite3 ~/.local/share/rucio-bootstrap/stats.db \
+sqlite3 ~/.local/share/rucio-bootstrap/bootstrap.db \
   ".backup /path/to/stats-backup.db"
 ```

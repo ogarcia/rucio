@@ -15,12 +15,17 @@
 //! persisted so the PeerId is stable across restarts). Operators who want a
 //! config file can write a documented example with `--init-config`.
 //!
-//! This is role 1 of SPEC phase 5. Role 2 (the passive DHT indexer) is compiled
-//! in with the `indexer` feature; when built that way it runs by default and is
-//! turned off with `--no-index` (or `indexer.enabled = false` in the config).
-//! See the [`indexer`] module.
+//! This is role 1 of SPEC phase 5. The optional DHT indexer and stats panel are
+//! compiled in with the `web` feature (a lean `stats` build records resource
+//! usage only); both run by default and are turned off at runtime with
+//! `--no-index` / `--no-stats`. See the `indexer` and `stats` modules.
 
 mod config;
+
+// The single SQLite database shared by the stats recorder and the DHT index.
+// Present on any `stats`/`web` build (both pull `sqlx`).
+#[cfg(feature = "stats")]
+mod db;
 
 #[cfg(feature = "web")]
 mod http;
@@ -83,16 +88,11 @@ struct Args {
     bootstrap_peer: Vec<String>,
 
     /// Disable the passive DHT indexer role. It runs by default when built with
-    /// the `indexer` feature; pass this to run as a plain bootstrap node.
+    /// the `web` feature; pass this to turn capturing and search off.
     /// Overrides `indexer.enabled`.
     #[cfg(feature = "web")]
     #[arg(long)]
     no_index: bool,
-
-    /// SQLite path for the indexer database. Overrides `indexer.db`.
-    #[cfg(feature = "web")]
-    #[arg(long, env = "RUCIO_BOOTSTRAP_INDEX_DB")]
-    index_db: Option<PathBuf>,
 
     /// Address the shared HTTP server (indexer web/API + stats panel) binds to.
     /// Overrides `api.listen`.
@@ -125,16 +125,17 @@ struct Args {
     identity_count: Option<u8>,
 
     /// Disable recording resource-usage statistics. They run by default when
-    /// built with the `stats` feature; pass this to record nothing.
+    /// built with the `stats` or `web` feature; pass this to record nothing.
     /// Overrides `stats.enabled`.
     #[cfg(feature = "stats")]
     #[arg(long)]
     no_stats: bool,
 
-    /// SQLite path for the statistics database. Overrides `stats.db`.
+    /// Path to the single SQLite database shared by the stats recorder and the
+    /// DHT index. Overrides `storage.db`.
     #[cfg(feature = "stats")]
-    #[arg(long, env = "RUCIO_BOOTSTRAP_STATS_DB")]
-    stats_db: Option<PathBuf>,
+    #[arg(long, env = "RUCIO_BOOTSTRAP_DB")]
+    db: Option<PathBuf>,
 
     /// Drop statistics samples older than this many days. Overrides
     /// `stats.retention_days`.
@@ -217,9 +218,6 @@ async fn main() -> Result<()> {
         if args.no_index {
             cfg.indexer.enabled = false;
         }
-        if let Some(db) = args.index_db {
-            cfg.indexer.db = Some(db);
-        }
         if let Some(days) = args.retention_days {
             cfg.indexer.retention_days = days;
         }
@@ -236,8 +234,8 @@ async fn main() -> Result<()> {
         if args.no_stats {
             cfg.stats.enabled = false;
         }
-        if let Some(db) = args.stats_db {
-            cfg.stats.db = Some(db);
+        if let Some(db) = args.db {
+            cfg.storage.db = Some(db);
         }
         if let Some(days) = args.stats_retention_days {
             cfg.stats.retention_days = days;
@@ -297,13 +295,27 @@ async fn main() -> Result<()> {
         .await
         .context("starting the bootstrap node")?;
 
+    // ── Shared database ───────────────────────────────────────────────────────
+    // One SQLite file for the stats recorder and the DHT index; opened once here
+    // (schema for every enabled role applied) and cloned to each role.
+    #[cfg(feature = "stats")]
+    let db_pool = {
+        let db_path = cfg
+            .storage
+            .db
+            .clone()
+            .unwrap_or_else(config::default_db_path);
+        let pool = db::open(&db_path).await?;
+        info!(db = %db_path.display(), "Database ready");
+        pool
+    };
+
     // ── Indexer ───────────────────────────────────────────────────────────────
     #[cfg(feature = "web")]
     let indexer = if cfg.indexer.enabled {
-        let db_path = cfg.indexer.db.unwrap_or_else(config::default_index_db_path);
         Some(
             indexer::Indexer::start(indexer::IndexerOpts {
-                db_path,
+                db: db_pool.clone(),
                 retention_days: cfg.indexer.retention_days,
                 enrich,
                 // Only the primary swarm carries the manifest protocol.
@@ -394,18 +406,7 @@ async fn main() -> Result<()> {
     // ── Statistics recorder ───────────────────────────────────────────────────
     #[cfg(feature = "stats")]
     let mut stats = if cfg.stats.enabled {
-        let db_path = cfg
-            .stats
-            .db
-            .clone()
-            .unwrap_or_else(config::default_stats_db_path);
-        Some(
-            stats::Stats::start(stats::StatsOpts {
-                db_path,
-                retention_days: cfg.stats.retention_days,
-            })
-            .await?,
-        )
+        Some(stats::Stats::start(db_pool.clone(), cfg.stats.retention_days).await?)
     } else {
         None
     };
@@ -425,12 +426,9 @@ async fn main() -> Result<()> {
             );
         }
         if let Some(st) = stats.as_ref() {
-            // When the indexer runs, hand its DB to the panel so it renders the
-            // search-index counters next to resource usage.
-            api.merge_role(
-                st.api_router(indexer.as_ref().map(|ix| ix.db())),
-                stats::Stats::api_doc(),
-            );
+            // Tell the panel whether the indexer runs, so it renders the
+            // search-index card (read from the shared pool it already holds).
+            api.merge_role(st.api_router(indexer.is_some()), stats::Stats::api_doc());
         }
         if api.has_roles() {
             api.serve(cfg.api.listen, std::time::Instant::now()).await?;
@@ -456,23 +454,15 @@ async fn main() -> Result<()> {
                 for tx in &all_cmd_txs {
                     tx.send(NodeCmd::Shutdown).await.ok();
                 }
-                // Close the indexer's SQLite pool cleanly so SQLite removes its
-                // -wal/-shm files. Bounded so a stuck query can't hang exit.
-                #[cfg(feature = "web")]
-                if let Some(ix) = indexer.as_ref()
-                    && tokio::time::timeout(Duration::from_secs(5), ix.close())
-                        .await
-                        .is_err()
-                {
-                    warn!("Timed out closing the indexer database on shutdown");
-                }
+                // Close the shared SQLite pool cleanly so SQLite checkpoints and
+                // removes its -wal/-shm files. Bounded so a stuck query can't
+                // hang exit.
                 #[cfg(feature = "stats")]
-                if let Some(st) = stats.as_ref()
-                    && tokio::time::timeout(Duration::from_secs(5), st.close())
-                        .await
-                        .is_err()
+                if tokio::time::timeout(Duration::from_secs(5), db_pool.close())
+                    .await
+                    .is_err()
                 {
-                    warn!("Timed out closing the stats database on shutdown");
+                    warn!("Timed out closing the database on shutdown");
                 }
                 break;
             }

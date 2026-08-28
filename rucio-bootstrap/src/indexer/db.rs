@@ -4,14 +4,11 @@
 //! first/last-seen timestamps. Pre-stable policy mirrors the daemon: the schema
 //! is applied with `CREATE TABLE IF NOT EXISTS` on startup, no migrations.
 
-use std::path::Path;
-use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use rucio_core::protocol::search::normalize_search_term;
 use serde::Serialize;
-use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::{FromRow, SqlitePool};
 use utoipa::ToSchema;
 
@@ -37,26 +34,15 @@ CREATE INDEX IF NOT EXISTS idx_files_name ON files (name);
 
 pub type Db = SqlitePool;
 
-/// Open (or create) the index database and apply the schema.
-pub async fn open(path: &Path) -> Result<Db> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("creating index db directory {}", parent.display()))?;
-    }
-    let opts = SqliteConnectOptions::from_str(&format!("sqlite://{}", path.display()))
-        .context("parsing sqlite URL")?
-        .create_if_missing(true)
-        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal);
-    let pool = SqlitePool::connect_with(opts)
-        .await
-        .with_context(|| format!("opening index db at {}", path.display()))?;
+/// Apply the index schema to the shared pool (see [`crate::db`]).
+pub async fn apply_schema(db: &Db) -> Result<()> {
     for stmt in SCHEMA.split(';').map(str::trim).filter(|s| !s.is_empty()) {
         sqlx::query(stmt)
-            .execute(&pool)
+            .execute(db)
             .await
             .context("applying index schema")?;
     }
-    Ok(pool)
+    Ok(())
 }
 
 fn now() -> i64 {

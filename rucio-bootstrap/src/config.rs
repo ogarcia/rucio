@@ -19,11 +19,20 @@ pub struct Config {
     #[serde(default)]
     pub node: NodeConfig,
     #[serde(default)]
+    pub storage: StorageConfig,
+    #[serde(default)]
     pub indexer: IndexerConfig,
     #[serde(default)]
     pub stats: StatsConfig,
     #[serde(default)]
     pub api: ApiConfig,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct StorageConfig {
+    /// Path to the single SQLite database shared by the stats recorder and the
+    /// DHT index. Only used on a `stats`- or `web`-feature build.
+    pub db: Option<PathBuf>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -45,8 +54,6 @@ pub struct IndexerConfig {
     /// node needs `enabled = false` (or the `--no-index` flag).
     #[serde(default = "default_indexer_enabled")]
     pub enabled: bool,
-    /// SQLite database path.
-    pub db: Option<PathBuf>,
     /// Drop records not refreshed within this many days.
     #[serde(default = "default_retention_days")]
     pub retention_days: i64,
@@ -68,8 +75,6 @@ pub struct StatsConfig {
     /// turned off with `enabled = false` (or the `--no-stats` flag).
     #[serde(default = "default_stats_enabled")]
     pub enabled: bool,
-    /// SQLite database path.
-    pub db: Option<PathBuf>,
     /// Drop samples older than this many days.
     #[serde(default = "default_stats_retention_days")]
     pub retention_days: i64,
@@ -130,7 +135,6 @@ impl Default for IndexerConfig {
     fn default() -> Self {
         Self {
             enabled: default_indexer_enabled(),
-            db: None,
             retention_days: default_retention_days(),
             enrich: default_enrich(),
             identity_count: 0,
@@ -151,7 +155,6 @@ impl Default for StatsConfig {
     fn default() -> Self {
         Self {
             enabled: default_stats_enabled(),
-            db: None,
             retention_days: default_stats_retention_days(),
         }
     }
@@ -173,18 +176,11 @@ pub fn default_identity_path() -> PathBuf {
         .join("identity.key")
 }
 
-pub fn default_index_db_path() -> PathBuf {
+pub fn default_db_path() -> PathBuf {
     dirs::data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("rucio-bootstrap")
-        .join("index.db")
-}
-
-pub fn default_stats_db_path() -> PathBuf {
-    dirs::data_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("rucio-bootstrap")
-        .join("stats.db")
+        .join("bootstrap.db")
 }
 
 #[cfg(feature = "web")]
@@ -238,16 +234,14 @@ pub fn write_template(path: &Path) -> Result<()> {
             .with_context(|| format!("creating config dir {}", parent.display()))?;
     }
     let identity = default_identity_path();
-    let db = default_index_db_path();
-    let stats_db = default_stats_db_path();
-    std::fs::write(path, render_template(&identity, &db, &stats_db))
+    let db = default_db_path();
+    std::fs::write(path, render_template(&identity, &db))
         .with_context(|| format!("writing config template to {}", path.display()))
 }
 
-fn render_template(identity: &Path, db: &Path, stats_db: &Path) -> String {
+fn render_template(identity: &Path, db: &Path) -> String {
     let id = identity.to_string_lossy();
     let db = db.to_string_lossy();
-    let stats_db = stats_db.to_string_lossy();
     format!(
         r#"# rucio-bootstrap configuration
 # Example written by `rucio-bootstrap --init-config` — edit freely.
@@ -265,6 +259,11 @@ listen = ["/ip4/0.0.0.0/tcp/4321", "/ip6/::/tcp/4321"]
 # Example: bootstrap_peers = ["/ip4/1.2.3.4/tcp/4321/p2p/12D3Koo..."]
 bootstrap_peers = []
 
+[storage]
+# Single SQLite database shared by the stats recorder and the DHT index (only
+# used on a `stats`- or `web`-feature build; env: RUCIO_BOOTSTRAP_DB).
+db = "{db}"
+
 [api]
 # Shared HTTP server for the web roles below (indexer search UI/API and the
 # stats panel). One port, one address; each role adds its own endpoints. Only
@@ -276,12 +275,10 @@ listen = "127.0.0.1:3003"
 # token = "change-me"
 
 [indexer]
-# Run the passive DHT indexer role. With an `indexer`-feature build it runs by
-# default; set this to false (or pass --no-index) for a plain bootstrap node.
+# Run the passive DHT indexer role. With a `web`-feature build it runs by
+# default; set this to false (or pass --no-index) to turn capturing and search
+# off.
 enabled = true
-
-# SQLite database path.
-db = "{db}"
 
 # Prune records not refreshed within this many days.
 retention_days = 30
@@ -297,14 +294,11 @@ identity_count = 0
 
 [stats]
 # Record periodic resource-usage snapshots (concurrent peers/connections, CPU,
-# memory, machine traffic, load) into SQLite so you can size the hardware a
-# bootstrap node needs. With a `stats`-feature build it runs by default; set
-# this to false (or pass --no-stats) to disable. Resource figures are read from
-# Linux /proc and are stored as NULL on other platforms.
+# memory, machine traffic, load) into the shared database so you can size the
+# hardware a bootstrap node needs. With a `stats`- or `web`-feature build it runs
+# by default; set this to false (or pass --no-stats) to disable. Resource figures
+# are read from Linux /proc and are stored as NULL on other platforms.
 enabled = true
-
-# SQLite database path.
-db = "{stats_db}"
 
 # Drop samples older than this many days.
 retention_days = 90

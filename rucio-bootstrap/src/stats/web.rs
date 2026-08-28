@@ -38,10 +38,12 @@ pub async fn panel(State(s): State<AppState>, Query(p): Query<PanelQuery>) -> Ht
     let window = p.w.unwrap_or(86_400).max(0);
     let host = query::host_info(&s.db).await.ok().flatten();
 
-    // The search-index card, rendered only when the indexer is enabled.
-    let index = match &s.index_db {
-        Some(db) => index_card(crate::indexer::index_stats(db).await.ok().as_ref()),
-        None => String::new(),
+    // The search-index card, rendered only when the indexer is enabled — read
+    // from the shared pool, which carries the index tables on a `web` build.
+    let index = if s.index_enabled {
+        index_card(crate::indexer::index_stats(&s.db).await.ok().as_ref())
+    } else {
+        String::new()
     };
     let has_index = !index.is_empty();
 

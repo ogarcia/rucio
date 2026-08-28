@@ -18,9 +18,9 @@ The indexer does not download, store, or serve any file content.
 
 When `rucio-bootstrap` is built with the `web` feature (as in the
 `latest-bootstrap` container image), the indexer **runs by default** — that is
-the whole point of that build. On first run the SQLite database is created
-automatically at `~/.local/share/rucio-bootstrap/index.db`. There is nothing to
-turn on.
+the whole point of that build. It shares one SQLite database with the stats
+recorder, created automatically on first run at
+`~/.local/share/rucio-bootstrap/bootstrap.db`. There is nothing to turn on.
 
 ### Turning the indexer off instead
 
@@ -51,10 +51,20 @@ does not exist and the node is always a plain bootstrap.
 | Key | Default | Description |
 |---|---|---|
 | `enabled` | `true` | Run the indexer at startup (on a `web`-feature build). Set to `false`, or pass `--no-index`, to disable capturing and search. |
-| `db` | `~/.local/share/rucio-bootstrap/index.db` | SQLite database path. Created automatically. |
 | `retention_days` | `30` | Delete records not refreshed within this many days. 0 = keep forever. |
 | `enrich` | `true` | Contact announcing peers to resolve file name and size. Disable with `false` or `--no-enrich` to index hashes only. |
 | `identity_count` | `0` | Number of **additional** Kademlia identities to spawn. See [Multi-identity](#multi-identity). |
+
+The database path is **not** here: the indexer shares one SQLite file with the
+stats recorder, configured under [`[storage]`](#storage-section).
+
+### `[storage]` section
+
+The stats recorder and the DHT index persist to a **single** SQLite database.
+
+| Key | Default | Description |
+|---|---|---|
+| `db` | `~/.local/share/rucio-bootstrap/bootstrap.db` | Shared SQLite database path. Created automatically. |
 
 ### `[api]` section
 
@@ -93,13 +103,15 @@ network rather than the public internet.
 identity = "/var/lib/rucio-bootstrap/identity.key"
 listen   = ["/ip4/0.0.0.0/tcp/4321", "/ip6/::/tcp/4321"]
 
+[storage]
+db = "/var/lib/rucio-bootstrap/bootstrap.db"
+
 [api]
 listen = "0.0.0.0:3003"
 token  = "change-me"
 
 [indexer]
 enabled        = true
-db             = "/var/lib/rucio-bootstrap/index.db"
 retention_days = 30
 enrich         = true
 identity_count = 3
@@ -110,7 +122,7 @@ identity_count = 3
 | Flag | Env variable | Overrides |
 |---|---|---|
 | `--no-index` | — | `indexer.enabled` (forces off) |
-| `--index-db <PATH>` | `RUCIO_BOOTSTRAP_INDEX_DB` | `indexer.db` |
+| `--db <PATH>` | `RUCIO_BOOTSTRAP_DB` | `storage.db` (shared database) |
 | `--api-listen <ADDR>` | `RUCIO_BOOTSTRAP_API_LISTEN` | `api.listen` (shared server) |
 | `--api-token <TOKEN>` | `RUCIO_BOOTSTRAP_API_TOKEN` | `api.token` (shared server) |
 | `--retention-days <N>` | `RUCIO_BOOTSTRAP_RETENTION_DAYS` | `indexer.retention_days` |
@@ -354,7 +366,7 @@ Add to the `[Service]` section of the unit file from
 ExecStart=/usr/local/bin/rucio-bootstrap
 Environment=RUCIO_BOOTSTRAP_API_LISTEN=127.0.0.1:3003
 Environment=RUCIO_BOOTSTRAP_API_TOKEN=changeme
-Environment=RUCIO_BOOTSTRAP_INDEX_DB=/var/lib/rucio-bootstrap/index.db
+Environment=RUCIO_BOOTSTRAP_DB=/var/lib/rucio-bootstrap/bootstrap.db
 ```
 
 A `web`-feature build indexes by default, so `ExecStart` needs no flag;
@@ -376,7 +388,7 @@ The index is stored in a single SQLite file in WAL journal mode.
 ### Manual inspection
 
 ```sh
-sqlite3 ~/.local/share/rucio-bootstrap/index.db \
+sqlite3 ~/.local/share/rucio-bootstrap/bootstrap.db \
   "SELECT hash, name, providers, datetime(last_seen,'unixepoch')
    FROM (
      SELECT pr.hash, f.name, COUNT(*) AS providers, MAX(pr.last_seen) AS last_seen
@@ -391,6 +403,6 @@ sqlite3 ~/.local/share/rucio-bootstrap/index.db \
 
 ```sh
 # Online backup (safe while the indexer is running)
-sqlite3 ~/.local/share/rucio-bootstrap/index.db \
+sqlite3 ~/.local/share/rucio-bootstrap/bootstrap.db \
   ".backup /path/to/index-backup.db"
 ```

@@ -19,13 +19,10 @@
 //! rest of the project: the schema is applied with `CREATE TABLE IF NOT EXISTS`
 //! on startup, no migrations.
 
-use std::path::{Path, PathBuf};
-use std::str::FromStr;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use sqlx::SqlitePool;
-use sqlx::sqlite::SqliteConnectOptions;
 use tracing::{info, warn};
 
 // Panel + JSON API, mounted onto the shared HTTP server. Pulled in only with the
@@ -76,15 +73,20 @@ CREATE INDEX IF NOT EXISTS idx_samples_ts ON samples (ts);
 
 pub type Db = SqlitePool;
 
-/// Runtime options for the stats role.
-pub struct StatsOpts {
-    pub db_path: PathBuf,
-    /// Drop samples older than this many days.
-    pub retention_days: i64,
+/// Apply the stats schema to the shared pool (see [`crate::db`]).
+pub async fn apply_schema(db: &Db) -> Result<()> {
+    for stmt in SCHEMA.split(';').map(str::trim).filter(|s| !s.is_empty()) {
+        sqlx::query(stmt)
+            .execute(db)
+            .await
+            .context("applying stats schema")?;
+    }
+    Ok(())
 }
 
-/// A running stats recorder: owns the DB pool and the previous cumulative
-/// readings needed to turn `/proc` counters into per-interval deltas.
+/// A running stats recorder: owns a handle to the shared DB pool and the
+/// previous cumulative readings needed to turn `/proc` counters into
+/// per-interval deltas.
 pub struct Stats {
     db: Db,
     /// Wall-clock instant of the previous sample (baseline captured at startup).
@@ -96,22 +98,19 @@ pub struct Stats {
 }
 
 impl Stats {
-    /// Open the DB, record host facts, start the retention sweep and capture the
-    /// baseline counters so the first sample already yields valid deltas.
-    pub async fn start(opts: StatsOpts) -> Result<Self> {
-        let db = open(&opts.db_path).await.context("opening stats db")?;
-        info!(
-            db = %opts.db_path.display(),
-            retention_days = opts.retention_days,
-            "Stats enabled"
-        );
+    /// Record host facts, start the retention sweep and capture the baseline
+    /// counters so the first sample already yields valid deltas. The schema is
+    /// already applied by [`crate::db::open`]; `db` is a handle to the shared
+    /// pool.
+    pub async fn start(db: Db, retention_days: i64) -> Result<Self> {
+        info!(retention_days, "Stats enabled");
 
         record_host_info(&db).await;
 
         // Retention sweep: prune once at startup (the interval's first tick is
         // immediate) then once a day.
         let rdb = db.clone();
-        let days = opts.retention_days;
+        let days = retention_days;
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(Duration::from_secs(24 * 3600));
             loop {
@@ -132,22 +131,16 @@ impl Stats {
         })
     }
 
-    /// Close the SQLite pool cleanly on shutdown so SQLite checkpoints and
-    /// removes its `-wal`/`-shm` sidecar files.
-    pub async fn close(&self) {
-        self.db.close().await;
-    }
-
     /// The stats panel + JSON API routes, ready to merge onto the shared server.
     /// The data is public (resource usage, not sensitive), so there is no token.
     ///
-    /// `index_db` (present only when the indexer is enabled at runtime) lets the
-    /// panel render the search-index counters next to the resource figures.
+    /// `index_enabled` — whether the indexer runs at runtime — tells the panel
+    /// whether to render the search-index card (read from the shared pool).
     #[cfg(feature = "web")]
-    pub fn api_router(&self, index_db: Option<crate::indexer::Db>) -> axum::Router {
+    pub fn api_router(&self, index_enabled: bool) -> axum::Router {
         api::router(api::AppState {
             db: self.db.clone(),
-            index_db,
+            index_enabled,
         })
     }
 
@@ -223,28 +216,6 @@ impl Stats {
         .await?;
         Ok(())
     }
-}
-
-/// Open (or create) the stats database and apply the schema.
-async fn open(path: &Path) -> Result<Db> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("creating stats db directory {}", parent.display()))?;
-    }
-    let opts = SqliteConnectOptions::from_str(&format!("sqlite://{}", path.display()))
-        .context("parsing sqlite URL")?
-        .create_if_missing(true)
-        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal);
-    let pool = SqlitePool::connect_with(opts)
-        .await
-        .with_context(|| format!("opening stats db at {}", path.display()))?;
-    for stmt in SCHEMA.split(';').map(str::trim).filter(|s| !s.is_empty()) {
-        sqlx::query(stmt)
-            .execute(&pool)
-            .await
-            .context("applying stats schema")?;
-    }
-    Ok(pool)
 }
 
 pub(crate) fn now_unix() -> i64 {

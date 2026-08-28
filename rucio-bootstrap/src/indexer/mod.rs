@@ -55,9 +55,9 @@ mod api;
 mod db;
 mod web;
 
-// Re-exported so the shared stats panel can render the index counters alongside
-// resource usage without reaching into `db` internals.
-pub use db::{Db, Stats};
+// Re-exported so the shared database opener applies the index schema, and the
+// stats panel renders the index counters, without reaching into `db` internals.
+pub use db::{Db, Stats, apply_schema};
 
 /// Aggregate index counters, for the shared `/stats` panel to display.
 pub async fn index_stats(db: &Db) -> Result<Stats> {
@@ -65,11 +65,10 @@ pub async fn index_stats(db: &Db) -> Result<Stats> {
 }
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use libp2p::PeerId;
 use libp2p::request_response::OutboundRequestId;
 use tokio::sync::{mpsc, oneshot};
@@ -80,7 +79,8 @@ use rucio_net::NodeCmd;
 
 /// Runtime options for the indexer role.
 pub struct IndexerOpts {
-    pub db_path: PathBuf,
+    /// The shared database pool (see [`crate::db`]).
+    pub db: crate::db::Db,
     pub retention_days: i64,
     /// Resolve file name/size from each announcing peer's manifest.
     pub enrich: bool,
@@ -104,14 +104,12 @@ pub struct Indexer {
 }
 
 impl Indexer {
-    /// Open the DB and start the daily retention sweep. The HTTP API is served
-    /// by the shared server (see [`Indexer::api_router`] / [`Indexer::api_doc`]).
+    /// Start the daily retention sweep over the shared pool. The schema is
+    /// already applied by [`crate::db::open`]; the HTTP API is served by the
+    /// shared server (see [`Indexer::api_router`] / [`Indexer::api_doc`]).
     pub async fn start(opts: IndexerOpts) -> Result<Self> {
-        let db = db::open(&opts.db_path)
-            .await
-            .context("opening indexer db")?;
+        let db = opts.db;
         info!(
-            db = %opts.db_path.display(),
             retention_days = opts.retention_days,
             enrich = opts.enrich,
             "Indexer enabled"
@@ -159,18 +157,6 @@ impl Indexer {
     /// The indexer's OpenAPI spec, for the shared server's merged docs.
     pub fn api_doc() -> utoipa::openapi::OpenApi {
         api::openapi()
-    }
-
-    /// A clone of the index DB pool, handed to the shared stats panel so it can
-    /// render the index counters alongside resource usage.
-    pub fn db(&self) -> db::Db {
-        self.db.clone()
-    }
-
-    /// Close the SQLite pool cleanly on shutdown so SQLite checkpoints and
-    /// removes its `-wal`/`-shm` sidecar files.
-    pub async fn close(&self) {
-        self.db.close().await;
     }
 
     /// Record an observed provider announcement, then (if enabled) kick off
