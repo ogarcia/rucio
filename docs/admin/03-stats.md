@@ -178,6 +178,37 @@ curl "http://localhost:3003/api/v1/stats/resources?window=86400"
 half cores). Peaks and the `/proc`-derived fields are `null` before any sample
 exists, or on non-Linux hosts.
 
+### `GET /api/v1/stats/series`
+
+Public endpoint. Downsamples the raw per-minute samples into at most `points`
+time buckets over the window — the shape behind the panel's sparklines. Each
+point is the mean peers, mean CPU percent and total traffic in its bucket;
+empty buckets are omitted (the line bridges the gap).
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `window` | integer | `86400` | Window in seconds to cover. `0` = all recorded history. |
+| `points` | integer | `60` | Number of buckets to downsample into (clamped to 2–500). |
+
+```sh
+# Last 24 hours in 48 buckets (~30-minute resolution)
+curl "http://localhost:3003/api/v1/stats/series?window=86400&points=48"
+```
+
+```json
+{
+  "window_secs": 86400,
+  "bucket_secs": 1800,
+  "points": [
+    { "t": 1716800400, "peers": 58.2, "cpu_pct": 3.1, "traffic_bytes": 91750400 },
+    { "t": 1716802200, "peers": 61.7, "cpu_pct": 3.4, "traffic_bytes": 88604672 }
+  ]
+}
+```
+
+`peers` / `cpu_pct` / `traffic_bytes` are `null` on non-Linux hosts (except
+`peers`, which is always recorded).
+
 ### `GET /api/v1/stats/host`
 
 Public endpoint. The box the node is running on. Returns `404` before the first

@@ -102,7 +102,8 @@ optional roles the node was built and started with:
   counters at `/api/v1/stats/index`. Only `/api/v1/admin/prune` needs a token.
 - **Stats** (`stats-web` feature) — the node dashboard at `/stats` (resource \
   usage, and the index counters when the indexer is on) plus \
-  `/api/v1/stats/resources` and `/api/v1/stats/host`.
+  `/api/v1/stats/resources`, `/api/v1/stats/series` (sparkline data) and \
+  `/api/v1/stats/host`.
 
 All read endpoints live under `/api/v1/stats/*` and need no auth; the only \
 token-guarded endpoint is the `/api/v1/admin/prune` mutation. Timestamps are \

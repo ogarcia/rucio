@@ -62,6 +62,34 @@ pub struct Summary {
     pub peak_threads: Option<i64>,
 }
 
+/// One downsampled bucket of the resource time series (backs the sparklines).
+/// A bucket with no samples is simply absent from the series (the line bridges
+/// the gap); `/proc`-derived fields are `NULL` on non-Linux hosts.
+#[derive(Debug, Default, Serialize, ToSchema, FromRow)]
+pub struct SeriesPoint {
+    /// Unix seconds at the start of the bucket.
+    pub t: i64,
+    /// Mean connected peers in the bucket.
+    pub peers: Option<f64>,
+    /// Mean process CPU use in the bucket, as a percentage of one core.
+    pub cpu_pct: Option<f64>,
+    /// Total machine traffic (rx + tx) in the bucket, bytes.
+    pub traffic_bytes: Option<i64>,
+}
+
+/// A downsampled resource time series over a window: one point per bucket,
+/// oldest first. Feeds the panel's sparklines; the raw per-minute samples stay
+/// in the DB.
+#[derive(Debug, Default, Serialize, ToSchema)]
+pub struct Series {
+    /// The requested window in seconds (`0` = all recorded history).
+    pub window_secs: i64,
+    /// Width of each bucket in seconds (derived from the window and point count).
+    pub bucket_secs: i64,
+    /// The buckets that contain at least one sample, oldest first.
+    pub points: Vec<SeriesPoint>,
+}
+
 /// The single host-facts row, if recorded yet.
 pub async fn host_info(db: &Db) -> Result<Option<HostInfo>> {
     let row = sqlx::query_as::<_, HostInfo>(
@@ -111,6 +139,47 @@ pub async fn summary(db: &Db, window_secs: i64) -> Result<Summary> {
     .fetch_one(db)
     .await?;
     Ok(s)
+}
+
+/// Downsample the samples over the window into at most `buckets` time buckets.
+///
+/// Buckets are aligned to absolute time (`ts / bucket_secs`), so a point's `t`
+/// is its bucket start. Empty buckets are omitted rather than zero-filled — the
+/// sparkline connects the points it has. `buckets` is clamped to 2..=500.
+pub async fn series(db: &Db, window_secs: i64, buckets: i64) -> Result<Series> {
+    let buckets = buckets.clamp(2, 500);
+    // Where the window starts: `now - window`, or the oldest sample for "all".
+    let start = if window_secs > 0 {
+        now_unix() - window_secs
+    } else {
+        sqlx::query_scalar::<_, Option<i64>>("SELECT MIN(ts) FROM samples")
+            .fetch_one(db)
+            .await?
+            .unwrap_or_else(now_unix)
+    };
+    let span = (now_unix() - start).max(1);
+    let bucket_secs = ((span + buckets - 1) / buckets).max(1);
+    let points = sqlx::query_as::<_, SeriesPoint>(
+        "SELECT
+            (ts / ?1) * ?1 AS t,
+            AVG(connected_peers) AS peers,
+            AVG(CASE WHEN interval_secs > 0 AND cpu_ms IS NOT NULL
+                     THEN cpu_ms / (interval_secs * 10.0) END) AS cpu_pct,
+            SUM(net_rx_bytes + net_tx_bytes) AS traffic_bytes
+         FROM samples
+         WHERE ts >= ?2
+         GROUP BY ts / ?1
+         ORDER BY t",
+    )
+    .bind(bucket_secs)
+    .bind(start)
+    .fetch_all(db)
+    .await?;
+    Ok(Series {
+        window_secs,
+        bucket_secs,
+        points,
+    })
 }
 
 #[cfg(test)]
@@ -193,5 +262,27 @@ mod tests {
         assert_eq!(s.samples, 0);
         assert_eq!(s.peak_peers, None);
         assert_eq!(s.net_rx_bytes, None);
+    }
+
+    #[tokio::test]
+    async fn series_buckets_samples_oldest_first() {
+        let db = seeded_db().await;
+        // Two samples 60 s apart, 60 s buckets → two points, oldest first.
+        let sr = series(&db, 3600, 60).await.unwrap();
+        assert_eq!(sr.bucket_secs, 60);
+        assert_eq!(sr.points.len(), 2);
+        assert_eq!(sr.points[0].peers, Some(4.0));
+        assert_eq!(sr.points[1].peers, Some(9.0));
+        assert_eq!(sr.points[0].cpu_pct, Some(5.0)); // 3000 ms / 60 s
+        assert_eq!(sr.points[1].cpu_pct, Some(10.0)); // 6000 ms / 60 s
+        assert_eq!(sr.points[0].traffic_bytes, Some(3_000)); // 1000 + 2000
+        assert_eq!(sr.points[1].traffic_bytes, Some(13_000)); // 5000 + 8000
+        assert!(sr.points[0].t <= sr.points[1].t);
+    }
+
+    #[tokio::test]
+    async fn series_is_empty_outside_the_window() {
+        let db = seeded_db().await;
+        assert!(series(&db, 1, 60).await.unwrap().points.is_empty());
     }
 }

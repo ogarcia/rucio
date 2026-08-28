@@ -13,7 +13,7 @@ use serde::Deserialize;
 use utoipa::{IntoParams, OpenApi};
 
 use super::Db;
-use super::query::{self, HostInfo, Summary};
+use super::query::{self, HostInfo, Series, SeriesPoint, Summary};
 
 /// State shared across the stats handlers.
 #[derive(Clone)]
@@ -28,8 +28,8 @@ pub struct AppState {
 
 #[derive(OpenApi)]
 #[openapi(
-    paths(get_resources, get_host),
-    components(schemas(Summary, HostInfo)),
+    paths(get_resources, get_series, get_host),
+    components(schemas(Summary, Series, SeriesPoint, HostInfo)),
     tags((
         name = "Stats",
         description = "Bootstrap node statistics: resource usage and, when the \
@@ -49,6 +49,7 @@ pub fn router(state: AppState) -> Router {
         .route("/stats", get(super::web::panel))
         // JSON API (explicit full paths so they merge with the indexer's).
         .route("/api/v1/stats/resources", get(get_resources))
+        .route("/api/v1/stats/series", get(get_series))
         .route("/api/v1/stats/host", get(get_host))
         .with_state(state)
 }
@@ -59,6 +60,15 @@ pub struct WindowParam {
     /// Window in seconds to aggregate over. `0` or omitted = all recorded
     /// history.
     pub window: Option<i64>,
+}
+
+/// Query parameters selecting the window and resolution of a time series.
+#[derive(Deserialize, IntoParams)]
+pub struct SeriesParams {
+    /// Window in seconds to cover. `0` or omitted = all recorded history.
+    pub window: Option<i64>,
+    /// Number of buckets to downsample into (clamped to 2–500, default 60).
+    pub points: Option<i64>,
 }
 
 fn internal(e: anyhow::Error) -> Response {
@@ -82,6 +92,26 @@ async fn get_resources(State(s): State<AppState>, Query(p): Query<WindowParam>) 
     let window = p.window.unwrap_or(0).max(0);
     match query::summary(&s.db, window).await {
         Ok(sm) => Json(sm).into_response(),
+        Err(e) => internal(e),
+    }
+}
+
+/// Downsampled resource time series, for sparklines.
+///
+/// Returns one point per non-empty bucket (oldest first) with the mean peers,
+/// mean CPU percent and total traffic in that bucket. `/proc`-derived fields are
+/// `NULL` on non-Linux hosts. Use `points` to trade resolution for size.
+#[utoipa::path(
+    get, path = "/api/v1/stats/series",
+    tag = "Stats",
+    params(SeriesParams),
+    responses((status = 200, description = "Downsampled resource time series", body = Series))
+)]
+async fn get_series(State(s): State<AppState>, Query(p): Query<SeriesParams>) -> Response {
+    let window = p.window.unwrap_or(86_400).max(0);
+    let points = p.points.unwrap_or(60);
+    match query::series(&s.db, window, points).await {
+        Ok(sr) => Json(sr).into_response(),
         Err(e) => internal(e),
     }
 }
