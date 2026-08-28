@@ -67,13 +67,15 @@ disable either at runtime with `--no-index` / `--no-stats`. See
 ## First run
 
 `rucio-bootstrap` needs no config file — every setting has a built-in default,
-so you can run it straight away and drive it with env vars or flags. The only
-file it persists is the identity key, so the Peer ID stays stable across
-restarts:
+so you can run it straight away and drive it with env vars or flags. A plain
+seed node persists only the identity key (so the Peer ID stays stable across
+restarts); a `stats`/`web` build — including the release binary and the
+`latest-bootstrap` image — also keeps a shared SQLite database:
 
 | File | Default path | Purpose |
 |---|---|---|
 | `identity.key` | `~/.local/share/rucio-bootstrap/identity.key` | Ed25519 keypair (stable Peer ID), generated on first run |
+| `bootstrap.db` | `~/.local/share/rucio-bootstrap/bootstrap.db` | Shared SQLite DB for the stats recorder and DHT index. Created on `stats`/`web` builds (`RUCIO_BOOTSTRAP_DB` / `storage.db`) |
 | `config.toml` | `~/.config/rucio-bootstrap/config.toml` | Optional. Written only when you run `--init-config` (see below) |
 
 ```
@@ -159,9 +161,14 @@ Options:
 |---|---|---|
 | `RUCIO_BOOTSTRAP_CONFIG` | *(config file path)* | `~/.config/rucio-bootstrap/config.toml` |
 | `RUCIO_BOOTSTRAP_IDENTITY` | `node.identity` | `~/.local/share/rucio-bootstrap/identity.key` |
+| `RUCIO_BOOTSTRAP_DB` | `storage.db` | `~/.local/share/rucio-bootstrap/bootstrap.db` *(`stats`/`web` builds only — the shared database for the stats recorder and DHT index)* |
 | `RUCIO_BOOTSTRAP_LISTEN` | `node.listen` | `/ip4/0.0.0.0/tcp/4321,/ip6/::/tcp/4321` |
 | `RUCIO_BOOTSTRAP_PEERS` | `node.bootstrap_peers` | *(empty)* |
 | `RUCIO_BOOTSTRAP_LOG` | *(log filter)* | `info` |
+
+The `web`/`stats` roles have several more variables (API bind address, token,
+retention, …); see the [indexer](02-indexer.md#cli-flags-indexer) and
+[stats](03-stats.md#cli-flags-stats) guides.
 
 ---
 
@@ -191,6 +198,8 @@ WorkingDirectory=/var/lib/rucio-bootstrap
 # Put data in a predictable location regardless of XDG defaults
 Environment=RUCIO_BOOTSTRAP_CONFIG=/etc/rucio-bootstrap/config.toml
 Environment=RUCIO_BOOTSTRAP_IDENTITY=/var/lib/rucio-bootstrap/identity.key
+# Only used on a stats/web build (the release binary is one); harmless otherwise.
+Environment=RUCIO_BOOTSTRAP_DB=/var/lib/rucio-bootstrap/bootstrap.db
 Environment=RUCIO_BOOTSTRAP_LOG=info
 
 [Install]
