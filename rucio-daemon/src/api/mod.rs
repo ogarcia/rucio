@@ -46,18 +46,26 @@ use rucio_core::api::ws::WsEvent;
 // OpenAPI spec + Scalar docs
 // ---------------------------------------------------------------------------
 
+/// Favicon as an inline SVG data URI: the Rucio logo silhouette stroked in the
+/// panel's indigo accent (`#4f6ef7`), matching `rucio-web/favicon.svg`. Inlined
+/// so the docs page carries its own icon regardless of static-file serving. `#`
+/// is encoded as `%23` (a raw `#` in a data URI starts the fragment).
+const FAVICON: &str = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%234f6ef7' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M19.3 12.4 C16.7 9.2 15.9 8.2 16.0 7.9 A16.3 16.3 0 0 0 17.1 6.3 C17.3 6.0 17.7 5.0 17.0 4.3 C16.4 3.7 15.7 3.7 15.1 4.3 S14.3 5.0 13.8 5.4 L13.2 4.3 C13.0 3.8 12.5 3.0 11.9 2.7 S10.5 3.0 10.5 4.3 A10.0 10.0 0 0 1 10.2 6.8 C10.1 7.1 9.9 7.6 5.3 17.1 L4.0 19.7 L9.9 19.7 C10.5 18.7 10.3 18.7 11.2 16.9 L11.8 15.4 L13.0 15.9 C14.4 16.5 15.7 17.0 17.1 17.6 A2.1 2.1 0 0 0 19.4 17.0 A3.5 3.5 0 0 0 19.3 12.4 Z'/%3E%3C/svg%3E";
+
 /// Custom HTML template for Scalar.
 ///
 /// - Sets the page title to "Rucio API".
 /// - Enables `operationTitleSource: "path"` so operation titles in the
 ///   sidebar show the URL path instead of the auto-generated summary.
-/// - The `$spec` placeholder is replaced by utoipa-scalar at runtime.
+/// - The `$spec` placeholder is replaced by utoipa-scalar at runtime; our own
+///   `$favicon` placeholder is substituted at the `custom_html` call site.
 const SCALAR_HTML: &str = r#"<!doctype html>
 <html>
   <head>
     <title>Rucio API</title>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="$favicon" />
   </head>
   <body>
     <script
@@ -564,7 +572,11 @@ pub fn router(state: AppState) -> Router {
     let r = Router::new()
         .route("/api/ws", routing::get(ws::ws_handler))
         .route("/health", routing::get(health::get_health))
-        .merge(Scalar::with_url("/api/docs", openapi).custom_html(SCALAR_HTML))
+        .merge(
+            Scalar::with_url("/api/docs", openapi)
+                // Substitute our own `$favicon` placeholder; Scalar fills `$spec` itself.
+                .custom_html(SCALAR_HTML.replace("$favicon", FAVICON)),
+        )
         .nest("/api/v1", v1_router());
 
     #[cfg(feature = "web-ui")]
