@@ -1071,6 +1071,9 @@ pub(crate) fn default_data_dir() -> PathBuf {
 /// `kad_cache.dat` is rewritten on every shutdown, and `nodes.dat` can be
 /// re-downloaded with `rucio emule bootstrap` — so they belong in the cache
 /// dir, not next to the database. Honours portable mode.
+// Only the eMule stack consumes this; keep it out of the default build (a test
+// references it too, so allow it under `test` as well).
+#[cfg(any(feature = "emule-compat", test))]
 pub(crate) fn default_kad_dir() -> PathBuf {
     if let Some(base) = base_dir_override() {
         return base.join("kad");
