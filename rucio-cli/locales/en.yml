@@ -309,6 +309,7 @@ share:
   hash_failed: "Failed to hash '%{path}': %{msg}"
   ambiguous: "Ambiguous: %{n} shares named '%{target}'. Use a hash prefix instead:"
   ambiguous_hash: "Ambiguous: %{n} shares match hash prefix '%{target}':"
+  rescan_triggered: "Rescan triggered. Watch progress with `rucio share indexing`."
   no_indexing: "No files being indexed."
   indexing_n: "%{n} file(s) being indexed…"
   ed2k_indexing_n: "%{n} file(s) being hashed for eMule…"

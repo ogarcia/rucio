@@ -169,6 +169,10 @@ pub enum ShareAction {
         /// A directory number from `rucio share dirs`, or its filesystem path
         target: String,
     },
+    /// Force a full rescan of the shared directories (reconcile disk vs. index).
+    /// Use it when a change wasn't picked up automatically (a missed watcher
+    /// event). Runs in the background; follow it with `rucio share indexing`.
+    Rescan,
     /// Show how many files are currently being indexed
     Indexing {
         /// Keep watching until indexing finishes
@@ -547,6 +551,7 @@ pub async fn run() -> Result<()> {
                 cmd::shares::magnet(&client, target.as_deref(), file.as_deref()).await
             }
             ShareAction::Ed2k { target } => cmd::shares::ed2k(&client, target.as_deref()).await,
+            ShareAction::Rescan => cmd::shares::rescan(&client).await,
             ShareAction::Indexing { watch } => cmd::shares::indexing(&client, watch).await,
         },
         Commands::Download { action } => match action {

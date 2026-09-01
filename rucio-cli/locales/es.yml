@@ -302,6 +302,7 @@ share:
   hash_failed: "No se pudo calcular el hash de '%{path}': %{msg}"
   ambiguous: "Ambiguo: %{n} compartidos llamados '%{target}'. Usa un prefijo de hash en su lugar:"
   ambiguous_hash: "Ambiguo: %{n} compartidos coinciden con el prefijo de hash '%{target}':"
+  rescan_triggered: "Reescaneo iniciado. Sigue el progreso con `rucio share indexing`."
   no_indexing: "No hay archivos indexándose."
   indexing_n: "%{n} archivo(s) indexándose…"
   ed2k_indexing_n: "%{n} archivo(s) hasheándose para eMule…"

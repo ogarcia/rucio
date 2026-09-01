@@ -1,6 +1,6 @@
 //! `rucio share list`, `rucio share dirs`, `rucio share add <path>`,
 //! `rucio share remove <#|path>`, `rucio share magnet <target>`,
-//! `rucio share ed2k <target>`, `rucio share indexing`
+//! `rucio share ed2k <target>`, `rucio share rescan`, `rucio share indexing`
 
 use anyhow::{Result, bail};
 use futures_util::StreamExt as _;
@@ -488,6 +488,16 @@ fn resolve_share<'a>(shares: &'a [ShareResponse], target: &str) -> Result<&'a Sh
         }
         _ => bail!(t!("share.no_share_match", target = target)),
     }
+}
+
+/// Force a full rescan of the shared directories. Triggers the daemon's
+/// disk-vs-index reconcile (new/changed files indexed, vanished ones dropped) —
+/// the safety net for changes the filesystem watcher missed. The sweep runs in
+/// the background; this just kicks it off.
+pub async fn rescan(client: &ApiClient) -> Result<()> {
+    client.rescan_shares().await?;
+    println!("{}", color::success(&t!("share.rescan_triggered")));
+    Ok(())
 }
 
 pub async fn indexing(client: &ApiClient, watch: bool) -> Result<()> {

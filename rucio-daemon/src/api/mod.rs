@@ -92,6 +92,7 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         shares::list_share_files,
         shares::add_share,
         shares::update_shared_dir,
+        shares::rescan_shares,
         shares::indexing_status,
         shares::get_magnet,
         shares::remove_share,
@@ -595,6 +596,7 @@ fn v1_router() -> Router<AppState> {
         .route("/shares/files", routing::get(shares::list_share_files))
         .route("/shares", routing::post(shares::add_share))
         .route("/shares", routing::put(shares::update_shared_dir))
+        .route("/shares/rescan", routing::post(shares::rescan_shares))
         .route("/shares/indexing", routing::get(shares::indexing_status))
         .route("/shares", routing::delete(shares::remove_shares_by_path))
         .route("/shares/{hash}", routing::delete(shares::remove_share))

@@ -87,8 +87,22 @@ immediately.
 
 Provider records in the DHT are kept fresh automatically (they are republished
 roughly every 12 hours, well before they expire). Separately, once a day
-Rucio reconciles the shared library against disk: any file that no longer exists
-is silently removed from the database.
+Rucio reconciles the shared library against disk: it indexes files that are new
+or have changed and removes any file that no longer exists.
+
+## Forcing a rescan
+
+The watcher can occasionally miss an event — inotify drops notifications on busy,
+networked, or FUSE filesystems — so a change may not show up until the daily
+reconcile. To reconcile immediately instead of waiting:
+
+```
+rucio share rescan
+```
+
+This runs the same full disk-vs-index sweep in the background: new and changed
+files are indexed, vanished files are dropped. Follow its progress with
+`rucio share indexing`.
 
 ## The download directory is protected
 

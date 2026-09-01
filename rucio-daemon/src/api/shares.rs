@@ -1,6 +1,7 @@
 //! GET    /api/v1/shares
 //! GET    /api/v1/shares/indexing
 //! POST   /api/v1/shares
+//! POST   /api/v1/shares/rescan   (force a disk-vs-index reconcile)
 //! PUT    /api/v1/shares          (update a directory's file filter)
 //! DELETE /api/v1/shares/:hash
 //! DELETE /api/v1/shares          (query param: path=<prefix>)
@@ -218,6 +219,34 @@ pub async fn update_shared_dir(
             StatusCode::INTERNAL_SERVER_ERROR
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/v1/shares/rescan
+// ---------------------------------------------------------------------------
+
+/// Force a full rescan of the shared directories
+///
+/// Triggers the same disk-vs-index reconcile that runs at startup and every 24
+/// hours: it walks every watched directory, indexes files that are new or have
+/// changed (size/mtime), and de-indexes files that have vanished. Use it to pick
+/// up changes the filesystem watcher missed — inotify can drop events on busy,
+/// networked, or FUSE filesystems.
+///
+/// The reconcile runs in the background (the periodic task is already waiting on
+/// this trigger), so this returns `202 Accepted` immediately rather than blocking
+/// until the sweep finishes; follow its progress with `GET /api/v1/shares/indexing`.
+#[utoipa::path(
+    post,
+    path = "/api/v1/shares/rescan",
+    tag = "shares",
+    responses(
+        (status = 202, description = "Rescan triggered; the reconcile runs in the background."),
+    )
+)]
+pub async fn rescan_shares(State(state): State<AppState>) -> StatusCode {
+    state.reconcile_trigger.notify_one();
+    StatusCode::ACCEPTED
 }
 
 // ---------------------------------------------------------------------------

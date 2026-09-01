@@ -210,6 +210,11 @@ impl ApiClient {
         .await
     }
 
+    /// Force a full rescan (disk-vs-index reconcile) of the shared directories.
+    pub async fn rescan_shares(&self) -> Result<()> {
+        self.post_empty("/api/v1/shares/rescan").await
+    }
+
     /// Update a shared directory's file filter.
     pub async fn update_shared_dir(&self, path: &str, filter: ShareFilter) -> Result<()> {
         self.put(
