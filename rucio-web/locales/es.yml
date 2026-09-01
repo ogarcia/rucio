@@ -266,6 +266,9 @@ share:
   pinned_marker_title: "Fijado"
   pin: "Fijar"
   unpin: "Quitar pin"
+  rescan: "Reescanear"
+  rescan_title: "Forzar un reescaneo completo de las carpetas compartidas (reconcilia con el disco; recoge cambios que el watcher no detectó)"
+  rescanning: "Reescaneando…"
   copied: "¡Copiado!"
   detail:
     path: "Ruta"

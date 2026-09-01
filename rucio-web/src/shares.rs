@@ -100,6 +100,15 @@ async fn api_remove_dir(path: &str) {
     let _ = gloo_net::http::Request::delete(&url).send().await;
 }
 
+/// Force a full disk-vs-index reconcile of every shared directory. Fire-and-
+/// forget: the daemon returns 202 and runs the sweep in the background, so the
+/// caller follows progress through the indexing counter (WebSocket) instead.
+async fn api_rescan() {
+    let _ = gloo_net::http::Request::post(&crate::api::api("/api/v1/shares/rescan"))
+        .send()
+        .await;
+}
+
 /// Pin a shared file by its magnet, into an optional collection. Since the file
 /// is already present, this never re-fetches — it just marks it as deliberately
 /// kept, which also publishes it (under `collection`) in this node's pin-set for
@@ -241,6 +250,9 @@ pub fn SharesTab(
     // Bumped on every load; a response is applied only if its generation is
     // still current, so a reset (new filter/dir) discards an in-flight page.
     let load_gen: RwSignal<u32> = RwSignal::new(0);
+    // True while a user-triggered rescan is in flight: the button stays disabled
+    // from the click until the resulting indexing backlog has drained.
+    let rescanning: RwSignal<bool> = RwSignal::new(false);
 
     // Load a page from the server. `reset` starts a fresh result set (offset 0,
     // replacing the list); otherwise it appends the next page.
@@ -490,6 +502,51 @@ pub fn SharesTab(
                     >
                         <Icon paths=icons::PINNED_OFF/>
                         <span class="btn-label">{t!("share.unpin")}</span>
+                    </button>
+                    <button
+                        class="toolbar-btn"
+                        title=t!("share.rescan_title")
+                        disabled=move || rescanning.get()
+                        on:click=move |_| {
+                            if rescanning.get_untracked() {
+                                return;
+                            }
+                            rescanning.set(true);
+                            spawn_local(async move {
+                                api_rescan().await;
+                                // Reflect directory-level changes right away.
+                                if let Some(d) = api_list_dirs().await {
+                                    dirs.set(d);
+                                }
+                                // Stay busy for the whole sweep: a lead-in covers
+                                // the daemon's disk walk (before any file starts
+                                // hashing), then follow the indexing backlog until
+                                // it drains. If nothing changed the backlog never
+                                // rises and the lead-in is the acknowledgement.
+                                sleep(Duration::from_millis(1500)).await;
+                                while indexing.get_untracked() > 0
+                                    || ed2k_indexing.get_untracked() > 0
+                                {
+                                    sleep(Duration::from_millis(400)).await;
+                                }
+                                load_files.run(true);
+                                rescanning.set(false);
+                            });
+                        }
+                    >
+                        <Show
+                            when=move || rescanning.get()
+                            fallback=|| view! { <Icon paths=icons::REFRESH/> }
+                        >
+                            <span class="spinner"></span>
+                        </Show>
+                        <span class="btn-label">
+                            {move || if rescanning.get() {
+                                t!("share.rescanning").to_string()
+                            } else {
+                                t!("share.rescan").to_string()
+                            }}
+                        </span>
                     </button>
                     {move || {
                         let n = indexing.get();
