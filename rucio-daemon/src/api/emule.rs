@@ -272,7 +272,9 @@ pub async fn post_emule_bootstrap(
         let contacts = crate::emule::bootstrap_nodes_dat(&save_path, &url)
             .await
             .map_err(|e| {
-                tracing::warn!(error = %e, "Failed to download nodes.dat");
+                // `{e:#}` prints the full anyhow cause chain (DNS/connection/
+                // status), not just the outermost context.
+                tracing::warn!(error = format!("{e:#}"), "Failed to download nodes.dat");
                 StatusCode::BAD_REQUEST
             })?;
 

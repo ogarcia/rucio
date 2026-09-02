@@ -791,7 +791,10 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                             info!(contacts = seeded, "Kad2 cold-start bootstrap complete");
                         }
                     }
-                    Err(e) => warn!("Failed to download nodes.dat: {e}"),
+                    // `{e:#}` prints the whole anyhow cause chain on one line
+                    // (e.g. the DNS/connection error), not just the outermost
+                    // context — essential for diagnosing container/network issues.
+                    Err(e) => warn!("Failed to download nodes.dat: {e:#}"),
                 }
             });
         }
