@@ -352,6 +352,15 @@ pub struct EmuleConfig {
     /// Default: 2.  Override via `RUCIOD_EMULE_MIN_SOURCE_SPEED_KIB_S`.
     #[serde(default = "EmuleConfig::default_min_source_speed_kib_s")]
     pub min_source_speed_kib_s: u32,
+
+    /// URL the daemon downloads `nodes.dat` from — both the cold-start
+    /// auto-download and `rucio node emule bootstrap` (without an explicit
+    /// `--url`). Optional; when `None` the built-in default mirror
+    /// ([`rucio_core::api::emule::DEFAULT_NODES_DAT_URL`]) is used. Point it at a
+    /// mirror you trust to avoid fetching one by hand. Override via
+    /// `RUCIOD_EMULE_NODES_DAT_URL`.
+    #[serde(default)]
+    pub nodes_dat_url: Option<String>,
 }
 
 impl EmuleConfig {
@@ -401,6 +410,7 @@ impl Default for EmuleConfig {
             max_concurrent_downloads: Self::default_max_concurrent_downloads(),
             nick: Self::default_nick(),
             min_source_speed_kib_s: Self::default_min_source_speed_kib_s(),
+            nodes_dat_url: None,
         }
     }
 }
@@ -433,7 +443,8 @@ pub struct StorageConfig {
     pub pin_dir: PathBuf,
     pub database_path: PathBuf,
     /// Path to an eMule `nodes.dat` file used to bootstrap the Kad2 network.
-    /// Optional — eMule Kad search is disabled when this is `None`.
+    /// Optional — when `None` it resolves to `<cache>/rucio/kad/nodes.dat`,
+    /// which the daemon auto-downloads on first start (see `emule.nodes_dat_url`).
     #[serde(default)]
     pub nodes_dat_path: Option<PathBuf>,
     /// Directories to share that are declared here rather than added through the
@@ -719,6 +730,7 @@ impl Config {
     /// | `RUCIOD_EMULE_IDENTITY_PATH`| `emule.identity_path`        | path               |
     /// | `RUCIOD_EMULE_TEMP_DIR`     | `emule.temp_dir`             | path               |
     /// | `RUCIOD_NODES_DAT`          | `storage.nodes_dat_path`     | path               |
+    /// | `RUCIOD_EMULE_NODES_DAT_URL`| `emule.nodes_dat_url`        | URL                |
     /// | `RUCIOD_EMULE_TCP_PORT`     | `emule.tcp_port`             | integer 1-65535    |
     /// | `RUCIOD_EMULE_UDP_PORT`     | `emule.udp_port`             | integer 1-65535    |
     /// | `RUCIOD_EMULE_DOWNLOAD_SLOTS_PER_FILE` | `emule.download_slots_per_file` | integer 1-50 |
@@ -905,6 +917,11 @@ impl Config {
             && let Ok(n) = v.parse::<u32>()
         {
             self.emule.min_source_speed_kib_s = n;
+        }
+        if let Ok(v) = std::env::var("RUCIOD_EMULE_NODES_DAT_URL")
+            && !v.trim().is_empty()
+        {
+            self.emule.nodes_dat_url = Some(v.trim().to_string());
         }
         // RUCIOD_UPNP=false / 0 / no disables UPnP; any other non-empty value enables it.
         if let Ok(v) = std::env::var("RUCIOD_UPNP")
@@ -1385,6 +1402,25 @@ mod tests {
         unsafe { std::env::remove_var("RUCIOD_BOOTSTRAP_PEERS") };
         assert_eq!(cfg.network.bootstrap_peers.len(), 2);
         assert!(cfg.network.bootstrap_peers[0].contains("12D3KooWAAA"));
+    }
+
+    #[test]
+    #[serial]
+    fn env_override_nodes_dat_url() {
+        assert_eq!(Config::default().emule.nodes_dat_url, None);
+        unsafe {
+            std::env::set_var(
+                "RUCIOD_EMULE_NODES_DAT_URL",
+                "http://mirror.example/nodes.dat",
+            )
+        };
+        let mut cfg = Config::default();
+        cfg.apply_env_overrides();
+        unsafe { std::env::remove_var("RUCIOD_EMULE_NODES_DAT_URL") };
+        assert_eq!(
+            cfg.emule.nodes_dat_url.as_deref(),
+            Some("http://mirror.example/nodes.dat")
+        );
     }
 
     #[test]

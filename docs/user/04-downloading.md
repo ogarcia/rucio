@@ -159,6 +159,13 @@ To use a different source:
 rucio node emule bootstrap --url http://kademlia.ru/download/nodes.dat
 ```
 
+To make a different mirror the default for both this command and the automatic
+first-start download, set `emule.nodes_dat_url` (or `RUCIOD_EMULE_NODES_DAT_URL`):
+
+```sh
+rucio config set emule.nodes_dat_url http://kademlia.ru/download/nodes.dat
+```
+
 ### Check status
 
 ```sh
@@ -196,6 +203,7 @@ other download.
 | Key | Default | Description |
 |---|---|---|
 | `storage.nodes_dat_path` | `<cache-dir>/rucio/kad/nodes.dat` | Path to the Kad2 bootstrap file |
+| `emule.nodes_dat_url` | *(built-in mirror)* | URL to download `nodes.dat` from |
 | `emule.temp_dir` | `<cache-dir>/rucio/emule-tmp` | Temporary directory for eMule `.part` files |
 | `emule.tcp_port` | `4662` | TCP port for incoming peer connections (High-ID) |
 | `emule.udp_port` | `4672` | UDP port for Kad2 routing and source search |
@@ -204,6 +212,7 @@ Environment variable overrides:
 
 ```sh
 RUCIOD_NODES_DAT=/path/to/nodes.dat ruciod
+RUCIOD_EMULE_NODES_DAT_URL=http://kademlia.ru/download/nodes.dat ruciod
 RUCIOD_EMULE_TEMP_DIR=/mnt/fast/emule-tmp ruciod
 RUCIOD_EMULE_TCP_PORT=4662 ruciod
 RUCIOD_EMULE_UDP_PORT=4672 ruciod

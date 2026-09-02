@@ -2323,6 +2323,17 @@ pub fn effective_nodes_dat_path(config: &crate::config::Config) -> std::path::Pa
         .unwrap_or_else(|| crate::config::default_kad_dir().join("nodes.dat"))
 }
 
+/// Resolve the effective `nodes.dat` download URL: the configured value when
+/// present, otherwise the built-in default mirror. This is the fallback used
+/// when no explicit URL is passed to `rucio node emule bootstrap`.
+pub fn effective_nodes_dat_url(config: &crate::config::Config) -> String {
+    config
+        .emule
+        .nodes_dat_url
+        .clone()
+        .unwrap_or_else(|| rucio_core::api::emule::DEFAULT_NODES_DAT_URL.to_string())
+}
+
 /// Path of the routing-table cache written by the daemon itself.
 pub fn kad_cache_path(config: &crate::config::Config) -> std::path::PathBuf {
     effective_nodes_dat_path(config).with_file_name("kad_cache.dat")
@@ -2521,6 +2532,31 @@ mod endgame_tests {
         assert_eq!(
             endgame_pick(&done, &in_flight, ENDGAME_MIN_WINDOW, |_| true),
             Some(0)
+        );
+    }
+}
+
+#[cfg(test)]
+mod nodes_dat_url_tests {
+    use super::effective_nodes_dat_url;
+    use crate::config::Config;
+
+    #[test]
+    fn falls_back_to_default_mirror() {
+        let cfg = Config::default();
+        assert_eq!(
+            effective_nodes_dat_url(&cfg),
+            rucio_core::api::emule::DEFAULT_NODES_DAT_URL
+        );
+    }
+
+    #[test]
+    fn configured_url_wins() {
+        let mut cfg = Config::default();
+        cfg.emule.nodes_dat_url = Some("http://mirror.example/nodes.dat".to_string());
+        assert_eq!(
+            effective_nodes_dat_url(&cfg),
+            "http://mirror.example/nodes.dat"
         );
     }
 }

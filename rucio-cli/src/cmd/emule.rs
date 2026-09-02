@@ -193,13 +193,13 @@ async fn status(client: &ApiClient) -> Result<()> {
 }
 
 async fn bootstrap(client: &ApiClient, url: Option<String>) -> Result<()> {
-    let display_url = url
-        .as_deref()
-        .unwrap_or(rucio_core::api::emule::DEFAULT_NODES_DAT_URL);
-    println!(
-        "{}",
-        t!("emule.downloading", url = display_url.cyan().to_string())
-    );
+    // Only claim a specific URL when the user gave one; otherwise the daemon
+    // resolves it (configured `emule.nodes_dat_url` or the built-in default),
+    // so a generic message avoids naming a URL that may not be the one used.
+    match url.as_deref() {
+        Some(u) => println!("{}", t!("emule.downloading", url = u.cyan().to_string())),
+        None => println!("{}", t!("emule.downloading_default")),
+    }
 
     let resp = client.emule_bootstrap(url).await?;
 

@@ -688,6 +688,26 @@ rucio config set emule.min_source_speed_kib_s 2
 
 ---
 
+### `emule.nodes_dat_url`
+
+URL the daemon downloads `nodes.dat` from — used both for the automatic download
+on first start and for `rucio node emule bootstrap` when you don't pass an
+explicit `--url`. **Optional — when unset the built-in default mirror
+(`http://upd.emule-security.org/nodes.dat`) is used.** Point it at a mirror you
+trust so you don't have to fetch a `nodes.dat` by hand.
+
+```sh
+rucio config set emule.nodes_dat_url http://kademlia.ru/download/nodes.dat
+rucio config unset emule.nodes_dat_url        # back to the default mirror
+```
+
+Precedence for the bootstrap command: an explicit `--url` wins, then this key,
+then the built-in default.
+
+**Default:** unset (built-in default mirror).
+
+---
+
 ### `[notifications]`
 
 The in-app notification centre and outbound webhooks are configured under the
@@ -759,8 +779,9 @@ max_upload_slots         = 4
 max_concurrent_downloads = 3
 min_source_speed_kib_s   = 2
 # identity_path = "~/.config/rucio/emule_identity.key"  # user-hash credit identity
-# temp_dir     = "~/.cache/rucio/emule-tmp"  # platform default
-# external_ip  = "1.2.3.4"                   # auto-detected via UPnP or peer responses
+# temp_dir      = "~/.cache/rucio/emule-tmp"  # platform default
+# external_ip   = "1.2.3.4"                    # auto-detected via UPnP or peer responses
+# nodes_dat_url = "http://upd.emule-security.org/nodes.dat"  # mirror to download nodes.dat from
 ```
 
 ---
@@ -807,6 +828,7 @@ the file value untouched.
 | `RUCIOD_EMULE_MAX_UPLOAD_SLOTS` | `emule.max_upload_slots` | `4` | integer 1–50 |
 | `RUCIOD_EMULE_MAX_CONCURRENT_DOWNLOADS` | `emule.max_concurrent_downloads` | `3` | integer 1–50 |
 | `RUCIOD_EMULE_MIN_SOURCE_SPEED_KIB_S` | `emule.min_source_speed_kib_s` | `2` | integer (`0` = off) |
+| `RUCIOD_EMULE_NODES_DAT_URL` | `emule.nodes_dat_url` | *(built-in mirror)* | URL |
 | `RUCIOD_AUTO_CLEAR_COMPLETED` | `downloads.auto_clear_completed` | `false` | `true`/`false` (also `1`/`0`, `yes`/`no`, `on`/`off`) |
 
 ### Docker / container example

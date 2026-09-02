@@ -189,6 +189,7 @@ emule:
   kad_empty_val: "%{state} — no contacts yet, wait a moment or check your bootstrap peers"
   upload_slots_val: "%{in_use} / %{total} in use"
   downloading: "Downloading nodes.dat from %{url}…"
+  downloading_default: "Downloading nodes.dat…"
   done_word: "Done."
   saved: "%{contacts} Kad2 contacts saved to %{path}"
   ready: "You can now use `rucio download add ed2k://…` to download eMule files."

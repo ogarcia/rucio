@@ -777,14 +777,10 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         if !save_path.exists() {
             let kad_cold = kad_handle.clone();
             let config_cold = config.clone();
+            let url = crate::emule::effective_nodes_dat_url(&config);
             tokio::spawn(async move {
-                info!(path = %save_path.display(), "nodes.dat not found — downloading in background");
-                match crate::emule::bootstrap_nodes_dat(
-                    &save_path,
-                    rucio_core::api::emule::DEFAULT_NODES_DAT_URL,
-                )
-                .await
-                {
+                info!(path = %save_path.display(), url = %url, "nodes.dat not found — downloading in background");
+                match crate::emule::bootstrap_nodes_dat(&save_path, &url).await {
                     Ok(n) => {
                         info!(contacts = n, path = %save_path.display(), "nodes.dat downloaded");
                         // Feed the fresh contacts into the live Kad2 task so it

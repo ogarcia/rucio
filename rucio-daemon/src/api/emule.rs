@@ -256,13 +256,13 @@ pub async fn post_emule_bootstrap(
             return Err(StatusCode::SERVICE_UNAVAILABLE);
         }
 
-        use rucio_core::api::emule::DEFAULT_NODES_DAT_URL;
-
+        // Precedence: an explicit request URL wins, then the configured
+        // `emule.nodes_dat_url`, then the built-in default mirror.
         let url = req
             .url
             .as_deref()
-            .unwrap_or(DEFAULT_NODES_DAT_URL)
-            .to_string();
+            .map(str::to_string)
+            .unwrap_or_else(|| crate::emule::effective_nodes_dat_url(&state.config));
 
         // Determine save path: use configured path or platform default.
         let save_path = crate::emule::effective_nodes_dat_path(&state.config);
