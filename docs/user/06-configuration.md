@@ -956,6 +956,68 @@ export RUCIOD_BOOTSTRAP_PEERS="\
 
 ---
 
+## Logging
+
+Rucio logs through `tracing`, and its verbosity is controlled **entirely by
+environment variables** — there is no `config.toml` key or CLI flag for it.
+Three variables are recognised, in order of precedence (the first one set wins):
+
+| Variable | What it does | Example |
+|---|---|---|
+| `RUST_LOG` | Standard `tracing` filter; always honoured first | `RUST_LOG=debug` |
+| `RUCIOD_LOG` | Fine-grained per-crate filter (same syntax as `RUST_LOG`) | `RUCIOD_LOG=rucio_emule=debug,rucio_daemon=info` |
+| `RUCIOD_LOG_LEVEL` | One level applied across all of Rucio's crates | `RUCIOD_LOG_LEVEL=debug` |
+
+Levels, from least to most verbose: `error`, `warn`, `info`, `debug`, `trace`
+(`off` disables logging entirely).
+
+**Default:** `info` — the daemon logs `rucio_daemon`, `rucio_core`, `rucio_emule`
+and `rucio_net` at `info`.
+
+Most of the time the simple form is all you need:
+
+```sh
+RUCIOD_LOG_LEVEL=debug ruciod       # turn everything up
+RUCIOD_LOG_LEVEL=error ruciod       # quiet — errors only
+```
+
+To turn up just one component without drowning in the rest, use the fine-grained
+form (crate names use underscores):
+
+```sh
+RUCIOD_LOG=rucio_emule=debug,rucio_daemon=info ruciod
+```
+
+`RUST_LOG` uses the exact same syntax and overrides both of the above:
+
+```sh
+RUST_LOG=rucio_net=trace ruciod
+```
+
+### Setting it persistently
+
+- **systemd** — add to the service's `[Service]` section (then
+  `systemctl daemon-reload` and restart):
+  ```ini
+  Environment=RUCIOD_LOG_LEVEL=debug
+  ```
+- **Docker** — pass `-e RUCIOD_LOG_LEVEL=debug`, or add an `ENV` line to your image.
+
+### CLI and bootstrap logging
+
+The `rucio` CLI is **silent by default** (its level is `off`) so it doesn't
+clutter command output. To see its internal logs — e.g. when troubleshooting the
+connection to the daemon — use the `RUCIO_*` variants:
+
+```sh
+RUCIO_LOG_LEVEL=debug rucio node status
+```
+
+The bootstrap node uses the same mechanism with a `RUCIO_BOOTSTRAP_*` prefix
+(`RUCIO_BOOTSTRAP_LOG_LEVEL`, `RUCIO_BOOTSTRAP_LOG`).
+
+---
+
 ## Precedence
 
 Settings are resolved in this order (highest wins):
