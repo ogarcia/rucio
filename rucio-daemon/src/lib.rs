@@ -765,40 +765,13 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
     // Resume any downloads interrupted by a previous crash or restart.
     engine.resume_interrupted().await;
 
-    // --- eMule: ensure nodes.dat is present (download if missing) -----------
-    // On a cold start (no nodes.dat, no kad_cache.dat) the Kad2 routing table
-    // is empty.  We download nodes.dat in the background and, once it lands on
-    // disk, immediately feed its contacts into the running Kad2 task so the
-    // node starts connecting to the eMule network without waiting for the first
-    // download request.
-    #[cfg(feature = "emule-compat")]
-    if config.emule.enabled {
-        let save_path = crate::emule::effective_nodes_dat_path(&config);
-        if !save_path.exists() {
-            let kad_cold = kad_handle.clone();
-            let config_cold = config.clone();
-            let url = crate::emule::effective_nodes_dat_url(&config);
-            tokio::spawn(async move {
-                info!(path = %save_path.display(), url = %url, "nodes.dat not found — downloading in background");
-                match crate::emule::bootstrap_nodes_dat(&save_path, &url).await {
-                    Ok(n) => {
-                        info!(contacts = n, path = %save_path.display(), "nodes.dat downloaded");
-                        // Feed the fresh contacts into the live Kad2 task so it
-                        // starts connecting immediately (cold-start bootstrap).
-                        let seeds = crate::emule::load_kad_seeds(&config_cold, 200);
-                        if !seeds.is_empty() {
-                            let seeded = kad_cold.bootstrap(seeds).await;
-                            info!(contacts = seeded, "Kad2 cold-start bootstrap complete");
-                        }
-                    }
-                    // `{e:#}` prints the whole anyhow cause chain on one line
-                    // (e.g. the DNS/connection error), not just the outermost
-                    // context — essential for diagnosing container/network issues.
-                    Err(e) => warn!("Failed to download nodes.dat: {e:#}"),
-                }
-            });
-        }
-    }
+    // On a cold start (no nodes.dat) the Kad2 routing table is empty and we must
+    // download nodes.dat.  We deliberately do NOT fetch it here at startup: in a
+    // container the network is often not ready yet, so an immediate attempt fails
+    // and (having no retry) leaves Kad unseeded until the next restart.  Instead
+    // the download is deferred to the first `PeerConnected` event — by then the
+    // libp2p stack has proven outbound connectivity — and retried on later peer
+    // connections until it succeeds (see the event loop below).
 
     // --- eMule: resume interrupted downloads --------------------------------
     #[cfg(feature = "emule-compat")]
@@ -922,6 +895,17 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
     // table by then) so shares actually land in the DHT without waiting for the
     // ~12-hour reprovide tick.
     let mut reannounced_after_connect = false;
+    // First-cold-start nodes.dat fetch, deferred to real connectivity: attempted
+    // when the first peer connects (network proven up) and retried on later peer
+    // connections until it succeeds. `ready` starts true when there is nothing to
+    // do (eMule off, or nodes.dat already on disk) so the handler is a no-op then;
+    // `in_flight` prevents overlapping downloads.
+    #[cfg(feature = "emule-compat")]
+    let nodes_dat_ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+        !config.emule.enabled || crate::emule::effective_nodes_dat_path(&config).exists(),
+    ));
+    #[cfg(feature = "emule-compat")]
+    let nodes_dat_in_flight = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     // Whether the last UploadProgress push carried any rows, so we can emit one
     // empty snapshot when uploads drain (clearing the client's Uploads tab)
     // without streaming an empty list every idle second.
@@ -1386,6 +1370,53 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                                 let n = reannounce_shares(&db2, &tx2).await;
                                 if n > 0 {
                                     info!("Re-announcing {n} share(s) after first peer connected");
+                                }
+                            });
+                        }
+                        // Cold-start nodes.dat fetch, now that connectivity is
+                        // proven. Claim the in-flight slot atomically so only one
+                        // download runs; on success mark ready (done for good), on
+                        // failure release the slot so a later PeerConnected retries.
+                        #[cfg(feature = "emule-compat")]
+                        if !nodes_dat_ready.load(std::sync::atomic::Ordering::Relaxed)
+                            && nodes_dat_in_flight
+                                .compare_exchange(
+                                    false,
+                                    true,
+                                    std::sync::atomic::Ordering::AcqRel,
+                                    std::sync::atomic::Ordering::Relaxed,
+                                )
+                                .is_ok()
+                        {
+                            let kad_cold = kad_handle.clone();
+                            let config_cold = config.clone();
+                            let url = crate::emule::effective_nodes_dat_url(&config);
+                            let save_path = crate::emule::effective_nodes_dat_path(&config);
+                            let ready = std::sync::Arc::clone(&nodes_dat_ready);
+                            let in_flight = std::sync::Arc::clone(&nodes_dat_in_flight);
+                            tokio::spawn(async move {
+                                info!(path = %save_path.display(), url = %url, "nodes.dat not found — downloading now that a peer has connected");
+                                match crate::emule::bootstrap_nodes_dat(&save_path, &url).await {
+                                    Ok(n) => {
+                                        info!(contacts = n, path = %save_path.display(), "nodes.dat downloaded");
+                                        // Feed the fresh contacts into the live Kad2
+                                        // task so it starts connecting immediately.
+                                        let seeds = crate::emule::load_kad_seeds(&config_cold, 200);
+                                        if !seeds.is_empty() {
+                                            let seeded = kad_cold.bootstrap(seeds).await;
+                                            info!(contacts = seeded, "Kad2 cold-start bootstrap complete");
+                                        }
+                                        // Done for good; leave in_flight set so no
+                                        // further attempts run.
+                                        ready.store(true, std::sync::atomic::Ordering::Relaxed);
+                                    }
+                                    // `{e:#}` prints the whole anyhow cause chain
+                                    // (DNS/connection/status), not just the outer
+                                    // context. Release the slot to retry later.
+                                    Err(e) => {
+                                        warn!("Failed to download nodes.dat: {e:#} — will retry when another peer connects");
+                                        in_flight.store(false, std::sync::atomic::Ordering::Release);
+                                    }
                                 }
                             });
                         }
