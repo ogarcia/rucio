@@ -131,7 +131,6 @@ pub struct NodeConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ApiConfig {
     pub listen: String,
-    pub token: Option<String>,
     /// Path prefix the web UI is served under, e.g. `/` (the default, origin
     /// root) or `/rucio/` when reverse-proxied into a subdirectory.
     ///
@@ -464,7 +463,6 @@ impl Default for ApiConfig {
     fn default() -> Self {
         Self {
             listen: "127.0.0.1:3003".to_string(),
-            token: None,
             base_path: ApiConfig::default_base_path(),
         }
     }

@@ -449,27 +449,16 @@ Address the HTTP API and web panel listen on (`host:port`). Keep it on
 `127.0.0.1` unless you front it with a reverse proxy; bind `0.0.0.0` only behind
 one. In a container, set it to `0.0.0.0:3003` and publish the port.
 
+The daemon has **no built-in authentication** — access control is delegated to a
+reverse proxy (e.g. nginx `auth_basic`). This keeps the bundled web panel and its
+WebSocket working through one gate; do not expose the port directly beyond
+localhost without one.
+
 ```sh
 rucio config set api.listen 0.0.0.0:3003
 ```
 
 **Default:** `127.0.0.1:3003`
-
----
-
-### `api.token`
-
-Optional bearer token for the API. When set, requests must send
-`Authorization: Bearer <token>`. When unset (the default), the API has **no
-authentication** — Rucio expects access control to be handled by a reverse proxy
-(e.g. nginx `auth_basic`) when exposed beyond localhost.
-
-```sh
-rucio config set api.token "a-long-random-secret"
-rucio config unset api.token            # disable token auth
-```
-
-**Default:** unset (no token).
 
 ---
 
@@ -739,7 +728,6 @@ listen_addrs = ["/ip4/0.0.0.0/tcp/4321", "/ip6/::/tcp/4321"]
 
 [api]
 listen = "127.0.0.1:3003"
-# token = "secret"               # enable API auth (disabled by default)
 
 [network]
 upnp                     = true
