@@ -28,6 +28,46 @@ see the table below.
 
 ## Available keys
 
+Every key at a glance — jump to a section below for the detail. Paths show Linux
+defaults; see each section for macOS. Every key can also be set through an
+environment variable (see [Environment variable overrides](#environment-variable-overrides)).
+
+| Key | Default | Description |
+|---|---|---|
+| [`storage.download_dir`](#storagedownload_dir) | `~/Downloads/rucio/downloads` | Where completed downloads are written |
+| [`storage.pin_dir`](#storagepin_dir) | `~/Downloads/rucio/pins` | Where pinned content is stored |
+| [`storage.temp_dir`](#storagetemp_dir) | `~/.cache/rucio/tmp` | In-progress `.part` files |
+| [`storage.outboard_dir`](#storageoutboard_dir) | `~/.cache/rucio/outboards` | Regenerable BLAKE3 verification cache |
+| [`storage.shared_dirs`](#storageshared_dirs) | *(empty)* | Protected shares declared in the config |
+| [`storage.database_path`](#storagedatabase_path) | `~/.local/share/rucio/rucio.db` | SQLite database file |
+| [`storage.nodes_dat_path`](#storagenodes_dat_path) | `<cache>/rucio/kad/nodes.dat` | eMule Kad bootstrap file |
+| [`network.upnp`](#networkupnp) | `true` | Automatic port forwarding via UPnP |
+| [`network.download_limit_kbps`](#networkdownload_limit_kbps) | `0` (unlimited) | Global download rate cap |
+| [`network.upload_limit_kbps`](#networkupload_limit_kbps) | `0` (unlimited) | Global upload rate cap |
+| [`network.temp_download_limit_kbps`](#networktemp_download_limit_kbps--networktemp_upload_limit_kbps) | `5120` (5 MB/s) | Download cap while the temporary limit is engaged |
+| [`network.temp_upload_limit_kbps`](#networktemp_download_limit_kbps--networktemp_upload_limit_kbps) | `5120` (5 MB/s) | Upload cap while the temporary limit is engaged |
+| [`network.max_upload_tasks`](#networkmax_upload_tasks) | `64` | Concurrent chunk-upload tasks |
+| [`network.bootstrap_peers`](#networkbootstrap_peers) | *(built-ins)* | Extra DHT bootstrap peers |
+| [`network.exclusive_bootstrap`](#networkexclusive_bootstrap) | `false` | Use only the configured peers (separate network) |
+| [`node.listen_addrs`](#nodelisten_addrs) | `/ip4/0.0.0.0/tcp/4321`, `/ip6/::/tcp/4321` | libp2p listen multiaddrs |
+| [`node.identity_path`](#nodeidentity_path) | `~/.config/rucio/identity.key` | libp2p identity key file |
+| [`api.listen`](#apilisten) | `127.0.0.1:3003` | HTTP API / web panel bind address |
+| [`api.base_path`](#apibase_path) | `/` | Path prefix when reverse-proxied into a subdirectory |
+| [`emule.enabled`](#emuleenabled) | `true` | Master switch for eMule / Kad2 |
+| [`emule.identity_path`](#emuleidentity_path) | `~/.config/rucio/emule_identity.key` | eMule credit (user-hash) identity |
+| [`emule.tcp_port`](#emuletcp_port) | `4662` | eMule TCP port (incoming peers, High-ID) |
+| [`emule.udp_port`](#emuleudp_port) | `4672` | Kad2 UDP port (routing, source search) |
+| [`emule.temp_dir`](#emuletemp_dir) | `~/.cache/rucio/emule-tmp` | eMule `.part` files |
+| [`emule.external_ip`](#emuleexternal_ip) | *(auto)* | Advertised external IPv4 |
+| [`emule.nick`](#emulenick) | *(auto petname)* | Nickname shown to eMule peers |
+| [`emule.download_slots_per_file`](#emuledownload_slots_per_file) | `5` | Connections opened per eMule download |
+| [`emule.max_upload_slots`](#emulemax_upload_slots) | `4` | Concurrent eMule upload slots |
+| [`emule.max_concurrent_downloads`](#emulemax_concurrent_downloads) | `3` | Simultaneous active eMule downloads |
+| [`emule.min_source_speed_kib_s`](#emulemin_source_speed_kib_s) | `2` | Slow-source drop threshold (`0` = off) |
+| [`emule.nodes_dat_url`](#emulenodes_dat_url) | *(built-in mirror)* | Where to download `nodes.dat` from |
+| [`downloads.auto_clear_completed`](#downloadsauto_clear_completed) | `false` | Auto-remove finished downloads from the history |
+| [`[notifications]`](#notifications) | *(on)* | In-app notification centre and webhooks (own guide) |
+
 ### `storage.download_dir`
 
 Directory where completed downloads are placed.
@@ -705,6 +745,23 @@ Precedence for the bootstrap command: an explicit `--url` wins, then this key,
 then the built-in default.
 
 **Default:** unset (built-in default mirror).
+
+---
+
+### `downloads.auto_clear_completed`
+
+When `true`, finished downloads are removed from the history automatically so you
+don't have to clear them by hand. It removes the same entries a manual clear
+would — completed downloads and ones you cancelled — **except errored ones**,
+which are kept so the failure stays visible. Files already written to disk are
+never touched.
+
+```sh
+rucio config set downloads.auto_clear_completed true
+rucio config unset downloads.auto_clear_completed
+```
+
+**Default:** `false`  (override at runtime with `RUCIOD_AUTO_CLEAR_COMPLETED`)
 
 ---
 
