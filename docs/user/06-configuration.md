@@ -192,16 +192,21 @@ rucio config unset storage.database_path
 
 ### `storage.nodes_dat_path`
 
-Path to an eMule `nodes.dat` file used to bootstrap the Kad2 network. **Optional
-— when unset, eMule Kad search is disabled.** Point it at a `nodes.dat` you have
-(or one fetched by the daemon) to enable Kad bootstrap and source search.
+Path to the eMule `nodes.dat` file used to bootstrap the Kad2 network. **Optional
+— leave it unset and the daemon uses `<cache-dir>/rucio/kad/nodes.dat`,
+downloading a fresh copy automatically the first time it starts (as long as
+`emule.enabled` is `true`).** Set it only to point at a `nodes.dat` you keep in a
+custom location.
 
 ```sh
-rucio config set storage.nodes_dat_path ~/.cache/rucio/kad/nodes.dat
-rucio config unset storage.nodes_dat_path     # disable Kad bootstrap
+rucio config set storage.nodes_dat_path /srv/emule/nodes.dat   # custom location
+rucio config unset storage.nodes_dat_path                       # back to the default
 ```
 
-**Default:** unset (no Kad bootstrap file).
+Whether eMule Kad runs at all is governed by [`emule.enabled`](#emuleenabled),
+not by this key.
+
+**Default:** unset — resolves to `<cache-dir>/rucio/kad/nodes.dat`.
 
 ---
 
