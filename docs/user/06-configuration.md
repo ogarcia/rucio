@@ -34,13 +34,10 @@ environment variable (see [Environment variable overrides](#environment-variable
 
 | Key | Default | Description |
 |---|---|---|
-| [`storage.download_dir`](#storagedownload_dir) | `~/Downloads/rucio/downloads` | Where completed downloads are written |
-| [`storage.pin_dir`](#storagepin_dir) | `~/Downloads/rucio/pins` | Where pinned content is stored |
-| [`storage.temp_dir`](#storagetemp_dir) | `~/.cache/rucio/tmp` | In-progress `.part` files |
-| [`storage.outboard_dir`](#storageoutboard_dir) | `~/.cache/rucio/outboards` | Regenerable BLAKE3 verification cache |
-| [`storage.shared_dirs`](#storageshared_dirs) | *(empty)* | Protected shares declared in the config |
-| [`storage.database_path`](#storagedatabase_path) | `~/.local/share/rucio/rucio.db` | SQLite database file |
-| [`storage.nodes_dat_path`](#storagenodes_dat_path) | `<cache>/rucio/kad/nodes.dat` | eMule Kad bootstrap file |
+| [`node.listen_addrs`](#nodelisten_addrs) | `/ip4/0.0.0.0/tcp/4321`, `/ip6/::/tcp/4321` | libp2p listen multiaddrs |
+| [`node.identity_path`](#nodeidentity_path) | `~/.config/rucio/identity.key` | libp2p identity key file |
+| [`api.listen`](#apilisten) | `127.0.0.1:3003` | HTTP API / web panel bind address |
+| [`api.base_path`](#apibase_path) | `/` | Path prefix when reverse-proxied into a subdirectory |
 | [`network.upnp`](#networkupnp) | `true` | Automatic port forwarding via UPnP |
 | [`network.download_limit_kbps`](#networkdownload_limit_kbps) | `0` (unlimited) | Global download rate cap |
 | [`network.upload_limit_kbps`](#networkupload_limit_kbps) | `0` (unlimited) | Global upload rate cap |
@@ -49,10 +46,13 @@ environment variable (see [Environment variable overrides](#environment-variable
 | [`network.max_upload_tasks`](#networkmax_upload_tasks) | `64` | Concurrent chunk-upload tasks |
 | [`network.bootstrap_peers`](#networkbootstrap_peers) | *(built-ins)* | Extra DHT bootstrap peers |
 | [`network.exclusive_bootstrap`](#networkexclusive_bootstrap) | `false` | Use only the configured peers (separate network) |
-| [`node.listen_addrs`](#nodelisten_addrs) | `/ip4/0.0.0.0/tcp/4321`, `/ip6/::/tcp/4321` | libp2p listen multiaddrs |
-| [`node.identity_path`](#nodeidentity_path) | `~/.config/rucio/identity.key` | libp2p identity key file |
-| [`api.listen`](#apilisten) | `127.0.0.1:3003` | HTTP API / web panel bind address |
-| [`api.base_path`](#apibase_path) | `/` | Path prefix when reverse-proxied into a subdirectory |
+| [`storage.download_dir`](#storagedownload_dir) | `~/Downloads/rucio/downloads` | Where completed downloads are written |
+| [`storage.pin_dir`](#storagepin_dir) | `~/Downloads/rucio/pins` | Where pinned content is stored |
+| [`storage.temp_dir`](#storagetemp_dir) | `~/.cache/rucio/tmp` | In-progress `.part` files |
+| [`storage.outboard_dir`](#storageoutboard_dir) | `~/.cache/rucio/outboards` | Regenerable BLAKE3 verification cache |
+| [`storage.shared_dirs`](#storageshared_dirs) | *(empty)* | Protected shares declared in the config |
+| [`storage.database_path`](#storagedatabase_path) | `~/.local/share/rucio/rucio.db` | SQLite database file |
+| [`storage.nodes_dat_path`](#storagenodes_dat_path) | `<cache>/rucio/kad/nodes.dat` | eMule Kad bootstrap file |
 | [`emule.enabled`](#emuleenabled) | `true` | Master switch for eMule / Kad2 |
 | [`emule.identity_path`](#emuleidentity_path) | `~/.config/rucio/emule_identity.key` | eMule credit (user-hash) identity |
 | [`emule.tcp_port`](#emuletcp_port) | `4662` | eMule TCP port (incoming peers, High-ID) |
@@ -68,185 +68,76 @@ environment variable (see [Environment variable overrides](#environment-variable
 | [`downloads.auto_clear_completed`](#downloadsauto_clear_completed) | `false` | Auto-remove finished downloads from the history |
 | [`[notifications]`](#notifications) | *(on)* | In-app notification centre and webhooks (own guide) |
 
-### `storage.download_dir`
+### `node.listen_addrs`
 
-Directory where completed downloads are placed.
+List of multiaddrs the daemon listens on for P2P connections. This key
+appends to the list; use `unset` with the exact value to remove one entry.
 
 ```sh
-rucio config set storage.download_dir /mnt/data/downloads
-rucio config unset storage.download_dir     # revert to platform default
+rucio config set node.listen_addrs "/ip4/0.0.0.0/tcp/4321"
+rucio config unset node.listen_addrs "/ip6/::/tcp/4321"
 ```
 
-Completed downloads and pinned content both live under one visible Rucio folder
-(`downloads/` and `pins/` as siblings), so the files you host are easy to find
-and browse — unlike the database and identity key, which stay in the hidden
-app-state directories.
-
-**Default:**
-
-| Platform | Default path |
-|---|---|
-| Linux (desktop) | `$XDG_DOWNLOAD_DIR/rucio/downloads` or `~/Downloads/rucio/downloads` |
-| macOS | `~/Downloads/rucio/downloads` |
-| Linux (server / no XDG) | `~/rucio/downloads` |
+**Default:** `/ip4/0.0.0.0/tcp/4321` and `/ip6/::/tcp/4321` (all interfaces,
+port 4321).
 
 ---
 
-### `storage.pin_dir`
+### `node.identity_path`
 
-Directory where pinned content that had to be fetched is stored and shared. Kept
-separate from `download_dir` so it's clear which files the node hosts on purpose.
-Pinned files are content you deliberately keep available (sometimes the only live
-copy on the network), so they sit next to your downloads in a persistent,
-visible place — not in a cache. See [Pinning](10-pinning.md).
+Path to the Ed25519 keypair that is this node's permanent libp2p identity (its
+PeerId derives from it). Generated on first start if absent; back it up to keep
+the same PeerId across reinstalls. App state, so it lives in the config dir.
 
 ```sh
-rucio config set storage.pin_dir /mnt/data/rucio-pins
-rucio config unset storage.pin_dir
-```
-
-A `pins` directory beside `downloads/` in the same Rucio content folder.
-
-**Default:**
-
-| Platform | Default path |
-|---|---|
-| Linux (desktop) | `$XDG_DOWNLOAD_DIR/rucio/pins` or `~/Downloads/rucio/pins` |
-| macOS | `~/Downloads/rucio/pins` |
-| Linux (server / no XDG) | `~/rucio/pins` |
-
----
-
-### `storage.temp_dir`
-
-Directory where incomplete downloads are stored as `.part` files while
-transferring. Must be on the same filesystem as `download_dir` for an
-efficient rename on completion; if they are on different filesystems rucio
-falls back to a copy-then-delete.
-
-```sh
-rucio config set storage.temp_dir /mnt/data/.rucio-tmp
-rucio config unset storage.temp_dir
+rucio config set node.identity_path /mnt/data/identity.key
+rucio config unset node.identity_path
 ```
 
 **Default:**
 
 | Platform | Default path |
 |---|---|
-| Linux | `~/.cache/rucio/tmp` |
-| macOS | `~/Library/Caches/rucio/tmp` |
+| Linux | `~/.config/rucio/identity.key` |
+| macOS | `~/Library/Application Support/rucio/identity.key` |
 
 ---
 
-### `storage.outboard_dir`
+### `api.listen`
 
-Directory for the **bao outboard cache** of completed shares — one small
-`<root_hash>.obao` sidecar per served file (sharded into subdirectories by the
-first hash byte). These are the BLAKE3 verified-streaming Merkle trees that let
-the node serve any chunk with a self-verifying proof; they are **regenerable**
-from the file at any time, so the directory is safe to wipe.
+Address the HTTP API and web panel listen on (`host:port`). Keep it on
+`127.0.0.1` unless you front it with a reverse proxy; bind `0.0.0.0` only behind
+one. In a container, set it to `0.0.0.0:3003` and publish the port.
 
-It defaults to a directory **beside** `temp_dir` (not inside it), so the
-short-lived transfer scratch and this longer-lived cache stay independent. It is
-configurable on its own because a large library's outboards add up (about
-1/16384 of the total shared bytes — roughly 3 MB per 50 GB shared) and you may
-want them on a different volume. In-progress downloads keep their partial
-outboard next to the `.part` file in `temp_dir`, not here.
-
-Most entries are written **lazily** — the first time a peer requests a chunk of
-a file — so a freshly-started node with a small library may have an empty (or
-absent until first served) outboard directory. Only files at or above 1 GiB get
-their outboard persisted eagerly at index time. The directory itself is created
-on startup.
+The daemon has **no built-in authentication** — access control is delegated to a
+reverse proxy (e.g. nginx `auth_basic`). This keeps the bundled web panel and its
+WebSocket working through one gate; do not expose the port directly beyond
+localhost without one.
 
 ```sh
-rucio config set storage.outboard_dir /mnt/big/rucio-outboards
-rucio config unset storage.outboard_dir     # back to <cache>/rucio/outboards
+rucio config set api.listen 0.0.0.0:3003
 ```
 
-**Default:**
-
-| Platform | Default path |
-|---|---|
-| Linux | `~/.cache/rucio/outboards` |
-| macOS | `~/Library/Caches/rucio/outboards` |
+**Default:** `127.0.0.1:3003`
 
 ---
 
-### `storage.shared_dirs`
+### `api.base_path`
 
-A list of directories to share **declaratively**, in addition to any you add
-through the app. Unlike directories added with `rucio share add` (or the web
-UI) — which live only in the database — these are written in the config file,
-so they:
-
-- can be declared **while the daemon is stopped** (edit the file, then start);
-- are **protected** (always re-shared on startup and not removable through the
-  API — like the download directory); and
-- **survive a database reset**.
-
-They are reconciled on every startup: each is created on disk if missing and
-indexed by the file watcher. This is the recommended way to pin a fixed share
-layout for containers or reproducible/headless deployments.
-
-```toml
-[storage]
-shared_dirs = ["/srv/media/music", "/srv/media/video"]
-```
-
-Or via the environment (comma-separated):
+Path prefix the web panel is served under. Leave as `/` (the default) when Rucio
+owns its own (sub)domain. Set it when reverse-proxying the panel into a
+subdirectory, e.g. `example.com/rucio`, so the daemon injects a matching
+`<base href>` and the panel resolves its assets and API/WebSocket URLs under the
+prefix. The reverse proxy is expected to strip the prefix before forwarding (see
+[Option D](01-installation.md#under-a-subpath-examplecomrucio)). `/rucio`,
+`/rucio/` and `rucio` all normalise to `/rucio/`. Override via `RUCIOD_BASE_PATH`.
 
 ```sh
-RUCIOD_SHARED_DIRS="/srv/media/music,/srv/media/video"
+rucio config set api.base_path /rucio/
+rucio config unset api.base_path        # back to the origin root
 ```
 
-To stop sharing one of these, remove it from the config and restart — the API
-won't delete a config-declared share. Directories added through the app are
-unaffected and stay removable as usual.
-
-**Default:** empty (no extra directories).
-
----
-
-### `storage.database_path`
-
-Path to the SQLite database holding all persistent state (shares, downloads,
-peers, pins, …). This is app state, not content, so it lives in the data
-directory rather than the content folder. Pre-1.0 the schema is volatile: if it
-changes between versions the file must be deleted and the daemon restarted (see
-[Storage](../design/04-storage.md)).
-
-```sh
-rucio config set storage.database_path /mnt/data/rucio.db
-rucio config unset storage.database_path
-```
-
-**Default:**
-
-| Platform | Default path |
-|---|---|
-| Linux | `~/.local/share/rucio/rucio.db` |
-| macOS | `~/Library/Application Support/rucio/rucio.db` |
-
----
-
-### `storage.nodes_dat_path`
-
-Path to the eMule `nodes.dat` file used to bootstrap the Kad2 network. **Optional
-— leave it unset and the daemon uses `<cache-dir>/rucio/kad/nodes.dat`,
-downloading a fresh copy automatically the first time it starts (as long as
-`emule.enabled` is `true`).** Set it only to point at a `nodes.dat` you keep in a
-custom location.
-
-```sh
-rucio config set storage.nodes_dat_path /srv/emule/nodes.dat   # custom location
-rucio config unset storage.nodes_dat_path                       # back to the default
-```
-
-Whether eMule Kad runs at all is governed by [`emule.enabled`](#emuleenabled),
-not by this key.
-
-**Default:** unset — resolves to `<cache-dir>/rucio/kad/nodes.dat`.
+**Default:** `/`.
 
 ---
 
@@ -448,76 +339,185 @@ exclusive_bootstrap = true
 
 ---
 
-### `node.listen_addrs`
+### `storage.download_dir`
 
-List of multiaddrs the daemon listens on for P2P connections. This key
-appends to the list; use `unset` with the exact value to remove one entry.
+Directory where completed downloads are placed.
 
 ```sh
-rucio config set node.listen_addrs "/ip4/0.0.0.0/tcp/4321"
-rucio config unset node.listen_addrs "/ip6/::/tcp/4321"
+rucio config set storage.download_dir /mnt/data/downloads
+rucio config unset storage.download_dir     # revert to platform default
 ```
 
-**Default:** `/ip4/0.0.0.0/tcp/4321` and `/ip6/::/tcp/4321` (all interfaces,
-port 4321).
+Completed downloads and pinned content both live under one visible Rucio folder
+(`downloads/` and `pins/` as siblings), so the files you host are easy to find
+and browse — unlike the database and identity key, which stay in the hidden
+app-state directories.
+
+**Default:**
+
+| Platform | Default path |
+|---|---|
+| Linux (desktop) | `$XDG_DOWNLOAD_DIR/rucio/downloads` or `~/Downloads/rucio/downloads` |
+| macOS | `~/Downloads/rucio/downloads` |
+| Linux (server / no XDG) | `~/rucio/downloads` |
 
 ---
 
-### `node.identity_path`
+### `storage.pin_dir`
 
-Path to the Ed25519 keypair that is this node's permanent libp2p identity (its
-PeerId derives from it). Generated on first start if absent; back it up to keep
-the same PeerId across reinstalls. App state, so it lives in the config dir.
+Directory where pinned content that had to be fetched is stored and shared. Kept
+separate from `download_dir` so it's clear which files the node hosts on purpose.
+Pinned files are content you deliberately keep available (sometimes the only live
+copy on the network), so they sit next to your downloads in a persistent,
+visible place — not in a cache. See [Pinning](10-pinning.md).
 
 ```sh
-rucio config set node.identity_path /mnt/data/identity.key
-rucio config unset node.identity_path
+rucio config set storage.pin_dir /mnt/data/rucio-pins
+rucio config unset storage.pin_dir
+```
+
+A `pins` directory beside `downloads/` in the same Rucio content folder.
+
+**Default:**
+
+| Platform | Default path |
+|---|---|
+| Linux (desktop) | `$XDG_DOWNLOAD_DIR/rucio/pins` or `~/Downloads/rucio/pins` |
+| macOS | `~/Downloads/rucio/pins` |
+| Linux (server / no XDG) | `~/rucio/pins` |
+
+---
+
+### `storage.temp_dir`
+
+Directory where incomplete downloads are stored as `.part` files while
+transferring. Must be on the same filesystem as `download_dir` for an
+efficient rename on completion; if they are on different filesystems rucio
+falls back to a copy-then-delete.
+
+```sh
+rucio config set storage.temp_dir /mnt/data/.rucio-tmp
+rucio config unset storage.temp_dir
 ```
 
 **Default:**
 
 | Platform | Default path |
 |---|---|
-| Linux | `~/.config/rucio/identity.key` |
-| macOS | `~/Library/Application Support/rucio/identity.key` |
+| Linux | `~/.cache/rucio/tmp` |
+| macOS | `~/Library/Caches/rucio/tmp` |
 
 ---
 
-### `api.listen`
+### `storage.outboard_dir`
 
-Address the HTTP API and web panel listen on (`host:port`). Keep it on
-`127.0.0.1` unless you front it with a reverse proxy; bind `0.0.0.0` only behind
-one. In a container, set it to `0.0.0.0:3003` and publish the port.
+Directory for the **bao outboard cache** of completed shares — one small
+`<root_hash>.obao` sidecar per served file (sharded into subdirectories by the
+first hash byte). These are the BLAKE3 verified-streaming Merkle trees that let
+the node serve any chunk with a self-verifying proof; they are **regenerable**
+from the file at any time, so the directory is safe to wipe.
 
-The daemon has **no built-in authentication** — access control is delegated to a
-reverse proxy (e.g. nginx `auth_basic`). This keeps the bundled web panel and its
-WebSocket working through one gate; do not expose the port directly beyond
-localhost without one.
+It defaults to a directory **beside** `temp_dir` (not inside it), so the
+short-lived transfer scratch and this longer-lived cache stay independent. It is
+configurable on its own because a large library's outboards add up (about
+1/16384 of the total shared bytes — roughly 3 MB per 50 GB shared) and you may
+want them on a different volume. In-progress downloads keep their partial
+outboard next to the `.part` file in `temp_dir`, not here.
+
+Most entries are written **lazily** — the first time a peer requests a chunk of
+a file — so a freshly-started node with a small library may have an empty (or
+absent until first served) outboard directory. Only files at or above 1 GiB get
+their outboard persisted eagerly at index time. The directory itself is created
+on startup.
 
 ```sh
-rucio config set api.listen 0.0.0.0:3003
+rucio config set storage.outboard_dir /mnt/big/rucio-outboards
+rucio config unset storage.outboard_dir     # back to <cache>/rucio/outboards
 ```
 
-**Default:** `127.0.0.1:3003`
+**Default:**
+
+| Platform | Default path |
+|---|---|
+| Linux | `~/.cache/rucio/outboards` |
+| macOS | `~/Library/Caches/rucio/outboards` |
 
 ---
 
-### `api.base_path`
+### `storage.shared_dirs`
 
-Path prefix the web panel is served under. Leave as `/` (the default) when Rucio
-owns its own (sub)domain. Set it when reverse-proxying the panel into a
-subdirectory, e.g. `example.com/rucio`, so the daemon injects a matching
-`<base href>` and the panel resolves its assets and API/WebSocket URLs under the
-prefix. The reverse proxy is expected to strip the prefix before forwarding (see
-[Option D](01-installation.md#under-a-subpath-examplecomrucio)). `/rucio`,
-`/rucio/` and `rucio` all normalise to `/rucio/`. Override via `RUCIOD_BASE_PATH`.
+A list of directories to share **declaratively**, in addition to any you add
+through the app. Unlike directories added with `rucio share add` (or the web
+UI) — which live only in the database — these are written in the config file,
+so they:
 
-```sh
-rucio config set api.base_path /rucio/
-rucio config unset api.base_path        # back to the origin root
+- can be declared **while the daemon is stopped** (edit the file, then start);
+- are **protected** (always re-shared on startup and not removable through the
+  API — like the download directory); and
+- **survive a database reset**.
+
+They are reconciled on every startup: each is created on disk if missing and
+indexed by the file watcher. This is the recommended way to pin a fixed share
+layout for containers or reproducible/headless deployments.
+
+```toml
+[storage]
+shared_dirs = ["/srv/media/music", "/srv/media/video"]
 ```
 
-**Default:** `/`.
+Or via the environment (comma-separated):
+
+```sh
+RUCIOD_SHARED_DIRS="/srv/media/music,/srv/media/video"
+```
+
+To stop sharing one of these, remove it from the config and restart — the API
+won't delete a config-declared share. Directories added through the app are
+unaffected and stay removable as usual.
+
+**Default:** empty (no extra directories).
+
+---
+
+### `storage.database_path`
+
+Path to the SQLite database holding all persistent state (shares, downloads,
+peers, pins, …). This is app state, not content, so it lives in the data
+directory rather than the content folder. Pre-1.0 the schema is volatile: if it
+changes between versions the file must be deleted and the daemon restarted (see
+[Storage](../design/04-storage.md)).
+
+```sh
+rucio config set storage.database_path /mnt/data/rucio.db
+rucio config unset storage.database_path
+```
+
+**Default:**
+
+| Platform | Default path |
+|---|---|
+| Linux | `~/.local/share/rucio/rucio.db` |
+| macOS | `~/Library/Application Support/rucio/rucio.db` |
+
+---
+
+### `storage.nodes_dat_path`
+
+Path to the eMule `nodes.dat` file used to bootstrap the Kad2 network. **Optional
+— leave it unset and the daemon uses `<cache-dir>/rucio/kad/nodes.dat`,
+downloading a fresh copy automatically the first time it starts (as long as
+`emule.enabled` is `true`).** Set it only to point at a `nodes.dat` you keep in a
+custom location.
+
+```sh
+rucio config set storage.nodes_dat_path /srv/emule/nodes.dat   # custom location
+rucio config unset storage.nodes_dat_path                       # back to the default
+```
+
+Whether eMule Kad runs at all is governed by [`emule.enabled`](#emuleenabled),
+not by this key.
+
+**Default:** unset — resolves to `<cache-dir>/rucio/kad/nodes.dat`.
 
 ---
 
