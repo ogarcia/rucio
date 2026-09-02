@@ -197,7 +197,7 @@ Path to an eMule `nodes.dat` file used to bootstrap the Kad2 network. **Optional
 (or one fetched by the daemon) to enable Kad bootstrap and source search.
 
 ```sh
-rucio config set storage.nodes_dat_path ~/.local/share/rucio/nodes.dat
+rucio config set storage.nodes_dat_path ~/.cache/rucio/kad/nodes.dat
 rucio config unset storage.nodes_dat_path     # disable Kad bootstrap
 ```
 
@@ -749,7 +749,7 @@ exclusive_bootstrap  = false       # true = use only the peers above (separate n
 # pin_dir        = "~/Downloads/rucio/pins"
 # temp_dir       = "~/.cache/rucio/tmp"
 # outboard_dir   = "~/.cache/rucio/outboards"  # regenerable bao cache; relocate for large libraries
-# nodes_dat_path = "~/.local/share/rucio/nodes.dat"  # omit to disable Kad bootstrap
+# nodes_dat_path = "~/.cache/rucio/kad/nodes.dat"  # omit to disable Kad bootstrap
 # shared_dirs    = ["/srv/media"]  # protected shares declared here, survive a DB reset
 
 [emule]

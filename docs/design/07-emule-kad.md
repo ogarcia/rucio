@@ -78,7 +78,7 @@ that arise from sharing a socket with `Arc<UdpSocket>`.
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `udp_port` | `u16` | `4672` | UDP port to bind |
-| `nodes_dat_path` | `PathBuf` | platform data dir | Path to bootstrap seed file |
+| `nodes_dat_path` | `PathBuf` | platform cache dir (`<cache>/rucio/kad`) | Path to bootstrap seed file |
 | `request_timeout` | `Duration` | `5s` | Per-request timeout |
 | `min_contacts` | `usize` | `4` | Re-bootstrap threshold |
 | `max_contacts` | `usize` | `50` | Bootstrap stops early when reached |

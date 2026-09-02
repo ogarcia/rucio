@@ -459,7 +459,7 @@ Run `rucio config show` at any time to see the actual paths in use.
 | Downloads | `$XDG_DOWNLOAD_DIR/rucio/downloads` or `~/Downloads/rucio/downloads` | `~/Downloads/rucio/downloads` |
 | Pinned content | `~/Downloads/rucio/pins` (sibling of downloads) | `~/Downloads/rucio/pins` |
 | Temp (parts) | `~/.cache/rucio/tmp` | `~/Library/Caches/rucio/tmp` |
-| eMule nodes.dat | `~/.local/share/rucio/nodes.dat` | `~/Library/Application Support/rucio/nodes.dat` |
+| eMule nodes.dat | `~/.cache/rucio/kad/nodes.dat` | `~/Library/Caches/rucio/kad/nodes.dat` |
 
 > **Windows (portable app):** the paths above do not apply — every file
 > (config, identity, database, downloads, parts, `nodes.dat`) lives next to

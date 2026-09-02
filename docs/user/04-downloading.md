@@ -147,7 +147,7 @@ rucio node emule bootstrap
 ```
 
 This downloads a fresh `nodes.dat` from `http://upd.emule-security.org/nodes.dat`,
-validates it, and saves it to `~/.local/share/rucio/nodes.dat` (or to
+validates it, and saves it to `~/.cache/rucio/kad/nodes.dat` (or to
 `storage.nodes_dat_path` if you have set it in the configuration).
 
 You only need to run this once.  Repeat it if the Kad2 bootstrap stops working
@@ -167,7 +167,7 @@ rucio node emule status
 
 ```
 eMule compatibility: enabled
-nodes.dat path:      /home/user/.local/share/rucio/nodes.dat
+nodes.dat path:      /home/user/.cache/rucio/kad/nodes.dat
 nodes.dat status:    present (150 contacts)
 ```
 
@@ -195,7 +195,7 @@ other download.
 
 | Key | Default | Description |
 |---|---|---|
-| `storage.nodes_dat_path` | `<data-dir>/rucio/nodes.dat` | Path to the Kad2 bootstrap file |
+| `storage.nodes_dat_path` | `<cache-dir>/rucio/kad/nodes.dat` | Path to the Kad2 bootstrap file |
 | `emule.temp_dir` | `<cache-dir>/rucio/emule-tmp` | Temporary directory for eMule `.part` files |
 | `emule.tcp_port` | `4662` | TCP port for incoming peer connections (High-ID) |
 | `emule.udp_port` | `4672` | UDP port for Kad2 routing and source search |
