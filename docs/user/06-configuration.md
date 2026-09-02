@@ -611,11 +611,16 @@ The nickname advertised to eMule peers — the name other clients show for you i
 their transfer lists ("downloading from <nick>"). Purely cosmetic; your credit
 identity is a separate internal user hash, not the nick.
 
+If you never set one, the daemon generates a random `<Adjective> <Adjective>
+Rucio` nickname on first start and persists it — so peers don't all see an
+identical name. Set this key (or `RUCIOD_EMULE_NICK`) to pick your own.
+
 ```sh
-rucio config set emule.nick "rucio"
+rucio config set emule.nick "my-nickname"
 ```
 
-**Default:** `rucio`  (override at runtime with `RUCIOD_EMULE_NICK`)
+**Default:** an auto-generated `<Adjective> <Adjective> Rucio` nickname
+(override at runtime with `RUCIOD_EMULE_NICK`)
 
 ---
 
@@ -754,7 +759,7 @@ exclusive_bootstrap  = false       # true = use only the peers above (separate n
 # pin_dir        = "~/Downloads/rucio/pins"
 # temp_dir       = "~/.cache/rucio/tmp"
 # outboard_dir   = "~/.cache/rucio/outboards"  # regenerable bao cache; relocate for large libraries
-# nodes_dat_path = "~/.cache/rucio/kad/nodes.dat"  # omit to disable Kad bootstrap
+# nodes_dat_path = "~/.cache/rucio/kad/nodes.dat"  # this is the default; auto-downloaded on first start
 # shared_dirs    = ["/srv/media"]  # protected shares declared here, survive a DB reset
 
 [emule]
@@ -802,18 +807,19 @@ the file value untouched.
 | `RUCIOD_TEMP_UPLOAD_LIMIT_KBPS` | `network.temp_upload_limit_kbps` | `5120` (5 MB/s) | integer KB/s |
 | `RUCIOD_MAX_UPLOAD_TASKS` | `network.max_upload_tasks` | `64` | integer ≥1 |
 | `RUCIOD_UPNP` | `network.upnp` | `true` | `true`/`false` (also `1`/`0`, `yes`/`no`, `on`/`off`) |
-| `RUCIOD_NODES_DAT` | `storage.nodes_dat_path` | *(unset)* | path |
+| `RUCIOD_NODES_DAT` | `storage.nodes_dat_path` | `<cache>/rucio/kad/nodes.dat` | path |
 | `RUCIOD_EMULE_ENABLED` | `emule.enabled` | `true` | `true`/`false` (also `1`/`0`, `yes`/`no`, `on`/`off`) |
 | `RUCIOD_EMULE_IDENTITY_PATH` | `emule.identity_path` | `<config dir>/emule_identity.key` | path |
 | `RUCIOD_EMULE_TEMP_DIR` | `emule.temp_dir` | platform default | path |
 | `RUCIOD_EMULE_TCP_PORT` | `emule.tcp_port` | `4662` | integer 1–65535 |
 | `RUCIOD_EMULE_UDP_PORT` | `emule.udp_port` | `4672` | integer 1–65535 |
-| `RUCIOD_EMULE_NICK` | `emule.nick` | `rucio` | string |
+| `RUCIOD_EMULE_NICK` | `emule.nick` | *(auto-generated petname)* | string |
 | `RUCIOD_EXTERNAL_IP` | `emule.external_ip` | *(auto)* | IPv4 address |
 | `RUCIOD_EMULE_DOWNLOAD_SLOTS_PER_FILE` | `emule.download_slots_per_file` | `5` | integer 1–50 |
 | `RUCIOD_EMULE_MAX_UPLOAD_SLOTS` | `emule.max_upload_slots` | `4` | integer 1–50 |
 | `RUCIOD_EMULE_MAX_CONCURRENT_DOWNLOADS` | `emule.max_concurrent_downloads` | `3` | integer 1–50 |
 | `RUCIOD_EMULE_MIN_SOURCE_SPEED_KIB_S` | `emule.min_source_speed_kib_s` | `2` | integer (`0` = off) |
+| `RUCIOD_AUTO_CLEAR_COMPLETED` | `downloads.auto_clear_completed` | `false` | `true`/`false` (also `1`/`0`, `yes`/`no`, `on`/`off`) |
 
 ### Docker / container example
 
