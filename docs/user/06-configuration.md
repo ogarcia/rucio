@@ -304,7 +304,7 @@ rucio config unset network.bootstrap_peers \
 ```
 
 **Default:** empty. The peers you configure here are **added** to the built-in
-public bootstrap node (`208.85.21.46:4321`, IPv4 + IPv6) — they do not replace
+public bootstrap node (`51.255.175.14:4321`, IPv4 + IPv6) — they do not replace
 it — so a fresh node still reaches the public network out of the box. LAN
 discovery via mDNS also works independently.
 
