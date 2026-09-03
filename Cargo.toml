@@ -117,7 +117,7 @@ notify = { version = "8", features = ["macos_fsevent"] }
 # mime detection
 infer = "0.22"
 
-owo-colors  = { version = "4.3", features = ["supports-colors"] }
+owo-colors  = { version = "4.4", features = ["supports-colors"] }
 
 # UPnP / IGD port mapping
 igd-next    = { version = "0.17", features = ["aio_tokio"] }
@@ -126,7 +126,7 @@ igd-next    = { version = "0.17", features = ["aio_tokio"] }
 rust-embed  = "8"
 
 # i18n
-rust-i18n   = "4.1"
+rust-i18n   = "4.2"
 sys-locale  = "0.3"
 
 # test utilities
