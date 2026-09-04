@@ -7,6 +7,7 @@ pub mod categories;
 pub mod config;
 pub mod downloads;
 pub mod emule;
+pub mod fs;
 pub mod health;
 pub mod metrics;
 pub mod notifications;
@@ -97,6 +98,7 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         shares::get_magnet,
         shares::remove_share,
         shares::remove_shares_by_path,
+        fs::list_dir,
         downloads::list_downloads,
         downloads::get_download,
         downloads::get_download_pieces,
@@ -168,6 +170,8 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         rucio_core::api::shares::SharesResponse,
         rucio_core::api::shares::SharedDirResponse,
         rucio_core::api::shares::SharedDirsResponse,
+        rucio_core::api::fs::FsEntry,
+        rucio_core::api::fs::FsListResponse,
         rucio_core::api::downloads::StartDownloadRequest,
         rucio_core::api::downloads::StartEd2kDownloadRequest,
         rucio_core::api::downloads::RenameDownloadRequest,
@@ -601,6 +605,8 @@ fn v1_router() -> Router<AppState> {
         .route("/shares", routing::delete(shares::remove_shares_by_path))
         .route("/shares/{hash}", routing::delete(shares::remove_share))
         .route("/shares/{hash}/magnet", routing::get(shares::get_magnet))
+        // filesystem browser (folder picker for adding a share)
+        .route("/fs/list", routing::get(fs::list_dir))
         // downloads
         .route("/downloads", routing::get(downloads::list_downloads))
         .route("/downloads", routing::post(downloads::start_download))

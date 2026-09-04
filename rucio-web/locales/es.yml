@@ -295,6 +295,12 @@ share:
   add_partial: "Se compartieron %{queued} archivo(s); %{count} ruta(s) no se pudieron leer:\n%{list}"
   adding: "Añadiendo…"
   share_btn: "Compartir"
+  browse: "Examinar…"
+  browse_title: "Elige una carpeta en el host del demonio"
+  browse_up: "Subir"
+  browse_loading: "Cargando…"
+  browse_empty: "No hay subcarpetas aquí"
+  browse_select: "Seleccionar esta carpeta"
 
 sub:
   add_title: "Suscribirse al contenido fijado de un par (replicarlo dentro de una cuota)"
@@ -359,6 +365,7 @@ config:
   loading: "Cargando…"
   pending: "Hay cambios guardados a la espera de reiniciar el demonio."
   env_locked: "Solo lectura: definido por una variable de entorno, que tiene prioridad sobre el panel."
+  browse: "Examinar"
   interface:
     hint: "Estas preferencias se guardan en este navegador, no en el demonio."
     theme: "Tema"

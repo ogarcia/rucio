@@ -634,6 +634,40 @@
            large screen; max-width:90vw still narrows it (tabs scroll) on mobile. */
         .modal-config { width: 640px; }
         .modal-config .modal-body { max-height: 60vh; overflow-y: auto; }
+        /* ── Folder browser (share picker) ───────────────────────────────── */
+        .path-input-row { display: flex; gap: 0.5rem; align-items: stretch; }
+        .path-input-row .search-input { flex: 1 1 auto; min-width: 0; }
+        .path-input-row .btn-sm,
+        .browse-toolbar .btn-sm {
+            display: inline-flex; align-items: center; gap: 0.3rem;
+            white-space: nowrap; flex-shrink: 0;
+        }
+        .browse-modal { width: 560px; }
+        /* Single line + ellipsis so a long path never grows the modal (full path
+           in the title tooltip). */
+        .browse-cwd {
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+            padding: 0.35rem 0.5rem; background: var(--raised); border-radius: 0.25rem;
+        }
+        .browse-toolbar { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+        /* Constant-height scroll area: the modal stays the same size regardless
+           of how many sub-folders the current directory has. */
+        .browse-scroll {
+            height: 46vh; overflow-y: auto;
+            border: 1px solid var(--border); border-radius: 0.25rem;
+        }
+        .browse-list { list-style: none; margin: 0; padding: 0; }
+        .browse-item {
+            display: flex; align-items: center; gap: 0.5rem;
+            padding: 0.4rem 0.6rem; cursor: pointer;
+            border-bottom: 1px solid var(--raised);
+            font-size: 0.8125rem; color: var(--text);
+        }
+        .browse-item:last-child { border-bottom: none; }
+        .browse-item:hover { background: var(--row-sel); }
+        .browse-item .icon { color: var(--accent); flex-shrink: 0; }
+        .browse-name { word-break: break-all; }
+        .browse-empty { text-align: center; padding: 1rem 0; }
         .config-input:disabled, .config-textarea:disabled {
             opacity: 0.5; cursor: not-allowed;
         }
@@ -642,6 +676,25 @@
         .config-input-locked {
             opacity: 0.6; cursor: not-allowed; font-style: italic;
         }
+        /* Storage path field with an inline, right-aligned folder-browser icon. */
+        .config-input-wrap { position: relative; width: 220px; display: flex; align-items: center; }
+        .config-input-wrap .config-input { width: 100%; box-sizing: border-box; }
+        /* Reserve exactly the icon button's width on the right (1rem icon +
+           0.4rem padding each side) so the value stops right at it, no gap.
+           Two classes to outweigh the `.config-input` padding shorthand. */
+        .config-input.config-input-has-browse { padding-right: 1.8rem; }
+        .config-input-browse {
+            position: absolute; right: 1px; top: 1px; bottom: 1px;
+            display: flex; align-items: center; justify-content: center;
+            padding: 0 0.4rem;
+            /* Solid background (matches the input) so a long path scrolling
+               underneath is masked, not visible behind the icon. */
+            background: var(--raised); border: none;
+            border-radius: 0 0.25rem 0.25rem 0;
+            color: var(--text-3); cursor: pointer;
+        }
+        .config-input-browse:hover { color: var(--accent); background: var(--border); }
+        .config-input-browse .icon { width: 1rem; height: 1rem; }
         .config-tabs {
             display: flex; gap: 0.25rem;
             padding: 0 1.25rem; border-bottom: 1px solid var(--border);

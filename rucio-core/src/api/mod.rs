@@ -2,6 +2,7 @@ pub mod categories;
 pub mod config;
 pub mod downloads;
 pub mod emule;
+pub mod fs;
 pub mod metrics;
 pub mod notifications;
 pub mod pins;

@@ -297,6 +297,12 @@ share:
   add_partial: "Shared %{queued} file(s); %{count} path(s) could not be read:\n%{list}"
   adding: "Adding…"
   share_btn: "Share"
+  browse: "Browse…"
+  browse_title: "Pick a folder on the daemon host"
+  browse_up: "Up"
+  browse_loading: "Loading…"
+  browse_empty: "No sub-folders here"
+  browse_select: "Select this folder"
 
 sub:
   add_title: "Subscribe to a peer's pinned content (mirror it within a quota)"
@@ -361,6 +367,7 @@ config:
   loading: "Loading…"
   pending: "There are saved changes waiting for a daemon restart."
   env_locked: "Read-only: set by an environment variable, which takes precedence over the panel."
+  browse: "Browse"
   interface:
     hint: "These preferences are stored in this browser, not on the daemon."
     theme: "Theme"

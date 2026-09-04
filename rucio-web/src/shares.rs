@@ -11,8 +11,8 @@ use rust_i18n::t;
 use crate::icons::{self, Icon};
 use crate::statusbar::StatusBar;
 use crate::types::{
-    AddShareResponse, EmuleStatusResponse, ExtFilterMode, PinsResponse, ShareFile, ShareFilter,
-    SharedDir, SharedDirKind, SharedDirsResponse, SharesFilesResponse, format_size,
+    AddShareResponse, EmuleStatusResponse, ExtFilterMode, FsListResponse, PinsResponse, ShareFile,
+    ShareFilter, SharedDir, SharedDirKind, SharedDirsResponse, SharesFilesResponse, format_size,
 };
 
 // ── API ─────────────────────────────────────────────────────────────────────
@@ -71,6 +71,34 @@ async fn api_add_dir(path: String, filter: ShareFilter) -> Result<AddShareRespon
             .map_err(|e| e.to_string())
     } else {
         // The daemon returns { "error": "…" } on 400.
+        let msg = resp
+            .json::<serde_json::Value>()
+            .await
+            .ok()
+            .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(String::from))
+            .unwrap_or_else(|| format!("HTTP {}", resp.status()));
+        Err(msg)
+    }
+}
+
+/// List one directory level on the **daemon host** for the folder picker.
+/// `None`/empty path = the daemon's home directory (its default start point).
+async fn api_browse(path: Option<String>) -> Result<FsListResponse, String> {
+    let mut url = crate::api::api("/api/v1/fs/list");
+    if let Some(p) = path.as_deref().filter(|p| !p.is_empty()) {
+        url.push_str("?path=");
+        url.push_str(&urlencoding_encode(p));
+    }
+    let resp = gloo_net::http::Request::get(&url)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if resp.ok() {
+        resp.json::<FsListResponse>()
+            .await
+            .map_err(|e| e.to_string())
+    } else {
+        // The daemon returns { "error": "…" } on 400 (unreadable directory).
         let msg = resp
             .json::<serde_json::Value>()
             .await
@@ -1101,13 +1129,27 @@ fn AddDirModal(
     on_added: impl Fn() + Copy + 'static,
     on_close: impl Fn() + Copy + 'static,
 ) -> impl IntoView {
-    crate::overlays::close_on_escape(on_close);
     let path = RwSignal::new(String::new());
     let busy = RwSignal::new(false);
     let error: RwSignal<Option<String>> = RwSignal::new(None);
     let recursive = RwSignal::new(true);
     let ext_mode = RwSignal::new(ExtFilterMode::All);
     let extensions = RwSignal::new(String::new());
+    // Whether the nested folder-browser overlay is open. We register our own
+    // Escape handler (instead of `close_on_escape`) so a single listener can
+    // close the browser first and only then the whole modal — otherwise two
+    // stacked handlers would both fire and close everything at once.
+    let browsing = RwSignal::new(false);
+    let esc = window_event_listener(leptos::ev::keydown, move |e| {
+        if e.key() == "Escape" {
+            if browsing.get_untracked() {
+                browsing.set(false);
+            } else {
+                on_close();
+            }
+        }
+    });
+    on_cleanup(move || esc.remove());
 
     let submit = move || {
         let p = path.get().trim().to_string();
@@ -1159,14 +1201,25 @@ fn AddDirModal(
                     <p class="modal-hint">
                         {t!("share.add_dir_hint")}
                     </p>
-                    <input
-                        class="search-input"
-                        type="text"
-                        placeholder="/home/user/Media"
-                        prop:value=move || path.get()
-                        on:input=move |e| path.set(event_target_value(&e))
-                        on:keydown=move |e| { if e.key() == "Enter" { submit(); } }
-                    />
+                    <div class="path-input-row">
+                        <input
+                            class="search-input"
+                            type="text"
+                            placeholder="/home/user/Media"
+                            prop:value=move || path.get()
+                            on:input=move |e| path.set(event_target_value(&e))
+                            on:keydown=move |e| { if e.key() == "Enter" { submit(); } }
+                        />
+                        <button
+                            class="btn-sm"
+                            type="button"
+                            title=move || t!("share.browse_title")
+                            on:click=move |_| browsing.set(true)
+                        >
+                            <Icon paths=icons::FOLDER/>
+                            {t!("share.browse")}
+                        </button>
+                    </div>
                     <FilterFields recursive=recursive ext_mode=ext_mode extensions=extensions/>
                     {move || error.get().map(|e| view! { <p class="error-msg">{e}</p> })}
                 </div>
@@ -1178,6 +1231,161 @@ fn AddDirModal(
                         on:click=move |_| submit()
                     >
                         {move || if busy.get() { t!("share.adding") } else { t!("share.share_btn") }}
+                    </button>
+                </div>
+            </div>
+        </div>
+        <Show when=move || browsing.get()>
+            <BrowseDir
+                on_pick=move |p| { path.set(p); browsing.set(false); }
+                on_cancel=move || browsing.set(false)
+            />
+        </Show>
+    }
+}
+
+// ── Folder browser (server-side directory picker) ────────────────────────────
+
+/// A modal that walks the daemon host's filesystem so the user can pick a folder
+/// to share instead of typing an absolute path — handy on Windows especially.
+/// It does **not** register its own Escape handler; the caller owns Escape and
+/// closes this overlay first (see `browsing` in `AddDirModal`, `browse_target`
+/// in the config modal).
+#[component]
+pub fn BrowseDir(
+    on_pick: impl Fn(String) + Copy + 'static,
+    on_cancel: impl Fn() + Copy + 'static,
+    /// Directory to open on: the caller's hint (e.g. the value already in a
+    /// config field). When missing, blank, or not a readable directory, the
+    /// picker falls back to the daemon's default start directory.
+    #[prop(optional, into)]
+    start: Option<String>,
+) -> impl IntoView {
+    let listing: RwSignal<Option<FsListResponse>> = RwSignal::new(None);
+    let error: RwSignal<Option<String>> = RwSignal::new(None);
+    let loading = RwSignal::new(true);
+
+    // Fetch a directory level; keeps the previous listing visible on error.
+    let navigate = move |target: Option<String>| {
+        loading.set(true);
+        error.set(None);
+        spawn_local(async move {
+            match api_browse(target).await {
+                Ok(l) => listing.set(Some(l)),
+                Err(e) => error.set(Some(e)),
+            }
+            loading.set(false);
+        });
+    };
+
+    // Initial directory: the caller's hint (e.g. the value already in the
+    // config field) when it lists cleanly; otherwise — no hint, or a missing /
+    // unreadable path — the daemon's default start directory.
+    let hint = start.filter(|p| !p.trim().is_empty());
+    spawn_local(async move {
+        loading.set(true);
+        error.set(None);
+        let mut result = api_browse(hint.clone()).await;
+        if result.is_err() && hint.is_some() {
+            result = api_browse(None).await;
+        }
+        match result {
+            Ok(l) => listing.set(Some(l)),
+            Err(e) => error.set(Some(e)),
+        }
+        loading.set(false);
+    });
+
+    view! {
+        <div class="modal-backdrop">
+            <div class="modal browse-modal" on:click=move |e| e.stop_propagation()>
+                <div class="modal-header">
+                    <span class="modal-title">{t!("share.browse_title")}</span>
+                    <button class="overlay-close" on:click=move |_| on_cancel()>
+                        <Icon paths=icons::X/>
+                    </button>
+                </div>
+                <div class="modal-body">
+                    {move || listing.get().map(|l| {
+                        let title = l.path.clone();
+                        view! {
+                            <p class="modal-hint mono browse-cwd" title=title>{l.path}</p>
+                        }
+                    })}
+                    {move || listing.get().map(|l| {
+                        let parent = l.parent.clone();
+                        let up_disabled = parent.is_none();
+                        view! {
+                            <div class="browse-toolbar">
+                                <button
+                                    class="btn-sm"
+                                    disabled=up_disabled
+                                    on:click=move |_| {
+                                        if let Some(p) = parent.clone() { navigate(Some(p)); }
+                                    }
+                                >
+                                    <Icon paths=icons::ARROW_UP/>
+                                    {t!("share.browse_up")}
+                                </button>
+                                {l.roots.into_iter().map(|r| {
+                                    let target = r.clone();
+                                    view! {
+                                        <button
+                                            class="btn-sm"
+                                            on:click=move |_| navigate(Some(target.clone()))
+                                        >
+                                            <Icon paths=icons::DEVICE_DESKTOP/>
+                                            {r}
+                                        </button>
+                                    }
+                                }).collect_view()}
+                            </div>
+                        }
+                    })}
+                    {move || error.get().map(|e| view! { <p class="error-msg">{e}</p> })}
+                    // Fixed-height scroll area so the modal keeps a constant size
+                    // whatever the number of sub-folders in the current directory.
+                    <div class="browse-scroll">
+                        {move || {
+                            if loading.get() {
+                                view! { <p class="loading">{t!("share.browse_loading")}</p> }.into_any()
+                            } else {
+                                match listing.get() {
+                                    None => ().into_any(),
+                                    Some(l) if l.entries.is_empty() => view! {
+                                        <p class="muted browse-empty">{t!("share.browse_empty")}</p>
+                                    }.into_any(),
+                                    Some(l) => view! {
+                                        <ul class="browse-list">
+                                            {l.entries.into_iter().map(|entry| {
+                                                let target = entry.path.clone();
+                                                view! {
+                                                    <li
+                                                        class="browse-item"
+                                                        on:click=move |_| navigate(Some(target.clone()))
+                                                    >
+                                                        <Icon paths=icons::FOLDER/>
+                                                        <span class="browse-name">{entry.name}</span>
+                                                    </li>
+                                                }
+                                            }).collect_view()}
+                                        </ul>
+                                    }.into_any(),
+                                }
+                            }
+                        }}
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn-sm" on:click=move |_| on_cancel()>{t!("common.cancel")}</button>
+                    <button
+                        class="btn-sm btn-primary"
+                        disabled=move || listing.get().is_none()
+                        on:click=move |_| {
+                            if let Some(l) = listing.get() { on_pick(l.path); }
+                        }
+                    >
+                        {t!("share.browse_select")}
                     </button>
                 </div>
             </div>

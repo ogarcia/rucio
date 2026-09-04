@@ -6,6 +6,7 @@ use crate::categories::{
     CategoriesEditor, Row as CatRow, mint_row as mint_cat, persist as persist_cats,
 };
 use crate::icons::{self, Icon};
+use crate::shares::BrowseDir;
 use crate::types::{
     Category, ConfigResponse, ConfigSnapshot, EmuleStatusResponse, NotificationSettings, WebhookDef,
 };
@@ -93,6 +94,68 @@ fn lines_to_vec(s: &str) -> Vec<String> {
         .collect()
 }
 
+/// A storage **directory** field: a path input with a compact folder-browser
+/// button tucked inside on the right (icon only — space is tight here — with an
+/// "examinar" tooltip on hover). The button appears only while the field is
+/// editable; an env-pinned (locked) field is read-only and shows no button, so
+/// the picker can only ever write a field the user is actually allowed to change.
+/// Clicking it opens the shared [`BrowseDir`] picker aimed at this field's signal.
+#[component]
+fn DirField(
+    /// i18n key for the field label.
+    label: &'static str,
+    /// The field's bound value (also the picker's write target).
+    value: RwSignal<String>,
+    /// Dotted config key, matched against `locked` to decide editability.
+    #[prop(into)]
+    field_key: String,
+    /// Server-computed list of env-pinned keys.
+    locked: RwSignal<Vec<String>>,
+    /// Shared browser target; set to `Some(value)` to open the picker here.
+    browse_target: RwSignal<Option<RwSignal<String>>>,
+    /// Extra disable condition on top of env-locking (e.g. the eMule subsystem
+    /// being off). When true the field is disabled and offers no browse button.
+    #[prop(optional, into)]
+    disabled: Option<Signal<bool>>,
+) -> impl IntoView {
+    // Derived (Copy) so the same state can drive several attributes.
+    let is_locked = Signal::derive(move || locked.get().contains(&field_key));
+    let is_disabled = Signal::derive(move || disabled.map(|d| d.get()).unwrap_or(false));
+    // Editable — and therefore browsable — only when neither env-locked nor
+    // otherwise disabled, so the picker can only ever write a field the user is
+    // actually allowed to change.
+    let editable = Signal::derive(move || !is_locked.get() && !is_disabled.get());
+    let title = move || {
+        if is_locked.get() {
+            t!("config.env_locked").to_string()
+        } else {
+            String::new()
+        }
+    };
+    view! {
+        <div class="config-field">
+            <label class="config-label">{t!(label)}</label>
+            <div class="config-input-wrap">
+                <input class="config-input" type="text"
+                    class:config-input-locked=move || is_locked.get()
+                    class:config-input-has-browse=move || editable.get()
+                    prop:readonly=move || is_locked.get()
+                    disabled=move || is_disabled.get()
+                    title=title
+                    prop:value=move || value.get()
+                    on:input=move |e| value.set(event_target_value(&e))/>
+                <Show when=move || editable.get()>
+                    <button class="config-input-browse" type="button"
+                        title=move || t!("config.browse")
+                        on:click=move |_| browse_target.set(Some(value))>
+                        <Icon paths=icons::FOLDER/>
+                    </button>
+                </Show>
+            </div>
+        </div>
+    }
+}
+
 /// Full configuration modal with tabbed sections. The menu's quick-settings
 /// signals are passed in so saving the limits here keeps them in sync.
 /// `notif_enabled` is the master notification switch, shared with the header so
@@ -112,7 +175,22 @@ pub fn ConfigModal(
     compact: RwSignal<bool>,
     on_close: impl Fn() + Copy + 'static,
 ) -> impl IntoView {
-    crate::overlays::close_on_escape(on_close);
+    // Folder-browser target: the storage field the picker will write to, or
+    // `None` when the browser is closed (which also gates the nested overlay).
+    let browse_target: RwSignal<Option<RwSignal<String>>> = RwSignal::new(None);
+    // Own the Escape key (instead of `close_on_escape`) so an open folder
+    // browser closes first, and only a second Escape closes the config modal —
+    // otherwise two stacked handlers would fire at once and close everything.
+    let esc = window_event_listener(leptos::ev::keydown, move |e| {
+        if e.key() == "Escape" {
+            if browse_target.get_untracked().is_some() {
+                browse_target.set(None);
+            } else {
+                on_close();
+            }
+        }
+    });
+    on_cleanup(move || esc.remove());
     let tab = RwSignal::new(ConfigTab::Network);
     // The on-disk snapshot we edit (pending if any, else current). Kept whole so
     // a save preserves sections this modal doesn't expose.
@@ -579,42 +657,18 @@ pub fn ConfigModal(
                             ConfigTab::Storage => view! {
                                 <div class="config-section">
                                     <p class="config-hint">{t!("config.storage.hint")}</p>
-                                    <div class="config-field">
-                                        <label class="config-label">{t!("config.storage.download_dir")}</label>
-                                        <input class="config-input" type="text"
-                                            class:config-input-locked=move || is_locked("storage.download_dir")
-                                            prop:readonly=move || is_locked("storage.download_dir")
-                                            title=move || lock_title("storage.download_dir")
-                                            prop:value=move || f_st_dl.get()
-                                            on:input=move |e| f_st_dl.set(event_target_value(&e))/>
-                                    </div>
-                                    <div class="config-field">
-                                        <label class="config-label">{t!("config.storage.pin_dir")}</label>
-                                        <input class="config-input" type="text"
-                                            class:config-input-locked=move || is_locked("storage.pin_dir")
-                                            prop:readonly=move || is_locked("storage.pin_dir")
-                                            title=move || lock_title("storage.pin_dir")
-                                            prop:value=move || f_st_pin.get()
-                                            on:input=move |e| f_st_pin.set(event_target_value(&e))/>
-                                    </div>
-                                    <div class="config-field">
-                                        <label class="config-label">{t!("config.storage.temp_dir")}</label>
-                                        <input class="config-input" type="text"
-                                            class:config-input-locked=move || is_locked("storage.temp_dir")
-                                            prop:readonly=move || is_locked("storage.temp_dir")
-                                            title=move || lock_title("storage.temp_dir")
-                                            prop:value=move || f_st_tmp.get()
-                                            on:input=move |e| f_st_tmp.set(event_target_value(&e))/>
-                                    </div>
-                                    <div class="config-field">
-                                        <label class="config-label">{t!("config.storage.outboard_dir")}</label>
-                                        <input class="config-input" type="text"
-                                            class:config-input-locked=move || is_locked("storage.outboard_dir")
-                                            prop:readonly=move || is_locked("storage.outboard_dir")
-                                            title=move || lock_title("storage.outboard_dir")
-                                            prop:value=move || f_st_outboard.get()
-                                            on:input=move |e| f_st_outboard.set(event_target_value(&e))/>
-                                    </div>
+                                    <DirField label="config.storage.download_dir" value=f_st_dl
+                                        field_key="storage.download_dir" locked=locked
+                                        browse_target=browse_target/>
+                                    <DirField label="config.storage.pin_dir" value=f_st_pin
+                                        field_key="storage.pin_dir" locked=locked
+                                        browse_target=browse_target/>
+                                    <DirField label="config.storage.temp_dir" value=f_st_tmp
+                                        field_key="storage.temp_dir" locked=locked
+                                        browse_target=browse_target/>
+                                    <DirField label="config.storage.outboard_dir" value=f_st_outboard
+                                        field_key="storage.outboard_dir" locked=locked
+                                        browse_target=browse_target/>
                                     <div class="config-field">
                                         <label class="config-label">{t!("config.storage.database")}</label>
                                         <input class="config-input" type="text" disabled=true
@@ -645,14 +699,10 @@ pub fn ConfigModal(
                                             prop:value=move || f_em_nick.get()
                                             on:input=move |e| f_em_nick.set(event_target_value(&e))/>
                                     </div>
-                                    <div class="config-field">
-                                        <label class="config-label">{t!("config.emule.temp_dir")}</label>
-                                        <input class="config-input" type="text"
-                                            disabled=move || em_field_locked("emule.temp_dir")
-                                            title=move || lock_title("emule.temp_dir")
-                                            prop:value=move || f_em_temp.get()
-                                            on:input=move |e| f_em_temp.set(event_target_value(&e))/>
-                                    </div>
+                                    <DirField label="config.emule.temp_dir" value=f_em_temp
+                                        field_key="emule.temp_dir" locked=locked
+                                        browse_target=browse_target
+                                        disabled=Signal::derive(em_locked)/>
                                     <div class="config-field">
                                         <label class="config-label">{t!("config.emule.external_ip")}</label>
                                         <input class="config-input" type="text"
@@ -776,5 +826,18 @@ pub fn ConfigModal(
                 </div>
             </div>
         </div>
+        {move || browse_target.get().map(|field| {
+            // Open the picker on the field's current path (untracked: only its
+            // value at open time matters); BrowseDir falls back to the default
+            // if that directory is missing or unreadable.
+            let start = field.get_untracked();
+            view! {
+                <BrowseDir
+                    start=start
+                    on_pick=move |p| { field.set(p); browse_target.set(None); }
+                    on_cancel=move || browse_target.set(None)
+                />
+            }
+        })}
     }
 }

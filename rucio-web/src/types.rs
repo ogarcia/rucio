@@ -43,6 +43,27 @@ pub struct PeersResponse {
     pub peers: Vec<PeerInfo>,
 }
 
+// ── Filesystem browser (GET /api/v1/fs/list) ─────────────────────────────────
+
+/// One sub-directory in a server-side directory listing.
+#[derive(Deserialize, Clone, Debug)]
+pub struct FsEntry {
+    pub name: String,
+    pub path: String,
+}
+
+/// One level of the daemon host's filesystem, for the share folder picker.
+#[derive(Deserialize, Clone, Debug)]
+pub struct FsListResponse {
+    pub path: String,
+    #[serde(default)]
+    pub parent: Option<String>,
+    #[serde(default)]
+    pub roots: Vec<String>,
+    #[serde(default)]
+    pub entries: Vec<FsEntry>,
+}
+
 // ── eMule status ───────────────────────────────────────────────────────────
 
 #[derive(Deserialize, Clone, Copy, Debug, Default, PartialEq)]

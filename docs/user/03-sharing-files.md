@@ -14,6 +14,11 @@ The path must be absolute and must exist on the machine where the daemon is
 running. If you are connecting to a remote daemon, use the path as seen by that
 machine.
 
+In the web panel, the **Add directory** dialog has a **Browse…** button that
+walks the daemon host's filesystem so you can pick the folder instead of typing
+its path — useful on Windows, and a reminder that the paths shown are the
+daemon's, not your own machine's when the panel is remote.
+
 The daemon begins indexing immediately. Indexing walks the directory tree,
 computes a BLAKE3 hash for every file, stores the results in the database and
 announces them to the Kademlia DHT.
