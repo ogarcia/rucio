@@ -915,6 +915,35 @@ async fn on_swarm_event(
             }
         }
         SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
+            // A `WrongPeerId` on a public address is positive proof that this
+            // `peer_id → address` binding is stale: the dial connected fine, but
+            // a *different*, live identity answered there. The peer we were
+            // after has been replaced at that address — typically a node that
+            // does not persist its keypair and came back with a fresh PeerId on
+            // the same NAT-mapped port, leaving ghost records behind. Prune the
+            // dead binding from the routing table so we stop wasting dials on
+            // it; it is fully re-learnable from the DHT if that peer ever
+            // republishes a signed record (the routing table is a cache, the
+            // DHT is the source of truth). We never prune a configured bootstrap
+            // peer: unlike anonymous churn, a bootstrap that rotated its key is
+            // actionable and must stay visible at WARN below.
+            if let DialError::WrongPeerId { obtained, address } = &error
+                && let Some(intended) = peer_id
+                && !addr_is_private_or_loopback(address)
+                && !is_bootstrap_peer(state, &intended)
+            {
+                swarm
+                    .behaviour_mut()
+                    .kademlia
+                    .remove_address(&intended, address);
+                // Don't retry a ghost — drop any pending retry too.
+                state.retry_dials.remove(&intended);
+                debug!(
+                    %obtained, %address,
+                    "Pruned stale peer address (WrongPeerId: a different identity now answers there)"
+                );
+                return;
+            }
             match classify_dial_error(&error) {
                 // Expected, non-actionable dial failures: the peer advertised
                 // non-routable addresses (LAN/loopback/link-local), or it isn't
@@ -2029,6 +2058,20 @@ fn classify_dial_error(error: &DialError) -> DialNoise {
     }
 }
 
+/// True if `pid` is one of our configured bootstrap peers, matched by the
+/// `/p2p/<id>` component of any bootstrap multiaddr.
+///
+/// Used to spare bootstrap peers from the `WrongPeerId` routing-table prune: a
+/// bootstrap that rotated its key is actionable (its multiaddr needs updating)
+/// and must stay visible at WARN, unlike the anonymous DHT churn we silently
+/// forget.
+fn is_bootstrap_peer(state: &LoopState, pid: &PeerId) -> bool {
+    state.bootstrap_addrs.iter().any(|addr| {
+        addr.iter()
+            .any(|p| matches!(p, Protocol::P2p(peer) if peer == *pid))
+    })
+}
+
 /// Classify the `io::Error` behind a single transport dial attempt.
 ///
 /// libp2p's combined transport (DNS / relay / Or-transport) can fold several
@@ -2206,5 +2249,26 @@ mod tests {
     fn genuinely_unexpected_error_stays_real() {
         let e = Error::other("unsupported protocol /rucio/kad/9.9.9");
         assert!(matches!(classify_transport_io(&e), DialNoise::Real));
+    }
+
+    #[test]
+    fn is_bootstrap_peer_matches_by_p2p_component() {
+        let mut s = LoopState::new(2);
+        let boot = PeerId::random();
+        let other = PeerId::random();
+        s.bootstrap_addrs
+            .push(format!("/ip4/1.2.3.4/tcp/4321/p2p/{boot}").parse().unwrap());
+
+        // The peer embedded in a bootstrap multiaddr is recognised; an
+        // unrelated peer (e.g. anonymous DHT churn) is not — so only the latter
+        // gets pruned on WrongPeerId.
+        assert!(is_bootstrap_peer(&s, &boot));
+        assert!(!is_bootstrap_peer(&s, &other));
+
+        // A bootstrap multiaddr without a /p2p component matches nobody.
+        let mut s2 = LoopState::new(2);
+        s2.bootstrap_addrs
+            .push("/ip4/1.2.3.4/tcp/4321".parse().unwrap());
+        assert!(!is_bootstrap_peer(&s2, &boot));
     }
 }
