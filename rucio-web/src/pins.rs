@@ -3,6 +3,13 @@
 //! Lists pinned items with their state (available / fetching / missing), lets
 //! the user pin a `rucio:` magnet, and unpin (which only drops the intent — the
 //! content stays on disk, per the daemon's no-auto-delete policy).
+//!
+//! Rows behave like the Downloads/Shares lists: click to select (ctrl/⌘ to
+//! toggle, shift for a range, plain tap on touch), with the collection and
+//! unpin actions living in the toolbar and acting on the whole selection. A
+//! state/collection/name filter bar sits in the status bar.
+
+use std::collections::HashSet;
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -72,6 +79,110 @@ fn resolve_pin_input(input: &str) -> String {
     }
 }
 
+// ── Filter ────────────────────────────────────────────────────────────────────
+
+/// State filter for the pin list, mirroring the pin `state` string.
+#[derive(Clone, Copy, PartialEq)]
+enum PinFilter {
+    All,
+    Available,
+    Fetching,
+    Missing,
+}
+
+impl PinFilter {
+    fn matches(self, state: &str) -> bool {
+        match self {
+            PinFilter::All => true,
+            PinFilter::Available => state == "available",
+            PinFilter::Fetching => state == "fetching",
+            PinFilter::Missing => state == "missing",
+        }
+    }
+
+    /// Stable key for the `<select>` value and localStorage.
+    fn as_key(self) -> &'static str {
+        match self {
+            PinFilter::All => "all",
+            PinFilter::Available => "available",
+            PinFilter::Fetching => "fetching",
+            PinFilter::Missing => "missing",
+        }
+    }
+
+    /// Parse a key back; unknown values fall back to `All`.
+    fn from_key(v: &str) -> Self {
+        match v {
+            "available" => PinFilter::Available,
+            "fetching" => PinFilter::Fetching,
+            "missing" => PinFilter::Missing,
+            _ => PinFilter::All,
+        }
+    }
+}
+
+/// Collection filter. Collection names are arbitrary user text, so a control
+/// char that trimmed input can never contain is used as the "uncollected"
+/// sentinel in the `<select>` value (empty = all).
+const COLL_NONE: &str = "\u{1}";
+
+#[derive(Clone, PartialEq)]
+enum CollFilter {
+    All,
+    Uncollected,
+    Name(String),
+}
+
+impl CollFilter {
+    fn matches(&self, coll: &Option<String>) -> bool {
+        match self {
+            CollFilter::All => true,
+            CollFilter::Uncollected => coll.as_deref().unwrap_or("").is_empty(),
+            CollFilter::Name(n) => coll.as_deref() == Some(n.as_str()),
+        }
+    }
+
+    /// Parse the `<select>` value: "" = all, sentinel = uncollected, else a name.
+    fn from_value(v: &str) -> Self {
+        match v {
+            "" => CollFilter::All,
+            COLL_NONE => CollFilter::Uncollected,
+            name => CollFilter::Name(name.to_string()),
+        }
+    }
+
+    /// Inverse of [`CollFilter::from_value`], for the `<select>` value and
+    /// localStorage.
+    fn to_value(&self) -> String {
+        match self {
+            CollFilter::All => String::new(),
+            CollFilter::Uncollected => COLL_NONE.to_string(),
+            CollFilter::Name(n) => n.clone(),
+        }
+    }
+}
+
+// ── Filter persistence ──────────────────────────────────────────────────────
+
+/// localStorage keys for the persisted pin filters (state + collection), kept
+/// across reloads like the active tab. The name search stays transient.
+const FILTER_STATE_KEY: &str = "rucio-pin-filter";
+const FILTER_COLL_KEY: &str = "rucio-pin-coll";
+
+fn ls() -> Option<web_sys::Storage> {
+    web_sys::window().and_then(|w| w.local_storage().ok().flatten())
+}
+
+fn load_filter(key: &str) -> Option<String> {
+    ls().and_then(|s| s.get_item(key).ok().flatten())
+}
+
+fn save_filter(key: &str, val: &str) {
+    if let Some(s) = ls() {
+        let _ = s.set_item(key, val);
+    }
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 #[component]
@@ -83,8 +194,27 @@ pub fn PinsTab(
     let pins: RwSignal<Vec<Pin>> = RwSignal::new(vec![]);
     let collections: RwSignal<Vec<String>> = RwSignal::new(vec![]);
     let add_open: RwSignal<bool> = RwSignal::new(false);
-    // When set to (hash, current_collection), the change-collection modal is open.
-    let edit_modal: RwSignal<Option<(String, Option<String>)>> = RwSignal::new(None);
+    // Multi-selection: the set of selected root hashes, plus the anchor row used
+    // as the pivot for shift+click range selection.
+    let selected: RwSignal<HashSet<String>> = RwSignal::new(HashSet::new());
+    let anchor: RwSignal<Option<String>> = RwSignal::new(None);
+    // When set to (hashes, prefill), the set-collection modal is open. The
+    // prefill is the current collection, carried only for a single selection.
+    let coll_modal: RwSignal<Option<(Vec<String>, Option<String>)>> = RwSignal::new(None);
+
+    // State and collection filters persist across reloads; the name search stays
+    // transient. Restore them from localStorage.
+    let filter_state: RwSignal<PinFilter> = RwSignal::new(
+        load_filter(FILTER_STATE_KEY)
+            .map(|s| PinFilter::from_key(&s))
+            .unwrap_or(PinFilter::All),
+    );
+    let filter_coll: RwSignal<CollFilter> = RwSignal::new(
+        load_filter(FILTER_COLL_KEY)
+            .map(|s| CollFilter::from_value(&s))
+            .unwrap_or(CollFilter::All),
+    );
+    let filter_name: RwSignal<String> = RwSignal::new(String::new());
 
     let reload = move || {
         spawn_local(async move {
@@ -97,6 +227,74 @@ pub fn PinsTab(
     // Initial load.
     reload();
 
+    // If the selected collection is later removed (its last pin re-filed or
+    // unpinned), fall back to "all" so the user isn't stranded on an empty view.
+    Effect::new(move |loaded: Option<bool>| {
+        let loaded = loaded.unwrap_or(false) || collections.with(|c| !c.is_empty());
+        if loaded
+            && let CollFilter::Name(n) = filter_coll.get_untracked()
+            && collections.with(|c| !c.iter().any(|x| x == &n))
+        {
+            filter_coll.set(CollFilter::All);
+            save_filter(FILTER_COLL_KEY, &CollFilter::All.to_value());
+        }
+        loaded
+    });
+
+    // The pins currently selected and still present in the list.
+    let selected_pins = move || -> Vec<Pin> {
+        pins.with(|v| {
+            v.iter()
+                .filter(|p| selected.with(|s| s.contains(&p.root_hash)))
+                .cloned()
+                .collect()
+        })
+    };
+    // Both bulk actions need at least one selected pin present in the list.
+    let has_selection = move || !selected_pins().is_empty();
+
+    // Visible (filtered) hashes in display order — used by the list and by
+    // shift+click to resolve the range between the anchor and the clicked row.
+    let visible_hashes = move || {
+        let fs = filter_state.get();
+        let fc = filter_coll.get();
+        let q = filter_name.get().to_lowercase();
+        pins.with(|v| {
+            v.iter()
+                .filter(|p| fs.matches(&p.state))
+                .filter(|p| fc.matches(&p.collection))
+                .filter(|p| pin_matches_name(p, &q))
+                .map(|p| p.root_hash.clone())
+                .collect::<Vec<String>>()
+        })
+    };
+
+    // Row click with modifier keys: plain = select only this row; ctrl/⌘ =
+    // toggle this row; shift = select the range from the anchor to this row.
+    let on_row_click = Callback::new(move |(hash, additive, range): (String, bool, bool)| {
+        if range && let Some(a) = anchor.get_untracked() {
+            let vis = visible_hashes();
+            if let (Some(i1), Some(i2)) = (
+                vis.iter().position(|x| x == &a),
+                vis.iter().position(|x| x == &hash),
+            ) {
+                let (lo, hi) = if i1 <= i2 { (i1, i2) } else { (i2, i1) };
+                selected.set(vis[lo..=hi].iter().cloned().collect());
+                return;
+            }
+        }
+        if additive {
+            selected.update(|s| {
+                if !s.insert(hash.clone()) {
+                    s.remove(&hash);
+                }
+            });
+        } else {
+            selected.set(HashSet::from([hash.clone()]));
+        }
+        anchor.set(Some(hash));
+    });
+
     view! {
         <div class="tab-content">
             <div class="tab-toolbar">
@@ -108,6 +306,58 @@ pub fn PinsTab(
                     >
                         <Icon paths=icons::PIN/>
                         <span class="btn-label">{t!("pin.add")}</span>
+                    </button>
+                    <button
+                        class="toolbar-btn"
+                        title=t!("pin.collection_title")
+                        disabled=move || !has_selection()
+                        on:click=move |_| {
+                            let sel = selected_pins();
+                            if sel.is_empty() {
+                                return;
+                            }
+                            let hashes: Vec<String> =
+                                sel.iter().map(|p| p.root_hash.clone()).collect();
+                            // Prefill the current value only when editing a single
+                            // pin; a bulk edit starts blank and overwrites all.
+                            let prefill = (sel.len() == 1)
+                                .then(|| sel[0].collection.clone())
+                                .flatten();
+                            coll_modal.set(Some((hashes, prefill)));
+                        }
+                    >
+                        <Icon paths=icons::FOLDER/>
+                        <span class="btn-label">{t!("pin.collection")}</span>
+                    </button>
+                    <button
+                        class="toolbar-btn toolbar-btn-danger"
+                        title=t!("pin.unpin_title")
+                        disabled=move || !has_selection()
+                        on:click=move |_| {
+                            // Unpinning is reversible and non-destructive (the file
+                            // stays on disk and shared), so no confirmation — same
+                            // as the Shares list's bulk Unpin.
+                            let hashes: Vec<String> = selected_pins()
+                                .iter()
+                                .map(|p| p.root_hash.clone())
+                                .collect();
+                            if hashes.is_empty() {
+                                return;
+                            }
+                            spawn_local(async move {
+                                for h in &hashes {
+                                    api_remove_pin(h).await;
+                                }
+                                selected.set(HashSet::new());
+                                if let Some(r) = api_list_pins().await {
+                                    pins.set(r.pins);
+                                    collections.set(r.collections);
+                                }
+                            });
+                        }
+                    >
+                        <Icon paths=icons::PINNED_OFF/>
+                        <span class="btn-label">{t!("pin.unpin")}</span>
                     </button>
                 </div>
             </div>
@@ -126,14 +376,25 @@ pub fn PinsTab(
                 >
                     <ul class="share-dir-list">
                         <For
-                            each=move || pins.get()
+                            each=move || {
+                                let fs = filter_state.get();
+                                let fc = filter_coll.get();
+                                let q = filter_name.get().to_lowercase();
+                                pins.with(|v| {
+                                    v.iter()
+                                        .filter(|p| fs.matches(&p.state))
+                                        .filter(|p| fc.matches(&p.collection))
+                                        .filter(|p| pin_matches_name(p, &q))
+                                        .cloned()
+                                        .collect::<Vec<Pin>>()
+                                })
+                            }
                             // Key on the collection too, so re-filing a pin
-                            // changes its key and the row (and its pill) rebuilds.
+                            // changes its key and the row (with its collection
+                            // label) rebuilds.
                             key=|p| (p.root_hash.clone(), p.collection.clone())
                             children=move |p| {
-                                let hash_rm = p.root_hash.clone();
-                                let hash_col = p.root_hash.clone();
-                                let col_now = p.collection.clone();
+                                let hash = p.root_hash.clone();
                                 let title = p
                                     .name
                                     .clone()
@@ -155,54 +416,39 @@ pub fn PinsTab(
                                     "missing" => t!("pin.state.missing"),
                                     _ => std::borrow::Cow::Owned(state.clone()),
                                 };
-                                let (pill_label, pill_class) = match &col_now {
-                                    Some(c) if !c.is_empty() => {
-                                        (c.clone(), "pin-collection-pill")
-                                    }
-                                    _ => (
-                                        t!("pin.add_collection").to_string(),
-                                        "pin-collection-pill pin-collection-pill-empty",
-                                    ),
-                                };
+                                // Read-only collection tag (editing is in the
+                                // toolbar); shown only when the pin is filed.
+                                let coll_tag = p.collection.clone().filter(|c| !c.is_empty());
+                                let row_hash = hash.clone();
                                 view! {
-                                    <li class="share-dir-row static-row">
+                                    <li
+                                        class=move || {
+                                            let mut c = String::from("share-dir-row");
+                                            if selected.with(|s| s.contains(&row_hash)) {
+                                                c.push_str(" share-dir-selected");
+                                            }
+                                            c
+                                        }
+                                        on:click=move |ev| {
+                                            // On a touchscreen there are no modifiers,
+                                            // so a plain tap toggles (builds a set).
+                                            let additive = ev.ctrl_key()
+                                                || ev.meta_key()
+                                                || crate::platform::coarse_pointer();
+                                            on_row_click.run((hash.clone(), additive, ev.shift_key()));
+                                        }
+                                    >
                                         <span class="share-dir-icon"><Icon paths=icons::PIN/></span>
                                         <div class="share-dir-main">
                                             <span class="share-dir-path">{title}</span>
                                             <span class="share-dir-meta">{meta}</span>
                                         </div>
                                         <div class="pin-side">
-                                            <button
-                                                class=pill_class
-                                                title=t!("pin.collection_title")
-                                                on:click=move |_| {
-                                                    edit_modal.set(Some((hash_col.clone(), col_now.clone())));
-                                                }
-                                            >
-                                                {pill_label}
-                                            </button>
+                                            {coll_tag.map(|c| view! {
+                                                <span class="pin-collection-tag">{c}</span>
+                                            })}
                                             <span class=state_class>{state_label}</span>
                                         </div>
-                                        <button
-                                            class="icon-btn icon-btn-danger"
-                                            title=t!("pin.unpin_title")
-                                            on:click=move |_| {
-                                                // Unpinning is reversible and non-destructive
-                                                // (the file stays on disk and shared), so no
-                                                // confirmation — consistent with the Shares
-                                                // list's Unpin toggle.
-                                                let h = hash_rm.clone();
-                                                spawn_local(async move {
-                                                    api_remove_pin(&h).await;
-                                                    if let Some(r) = api_list_pins().await {
-                                                        pins.set(r.pins);
-                                                        collections.set(r.collections);
-                                                    }
-                                                });
-                                            }
-                                        >
-                                            <Icon paths=icons::TRASH/>
-                                        </button>
                                     </li>
                                 }
                             }
@@ -219,6 +465,51 @@ pub fn PinsTab(
             </div>
 
             <StatusBar dl_speed=dl_speed ul_speed=ul_speed temp_limit=temp_limit>
+                // The filter controls are meaningless with an empty list, so
+                // they only appear once there is something to filter.
+                <Show when=move || !pins.get().is_empty()>
+                    <select
+                        class="dl-filter-select"
+                        prop:value=move || filter_state.get().as_key()
+                        on:change=move |e| {
+                            let fs = PinFilter::from_key(&event_target_value(&e));
+                            filter_state.set(fs);
+                            save_filter(FILTER_STATE_KEY, fs.as_key());
+                        }
+                    >
+                        <option value="all">{t!("pin.filter.all")}</option>
+                        <option value="available">{t!("pin.filter.available")}</option>
+                        <option value="fetching">{t!("pin.filter.fetching")}</option>
+                        <option value="missing">{t!("pin.filter.missing")}</option>
+                    </select>
+                    <Show when=move || !collections.get().is_empty()>
+                        <select
+                            class="dl-filter-select"
+                            prop:value=move || filter_coll.get().to_value()
+                            on:change=move |e| {
+                                let fc = CollFilter::from_value(&event_target_value(&e));
+                                filter_coll.set(fc.clone());
+                                save_filter(FILTER_COLL_KEY, &fc.to_value());
+                            }
+                        >
+                            <option value="">{t!("pin.filter.all_collections")}</option>
+                            <option value=COLL_NONE>{t!("pin.filter.uncollected")}</option>
+                            <For each=move || collections.get() key=|c| c.clone() let:c>
+                                {
+                                    let val = c.clone();
+                                    view! { <option value=val>{c}</option> }
+                                }
+                            </For>
+                        </select>
+                    </Show>
+                    <input
+                        type="text"
+                        class="dl-filter-input"
+                        placeholder=t!("pin.filter.placeholder")
+                        prop:value=move || filter_name.get()
+                        on:input=move |e| filter_name.set(event_target_value(&e))
+                    />
+                </Show>
                 {move || {
                     let n = pins.get().len();
                     if n == 0 {
@@ -240,15 +531,18 @@ pub fn PinsTab(
             />
         </Show>
 
-        <Show when=move || edit_modal.get().is_some()>
+        <Show when=move || coll_modal.get().is_some()>
             {move || {
-                let (hash, current) = edit_modal.get().unwrap();
+                let (hashes, current) = coll_modal.get().unwrap();
                 view! {
                     <SetCollectionModal
-                        hash=hash
+                        hashes=hashes
                         current=current
-                        on_saved=move || reload()
-                        on_close=move || edit_modal.set(None)
+                        on_saved=move || {
+                            reload();
+                            selected.set(HashSet::new());
+                        }
+                        on_close=move || coll_modal.set(None)
                     />
                 }
             }}
@@ -256,21 +550,34 @@ pub fn PinsTab(
     }
 }
 
+/// Case-insensitive match of a pin against a name/hash search (`q` already
+/// lowercased). An empty query matches everything.
+fn pin_matches_name(p: &Pin, q: &str) -> bool {
+    if q.is_empty() {
+        return true;
+    }
+    p.name.as_deref().unwrap_or("").to_lowercase().contains(q)
+        || p.root_hash.to_lowercase().contains(q)
+}
+
 // ── Change-collection modal ─────────────────────────────────────────────────
 
-/// Re-file an existing pin under a different collection (or clear it). Opened by
-/// clicking a pin's collection pill; mirrors the collection control in the
-/// add-pin and share-pin modals so the interaction is consistent.
+/// Re-file the selected pins under a collection (or clear it). Opened from the
+/// toolbar; mirrors the collection control in the add-pin and share-pin modals
+/// so the interaction is consistent. Applies to one or many pins — a single
+/// selection prefills the current value, a bulk edit starts blank and
+/// overwrites every selected pin (blank = uncollected).
 #[component]
 fn SetCollectionModal(
-    hash: String,
+    hashes: Vec<String>,
     current: Option<String>,
     on_saved: impl Fn() + Copy + 'static,
     on_close: impl Fn() + Copy + 'static,
 ) -> impl IntoView {
     crate::overlays::close_on_escape(on_close);
     let collection = RwSignal::new(current.unwrap_or_default());
-    let hash = StoredValue::new(hash);
+    let count = hashes.len();
+    let hashes = StoredValue::new(hashes);
     let busy = RwSignal::new(false);
 
     let submit = move || {
@@ -280,7 +587,9 @@ fn SetCollectionModal(
         };
         busy.set(true);
         spawn_local(async move {
-            api_set_pin_collection(&hash.get_value(), col).await;
+            for h in hashes.get_value() {
+                api_set_pin_collection(&h, col.clone()).await;
+            }
             on_saved();
             on_close();
         });
@@ -290,14 +599,24 @@ fn SetCollectionModal(
         <div class="modal-backdrop">
             <div class="modal" on:click=move |e| e.stop_propagation()>
                 <div class="modal-header">
-                    <span class="modal-title">{t!("pin.change_collection")}</span>
+                    <span class="modal-title">
+                        {if count == 1 {
+                            t!("pin.change_collection").to_string()
+                        } else {
+                            t!("pin.set_collection_n", n = count).to_string()
+                        }}
+                    </span>
                     <button class="overlay-close" on:click=move |_| on_close()>
                         <Icon paths=icons::X/>
                     </button>
                 </div>
                 <div class="modal-body">
                     <p class="modal-hint">
-                        {t!("pin.collection_hint")}
+                        {if count == 1 {
+                            t!("pin.collection_hint").to_string()
+                        } else {
+                            t!("pin.collection_hint_bulk", n = count).to_string()
+                        }}
                     </p>
                     <input
                         class="search-input"

@@ -1333,6 +1333,14 @@
         }
         .pin-collection-pill:hover { border-color: var(--accent); color: var(--accent); }
         .pin-collection-pill-empty { color: var(--text-4); font-weight: 500; }
+        /* Read-only collection tag shown in a pin row; editing lives in the
+           toolbar now, so this is a plain label (no pointer/hover). */
+        .pin-collection-tag {
+            font-size: 0.6875rem; font-weight: 600; max-width: 11rem;
+            padding: 0.15rem 0.55rem; border-radius: 9999px;
+            border: 1px solid var(--border); background: var(--bg-2); color: var(--text-2);
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
 
         /* Subscription storage meter: the used/quota bar under the peer id. */
         /* Two-tone subscription meter: lighter = committed (selected within
