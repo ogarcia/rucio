@@ -14,6 +14,7 @@ pub mod metrics;
 pub mod notifier;
 pub mod petname;
 pub mod pinset;
+pub mod pinset_probes;
 pub mod throttle;
 pub mod transfer;
 pub mod upload_scheduler;
@@ -365,6 +366,10 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
     // Per-peer active-upload registry, shared between the rucio engine, the
     // eMule upload server, the per-second sampler in this loop, and the API.
     let upload_stats = Arc::new(upload_stats::UploadRegistry::new());
+    // In-memory, privacy-preserving count of distinct peers that have recently
+    // fetched our pin-set (a "someone follows your pins" gauge). Peer ids are
+    // held only to de-duplicate the count and never leave the node.
+    let pinset_probes = Arc::new(crate::pinset_probes::PinsetProbes::new());
     // WebSocket broadcast bus and the notification service are created up front
     // so the download engine (and later the eMule task and indexing tick) can
     // record notifications. The notifier holds live toggles seeded from config.
@@ -706,6 +711,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         external_ip,
         live_stats: Arc::clone(&live_stats),
         upload_stats: Arc::clone(&upload_stats),
+        pinset_probes: Arc::clone(&pinset_probes),
         notifications: Arc::clone(&notif_state),
         indexing_seen: Arc::clone(&indexing_seen),
         reconcile_trigger: Arc::clone(&reconcile_trigger),
@@ -1531,7 +1537,10 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                     Some(node::messages::NodeEvent::HaveReceived { peer, response }) => {
                         engine.on_have_received(peer, response);
                     }
-                    Some(node::messages::NodeEvent::PinsetRequested { channel_id, .. }) => {
+                    Some(node::messages::NodeEvent::PinsetRequested { peer, channel_id, .. }) => {
+                        // Anonymous interest signal: count the requester (id kept
+                        // only to de-dup, never surfaced), then answer statelessly.
+                        pinset_probes.record(peer);
                         crate::pinset::serve_pinset(&db, &handle.cmd_tx, channel_id);
                     }
                     Some(node::messages::NodeEvent::PinsetReceived { peer, response, .. }) => {

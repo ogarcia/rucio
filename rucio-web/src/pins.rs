@@ -17,7 +17,7 @@ use rust_i18n::t;
 
 use crate::icons::{self, Icon};
 use crate::statusbar::StatusBar;
-use crate::types::{Pin, PinsResponse, format_size};
+use crate::types::{Pin, PinsResponse, PinsetProbes, format_size};
 
 // ── API ─────────────────────────────────────────────────────────────────────
 
@@ -63,6 +63,18 @@ async fn api_set_pin_collection(hash: &str, collection: Option<String>) {
 async fn api_remove_pin(hash: &str) {
     let url = crate::api::api(&format!("/api/v1/pins/{hash}"));
     let _ = gloo_net::http::Request::delete(&url).send().await;
+}
+
+/// Distinct peers that recently probed our pin-set (anonymous interest gauge).
+async fn api_probe_count() -> Option<u64> {
+    gloo_net::http::Request::get(&crate::api::api("/api/v1/pinset/probes"))
+        .send()
+        .await
+        .ok()?
+        .json::<PinsetProbes>()
+        .await
+        .ok()
+        .map(|p| p.count)
 }
 
 /// Normalise a pin input into a `rucio:` magnet: a magnet is used as-is; a bare
@@ -216,11 +228,18 @@ pub fn PinsTab(
     );
     let filter_name: RwSignal<String> = RwSignal::new(String::new());
 
+    // Anonymous count of peers that recently fetched our pin-set. Refreshed
+    // alongside the pin list (soft gauge — no need for a live tick).
+    let probes: RwSignal<u64> = RwSignal::new(0);
+
     let reload = move || {
         spawn_local(async move {
             if let Some(r) = api_list_pins().await {
                 pins.set(r.pins);
                 collections.set(r.collections);
+            }
+            if let Some(c) = api_probe_count().await {
+                probes.set(c);
             }
         });
     };
@@ -519,6 +538,20 @@ pub fn PinsTab(
                         view! { <span class="dl-active-count">{t!("pin.count", n = n)}</span> }
                             .into_any()
                     }
+                }}
+                // Anonymous "someone follows your pins" gauge — only shown when
+                // at least one peer has fetched our pin-set recently.
+                {move || {
+                    let c = probes.get();
+                    (c > 0)
+                        .then(|| {
+                            view! {
+                                <span class="dl-active-count" title=t!("pin.probes_title")>
+                                    {"· "}
+                                    {t!("pin.probes", n = c)}
+                                </span>
+                            }
+                        })
                 }}
             </StatusBar>
         </div>

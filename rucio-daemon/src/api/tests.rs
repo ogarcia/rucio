@@ -107,6 +107,7 @@ async fn test_state() -> (
         external_ip: Arc::new(tokio::sync::RwLock::new(None)),
         live_stats: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         upload_stats: Arc::new(crate::upload_stats::UploadRegistry::new()),
+        pinset_probes: Arc::new(crate::pinset_probes::PinsetProbes::new()),
         notifications: crate::notifier::NotificationState::from_config(
             &crate::config::NotificationConfig::default(),
         ),

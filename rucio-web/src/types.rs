@@ -225,6 +225,13 @@ pub struct PinsResponse {
     pub collections: Vec<String>,
 }
 
+/// Anonymous count of distinct peers that recently fetched our pin-set.
+/// GET /api/v1/pinset/probes.
+#[derive(Deserialize, Clone, Debug)]
+pub struct PinsetProbes {
+    pub count: u64,
+}
+
 /// A subscription: another node's pin-set we mirror within a quota.
 /// GET /api/v1/subscriptions.
 #[derive(Deserialize, Clone, Debug, PartialEq)]

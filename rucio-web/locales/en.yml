@@ -29,6 +29,8 @@ pin:
   unpin_title: "Unpin the selected items (content stays on disk)"
   none: "No pins"
   count: "%{n} pinned"
+  probes: "%{n} probed your pin-set"
+  probes_title: "Distinct peers that fetched your pin-set recently."
   state:
     available: "available"
     fetching: "fetching"

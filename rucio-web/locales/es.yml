@@ -27,6 +27,8 @@ pin:
   unpin_title: "Quitar el pin de los elementos seleccionados (el contenido permanece en disco)"
   none: "No hay pines"
   count: "%{n} fijados"
+  probes: "%{n} sondearon tu pinset"
+  probes_title: "Pares distintos que han pedido tu lista de pines recientemente."
   state:
     available: "disponible"
     fetching: "obteniendo"

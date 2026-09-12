@@ -138,6 +138,7 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         pins::create_pin,
         pins::delete_pin,
         pins::set_pin_collection,
+        pins::pinset_probe_count,
         subscriptions::list_subscriptions,
         subscriptions::create_subscription,
         subscriptions::delete_subscription,
@@ -231,6 +232,7 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         rucio_core::api::pins::PinResponse,
         rucio_core::api::pins::PinState,
         rucio_core::api::pins::PinsResponse,
+        rucio_core::api::pins::PinsetProbes,
         rucio_core::api::subscriptions::SubscriptionRequest,
         rucio_core::api::subscriptions::SubscriptionCollectionsRequest,
         rucio_core::api::subscriptions::SubscriptionResponse,
@@ -525,6 +527,9 @@ pub struct AppState {
     pub live_stats: crate::live_stats::LiveStatsMap,
     /// Per-peer active-upload statistics (who is downloading from us, rate).
     pub upload_stats: Arc<crate::upload_stats::UploadRegistry>,
+    /// In-memory count of distinct peers that recently probed our pin-set (an
+    /// anonymous "someone follows your pins" gauge; ids never leave the node).
+    pub pinset_probes: Arc<crate::pinset_probes::PinsetProbes>,
     /// Live notification toggles, updated by the settings handler and read by
     /// the notifier when deciding whether to record an event.
     pub notifications: Arc<crate::notifier::NotificationState>,
@@ -710,6 +715,8 @@ fn v1_router() -> Router<AppState> {
             "/pins/{hash}/collection",
             routing::put(pins::set_pin_collection),
         )
+        // anonymous interest gauge: how many peers recently fetched our pin-set
+        .route("/pinset/probes", routing::get(pins::pinset_probe_count))
         // subscriptions (cooperative pinning: mirror a peer's pin-set)
         .route(
             "/subscriptions",

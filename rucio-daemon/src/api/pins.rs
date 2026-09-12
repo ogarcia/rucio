@@ -12,7 +12,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 
 use rucio_core::api::pins::{
-    PinCollectionRequest, PinRequest, PinResponse, PinState, PinsResponse,
+    PinCollectionRequest, PinRequest, PinResponse, PinState, PinsResponse, PinsetProbes,
 };
 
 use crate::api::{AppState, DownloadRequest};
@@ -175,6 +175,26 @@ pub async fn create_pin(
         added_at: crate::now_secs() as i64,
     };
     Ok((status, Json(resp)))
+}
+
+/// Count peers that recently probed our pin-set.
+///
+/// An anonymous interest gauge: returns how many distinct peers have fetched our
+/// pin-set within the rolling window (a subscriber re-probes every few minutes).
+/// Only the count is returned — peer identities are held in memory solely to
+/// de-duplicate and never leave the node, so this can never reveal *who*
+/// follows the user's pins.
+#[utoipa::path(
+    get,
+    path = "/api/v1/pinset/probes",
+    tag = "pins",
+    responses((status = 200, description = "Distinct recent pin-set probers", body = PinsetProbes)),
+)]
+pub async fn pinset_probe_count(State(state): State<AppState>) -> Json<PinsetProbes> {
+    Json(PinsetProbes {
+        count: state.pinset_probes.count() as u64,
+        window_secs: crate::pinset_probes::PROBE_WINDOW_SECS,
+    })
 }
 
 /// Move a pin to a different collection (or clear it). The change is reflected

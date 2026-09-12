@@ -73,3 +73,18 @@ pub struct PinsResponse {
     #[serde(default)]
     pub collections: Vec<String>,
 }
+
+/// GET /api/v1/pinset/probes
+///
+/// An anonymous, privacy-preserving gauge of interest in this node's pin-set:
+/// how many distinct peers have fetched it recently. Subscribers re-fetch the
+/// pin-set periodically, so this approximates "peers following your pins". Only
+/// the count is exposed — the publisher never learns *who* is subscribed (peer
+/// identities are held in memory solely to de-duplicate the count).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+pub struct PinsetProbes {
+    /// Distinct peers that requested our pin-set within `window_secs`.
+    pub count: u64,
+    /// Length of the rolling window the count is measured over, in seconds.
+    pub window_secs: u64,
+}
