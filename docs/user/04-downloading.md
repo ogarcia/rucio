@@ -89,6 +89,38 @@ re-downloaded.
 
 No action is required — resumption is automatic.
 
+## Moving a partial download to another machine
+
+A half-finished Rucio download can be continued on a different machine. Copy the
+in-progress file across, re-add the same `rucio:` magnet there, and Rucio picks
+up where the transfer left off instead of starting over.
+
+1. On the source machine, locate the temp directory (`storage.temp_dir`, shown
+   by `rucio config show`). It holds the in-progress `.part` file, whose name
+   encodes the content hash.
+2. Copy that `.part` file — unchanged, same name — into the temp directory of
+   the destination machine. If a matching `.part.obao` sidecar sits next to it,
+   copy that too.
+3. On the destination machine, re-add the same magnet:
+
+   ```sh
+   rucio download add "rucio:7b4a...?name=moby-dick.epub&size=980123"
+   ```
+
+Rucio verifies the copied bytes against the magnet's root hash: the parts that
+check out are kept, and only the missing chunks are fetched. Nothing is trusted
+without verification, so a wrong or corrupted file never counts as complete.
+
+The `.part.obao` sidecar makes recovery instant and fully offline. Without it,
+Rucio re-fetches the verification tree from a peer that has the complete file,
+so recovery still works as long as such a peer is online; if none is, the file
+simply downloads from scratch.
+
+Keep the file's name and `.part` extension exactly as they were and place it in
+the temp directory: the name encodes the content hash and Rucio looks for it
+there by that name. A renamed or misplaced file is not found and the download
+starts from zero — harmless, just no bandwidth saved.
+
 ## Cancelling a download
 
 ```sh
