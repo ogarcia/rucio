@@ -125,9 +125,6 @@ The decoder:
 
 `PacketError::Decompress` is returned if decompression fails.
 
-Before this was implemented, all responses from modern nodes were discarded
-as `WrongProto(229)`, resulting in `contacts=0` after bootstrap.
-
 ### Integer encoding
 
 All multi-byte integers in Kad2 packets are **little-endian**. IP addresses

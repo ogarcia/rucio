@@ -151,9 +151,6 @@ Pre-built images are published to `ghcr.io/ogarcia/rucio`.
 | `latest-cli` / `0.1.x-cli` | Standalone `rucio-cli` only — no daemon | Driving a remote daemon from another host/CI |
 | `latest-bootstrap` / `0.1.x-bootstrap` | `rucio-bootstrap` with indexer | Dedicated DHT bootstrap node |
 
-> `latest` is the full client — if you came from an earlier tag where `latest`
-> was the bare daemon, that's now `latest-headless`.
-
 ### Quick start (complete)
 
 The default image runs the daemon, serves the web panel, and lets you `exec`

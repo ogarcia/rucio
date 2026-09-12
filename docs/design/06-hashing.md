@@ -56,10 +56,6 @@ tens of GB of data.
   chunk it already holds from a *partially* downloaded file (partial sharing),
   and what lets a chunk's slice be verified in isolation against the root.
 
-This replaces the earlier scheme, where the manifest carried a flat list of
-per-chunk hashes and the root was the hash of that list — that never tied the
-parts back to the whole, and grew the manifest linearly with file size.
-
 ## FileHash and collect_files
 
 `rucio-core::protocol::hashing` exports:
