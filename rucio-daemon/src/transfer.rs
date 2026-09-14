@@ -671,6 +671,14 @@ impl DownloadEngine {
 
         self.active.insert(root_hash, dl);
 
+        // Already complete (e.g. a completed-but-unsaved download retried via
+        // resume): skip provider discovery and finalize now, moving the
+        // verified .part into place instead of searching for peers.
+        if self.active[&root_hash].is_complete() {
+            self.finalize_download(root_hash, row.id).await;
+            return;
+        }
+
         // Update status to 'downloading' and kick off DHT discovery.
         if let Err(e) = db::downloads::set_status(&self.db, row.id, "downloading", None).await {
             warn!(id = row.id, "set_status error: {e}");
@@ -1109,6 +1117,144 @@ impl DownloadEngine {
             }
         };
         self.rehydrate_row(row).await;
+    }
+
+    /// Finalize a fully-downloaded item: move the fully-verified `.part` into
+    /// its destination directory and mark it `completed`. On any failure (dir
+    /// gone and unrecreatable, no write permission, full disk) the `.part` is
+    /// kept and the download is marked `error` — never a phantom `completed` —
+    /// so the user can fix the folder and either resume (retry the move) or
+    /// cancel (discard the `.part`). Removes the download from the active and
+    /// live-stats maps either way.
+    ///
+    /// Reached both from the last chunk arriving and from resuming a
+    /// completed-but-unsaved download (see [`rehydrate_row`](Self::rehydrate_row)).
+    async fn finalize_download(&mut self, root_hash: [u8; 32], dl_id: i64) {
+        let part_path = self.active[&root_hash].dest_path.clone();
+        // The clean, user-facing name (the DB `name` column — the `.part` is
+        // now named with a hash frag, so its stem isn't it). Used for the final
+        // file, the notification, and disambiguation.
+        let name = db::downloads::get(&self.db, dl_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|r| r.name)
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(|| {
+                part_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.strip_suffix(".part").unwrap_or(n).to_string())
+                    .unwrap_or_default()
+            });
+        let hash_hex = hex::encode(root_hash);
+
+        // Resolve where this download lands, in precedence order:
+        //   1. an explicit category the user assigned (its dir, or the global
+        //      dir if the category pins none) — user intent wins, even when the
+        //      download is also pinned;
+        //   2. otherwise, if pinned manually or mirrored for a subscription, the
+        //      dedicated pin_dir;
+        //   3. otherwise the global download_dir.
+        // Pinning keeps content shared/re-provided wherever it lives, so
+        // honouring the category doesn't weaken the pin. Resolved now, not at
+        // start, so a category/pin edited mid-download is honoured.
+        let cat_id = db::downloads::get_category_id(&self.db, dl_id)
+            .await
+            .ok()
+            .flatten();
+        let dest_dir = if cat_id.is_some() {
+            db::categories::resolve_dir(&self.db, &self.dest_dir, cat_id).await
+        } else if db::pins::exists(&self.db, &root_hash)
+            .await
+            .unwrap_or(false)
+            || db::mirror_pins::is_wanted(&self.db, &root_hash)
+                .await
+                .unwrap_or(false)
+        {
+            self.pin_dir.clone()
+        } else {
+            self.dest_dir.clone()
+        };
+
+        // Persist the fully-verified `.part` into the download dir.
+        // `persist_completed` (re)creates that dir first — the user may have
+        // deleted it while we ran.
+        match persist_completed(&dest_dir, &part_path, &name, &name_frag(&root_hash)).await {
+            Ok(final_path) => {
+                info!(
+                    from = %part_path.display(),
+                    to   = %final_path.display(),
+                    "Download moved to download_dir"
+                );
+                // The accumulated `.part.obao` is the full outboard (every chunk
+                // was verified). Promote it to the share outboard cache so
+                // serving doesn't recompute it; if this fails the producer
+                // regenerates from the file.
+                let part_obao = partial_outboard_path(&part_path);
+                let share_obao = share_outboard_path(&self.outboard_dir, &root_hash);
+                if let Some(parent) = share_obao.parent() {
+                    let _ = tokio::fs::create_dir_all(parent).await;
+                }
+                if let Err(e) = crate::fsutil::move_file(&part_obao, &share_obao).await {
+                    debug!("Could not promote outboard sidecar (will regenerate): {e}");
+                    let _ = tokio::fs::remove_file(&part_obao).await;
+                }
+                if let Err(e) =
+                    db::downloads::set_dest_path(&self.db, dl_id, final_path.to_str().unwrap_or(""))
+                        .await
+                {
+                    warn!("Could not update dest_path in DB: {e}");
+                }
+                if let Err(e) = db::downloads::set_status(&self.db, dl_id, "completed", None).await
+                {
+                    warn!("set_status completed error: {e}");
+                }
+                // Auto-clear: drop the just-completed entry from the history if
+                // the user opted in, *before* the notify below, so the row is
+                // already gone when the WS active→idle edge fires and the panel
+                // refreshes — otherwise a lone completed download can linger in
+                // the list (no later edge announces the deferred removal). The
+                // file (now shared) and its outboard are untouched.
+                if self.auto_clear.load(std::sync::atomic::Ordering::Relaxed) {
+                    let _ = db::downloads::delete(&self.db, dl_id).await;
+                }
+                info!(root_hash = %hash_hex, "Download completed");
+                self.notifier
+                    .notify(
+                        rucio_core::api::notifications::NotificationKind::Download,
+                        "Download complete",
+                        name,
+                        Some(hash_hex),
+                    )
+                    .await;
+            }
+            Err(e) => {
+                warn!(
+                    part = %part_path.display(),
+                    dir  = %dest_dir.display(),
+                    "Download finished but could not be saved (keeping .part): {e}"
+                );
+                let reason = format!("Couldn't save to {}: {e}", dest_dir.display());
+                if let Err(e2) =
+                    db::downloads::set_status(&self.db, dl_id, "error", Some(&reason)).await
+                {
+                    warn!("set_status error: {e2}");
+                }
+                self.notifier
+                    .notify(
+                        rucio_core::api::notifications::NotificationKind::Download,
+                        "Couldn't save download",
+                        format!(
+                            "{name}: the download folder is missing or not writable — fix it and retry"
+                        ),
+                        Some(hash_hex),
+                    )
+                    .await;
+            }
+        }
+        self.live_stats.write().await.remove(&dl_id);
+        self.active.remove(&root_hash);
     }
 
     /// Rename an in-progress download: move its `.part` to `<new_name>.part`
@@ -1817,144 +1963,7 @@ impl DownloadEngine {
                 }
 
                 if self.active[&root_hash].is_complete() {
-                    let part_path = self.active[&root_hash].dest_path.clone();
-                    // The clean, user-facing name (the DB `name` column — the
-                    // `.part` is now named with a hash frag, so its stem isn't it).
-                    // Used for the final file, the notification, and disambiguation.
-                    let name = db::downloads::get(&self.db, dl_id)
-                        .await
-                        .ok()
-                        .flatten()
-                        .map(|r| r.name)
-                        .filter(|n| !n.trim().is_empty())
-                        .unwrap_or_else(|| {
-                            part_path
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .map(|n| n.strip_suffix(".part").unwrap_or(n).to_string())
-                                .unwrap_or_default()
-                        });
-                    let hash_hex = hex::encode(root_hash);
-
-                    // Resolve where this download lands, in precedence order:
-                    //   1. an explicit category the user assigned (its dir, or the
-                    //      global dir if the category pins none) — user intent wins,
-                    //      even when the download is also pinned;
-                    //   2. otherwise, if pinned manually or mirrored for a
-                    //      subscription, the dedicated pin_dir;
-                    //   3. otherwise the global download_dir.
-                    // Pinning keeps content shared/re-provided wherever it lives, so
-                    // honouring the category doesn't weaken the pin. Resolved now,
-                    // not at start, so a category/pin edited mid-download is honoured.
-                    let cat_id = db::downloads::get_category_id(&self.db, dl_id)
-                        .await
-                        .ok()
-                        .flatten();
-                    let dest_dir = if cat_id.is_some() {
-                        db::categories::resolve_dir(&self.db, &self.dest_dir, cat_id).await
-                    } else if db::pins::exists(&self.db, &root_hash)
-                        .await
-                        .unwrap_or(false)
-                        || db::mirror_pins::is_wanted(&self.db, &root_hash)
-                            .await
-                            .unwrap_or(false)
-                    {
-                        self.pin_dir.clone()
-                    } else {
-                        self.dest_dir.clone()
-                    };
-
-                    // Persist the fully-verified `.part` into the download dir.
-                    // `persist_completed` (re)creates that dir first — the user
-                    // may have deleted it while we ran. Any failure (dir gone and
-                    // unrecreatable, no write permission, full disk) is recoverable:
-                    // the `.part` is left untouched, so we mark the download failed
-                    // — never a phantom "completed" — and notify so the user can
-                    // fix the folder and retry.
-                    match persist_completed(&dest_dir, &part_path, &name, &name_frag(&root_hash))
-                        .await
-                    {
-                        Ok(final_path) => {
-                            info!(
-                                from = %part_path.display(),
-                                to   = %final_path.display(),
-                                "Download moved to download_dir"
-                            );
-                            // The accumulated `.part.obao` is the full outboard
-                            // (every chunk was verified). Promote it to the share
-                            // outboard cache so serving doesn't recompute it; if
-                            // this fails the producer regenerates from the file.
-                            let part_obao = partial_outboard_path(&part_path);
-                            let share_obao = share_outboard_path(&self.outboard_dir, &root_hash);
-                            if let Some(parent) = share_obao.parent() {
-                                let _ = tokio::fs::create_dir_all(parent).await;
-                            }
-                            if let Err(e) = crate::fsutil::move_file(&part_obao, &share_obao).await
-                            {
-                                debug!("Could not promote outboard sidecar (will regenerate): {e}");
-                                let _ = tokio::fs::remove_file(&part_obao).await;
-                            }
-                            if let Err(e) = db::downloads::set_dest_path(
-                                &self.db,
-                                dl_id,
-                                final_path.to_str().unwrap_or(""),
-                            )
-                            .await
-                            {
-                                warn!("Could not update dest_path in DB: {e}");
-                            }
-                            if let Err(e) =
-                                db::downloads::set_status(&self.db, dl_id, "completed", None).await
-                            {
-                                warn!("set_status completed error: {e}");
-                            }
-                            // Auto-clear: drop the just-completed entry from the
-                            // history if the user opted in, *before* the notify
-                            // below, so the row is already gone when the WS
-                            // active→idle edge fires and the panel refreshes —
-                            // otherwise a lone completed download can linger in the
-                            // list (no later edge announces the deferred removal).
-                            // The file (now shared) and its outboard are untouched.
-                            if self.auto_clear.load(std::sync::atomic::Ordering::Relaxed) {
-                                let _ = db::downloads::delete(&self.db, dl_id).await;
-                            }
-                            info!(root_hash = %hash_hex, "Download completed");
-                            self.notifier
-                                .notify(
-                                    rucio_core::api::notifications::NotificationKind::Download,
-                                    "Download complete",
-                                    name,
-                                    Some(hash_hex),
-                                )
-                                .await;
-                        }
-                        Err(e) => {
-                            warn!(
-                                part = %part_path.display(),
-                                dir  = %dest_dir.display(),
-                                "Download finished but could not be saved (keeping .part): {e}"
-                            );
-                            let reason = format!("Couldn't save to {}: {e}", dest_dir.display());
-                            if let Err(e2) =
-                                db::downloads::set_status(&self.db, dl_id, "failed", Some(&reason))
-                                    .await
-                            {
-                                warn!("set_status failed error: {e2}");
-                            }
-                            self.notifier
-                                .notify(
-                                    rucio_core::api::notifications::NotificationKind::Download,
-                                    "Couldn't save download",
-                                    format!(
-                                        "{name}: the download folder is missing or not writable — fix it and retry"
-                                    ),
-                                    Some(hash_hex),
-                                )
-                                .await;
-                        }
-                    }
-                    self.live_stats.write().await.remove(&dl_id);
-                    self.active.remove(&root_hash);
+                    self.finalize_download(root_hash, dl_id).await;
                 } else {
                     self.dispatch_requests(root_hash).await;
                 }
@@ -3507,6 +3516,61 @@ mod tests {
             final_file.exists(),
             "a completed file must never be deleted"
         );
+    }
+
+    #[tokio::test]
+    async fn resume_finalizes_a_completed_but_unsaved_download() {
+        // A download whose chunks were all received but whose final move failed
+        // sits in `error` with its verified .part still on disk. Resuming it must
+        // re-run finalization — move the file into the download dir and mark it
+        // completed — without fetching anything.
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut engine, _rx, _db_dir) = make_engine(&tmp).await;
+        let hash = [0x5eu8; 32];
+        let size = 512u64;
+
+        let id =
+            db::downloads::create_pending(&engine.db, &hash, Some("resume.bin"), size, false, None)
+                .await
+                .unwrap()
+                .id();
+        let part = tmp.path().join("resume.bin.part");
+        tokio::fs::write(&part, vec![0u8; size as usize])
+            .await
+            .unwrap();
+        // One chunk covering the whole file, marked done, then forced to error.
+        db::downloads::finalize_pending(
+            &engine.db,
+            id,
+            "resume.bin",
+            size,
+            part.to_str().unwrap(),
+            0,
+            &[(0, size as u32)],
+        )
+        .await
+        .unwrap();
+        db::downloads::chunk_done(&engine.db, id, 0, size as u32)
+            .await
+            .unwrap();
+        db::downloads::set_status(&engine.db, id, "error", Some("no folder"))
+            .await
+            .unwrap();
+
+        engine.resume(id).await;
+
+        // The verified file moved into the download dir (== tmp in the harness)
+        // and the .part is gone.
+        let final_file = tmp.path().join("resume.bin");
+        assert!(
+            final_file.exists(),
+            "the verified file was moved into place"
+        );
+        assert!(!part.exists(), "the .part was consumed by the move");
+        // Status flipped to completed; the download is no longer active.
+        let status = db::downloads::get_status(&engine.db, id).await.unwrap();
+        assert_eq!(status.as_deref(), Some("completed"));
+        assert!(!engine.active.contains_key(&hash));
     }
 
     #[tokio::test]

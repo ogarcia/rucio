@@ -25,6 +25,13 @@ fn is_finished(state: &DownloadState) -> bool {
     )
 }
 
+/// Finished states that `clean` may remove from history. `Failed` is excluded on
+/// purpose: an errored download still owns its verified `.part`, so it must be
+/// resumed (retry) or cancelled (discard), never swept from the list.
+fn is_removable(state: &DownloadState) -> bool {
+    matches!(state, DownloadState::Completed | DownloadState::Cancelled)
+}
+
 pub async fn list(client: &ApiClient, watch: bool, active: bool, done: bool) -> Result<()> {
     if !watch {
         let resp = client.list_downloads().await?;
@@ -643,15 +650,22 @@ pub async fn resume(client: &ApiClient, hash: &str) -> Result<()> {
 
 /// Remove finished downloads from the history.
 ///
-/// If `hash` is given, removes only the matching entry (completed, failed, or
-/// cancelled).  Otherwise removes all finished downloads.
+/// If `hash` is given, removes only the matching entry (completed or cancelled).
+/// Otherwise removes all such entries. Errored downloads are left in place — they
+/// must be resumed (retry) or cancelled (discard) first.
 pub async fn clean(client: &ApiClient, hash: Option<&str>) -> Result<()> {
     if let Some(h) = hash {
-        // Single entry — must be finished (not active).
+        // Single entry — must be cleanly finished (completed/cancelled).
         let dl = client.find_download_by_idx_or_hash(h).await?;
         match dl {
             None => bail!(t!("download.no_download_for", target = h)),
-            Some(d) if !is_finished(&d.state) => {
+            Some(d) if d.state == DownloadState::Failed => {
+                bail!(t!(
+                    "download.error_clean",
+                    name = d.name.unwrap_or_else(|| d.root_hash.clone())
+                ))
+            }
+            Some(d) if !is_removable(&d.state) => {
                 bail!(t!(
                     "download.still_active_clean",
                     name = d.name.unwrap_or_else(|| d.root_hash.clone())
@@ -670,12 +684,12 @@ pub async fn clean(client: &ApiClient, hash: Option<&str>) -> Result<()> {
             }
         }
     } else {
-        // Bulk — remove all finished downloads.
+        // Bulk — remove all cleanly-finished downloads (errored ones stay).
         let resp = client.list_downloads().await?;
         let finished: Vec<_> = resp
             .downloads
             .into_iter()
-            .filter(|d| is_finished(&d.state))
+            .filter(|d| is_removable(&d.state))
             .collect();
 
         if finished.is_empty() {

@@ -53,6 +53,7 @@ download:
   paused_msg: "Pausada: %{name} (%{hash})"
   resumed_msg: "Reanudada: %{name} (%{hash})"
   still_active_clean: "La descarga '%{name}' sigue activa. Usa `rucio download cancel` para detenerla primero."
+  error_clean: "La descarga '%{name}' terminó en error. Usa `rucio download resume` para reintentarla, o `rucio download cancel` para descartarla."
   removed_msg: "Eliminada: %{name} (%{hash})"
   nothing_to_clean: "Nada que limpiar."
   remove_warning: "Aviso: no se pudo eliminar %{hash}: %{msg}"

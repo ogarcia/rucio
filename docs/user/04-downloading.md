@@ -75,11 +75,24 @@ the current download speed and an ETA.
 | `downloading` | Actively transferring chunks |
 | `stalled` | Stuck after several search rounds with no (or unresponsive) sources; still retrying in the background |
 | `completed` | All chunks received and file moved to download directory |
-| `failed` | Could not complete the download |
+| `failed` | Could not complete, or could not be saved to the download folder; any data received is kept — **resume** to retry or **cancel** to discard |
 | `cancelled` | Cancelled by the user |
 
 The `finding providers` state is normal for files that are not yet cached
 locally in the DHT. It can last up to a minute on a cold start.
+
+A `failed` download is not a dead end. If every chunk was received but the file
+could not be moved into place — the download folder was missing, read-only, or
+the disk was full — the fully-verified data is kept, and the download waits for
+you to decide:
+
+- **Resume** retries the operation: it re-attempts the move (once you have fixed
+  the folder), or, for a partially-received download, continues fetching.
+- **Cancel** discards it: the partial data is removed and the entry becomes
+  `cancelled`.
+
+A `failed` download therefore cannot be removed from the history directly (that
+would strand its data on disk) — resume or cancel it first.
 
 ## Resuming interrupted downloads
 

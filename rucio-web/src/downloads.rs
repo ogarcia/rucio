@@ -173,6 +173,21 @@ fn is_pausable(s: &DownloadState) -> bool {
     )
 }
 
+/// States a download can be resumed from: `Paused` (continue) or `Failed`
+/// (retry — a completed-but-unsaved download re-runs the move into the download
+/// dir, a partially-failed one keeps fetching). The resume button reuses this.
+fn is_resumable(s: &DownloadState) -> bool {
+    matches!(s, DownloadState::Paused | DownloadState::Failed)
+}
+
+/// Cleanly-finished states that can be removed from history. `Failed` is
+/// excluded on purpose: an errored download must be resumed (retry) or
+/// cancelled (discard) — never deleted straight from the list, which would
+/// orphan its `.part`.
+fn is_removable(s: &DownloadState) -> bool {
+    matches!(s, DownloadState::Completed | DownloadState::Cancelled)
+}
+
 // ── API calls ─────────────────────────────────────────────────────────────────
 
 pub async fn refresh_downloads(downloads: RwSignal<Vec<DownloadResponse>>) {
@@ -489,19 +504,17 @@ pub fn DownloadsTab(
     // Enabled with any selection: one row opens the detail panel, several open
     // the bulk-edit modal (category + priority).
     let can_info = move || !selected_ids.with(|s| s.is_empty());
-    // Cancel/remove act on whichever selected rows qualify.
-    let can_cancel = move || selected_dls().iter().any(|d| !is_terminal(&d.state));
-    let can_remove = move || selected_dls().iter().any(|d| is_terminal(&d.state));
+    // Cancel acts on anything not cleanly finished (active, paused, stalled or
+    // errored); remove (clear from history) only on completed/cancelled rows.
+    let can_cancel = move || selected_dls().iter().any(|d| !is_removable(&d.state));
+    let can_remove = move || selected_dls().iter().any(|d| is_removable(&d.state));
     let any_active = move || selected_dls().iter().any(|d| is_pausable(&d.state));
-    let any_paused = move || {
-        selected_dls()
-            .iter()
-            .any(|d| d.state == DownloadState::Paused)
-    };
-    // The toggle resumes only when nothing is active and something is paused;
-    // otherwise it pauses (the common case for a mixed selection).
-    let show_resume = move || !any_active() && any_paused();
-    let can_pause_toggle = move || any_active() || any_paused();
+    let any_resumable = move || selected_dls().iter().any(|d| is_resumable(&d.state));
+    // The toggle resumes only when nothing is active and something is resumable
+    // (paused or errored); otherwise it pauses (the common case for a mixed
+    // selection).
+    let show_resume = move || !any_active() && any_resumable();
+    let can_pause_toggle = move || any_active() || any_resumable();
 
     // Visible (filtered) ids in display order — used by the list and by
     // shift+click to resolve the range between the anchor and the clicked row.
@@ -591,7 +604,7 @@ pub fn DownloadsTab(
                             .into_iter()
                             .filter(|d| {
                                 if resume {
-                                    d.state == DownloadState::Paused
+                                    is_resumable(&d.state)
                                 } else {
                                     is_pausable(&d.state)
                                 }
@@ -624,7 +637,7 @@ pub fn DownloadsTab(
                     on:click=move |_| {
                         let targets: Vec<i64> = selected_dls()
                             .into_iter()
-                            .filter(|d| !is_terminal(&d.state))
+                            .filter(|d| !is_removable(&d.state))
                             .map(|d| d.id)
                             .collect();
                         spawn_local(async move {
@@ -646,7 +659,7 @@ pub fn DownloadsTab(
                     on:click=move |_| {
                         let targets: Vec<i64> = selected_dls()
                             .into_iter()
-                            .filter(|d| is_terminal(&d.state))
+                            .filter(|d| is_removable(&d.state))
                             .map(|d| d.id)
                             .collect();
                         spawn_local(async move {

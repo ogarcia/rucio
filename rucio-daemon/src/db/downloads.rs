@@ -381,14 +381,16 @@ pub async fn delete(db: &Db, download_id: i64) -> Result<bool> {
     Ok(affected > 0)
 }
 
-/// Delete every finished download (completed/error/cancelled) in one statement.
-/// Active and paused downloads are left untouched. Returns the number removed.
+/// Delete every cleanly-finished download (completed/cancelled) in one statement.
+/// Active, paused and `error` downloads are left untouched — an `error` download
+/// still owns its verified `.part`, so it must be resumed (retry) or cancelled
+/// (which removes the `.part`) rather than swept from history. Returns the number
+/// removed.
 pub async fn delete_terminal(db: &Db) -> Result<u64> {
-    let affected =
-        sqlx::query("DELETE FROM downloads WHERE status IN ('completed', 'error', 'cancelled')")
-            .execute(db)
-            .await?
-            .rows_affected();
+    let affected = sqlx::query("DELETE FROM downloads WHERE status IN ('completed', 'cancelled')")
+        .execute(db)
+        .await?
+        .rows_affected();
     Ok(affected)
 }
 
@@ -682,5 +684,37 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result, CreatePendingResult::AlreadyActive(id));
+    }
+
+    #[tokio::test]
+    async fn delete_terminal_sweeps_completed_and_cancelled_but_keeps_error() {
+        let (db, _dir) = test_db().await;
+        let done = create_pending(&db, &hash(10), Some("done.bin"), 1_000, false, None)
+            .await
+            .unwrap()
+            .id();
+        set_status(&db, done, "completed", None).await.unwrap();
+        let cancelled = create_pending(&db, &hash(11), Some("cxl.bin"), 1_000, false, None)
+            .await
+            .unwrap()
+            .id();
+        set_status(&db, cancelled, "cancelled", None).await.unwrap();
+        let errored = create_pending(&db, &hash(12), Some("err.bin"), 1_000, false, None)
+            .await
+            .unwrap()
+            .id();
+        set_status(&db, errored, "error", Some("disk full"))
+            .await
+            .unwrap();
+
+        let removed = delete_terminal(&db).await.unwrap();
+        assert_eq!(removed, 2, "completed and cancelled are swept");
+
+        // The errored download survives so it can be resumed or cancelled — a
+        // clean must never strand its still-on-disk .part.
+        let rows = list(&db).await.unwrap();
+        assert_eq!(rows.len(), 1, "the errored download survives clean");
+        assert_eq!(rows[0].id, errored);
+        assert_eq!(rows[0].status, "error");
     }
 }

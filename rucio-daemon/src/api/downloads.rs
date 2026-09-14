@@ -811,8 +811,10 @@ pub async fn pause_download(State(state): State<AppState>, Path(id): Path<i64>) 
 
 /// Resume a download
 ///
-/// Restarts a previously paused download from where it left off, re-using the partial file
-/// and per-chunk progress kept on disk.  Only downloads in the `paused` state can be resumed.
+/// Restarts a paused or errored download, re-using the partial file and per-chunk progress
+/// kept on disk. A `paused` download continues fetching; an `error` download retries — a
+/// completed-but-unsaved one re-runs the move into the download directory, a partially-failed
+/// one resumes fetching. (eMule downloads resume from `paused` only.)
 ///
 /// Use **negative IDs** (e.g. `-3`) for eMule downloads as returned by `GET /api/v1/downloads`.
 #[utoipa::path(
@@ -824,7 +826,7 @@ pub async fn pause_download(State(state): State<AppState>, Path(id): Path<i64>) 
     responses(
         (status = 204, description = "Download resumed."),
         (status = 404, description = "No download with that ID."),
-        (status = 409, description = "Download is not paused.")
+        (status = 409, description = "Download cannot be resumed (not paused or in error).")
     )
 )]
 pub async fn resume_download(State(state): State<AppState>, Path(id): Path<i64>) -> StatusCode {
@@ -879,9 +881,12 @@ pub async fn resume_download(State(state): State<AppState>, Path(id): Path<i64>)
         StatusCode::NOT_FOUND
     } else {
         // libp2p download
+        // Resumable from `paused` (continue downloading) and from `error`
+        // (retry): re-hydrating a completed-but-unsaved download re-runs the
+        // move into the download dir; a partially-errored one resumes fetching.
         match crate::db::downloads::get_status(&state.db, id).await {
             Ok(None) => return StatusCode::NOT_FOUND,
-            Ok(Some(s)) if s != "paused" => return StatusCode::CONFLICT,
+            Ok(Some(s)) if s != "paused" && s != "error" => return StatusCode::CONFLICT,
             Err(e) => {
                 tracing::error!("DB error fetching download {id}: {e}");
                 return StatusCode::INTERNAL_SERVER_ERROR;
@@ -1010,11 +1015,11 @@ pub async fn rename_download(
 
 /// Remove a download from history
 ///
-/// Permanently deletes a finished download record (completed, failed, or cancelled) from the
-/// database.
+/// Permanently deletes a finished download record (completed or cancelled) from the database.
 ///
-/// Returns `409 Conflict` if the download is still active — cancel it first with
-/// `POST /api/v1/downloads/:id/cancel`.
+/// Returns `409 Conflict` if the download is still active, or in `error` — an errored download
+/// still owns its verified `.part`, so resume it to retry or cancel it to discard first
+/// (`POST /api/v1/downloads/:id/cancel`), rather than deleting the record here.
 ///
 /// Use **negative IDs** (e.g. `-3`) for eMule downloads as returned by `GET /api/v1/downloads`.
 #[utoipa::path(
@@ -1026,7 +1031,7 @@ pub async fn rename_download(
     responses(
         (status = 204, description = "Download record deleted."),
         (status = 404, description = "No download with that ID."),
-        (status = 409, description = "Download is still active — cancel it first with `POST /api/v1/downloads/:id/cancel`.")
+        (status = 409, description = "Download is still active or in `error` — resume to retry or cancel to discard first (`POST /api/v1/downloads/:id/cancel`).")
     )
 )]
 pub async fn delete_download(State(state): State<AppState>, Path(id): Path<i64>) -> StatusCode {
@@ -1067,12 +1072,17 @@ pub async fn delete_download(State(state): State<AppState>, Path(id): Path<i64>)
             .unwrap_or_default();
         let row = rows.iter().find(|r| r.id == id);
 
+        // `error` is deliberately not deletable: a completed-but-unsaved
+        // download still owns its verified `.part`. Deleting the row here would
+        // orphan that file, so the only ways out of `error` are resume (retry
+        // the move) or cancel (which removes the `.part` first). Active states
+        // must be paused/cancelled before removal.
         match row {
             None => return StatusCode::NOT_FOUND,
             Some(r)
                 if matches!(
                     r.status.as_str(),
-                    "finding_providers" | "queued" | "downloading"
+                    "finding_providers" | "queued" | "downloading" | "error"
                 ) =>
             {
                 return StatusCode::CONFLICT;
