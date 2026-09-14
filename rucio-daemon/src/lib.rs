@@ -147,15 +147,35 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         info!(path = %dir.display(), "Storage directory ready");
     }
 
-    // Directories whose files must never be indexed/shared: the temp dirs,
-    // where in-progress `.part` downloads live. The share watcher excludes
-    // anything under these (and any `.part`), so a temp_dir nested inside the
-    // download_dir can't leak partial files onto the network.
-    let excluded_index_dirs = std::sync::Arc::new(vec![
+    // Paths whose files must never be indexed/shared. Two kinds:
+    //  - the temp dirs (in-progress `.part` downloads) and the outboard cache —
+    //    excluded as directory prefixes, so a temp_dir nested inside download_dir
+    //    can't leak partial files onto the network;
+    //  - the daemon's own state files — its libp2p and eMule identity keys, the
+    //    database (plus its SQLite WAL/SHM sidecars) and the config file —
+    //    excluded by exact path. A user who shares their data directory (easy to
+    //    do in portable mode, where everything sits in one folder) must never end
+    //    up serving their private keys or database. Matching the exact configured
+    //    path means an unrelated file the user happens to name `identity.key`,
+    //    `rucio.db` or `config.toml` elsewhere is still shared normally.
+    let mut excluded = vec![
         config.storage.temp_dir.clone(),
         config.storage.outboard_dir.clone(),
         config.emule.temp_dir.clone(),
-    ]);
+        config.node.identity_path.clone(),
+        config.emule.identity_path.clone(),
+        config.storage.database_path.clone(),
+    ];
+    // The SQLite WAL/SHM sidecars hold the same data as the database file itself.
+    for suffix in ["-wal", "-shm"] {
+        let mut p = config.storage.database_path.clone().into_os_string();
+        p.push(suffix);
+        excluded.push(std::path::PathBuf::from(p));
+    }
+    if let Some(cfg_path) = &stored_config_path {
+        excluded.push(cfg_path.clone());
+    }
+    let excluded_index_paths = std::sync::Arc::new(excluded);
     // Warn (don't block — the watcher handles it) about the nested-temp footgun.
     if config
         .storage
@@ -436,7 +456,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         db.clone(),
         handle.cmd_tx.clone(),
         Arc::clone(&indexing_count),
-        Arc::clone(&excluded_index_dirs),
+        Arc::clone(&excluded_index_paths),
         config.storage.outboard_dir.clone(),
         ed2k_index.clone(),
         index_guard.clone(),
@@ -464,7 +484,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         let db = db.clone();
         let node_tx = handle.cmd_tx.clone();
         let indexing_count = indexing_count.clone();
-        let excluded = Arc::clone(&excluded_index_dirs);
+        let excluded = Arc::clone(&excluded_index_paths);
         let ed2k_tx = ed2k_index.clone();
         let indexing_seen = Arc::clone(&indexing_seen);
         let outboard_dir = config.storage.outboard_dir.clone();

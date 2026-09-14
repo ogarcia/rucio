@@ -82,8 +82,10 @@ impl WatcherHandle {
 /// # Parameters
 /// - `db` — shared DB pool
 /// - `node_tx` — channel to send `NodeCmd` to the libp2p node task
-/// - `excluded` — directory prefixes whose files must never be indexed (the
-///   temp dirs); guards against a `temp_dir` nested inside the `download_dir`.
+/// - `excluded` — paths whose files must never be indexed: directory prefixes
+///   (the temp/outboard dirs; guards a `temp_dir` nested inside `download_dir`)
+///   and exact files (the daemon's own identity keys, database and config), so
+///   sharing the data directory never serves the node's own secrets/state.
 #[allow(clippy::too_many_arguments)]
 pub fn spawn(
     db: Db,
@@ -608,9 +610,11 @@ pub async fn reconcile_shares(
             .unwrap_or_default()
         };
 
-        // Drop excluded files (.part / under a temp dir). Removing them from the
-        // disk set means they're never indexed, and any that slipped into the
-        // index before are de-indexed below (in DB, absent from disk → removed).
+        // Drop excluded files: `.part`, anything under a temp/outboard dir, and
+        // the daemon's own state files (identity keys, database, config) matched
+        // by exact path. Removing them from the disk set means they're never
+        // indexed, and any that slipped into the index before are de-indexed
+        // below (in DB, absent from disk → removed).
         disk.retain(|p, _| !is_excluded(Path::new(p), excluded));
 
         // Apply each directory's file filter (recursive flag + extensions).
@@ -689,9 +693,12 @@ fn top_level_dirs(dirs: &[PathBuf]) -> Vec<PathBuf> {
 ///
 /// * **Partial downloads** (`*.part`) — incomplete content; sharing one would
 ///   serve a hash of a half-written file.
-/// * **Anything under an excluded directory** (the temp dirs). This is the
-///   guard for the footgun of putting `temp_dir` inside `download_dir`: the
-///   recursive watcher would otherwise see, index and re-hash every `.part`.
+/// * **Anything matching an excluded path.** `starts_with` is component-wise, so
+///   a *directory* entry (the temp/outboard dirs) matches everything under it —
+///   the guard for the footgun of putting `temp_dir` inside `download_dir` — and
+///   a *file* entry (the daemon's own identity keys, database and config) matches
+///   only its exact path, so the node never serves its own secrets/state while a
+///   like-named file the user has elsewhere is shared normally.
 fn is_excluded(path: &Path, excluded: &[PathBuf]) -> bool {
     if path.extension().and_then(|e| e.to_str()) == Some("part") {
         return true;
@@ -772,6 +779,36 @@ mod tests {
             Path::new("/downloads/temp-extra/x.mkv"),
             &excluded
         ));
+    }
+
+    #[test]
+    fn is_excluded_protects_own_state_files_by_exact_path() {
+        // The daemon's own identity keys / database / config are passed as exact
+        // file paths, so sharing the data dir never serves them.
+        let excluded = vec![
+            PathBuf::from("/data/identity.key"),
+            PathBuf::from("/data/emule_identity.key"),
+            PathBuf::from("/data/rucio.db"),
+            PathBuf::from("/data/rucio.db-wal"),
+            PathBuf::from("/data/config.toml"),
+        ];
+
+        assert!(is_excluded(Path::new("/data/identity.key"), &excluded));
+        assert!(is_excluded(
+            Path::new("/data/emule_identity.key"),
+            &excluded
+        ));
+        assert!(is_excluded(Path::new("/data/rucio.db"), &excluded));
+        assert!(is_excluded(Path::new("/data/rucio.db-wal"), &excluded));
+        assert!(is_excluded(Path::new("/data/config.toml"), &excluded));
+
+        // A like-named file the user has elsewhere is shared normally — the match
+        // is the exact configured path, not the file name.
+        assert!(!is_excluded(Path::new("/media/identity.key"), &excluded));
+        assert!(!is_excluded(Path::new("/media/rucio.db"), &excluded));
+        // And a similarly-prefixed sibling name is not caught (component-wise).
+        assert!(!is_excluded(Path::new("/data/rucio.db.backup"), &excluded));
+        assert!(!is_excluded(Path::new("/data/config.toml.bak"), &excluded));
     }
 
     async fn test_db() -> (Db, tempfile::TempDir) {

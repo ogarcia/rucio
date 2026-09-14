@@ -115,3 +115,18 @@ The directory configured as `storage.download_dir` cannot be added as a shared
 directory. This prevents accidentally sharing incomplete `.part` files or
 creating feedback loops where downloaded files are immediately re-shared before
 they are complete.
+
+## The daemon's own files are never shared
+
+Even when a shared directory happens to contain them — easiest to do in portable
+mode, where the config, database, keys and content directories all sit in one
+folder — Rucio never indexes or serves its own state files:
+
+- the node's libp2p and eMule **identity keys** (`identity.key`,
+  `emule_identity.key`): these are private keys; serving one would let someone
+  impersonate your node;
+- the **database** (`rucio.db` and its `-wal` / `-shm` sidecars);
+- the **config file** (`config.toml`).
+
+The match is by exact path, so a file you deliberately share that merely happens
+to be named `identity.key`, `rucio.db` or `config.toml` is unaffected.
