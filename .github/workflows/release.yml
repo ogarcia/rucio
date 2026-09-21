@@ -245,7 +245,7 @@ jobs:
   # ---------------------------------------------------------------------------
   linux-flatpak:
     name: Build Linux desktop (Flatpak)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
 
