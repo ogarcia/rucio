@@ -256,10 +256,14 @@ pub fn SharesTab(
     // When set, the file list is restricted to this directory. Toggled by
     // clicking a folder row.
     let selected_dir: RwSignal<Option<String>> = RwSignal::new(None);
-    // Multi-selection over the loaded files (by root_hash), plus the anchor row
-    // for shift+click range selection — the same model as the downloads list.
-    // Per-file actions (info, pin, unpin) act on the selection from the toolbar,
-    // so the rows themselves carry no buttons (keeps them readable on mobile).
+    // Multi-selection over the loaded files, keyed by `path` (unique per row),
+    // plus the anchor row for shift+click range selection — the same model as
+    // the downloads list. Selection must key on path, not root_hash: identical
+    // content shared under two paths yields two rows with the same hash, and a
+    // hash-keyed selection would tie the two rows together (select/highlight both
+    // at once, breaking single-row info/pin). Per-file actions (info, pin, unpin)
+    // act on the selection from the toolbar, so the rows themselves carry no
+    // buttons (keeps them readable on mobile).
     let selected: RwSignal<HashSet<String>> = RwSignal::new(HashSet::new());
     let anchor: RwSignal<Option<String>> = RwSignal::new(None);
     // The file shown in the info overlay (the single selected one), or None.
@@ -378,13 +382,13 @@ pub fn SharesTab(
 
     // Row click with modifiers: plain = select only this row; ctrl/⌘ = toggle
     // this row; shift = select the range from the anchor to this row.
-    let on_row_click = Callback::new(move |(hash, additive, range): (String, bool, bool)| {
+    let on_row_click = Callback::new(move |(path, additive, range): (String, bool, bool)| {
         if range && let Some(a) = anchor.get_untracked() {
             let vis: Vec<String> =
-                files.with_untracked(|f| f.iter().map(|x| x.root_hash.clone()).collect());
+                files.with_untracked(|f| f.iter().map(|x| x.path.clone()).collect());
             if let (Some(i1), Some(i2)) = (
                 vis.iter().position(|x| x == &a),
-                vis.iter().position(|x| x == &hash),
+                vis.iter().position(|x| x == &path),
             ) {
                 let (lo, hi) = if i1 <= i2 { (i1, i2) } else { (i2, i1) };
                 selected.set(vis[lo..=hi].iter().cloned().collect());
@@ -393,21 +397,21 @@ pub fn SharesTab(
         }
         if additive {
             selected.update(|s| {
-                if !s.insert(hash.clone()) {
-                    s.remove(&hash);
+                if !s.insert(path.clone()) {
+                    s.remove(&path);
                 }
             });
         } else {
-            selected.set(HashSet::from([hash.clone()]));
+            selected.set(HashSet::from([path.clone()]));
         }
-        anchor.set(Some(hash));
+        anchor.set(Some(path));
     });
 
     // The currently-selected files still present in the loaded list.
     let selected_files = move || -> Vec<ShareFile> {
         files.with(|fs| {
             fs.iter()
-                .filter(|f| selected.with(|s| s.contains(&f.root_hash)))
+                .filter(|f| selected.with(|s| s.contains(&f.path)))
                 .cloned()
                 .collect()
         })
@@ -438,9 +442,13 @@ pub fn SharesTab(
     // Clicking Pin opens the collection modal for every selected file that
     // isn't pinned yet; the actual pin happens on confirm (see `do_pin`).
     let on_pin = move || {
+        // Dedupe by hash: two selected rows of the same content (distinct paths,
+        // one root_hash) must pin that content once, not twice.
+        let mut seen = HashSet::new();
         let targets: Vec<(String, String)> = selected_files()
             .into_iter()
             .filter(|f| !pinned_set.get_untracked().contains(&f.root_hash))
+            .filter(|f| seen.insert(f.root_hash.clone()))
             .map(|f| (f.root_hash, f.magnet))
             .collect();
         if !targets.is_empty() {
@@ -469,10 +477,14 @@ pub fn SharesTab(
 
     // Unpin every selected file that is pinned (optimistic), then refresh.
     let on_unpin = move || {
+        // Dedupe by hash (see `on_pin`): both rows of duplicated content resolve
+        // to the same pin, so unpin it once.
+        let mut seen = HashSet::new();
         let hashes: Vec<String> = selected_files()
             .into_iter()
             .filter(|f| pinned_set.get_untracked().contains(&f.root_hash))
             .map(|f| f.root_hash)
+            .filter(|h| seen.insert(h.clone()))
             .collect();
         pinned_set.update(|s| {
             for h in &hashes {
@@ -761,11 +773,13 @@ pub fn SharesTab(
                             // is the server-side primary key, so it is unique.
                             key=|f| f.path.clone()
                             children=move |f| {
-                                let hash = f.root_hash.clone();
-                                let hash_sel = f.root_hash.clone();
+                                let path = f.path.clone();
+                                let path_sel = f.path.clone();
                                 let hash_pin = f.root_hash.clone();
-                                // Selected rows highlight; pinned rows show a marker.
-                                let row_class = move || if selected.get().contains(&hash) {
+                                // Rows highlight by path (selection is per row);
+                                // the pin marker keys on root_hash (pins are per
+                                // content, so both copies of a duplicate show it).
+                                let row_class = move || if selected.get().contains(&path) {
                                     "share-file-row share-file-selected"
                                 } else {
                                     "share-file-row"
@@ -781,7 +795,7 @@ pub fn SharesTab(
                                                 || ev.meta_key()
                                                 || crate::platform::coarse_pointer();
                                             on_row_click.run((
-                                                hash_sel.clone(),
+                                                path_sel.clone(),
                                                 additive,
                                                 ev.shift_key(),
                                             ));
