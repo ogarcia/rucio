@@ -353,6 +353,20 @@ pub struct EmuleConfig {
     #[serde(default = "EmuleConfig::default_min_source_speed_kib_s")]
     pub min_source_speed_kib_s: u32,
 
+    /// Seconds to wait between hashing two files during the one-shot startup
+    /// backfill that computes ed2k hashes for pre-existing Rucio shares (so they
+    /// can be seeded to Kad). The pause throttles disk I/O so catching up on a
+    /// large library at startup does not monopolise a slow or shared disk — it is
+    /// best-effort seeding, never urgent. On a big library the wait dominates: at
+    /// the default 3 s, 2,500 files spend over two hours just pausing. Lower it to
+    /// catch up faster on a fast disk (SSD/NVMe), or set `0` to disable the pause
+    /// entirely. Only the startup backfill is spaced; files added or changed while
+    /// running are hashed immediately as their events arrive.
+    ///
+    /// Default: 3.  Override via `RUCIOD_EMULE_BACKFILL_SPACING_SECS`.
+    #[serde(default = "EmuleConfig::default_backfill_spacing_secs")]
+    pub backfill_spacing_secs: u64,
+
     /// URL the daemon downloads `nodes.dat` from — both the cold-start
     /// auto-download and `rucio node emule bootstrap` (without an explicit
     /// `--url`). Optional; when `None` the built-in default mirror
@@ -394,6 +408,10 @@ impl EmuleConfig {
     fn default_min_source_speed_kib_s() -> u32 {
         2
     }
+
+    fn default_backfill_spacing_secs() -> u64 {
+        3
+    }
 }
 
 impl Default for EmuleConfig {
@@ -410,6 +428,7 @@ impl Default for EmuleConfig {
             max_concurrent_downloads: Self::default_max_concurrent_downloads(),
             nick: Self::default_nick(),
             min_source_speed_kib_s: Self::default_min_source_speed_kib_s(),
+            backfill_spacing_secs: Self::default_backfill_spacing_secs(),
             nodes_dat_url: None,
         }
     }
@@ -737,6 +756,7 @@ impl Config {
     /// | `RUCIOD_EMULE_MAX_UPLOAD_SLOTS` | `emule.max_upload_slots` | integer 1-50       |
     /// | `RUCIOD_EMULE_MAX_CONCURRENT_DOWNLOADS` | `emule.max_concurrent_downloads` | integer 1-50 |
     /// | `RUCIOD_EMULE_MIN_SOURCE_SPEED_KIB_S` | `emule.min_source_speed_kib_s` | integer (0 = off) |
+    /// | `RUCIOD_EMULE_BACKFILL_SPACING_SECS` | `emule.backfill_spacing_secs` | integer seconds (0 = no pause) |
     /// | `RUCIOD_UPNP`               | `network.upnp`               | `true`/`false`     |
     /// Apply a `u64` environment-variable override to a config field, logging
     /// when it replaces a *different* value the config file (or default) already
@@ -918,6 +938,10 @@ impl Config {
         {
             self.emule.min_source_speed_kib_s = n;
         }
+        Self::env_override_u64(
+            &mut self.emule.backfill_spacing_secs,
+            "RUCIOD_EMULE_BACKFILL_SPACING_SECS",
+        );
         if let Ok(v) = std::env::var("RUCIOD_EMULE_NODES_DAT_URL")
             && !v.trim().is_empty()
         {
@@ -1277,6 +1301,20 @@ mod tests {
         cfg.apply_env_overrides();
         unsafe { std::env::remove_var("RUCIOD_EMULE_IDENTITY_PATH") };
         assert_eq!(cfg.emule.identity_path, PathBuf::from("/keys/emule.key"));
+    }
+
+    #[test]
+    #[serial]
+    fn env_override_backfill_spacing_secs() {
+        // Default preserves the historical 3 s pause.
+        assert_eq!(Config::default().emule.backfill_spacing_secs, 3);
+
+        // `0` is a valid value: it disables the pause entirely.
+        unsafe { std::env::set_var("RUCIOD_EMULE_BACKFILL_SPACING_SECS", "0") };
+        let mut cfg = Config::default();
+        cfg.apply_env_overrides();
+        unsafe { std::env::remove_var("RUCIOD_EMULE_BACKFILL_SPACING_SECS") };
+        assert_eq!(cfg.emule.backfill_spacing_secs, 0);
     }
 
     #[test]

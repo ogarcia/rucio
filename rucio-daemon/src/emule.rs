@@ -458,25 +458,23 @@ pub fn spawn_source_republisher(
     });
 }
 
-/// Spacing between hashing two files during the one-shot startup backfill, so
-/// catching up on a large pre-existing library does not monopolise disk I/O —
-/// this is best-effort seeding, never urgent. Live indexing events (the channel
-/// path) are not spaced: they arrive one at a time at the watcher's own pace.
-const ED2K_BACKFILL_SPACING: Duration = Duration::from_secs(3);
-
 /// Compute the ed2k hashes of files already shared on the Rucio network so they
 /// can be seeded to the eMule Kad DHT as sources too — a one-shot catch-up for
 /// files that existed before this run (they generate no filesystem event, so
 /// the live channel never sees them).
 ///
 /// Runs once at startup, gently: each file is hashed off the async runtime
-/// (`spawn_blocking`) with [`ED2K_BACKFILL_SPACING`] between files. Files added
-/// or changed *while running* are handled by [`spawn_ed2k_indexer`] instead, so
-/// this is not a loop — no periodic CPU spikes.
+/// (`spawn_blocking`) with `spacing` between files, so catching up on a large
+/// pre-existing library does not monopolise disk I/O — this is best-effort
+/// seeding, never urgent. `spacing` comes from `emule.backfill_spacing_secs`
+/// (default 3 s); `Duration::ZERO` disables the pause. Files added or changed
+/// *while running* are handled by [`spawn_ed2k_indexer`] instead (the channel
+/// path is never spaced), so this is not a loop — no periodic CPU spikes.
 pub fn spawn_ed2k_startup_backfill(
     db: Db,
     active_downloads: ActiveDownloads,
     pending: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    spacing: Duration,
 ) {
     use std::sync::atomic::Ordering;
     tokio::spawn(async move {
@@ -503,7 +501,9 @@ pub fn spawn_ed2k_startup_backfill(
         for cand in candidates {
             backfill_path(&db, &active_downloads, std::path::PathBuf::from(cand.path)).await;
             pending.fetch_sub(1, Ordering::Relaxed);
-            tokio::time::sleep(ED2K_BACKFILL_SPACING).await;
+            if !spacing.is_zero() {
+                tokio::time::sleep(spacing).await;
+            }
         }
     });
 }

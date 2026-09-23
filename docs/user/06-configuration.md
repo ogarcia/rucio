@@ -64,6 +64,7 @@ environment variable (see [Environment variable overrides](#environment-variable
 | [`emule.max_upload_slots`](#emulemax_upload_slots) | `4` | Concurrent eMule upload slots |
 | [`emule.max_concurrent_downloads`](#emulemax_concurrent_downloads) | `3` | Simultaneous active eMule downloads |
 | [`emule.min_source_speed_kib_s`](#emulemin_source_speed_kib_s) | `2` | Slow-source drop threshold (`0` = off) |
+| [`emule.backfill_spacing_secs`](#emulebackfill_spacing_secs) | `3` | Pause between files when seeding an existing library (`0` = no pause) |
 | [`emule.nodes_dat_url`](#emulenodes_dat_url) | *(built-in mirror)* | Where to download `nodes.dat` from |
 | [`downloads.auto_clear_completed`](#downloadsauto_clear_completed) | `false` | Auto-remove finished downloads from the history |
 | [`[notifications]`](#notifications) | *(on)* | In-app notification centre and webhooks (own guide) |
@@ -725,6 +726,39 @@ rucio config set emule.min_source_speed_kib_s 2
 
 **Default:** `2`  (set to `0` to disable the check; override at runtime with
 `RUCIOD_EMULE_MIN_SOURCE_SPEED_KIB_S`)
+
+---
+
+### `emule.backfill_spacing_secs`
+
+Seconds to wait between hashing two files during the one-time startup catch-up
+that computes ed2k hashes for files you already share on the Rucio network, so
+they can be seeded to the eMule Kad DHT as sources too. The pause throttles disk
+I/O so this best-effort catch-up never monopolises a slow or shared disk.
+
+On a large library the pause dominates the catch-up time: at the default 3 s,
+2,500 files spend over two hours just waiting, on top of the hashing itself.
+Lower it to catch up faster on an SSD/NVMe, or set `0` to remove the pause
+entirely.
+
+This only affects the startup catch-up of pre-existing files. Files you add or
+change while the daemon runs are hashed immediately, unspaced.
+
+Set it in `config.toml` (it takes effect on the next startup, which is the only
+time it matters):
+
+```toml
+[emule]
+backfill_spacing_secs = 0
+```
+
+or, equivalently, via the environment:
+
+```sh
+RUCIOD_EMULE_BACKFILL_SPACING_SECS=0 ruciod
+```
+
+**Default:** `3`  (set to `0` for no pause).
 
 ---
 

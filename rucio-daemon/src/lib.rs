@@ -759,6 +759,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
             db.clone(),
             active_downloads.clone(),
             ed2k_pending.clone(),
+            std::time::Duration::from_secs(config.emule.backfill_spacing_secs),
         );
         if let Some(rx) = ed2k_index_rx {
             crate::emule::spawn_ed2k_indexer(
