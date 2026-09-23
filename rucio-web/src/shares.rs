@@ -754,7 +754,12 @@ pub fn SharesTab(
                     <ul class="share-file-list">
                         <For
                             each=move || files.get()
-                            key=|f| f.root_hash.clone()
+                            // Key on `path`, not `root_hash`: identical content
+                            // shared under two paths yields two rows with the same
+                            // root hash, and a duplicate `<For>` key breaks keyed
+                            // reconciliation (missing rows / stale leftovers). Path
+                            // is the server-side primary key, so it is unique.
+                            key=|f| f.path.clone()
                             children=move |f| {
                                 let hash = f.root_hash.clone();
                                 let hash_sel = f.root_hash.clone();
