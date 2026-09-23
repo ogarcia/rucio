@@ -131,11 +131,21 @@ subdirectory, e.g. `example.com/rucio`, so the daemon injects a matching
 `<base href>` and the panel resolves its assets and API/WebSocket URLs under the
 prefix. The reverse proxy is expected to strip the prefix before forwarding (see
 [Option D](01-installation.md#under-a-subpath-examplecomrucio)). `/rucio`,
-`/rucio/` and `rucio` all normalise to `/rucio/`. Override via `RUCIOD_BASE_PATH`.
+`/rucio/` and `rucio` all normalise to `/rucio/`.
+
+Read at startup to build the panel's asset and API URLs, so it is **not editable
+at runtime** (not exposed by the API or `rucio config set`). Set it in
+`config.toml`:
+
+```toml
+[api]
+base_path = "/rucio/"
+```
+
+or via the environment:
 
 ```sh
-rucio config set api.base_path /rucio/
-rucio config unset api.base_path        # back to the origin root
+RUCIOD_BASE_PATH=/rucio/ ruciod
 ```
 
 **Default:** `/`.
@@ -510,9 +520,16 @@ downloading a fresh copy automatically the first time it starts (as long as
 `emule.enabled` is `true`).** Set it only to point at a `nodes.dat` you keep in a
 custom location.
 
+Read once at startup, so it is set in `config.toml` (or the environment), not
+through `rucio config set`. It is shown, read-only, by `rucio config show`.
+
+```toml
+[storage]
+nodes_dat_path = "/srv/emule/nodes.dat"
+```
+
 ```sh
-rucio config set storage.nodes_dat_path /srv/emule/nodes.dat   # custom location
-rucio config unset storage.nodes_dat_path                       # back to the default
+RUCIOD_NODES_DAT=/srv/emule/nodes.dat ruciod
 ```
 
 Whether eMule Kad runs at all is governed by [`emule.enabled`](#emuleenabled),
@@ -745,7 +762,7 @@ This only affects the startup catch-up of pre-existing files. Files you add or
 change while the daemon runs are hashed immediately, unspaced.
 
 Set it in `config.toml` (it takes effect on the next startup, which is the only
-time it matters):
+time it matters); it is shown, read-only, by `rucio config show`:
 
 ```toml
 [emule]
@@ -770,9 +787,16 @@ explicit `--url`. **Optional — when unset the built-in default mirror
 (`http://upd.emule-security.org/nodes.dat`) is used.** Point it at a mirror you
 trust so you don't have to fetch a `nodes.dat` by hand.
 
+Read at startup, so it is set in `config.toml` (or the environment), not through
+`rucio config set`. It is shown, read-only, by `rucio config show`.
+
+```toml
+[emule]
+nodes_dat_url = "http://kademlia.ru/download/nodes.dat"
+```
+
 ```sh
-rucio config set emule.nodes_dat_url http://kademlia.ru/download/nodes.dat
-rucio config unset emule.nodes_dat_url        # back to the default mirror
+RUCIOD_EMULE_NODES_DAT_URL=http://kademlia.ru/download/nodes.dat ruciod
 ```
 
 Precedence for the bootstrap command: an explicit `--url` wins, then this key,
