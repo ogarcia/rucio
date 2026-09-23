@@ -107,6 +107,17 @@ pub struct EmuleConfig {
     /// slow-source drop.
     #[serde(default)]
     pub min_source_speed_kib_s: u32,
+    /// Seconds paused between files during the one-shot startup backfill that
+    /// hashes pre-existing shares for eMule seeding; `0` disables the pause.
+    /// **Read-only** here: it only takes effect at startup, so it is set in
+    /// `config.toml` / the environment, not through this API.
+    #[serde(default)]
+    pub backfill_spacing_secs: u64,
+    /// URL the daemon downloads `nodes.dat` from (empty = built-in mirror).
+    /// **Read-only** here: a startup-time bootstrap knob, set in `config.toml` /
+    /// the environment.
+    #[serde(default)]
+    pub nodes_dat_url: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
@@ -170,4 +181,9 @@ pub struct StorageConfig {
     #[serde(default)]
     pub pin_dir: String,
     pub database_path: String,
+    /// Path to the eMule `nodes.dat` used to bootstrap Kad2 (empty = default
+    /// location the daemon auto-downloads). **Read-only** here: a startup-time
+    /// bootstrap knob, set in `config.toml` / the environment.
+    #[serde(default)]
+    pub nodes_dat_path: Option<String>,
 }

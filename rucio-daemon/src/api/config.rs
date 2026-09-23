@@ -113,6 +113,12 @@ fn build_snapshot(
             outboard_dir: cfg.storage.outboard_dir.to_string_lossy().into_owned(),
             pin_dir: cfg.storage.pin_dir.to_string_lossy().into_owned(),
             database_path: cfg.storage.database_path.to_string_lossy().into_owned(),
+            // Read-only: startup-only bootstrap knob, never written back by the API.
+            nodes_dat_path: cfg
+                .storage
+                .nodes_dat_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned()),
         },
         emule: EmuleConfig {
             enabled: cfg.emule.enabled,
@@ -126,6 +132,9 @@ fn build_snapshot(
             max_concurrent_downloads: cfg.emule.max_concurrent_downloads,
             nick: cfg.emule.nick.clone(),
             min_source_speed_kib_s: cfg.emule.min_source_speed_kib_s,
+            // Read-only: startup-only knobs, never written back by the API.
+            backfill_spacing_secs: cfg.emule.backfill_spacing_secs,
+            nodes_dat_url: cfg.emule.nodes_dat_url.clone(),
         },
     }
 }
@@ -272,7 +281,10 @@ pub async fn put_config(
         new_cfg.emule.min_source_speed_kib_s = c.emule.min_source_speed_kib_s;
     }
     // node.identity_path, emule.identity_path and api.listen intentionally not
-    // writable at runtime
+    // writable at runtime. The snapshot also exposes some startup-only knobs
+    // read-only (storage.database_path, storage.nodes_dat_path,
+    // emule.nodes_dat_url, emule.backfill_spacing_secs): they have no arm here,
+    // so new_cfg keeps their on-disk value and a PUT never clobbers them.
 
     match new_cfg.save(state.config_path.as_deref()) {
         Ok(()) => StatusCode::NO_CONTENT,
