@@ -5,6 +5,7 @@ use rust_i18n::t;
 
 use crate::client::ApiClient;
 use crate::color;
+use rucio_core::api::config::DownloadSettings;
 
 /// Parse a boolean from common textual forms.
 fn parse_bool(value: &str) -> Result<bool> {
@@ -89,6 +90,8 @@ pub async fn show(client: &ApiClient) -> Result<()> {
     let cfg = client.get_config().await?;
     let cur = &cfg.current;
     let p = cfg.pending.as_deref();
+    // Placeholder shown for optional read-only paths/URLs left at their default.
+    let default = t!("config.default");
 
     println!("{}", color::section("[node]"));
     println!(
@@ -108,14 +111,14 @@ pub async fn show(client: &ApiClient) -> Result<()> {
     println!("\n{}", color::section("[network]"));
     print_list_field(
         "bootstrap_peers",
-        20,
+        24,
         &cur.network.bootstrap_peers,
         p.map(|p| p.network.bootstrap_peers.as_slice()),
     );
     let ul = cur.network.upload_limit_kbps;
     let dl = cur.network.download_limit_kbps;
     println!(
-        "  upload_limit_kbps    = {}",
+        "  upload_limit_kbps        = {}",
         color::value(&if ul == 0 {
             t!("config.unlimited").to_string()
         } else {
@@ -123,7 +126,7 @@ pub async fn show(client: &ApiClient) -> Result<()> {
         })
     );
     println!(
-        "  download_limit_kbps  = {}",
+        "  download_limit_kbps      = {}",
         color::value(&if dl == 0 {
             t!("config.unlimited").to_string()
         } else {
@@ -131,14 +134,22 @@ pub async fn show(client: &ApiClient) -> Result<()> {
         })
     );
     println!(
-        "  max_upload_tasks     = {}",
+        "  temp_upload_limit_kbps   = {}",
+        color::value(&cur.network.temp_upload_limit_kbps.to_string())
+    );
+    println!(
+        "  temp_download_limit_kbps = {}",
+        color::value(&cur.network.temp_download_limit_kbps.to_string())
+    );
+    println!(
+        "  max_upload_tasks         = {}",
         pending_scalar(
             &cur.network.max_upload_tasks.to_string(),
             p.map(|p| p.network.max_upload_tasks.to_string()).as_deref(),
         )
     );
     println!(
-        "  exclusive_bootstrap  = {}",
+        "  exclusive_bootstrap      = {}",
         pending_scalar(
             &cur.network.exclusive_bootstrap.to_string(),
             p.map(|p| p.network.exclusive_bootstrap.to_string())
@@ -146,7 +157,7 @@ pub async fn show(client: &ApiClient) -> Result<()> {
         )
     );
     println!(
-        "  upnp                 = {}",
+        "  upnp                     = {}",
         pending_scalar(
             &cur.network.upnp.to_string(),
             p.map(|p| p.network.upnp.to_string()).as_deref(),
@@ -155,32 +166,41 @@ pub async fn show(client: &ApiClient) -> Result<()> {
 
     println!("\n{}", color::section("[storage]"));
     println!(
-        "  download_dir  = {}",
+        "  download_dir   = {}",
         pending_scalar(
             &cur.storage.download_dir,
             p.map(|p| p.storage.download_dir.as_str()),
         )
     );
     println!(
-        "  temp_dir      = {}",
+        "  temp_dir       = {}",
         pending_scalar(
             &cur.storage.temp_dir,
             p.map(|p| p.storage.temp_dir.as_str()),
         )
     );
     println!(
-        "  outboard_dir  = {}",
+        "  outboard_dir   = {}",
         pending_scalar(
             &cur.storage.outboard_dir,
             p.map(|p| p.storage.outboard_dir.as_str()),
         )
     );
     println!(
-        "  database_path = {}",
+        "  pin_dir        = {}",
+        pending_scalar(&cur.storage.pin_dir, p.map(|p| p.storage.pin_dir.as_str()),)
+    );
+    println!(
+        "  database_path  = {}",
         pending_scalar(
             &cur.storage.database_path,
             p.map(|p| p.storage.database_path.as_str()),
         )
+    );
+    // Read-only (startup-only bootstrap knob).
+    println!(
+        "  nodes_dat_path = {}",
+        color::value(cur.storage.nodes_dat_path.as_deref().unwrap_or(&default))
     );
 
     let e = &cur.emule;
@@ -247,6 +267,36 @@ pub async fn show(client: &ApiClient) -> Result<()> {
                 .as_deref(),
         )
     );
+    let nick: &str = if e.nick.is_empty() { &default } else { &e.nick };
+    println!(
+        "  nick                     = {}",
+        pending_scalar(nick, pe.map(|pe| pe.nick.clone()).as_deref())
+    );
+    println!(
+        "  min_source_speed_kib_s   = {}",
+        pending_scalar(
+            &e.min_source_speed_kib_s.to_string(),
+            pe.map(|pe| pe.min_source_speed_kib_s.to_string())
+                .as_deref(),
+        )
+    );
+    // Read-only (startup-only knobs).
+    println!(
+        "  backfill_spacing_secs    = {}",
+        color::value(&e.backfill_spacing_secs.to_string())
+    );
+    println!(
+        "  nodes_dat_url            = {}",
+        color::value(e.nodes_dat_url.as_deref().unwrap_or(&default))
+    );
+
+    // Download-history toggle lives on its own endpoint, not in the snapshot.
+    let auto_clear = client.get_download_settings().await?.auto_clear_completed;
+    println!("\n{}", color::section("[downloads]"));
+    println!(
+        "  auto_clear_completed = {}",
+        color::value(&auto_clear.to_string())
+    );
 
     Ok(())
 }
@@ -255,13 +305,33 @@ pub async fn show(client: &ApiClient) -> Result<()> {
 ///
 /// Scalar keys replace the current value; list keys append one entry.
 pub async fn set(client: &ApiClient, key: &str, value: &str) -> Result<()> {
+    // Live-applied setting with its own endpoint, separate from PUT /config.
+    if key == "downloads.auto_clear_completed" {
+        let auto_clear_completed = parse_bool(value)?;
+        client
+            .put_download_settings(&DownloadSettings {
+                auto_clear_completed,
+            })
+            .await?;
+        println!("{}", color::success(&t!("config.ok_applied")));
+        return Ok(());
+    }
+
     let mut cfg = client.get_config().await?;
+    // The daemon rewrites every editable field from what we send, so edit on top
+    // of the on-disk config (`pending`) when it differs from the running one —
+    // otherwise setting a second restart-required key would revert an earlier one
+    // that is still waiting for a restart.
+    if let Some(pending) = cfg.pending.take() {
+        cfg.current = *pending;
+    }
     let c = &mut cfg.current;
 
     match key {
         "storage.download_dir" => c.storage.download_dir = value.to_string(),
         "storage.temp_dir" => c.storage.temp_dir = value.to_string(),
         "storage.outboard_dir" => c.storage.outboard_dir = value.to_string(),
+        "storage.pin_dir" => c.storage.pin_dir = value.to_string(),
         "network.bootstrap_peers" => {
             if !c.network.bootstrap_peers.contains(&value.to_string()) {
                 c.network.bootstrap_peers.push(value.to_string());
@@ -279,6 +349,16 @@ pub async fn set(client: &ApiClient, key: &str, value: &str) -> Result<()> {
         }
         "network.download_limit_kbps" => {
             c.network.download_limit_kbps = value
+                .parse::<u64>()
+                .map_err(|_| anyhow::anyhow!(t!("config.not_integer", value = value)))?;
+        }
+        "network.temp_upload_limit_kbps" => {
+            c.network.temp_upload_limit_kbps = value
+                .parse::<u64>()
+                .map_err(|_| anyhow::anyhow!(t!("config.not_integer", value = value)))?;
+        }
+        "network.temp_download_limit_kbps" => {
+            c.network.temp_download_limit_kbps = value
                 .parse::<u64>()
                 .map_err(|_| anyhow::anyhow!(t!("config.not_integer", value = value)))?;
         }
@@ -310,12 +390,21 @@ pub async fn set(client: &ApiClient, key: &str, value: &str) -> Result<()> {
         "emule.max_concurrent_downloads" => {
             c.emule.max_concurrent_downloads = parse_slots(value)?;
         }
+        "emule.min_source_speed_kib_s" => {
+            c.emule.min_source_speed_kib_s = value
+                .parse::<u32>()
+                .map_err(|_| anyhow::anyhow!(t!("config.not_integer", value = value)))?;
+        }
+        "emule.nick" => c.emule.nick = value.trim().to_string(),
         other => bail!(t!("config.unknown_key", key = other)),
     }
 
     client.put_config(&cfg).await?;
     let msg = match key {
-        "network.upload_limit_kbps" | "network.download_limit_kbps" => t!("config.ok_bandwidth"),
+        "network.upload_limit_kbps"
+        | "network.download_limit_kbps"
+        | "network.temp_upload_limit_kbps"
+        | "network.temp_download_limit_kbps" => t!("config.ok_bandwidth"),
         _ => t!("config.ok_restart"),
     };
     println!("{}", color::success(&msg));
@@ -327,6 +416,11 @@ pub async fn set(client: &ApiClient, key: &str, value: &str) -> Result<()> {
 /// List keys remove the given entry; scalar keys revert to their default.
 pub async fn unset(client: &ApiClient, key: &str, value: Option<&str>) -> Result<()> {
     let mut cfg = client.get_config().await?;
+    // Edit on top of the on-disk config (see `set`) so an unset never reverts an
+    // earlier change that is still waiting for a restart.
+    if let Some(pending) = cfg.pending.take() {
+        cfg.current = *pending;
+    }
     let c = &mut cfg.current;
 
     // List keys require a value to identify the entry to remove.

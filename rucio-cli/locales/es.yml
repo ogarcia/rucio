@@ -332,31 +332,41 @@ config:
   ipv4_invalid: "'%{value}' no es una dirección IPv4 válida"
   max_upload_min: "network.max_upload_tasks debe ser al menos 1"
   ok_bandwidth: "ok — límite de ancho de banda aplicado inmediatamente"
+  ok_applied: "ok — aplicado inmediatamente"
   ok_restart: "ok — reinicia el demonio para que los cambios surtan efecto"
   requires_value: "la clave '%{key}' requiere un valor para eliminar"
   not_found_in: "El valor '%{value}' no se encontró en %{key}"
   restart_required: "(requiere reinicio)"
   unlimited: "sin límite"
   auto: "(automático)"
+  default: "(por defecto)"
   unknown_key: |-
     Clave desconocida o de solo lectura '%{key}'.
     Claves configurables:
       storage.download_dir
       storage.temp_dir
       storage.outboard_dir
-      network.bootstrap_peers         (añade)
-      node.listen_addrs               (añade)
-      network.upload_limit_kbps       (KB/s, 0 = sin límite, aplicado inmediatamente)
-      network.download_limit_kbps     (KB/s, 0 = sin límite, aplicado inmediatamente)
-      network.max_upload_tasks        (entero ≥1, requiere reinicio)
-      emule.enabled                   (true/false)
+      storage.pin_dir
+      network.bootstrap_peers           (añade)
+      node.listen_addrs                 (añade)
+      network.upload_limit_kbps         (KB/s, 0 = sin límite, aplicado inmediatamente)
+      network.download_limit_kbps       (KB/s, 0 = sin límite, aplicado inmediatamente)
+      network.temp_upload_limit_kbps    (KB/s, aplicado inmediatamente)
+      network.temp_download_limit_kbps  (KB/s, aplicado inmediatamente)
+      network.max_upload_tasks          (entero ≥1, requiere reinicio)
+      network.exclusive_bootstrap       (true/false)
+      network.upnp                      (true/false)
+      emule.enabled                     (true/false)
       emule.temp_dir
-      emule.udp_port                  (1-65535)
-      emule.tcp_port                  (1-65535)
-      emule.external_ip               (IPv4; quítalo para autodetectar)
-      emule.download_slots_per_file   (1-50)
-      emule.max_upload_slots          (1-50)
-      emule.max_concurrent_downloads  (1-50)
+      emule.udp_port                    (1-65535)
+      emule.tcp_port                    (1-65535)
+      emule.external_ip                 (IPv4; quítalo para autodetectar)
+      emule.download_slots_per_file     (1-50)
+      emule.max_upload_slots            (1-50)
+      emule.max_concurrent_downloads    (1-50)
+      emule.nick
+      emule.min_source_speed_kib_s      (0 = desactivado)
+      downloads.auto_clear_completed    (true/false, aplicado inmediatamente)
   unset_unknown: |-
     '%{key}' no es una clave de lista o no admite unset.
     Claves que admiten unset:

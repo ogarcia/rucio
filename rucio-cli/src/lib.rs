@@ -474,22 +474,30 @@ pub enum ConfigAction {
     /// Set a configuration value (restarts may be required for some changes)
     ///
     /// Settable keys:
-    ///   storage.download_dir            <path>
-    ///   storage.temp_dir                <path>
-    ///   storage.outboard_dir            <path>
-    ///   network.bootstrap_peers         <multiaddr>  (appends to the list)
-    ///   node.listen_addrs               <multiaddr>  (appends to the list)
-    ///   network.upload_limit_kbps       <integer>    (0 = unlimited, applied immediately)
-    ///   network.download_limit_kbps     <integer>    (0 = unlimited, applied immediately)
-    ///   network.max_upload_tasks        <integer>    (≥1, requires restart)
-    ///   emule.enabled                   <bool>
-    ///   emule.temp_dir                  <path>
-    ///   emule.tcp_port                  <integer>    (1-65535)
-    ///   emule.udp_port                  <integer>    (1-65535)
-    ///   emule.external_ip               <ipv4>
-    ///   emule.download_slots_per_file   <integer>    (1-50)
-    ///   emule.max_upload_slots          <integer>    (1-50)
-    ///   emule.max_concurrent_downloads  <integer>    (1-50)
+    ///   storage.download_dir              <path>
+    ///   storage.temp_dir                  <path>
+    ///   storage.outboard_dir              <path>
+    ///   storage.pin_dir                   <path>
+    ///   network.bootstrap_peers           <multiaddr>  (appends to the list)
+    ///   node.listen_addrs                 <multiaddr>  (appends to the list)
+    ///   network.upload_limit_kbps         <integer>    (0 = unlimited, applied immediately)
+    ///   network.download_limit_kbps       <integer>    (0 = unlimited, applied immediately)
+    ///   network.temp_upload_limit_kbps    <integer>    (applied immediately)
+    ///   network.temp_download_limit_kbps  <integer>    (applied immediately)
+    ///   network.max_upload_tasks          <integer>    (≥1, requires restart)
+    ///   network.exclusive_bootstrap       <bool>
+    ///   network.upnp                      <bool>
+    ///   emule.enabled                     <bool>
+    ///   emule.temp_dir                    <path>
+    ///   emule.tcp_port                    <integer>    (1-65535)
+    ///   emule.udp_port                    <integer>    (1-65535)
+    ///   emule.external_ip                 <ipv4>
+    ///   emule.download_slots_per_file     <integer>    (1-50)
+    ///   emule.max_upload_slots            <integer>    (1-50)
+    ///   emule.max_concurrent_downloads    <integer>    (1-50)
+    ///   emule.nick                        <string>
+    ///   emule.min_source_speed_kib_s      <integer>    (0 = off)
+    ///   downloads.auto_clear_completed    <bool>       (applied immediately)
     Set {
         /// Configuration key (e.g. storage.download_dir)
         key: String,

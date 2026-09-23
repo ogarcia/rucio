@@ -14,7 +14,7 @@ pub type WsStream =
 
 use rucio_core::api::{
     categories::{CategoriesResponse, CategoryRequest, CategoryResponse, SetCategoryRequest},
-    config::ConfigResponse,
+    config::{ConfigResponse, DownloadSettings},
     downloads::{
         DownloadDetailResponse, DownloadResponse, DownloadsResponse, StartDownloadRequest,
     },
@@ -565,6 +565,18 @@ impl ApiClient {
 
     pub async fn put_config(&self, cfg: &ConfigResponse) -> Result<()> {
         self.put("/api/v1/config", cfg).await
+    }
+
+    /// Read download-history settings (the live auto-clear toggle), which live
+    /// on their own endpoint rather than in the main config snapshot.
+    pub async fn get_download_settings(&self) -> Result<DownloadSettings> {
+        self.get("/api/v1/config/downloads").await
+    }
+
+    /// Update download-history settings (the auto-clear toggle). Applied live
+    /// and persisted via its own endpoint, separate from `put_config`.
+    pub async fn put_download_settings(&self, settings: &DownloadSettings) -> Result<()> {
+        self.put("/api/v1/config/downloads", settings).await
     }
 
     // -----------------------------------------------------------------------
