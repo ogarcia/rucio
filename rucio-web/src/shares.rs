@@ -648,7 +648,22 @@ pub fn SharesTab(
                                         <div class="share-dir-main">
                                             <span class="share-dir-path">{d.path.clone()}</span>
                                             <span class="share-dir-meta">
-                                                {t!("share.dir_meta", count = d.file_count, size = format_size(d.total_size))}
+                                                {
+                                                    let base = t!(
+                                                        "share.dir_meta",
+                                                        count = d.file_count,
+                                                        size = format_size(d.total_size)
+                                                    ).to_string();
+                                                    // Append the mount's free space when the daemon
+                                                    // could read it (absent on Windows / stat error).
+                                                    match d.free_space {
+                                                        Some(free) => format!(
+                                                            "{base} · {}",
+                                                            t!("share.dir_free", free = format_size(free))
+                                                        ),
+                                                        None => base,
+                                                    }
+                                                }
                                             </span>
                                         </div>
                                         {if kind == SharedDirKind::User {

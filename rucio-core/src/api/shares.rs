@@ -189,6 +189,12 @@ pub struct SharedDirResponse {
     pub file_count: u64,
     /// Total size of indexed files under this directory, in bytes.
     pub total_size: u64,
+    /// Bytes free on the filesystem that hosts this directory (its mount point),
+    /// or `None` when it can't be determined — a stat error, or a platform
+    /// without `statvfs` (e.g. Windows). Advisory only: it reflects the moment
+    /// the listing was built, not live usage.
+    #[serde(default)]
+    pub free_space: Option<u64>,
     /// Which files under this directory are shared (recursive flag + extension
     /// filter). Defaults to "share the whole tree".
     #[serde(default)]

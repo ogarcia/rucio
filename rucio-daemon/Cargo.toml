@@ -51,6 +51,7 @@ clap                = { workspace = true }
 infer               = { workspace = true }
 notify              = { workspace = true }
 igd-next            = { workspace = true }
+rustix              = { workspace = true }
 
 [dev-dependencies]
 tower               = { version = "0.5", features = ["util"] }

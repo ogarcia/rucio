@@ -167,6 +167,10 @@ pub struct SharedDir {
     pub kind: SharedDirKind,
     pub file_count: u64,
     pub total_size: u64,
+    /// Bytes free on the filesystem hosting this dir, or `None` when the daemon
+    /// couldn't determine it (stat error, or a platform without `statvfs`).
+    #[serde(default)]
+    pub free_space: Option<u64>,
     #[serde(default)]
     pub filter: ShareFilter,
 }

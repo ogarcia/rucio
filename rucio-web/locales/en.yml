@@ -249,6 +249,7 @@ share:
   no_folders: "No shared folders"
   dir_click_title: "Click to show only this folder's files"
   dir_meta: "%{count} file(s) · %{size}"
+  dir_free: "%{free} free"
   unshare_title: "Stop sharing this folder (files stay on disk)"
   unshare_confirm: "Stop sharing this folder?\n%{path}\n\nFiles stay on disk; re-adding will re-index them."
   edit_title: "Edit this folder's filter"

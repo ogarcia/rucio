@@ -247,6 +247,7 @@ share:
   no_folders: "No hay carpetas compartidas"
   dir_click_title: "Haz clic para mostrar solo los archivos de esta carpeta"
   dir_meta: "%{count} archivo(s) · %{size}"
+  dir_free: "%{free} libres"
   unshare_title: "Dejar de compartir esta carpeta (los archivos permanecen en disco)"
   unshare_confirm: "¿Dejar de compartir esta carpeta?\n%{path}\n\nLos archivos permanecen en disco; al volver a añadirla se reindexarán."
   edit_title: "Editar el filtro de esta carpeta"

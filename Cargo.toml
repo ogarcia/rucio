@@ -114,6 +114,10 @@ tracing-subscriber  = { version = "0.3", features = ["env-filter"] }
 # filesystem watching
 notify = { version = "8", features = ["macos_fsevent"] }
 
+# filesystem stats (statvfs for free-space per shared dir); syscall-direct on
+# Linux (linux_raw backend), so it stays sound under static musl.
+rustix = { version = "1", features = ["fs"] }
+
 # mime detection
 infer = "0.22"
 

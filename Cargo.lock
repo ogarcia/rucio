@@ -6400,6 +6400,7 @@ dependencies = [
  "rucio-emule",
  "rucio-net",
  "rust-embed",
+ "rustix",
  "serde",
  "serde_json",
  "serial_test",

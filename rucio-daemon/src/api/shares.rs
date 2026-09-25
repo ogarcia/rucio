@@ -47,6 +47,27 @@ fn build_magnet(root_hash: &[u8], name: &str, size: u64, self_peer_id: &str) -> 
     .to_string()
 }
 
+/// Bytes free on the filesystem hosting `path`. `statvfs` resolves the path to
+/// its mount point, so this reflects the actual device backing a shared
+/// directory, whatever it's mounted on. Returns `None` on a stat error (e.g. the
+/// directory vanished). Available (unprivileged) space = `f_bavail * f_frsize`.
+///
+/// The syscall is issued directly (rustix `linux_raw` backend on Linux), so it
+/// stays sound in the static-musl build. It's a fast metadata call, so running
+/// it inline in the handler for a handful of shared dirs is fine.
+#[cfg(unix)]
+fn free_space_bytes(path: &Path) -> Option<u64> {
+    let st = rustix::fs::statvfs(path).ok()?;
+    Some(st.f_bavail.saturating_mul(st.f_frsize))
+}
+
+/// Non-unix platforms (e.g. Windows) have no `statvfs`; the field stays `None`
+/// and the UI hides it rather than showing a bogus zero.
+#[cfg(not(unix))]
+fn free_space_bytes(_path: &Path) -> Option<u64> {
+    None
+}
+
 /// Collect the eMule `ed2k://` link for each shared file in `rows` that the
 /// backfill has already hashed, as a `path -> link` map (one batch query, not
 /// one lookup per row). Files without a seeded ed2k hash are simply absent.
@@ -156,12 +177,14 @@ pub async fn list_shares(State(state): State<AppState>) -> Json<SharedDirsRespon
             ext_mode: rucio_core::api::shares::ExtFilterMode::from_i64(d.ext_mode),
             extensions: d.ext_list,
         };
+        let free_space = free_space_bytes(Path::new(&d.path));
         out.push(SharedDirResponse {
             path: d.path,
             protected: d.protected,
             kind,
             file_count: file_count as u64,
             total_size: total_size as u64,
+            free_space,
             filter,
         });
     }
