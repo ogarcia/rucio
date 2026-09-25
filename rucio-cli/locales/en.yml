@@ -328,6 +328,7 @@ share:
     path: "Path"
     directory: "Directory"
     files: "Files"
+    free: "Free"
     protected: "Protected"
     filter: "Filter"
 

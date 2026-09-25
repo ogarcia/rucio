@@ -131,7 +131,7 @@ pub async fn dirs(client: &ApiClient) -> Result<()> {
         return Ok(());
     }
 
-    let rows: Vec<[String; 6]> = resp
+    let rows: Vec<[String; 7]> = resp
         .dirs
         .iter()
         .enumerate()
@@ -141,6 +141,11 @@ pub async fn dirs(client: &ApiClient) -> Result<()> {
                 color::value(&d.path),
                 d.file_count.to_string(),
                 human_size(d.total_size),
+                // Free space on the hosting mount; absent when the daemon
+                // couldn't read it (stat error, or a platform without statvfs).
+                d.free_space
+                    .map(human_size)
+                    .unwrap_or_else(|| "-".to_string()),
                 if d.protected {
                     t!("share.yes").to_string()
                 } else {
@@ -160,6 +165,7 @@ pub async fn dirs(client: &ApiClient) -> Result<()> {
         t!("share.col.directory").to_string(),
         t!("share.col.files").to_string(),
         t!("share.col.size").to_string(),
+        t!("share.col.free").to_string(),
         t!("share.col.protected").to_string(),
         t!("share.col.filter").to_string(),
     ]);

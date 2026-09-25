@@ -321,6 +321,7 @@ share:
     path: "Ruta"
     directory: "Directorio"
     files: "Archivos"
+    free: "Libre"
     protected: "Protegido"
     filter: "Filtro"
 
