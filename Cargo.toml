@@ -52,7 +52,7 @@ bao-tree    = { version = "0.16", default-features = false, features = ["validat
 flate2      = { version = "1", default-features = false, features = ["zlib-rs"] }
 
 # p2p
-libp2p      = { version = "0.56", features = [
+libp2p      = { version = "0.57", features = [
     "tokio",
     "tcp",
     "quic",
@@ -124,7 +124,7 @@ infer = "0.22"
 owo-colors  = { version = "4.4", features = ["supports-colors"] }
 
 # UPnP / IGD port mapping
-igd-next    = { version = "0.17", features = ["aio_tokio"] }
+igd-next    = { version = "0.18", features = ["aio_tokio"] }
 
 # web UI embedding
 rust-embed  = "8"
