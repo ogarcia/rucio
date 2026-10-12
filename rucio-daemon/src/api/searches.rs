@@ -17,7 +17,7 @@ use rucio_core::api::searches::{
 };
 use rucio_core::protocol::search::SearchQuery;
 #[cfg(feature = "emule-compat")]
-use rucio_core::protocol::search::lowercase_keyword;
+use rucio_core::protocol::search::{KAD_KEYWORD_SEPARATORS, lowercase_keyword};
 
 use crate::api::{AppState, MAX_SEARCHES, SearchRecord, SearchRegistry};
 use crate::node::messages::NodeCmd;
@@ -446,7 +446,8 @@ fn spawn_kad2_search(state: &AppState, search_id: u64, keywords: Vec<String>) {
     // and for the client-side all-words filter.
     let norm_words: Vec<String> = keywords
         .iter()
-        .flat_map(|k| k.split_whitespace())
+        .flat_map(|k| k.split(KAD_KEYWORD_SEPARATORS))
+        .filter(|w| !w.is_empty())
         .map(lowercase_keyword)
         .filter(|w| !w.is_empty())
         .collect();

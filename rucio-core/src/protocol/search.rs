@@ -199,9 +199,30 @@ pub fn normalize_search_term(s: &str) -> String {
 /// because the DHT index is not under our control. Accent-insensitive search
 /// applies only to the rucio network, where we control both sides of the match
 /// (see [`normalize_search_term`]).
+///
+/// eMule's `KadTagStrMakeLower` is a locale-independent, 1:1 (character-count
+/// preserving) lowercase map. Rust's `str::to_lowercase` instead applies full
+/// Unicode special-casing, which *expands* `İ` (U+0130 → `"i̇"`) and applies the
+/// Greek final-sigma rule (`Σ` → `ς` at word end) — both yield a different byte
+/// string, hence a different MD4 keyword hash than every stock client, so those
+/// keywords would silently find nothing. Map char-by-char and keep the first
+/// lowercase char to stay 1:1: `İ` → `i` (matching eMule's map) and `Σ` → `σ`
+/// regardless of position (eMule does no final-sigma). Common accented Latin
+/// letters are unaffected (their lowercase is a single char either way).
 pub fn lowercase_keyword(s: &str) -> String {
-    s.to_lowercase()
+    s.chars()
+        .map(|c| c.to_lowercase().next().unwrap_or(c))
+        .collect()
 }
+
+/// eMule's Kad keyword separators (`INV_KAD_KEYWORD_CHARS` in SearchManager.h).
+/// A query or filename is split into keyword tokens on exactly these characters,
+/// so Rust's `split_whitespace` (which also breaks on non-ASCII whitespace like
+/// U+00A0 and never on `.`/`-`/`_`) must not be used for the Kad leg.
+pub const KAD_KEYWORD_SEPARATORS: &[char] = &[
+    ' ', '(', ')', '[', ']', '{', '}', '<', '>', ',', '.', '_', '-', '!', '?', ':', ';', '\\', '/',
+    '"',
+];
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -272,6 +293,41 @@ mod tests {
         assert_eq!(normalize_search_term("Fariña"), "fariña");
         // Other-language n-diacritics still fold.
         assert_eq!(normalize_search_term("Gdańsk"), "gdansk");
+    }
+
+    #[test]
+    fn lowercase_keyword_is_one_to_one() {
+        // Common cases: plain ASCII and accented Latin lowercase unchanged in count.
+        assert_eq!(lowercase_keyword("Último AÑO"), "último año");
+        assert_eq!(lowercase_keyword("CAMIÓN"), "camión");
+        // 'İ' (U+0130): str::to_lowercase expands to "i\u{307}" (2 chars); the 1:1
+        // map must yield a single 'i' to match eMule's keyword hash.
+        assert_eq!(lowercase_keyword("İ"), "i");
+        assert_eq!("İ".to_lowercase().chars().count(), 2); // guards the premise
+        // Greek final-sigma: str::to_lowercase("ΟΔΟΣ") ends in 'ς'; the char-by-char
+        // map yields 'σ' in every position, as eMule does (no final-sigma rule).
+        assert_eq!(lowercase_keyword("ΟΔΟΣ"), "οδοσ");
+        assert!("ΟΔΟΣ".to_lowercase().ends_with('ς')); // guards the premise
+    }
+
+    #[test]
+    fn kad_keyword_separators_match_emule() {
+        let split = |s: &str| -> Vec<String> {
+            s.split(KAD_KEYWORD_SEPARATORS)
+                .filter(|w| !w.is_empty())
+                .map(|w| w.to_string())
+                .collect()
+        };
+        // Splits on '.', '-', '_' (eMule separators) — not just whitespace.
+        assert_eq!(
+            split("The.Movie-2024_x264"),
+            ["The", "Movie", "2024", "x264"]
+        );
+        // Brackets, parens, punctuation are separators; consecutive ones collapse.
+        assert_eq!(split("[grp] file (v2)!!"), ["grp", "file", "v2"]);
+        // A non-breaking space (U+00A0) is NOT a separator — split_whitespace would
+        // wrongly break here; eMule keeps it inside the token.
+        assert_eq!(split("a\u{00A0}b"), ["a\u{00A0}b"]);
     }
 
     #[test]
