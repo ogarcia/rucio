@@ -160,12 +160,12 @@ async fn try_upnp_cycle(
 ) -> anyhow::Result<Cycle> {
     // ── 1. Discover gateway ───────────────────────────────────────────────────
     debug!("UPnP: searching for gateway");
-    let gateway = search_gateway(SearchOptions {
-        timeout: Some(Duration::from_secs(5)),
-        ..Default::default()
-    })
-    .await
-    .map_err(|e| anyhow::anyhow!("gateway search failed: {e}"))?;
+    // SearchOptions is #[non_exhaustive]; build from Default and override.
+    let mut search_opts = SearchOptions::default();
+    search_opts.timeout = Some(Duration::from_secs(5));
+    let gateway = search_gateway(search_opts)
+        .await
+        .map_err(|e| anyhow::anyhow!("gateway search failed: {e}"))?;
 
     // ── 2. Determine OUR LAN IP (the internal client for the mapping) ─────────
     // `gateway.addr` is the ROUTER's address, not ours. A secure IGD rejects
