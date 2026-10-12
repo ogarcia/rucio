@@ -154,6 +154,25 @@ pub fn udp_verify_key(secret: u32, target_ip: Ipv4Addr) -> u32 {
     (folded % 0xFFFF_FFFE) + 1
 }
 
+/// eMule's reserved "not a protocol marker" bytes for the UDP/Kad obfuscation
+/// header's first byte. Mirrors the switch in `CEncryptedDatagramSocket::Encrypt`
+/// (EncryptedDatagramSocket.cpp) with the `OP_*` values from Opcodes.h. The first
+/// header byte is semi-random with its low 2 bits forced to the key-scheme marker,
+/// so it can legitimately land on one of these; eMule re-rolls it so a receiver
+/// cannot misread an obfuscated datagram as a plaintext protocol header.
+///
+/// `OP_EDONKEYPROT` (0xE3) is deliberately absent — eMule omits it from the UDP
+/// set, and with the marker bits applied (0b00 KadID / 0b10 RecvKey) its low bits
+/// (0b11) can never be produced on the Kad path anyway.
+const UDP_RESERVED_MARKERS: [u8; 6] = [
+    0xC5, // OP_EMULEPROT
+    0xE5, // OP_KADEMLIAPACKEDPROT
+    0xE4, // OP_KADEMLIAHEADER
+    0xA3, // OP_UDPRESERVEDPROT1
+    0xB2, // OP_UDPRESERVEDPROT2
+    0xD4, // OP_PACKEDPROT
+];
+
 /// Build the 8-byte obfuscation header and return an RC4 cipher ready for payload.
 /// The marker byte has bits[1:0] set according to the key type:
 /// - 0b00: Kad + NodeID key (kad_id provided)
@@ -165,15 +184,16 @@ fn build_header(
     receiver_verify_key: Option<u32>,
     sender_verify_key: Option<u32>,
 ) -> Vec<u8> {
-    // Generate a semiRandom byte that won't be confused for a plaintext protocol marker.
-    // Protocol bytes to avoid: 0xe4 (KAD2), 0xe5 (KAD2_PACKED), 0xd4, 0xc5, 0x01.
-    // Use random_key_part as entropy source; try up to 16 candidates.
+    // Generate a semiRandom byte that won't be confused for a plaintext protocol
+    // marker (see UDP_RESERVED_MARKERS). Use random_key_part as the entropy source.
     let semi_random: u8 = {
         let mut candidate = (random_key_part as u8) ^ ((random_key_part >> 8) as u8);
-        // Set the marker bits and clear conflicting high bits.
+        // Set the marker bits (low 2) without disturbing the high bits.
         candidate = (candidate & 0xFC) | (marker_bits & 0x03);
-        // If the candidate is a reserved protocol byte, flip a bit to avoid it.
-        if matches!(candidate, 0xe4 | 0xe5 | 0xd4 | 0xc5 | 0x01) {
+        // If it collides with a reserved protocol byte, flip bit 3 to escape it.
+        // 0x08 leaves the low 2 marker bits untouched, and no reserved marker
+        // XOR 0x08 is itself reserved, so a single flip always succeeds.
+        if UDP_RESERVED_MARKERS.contains(&candidate) {
             candidate ^= 0x08;
         }
         candidate
@@ -449,6 +469,27 @@ mod tests {
         Rc4::new(key).apply(&mut data);
         Rc4::new(key).apply(&mut data);
         assert_eq!(&data, plain);
+    }
+
+    #[test]
+    fn test_semi_random_marker_never_reserved() {
+        // The first header byte must never equal a reserved eMule UDP protocol
+        // marker, or a stock receiver misreads the obfuscated datagram as
+        // plaintext. Sweep the whole random_key_part space for both key schemes.
+        // Regression guard for the missing 0xB2 (reachable on the RecvKey scheme).
+        let mut rc4 = Rc4::new(b"k");
+        for marker_bits in [0x00u8, 0x02] {
+            for rkp in 0u16..=u16::MAX {
+                let header = build_header(&mut rc4, marker_bits, rkp, Some(0), Some(0));
+                let first = header[0];
+                assert!(
+                    !UDP_RESERVED_MARKERS.contains(&first),
+                    "reserved marker {first:#04x} emitted for marker_bits={marker_bits:#04x} rkp={rkp:#06x}"
+                );
+                // The key-scheme marker bits must survive the escape flip.
+                assert_eq!(first & 0x03, marker_bits, "marker bits corrupted");
+            }
+        }
     }
 
     #[test]
