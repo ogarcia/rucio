@@ -788,6 +788,13 @@ const RECONNECT_BACKOFF: Duration = Duration::from_secs(60);
 /// abandoned a full queue — never the warm A4AF path.
 const REASK_COOLDOWN: Duration = Duration::from_secs(600);
 
+/// How long a source stays on the per-download dead list after it answered
+/// `OP_FILENOTFOUND` (it does not have this file). Comfortably longer than a
+/// search round (`SOURCE_CACHE_SECS`), so we skip re-dialing it for several rounds
+/// instead of every round, but it expires so a long-running download eventually
+/// re-checks a peer that may have since acquired the file.
+const DEAD_SOURCE_TTL: Duration = Duration::from_secs(2 * 60 * 60);
+
 /// Exponential back-off for source-search retries.
 /// Sequence: 30 s, 60 s, 2 min, 4 min, 8 min, 16 min, 30 min (cap), …
 fn retry_delay_secs(attempt: u32) -> u64 {
@@ -981,6 +988,13 @@ pub async fn run_ed2k_download(
     let peer_cooldown: Arc<Mutex<HashMap<std::net::SocketAddrV4, Instant>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
+    // Dead-source list: peers that answered OP_FILENOTFOUND, keyed by address →
+    // expiry deadline. We drop them from the source cache and skip re-adding them
+    // until the deadline so a peer that said "I don't have this file" is not
+    // re-dialed every search round. Pruned each round so the map stays bounded.
+    let dead_sources: Arc<Mutex<HashMap<std::net::SocketAddrV4, Instant>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+
     loop {
         // Check for user-requested stop (cancel / pause) before doing any work.
         // The in-memory `cancel` flag makes the round abort promptly; the DB
@@ -1076,6 +1090,20 @@ pub async fn run_ed2k_download(
                 cache_age_secs,
                 "Reusing cached sources from previous round"
             );
+        }
+
+        // Prune the dead-source list (drop expired entries so it stays bounded),
+        // then evict any still-dead peers from the source cache. A peer that told
+        // us it does not have the file is skipped until its TTL lapses, instead of
+        // being re-dialed on every round.
+        {
+            let now = Instant::now();
+            let mut dead = dead_sources.lock().unwrap();
+            dead.retain(|_, until| *until > now);
+            if !dead.is_empty() {
+                cached_sources
+                    .retain(|s| !dead.contains_key(&std::net::SocketAddrV4::new(s.ip, s.tcp_port)));
+            }
         }
 
         if cached_sources.is_empty() {
@@ -1394,6 +1422,7 @@ pub async fn run_ed2k_download(
             let conn_pool_w = conn_pool.clone();
             let qranks = queue_ranks.clone();
             let peer_cooldown_w = peer_cooldown.clone();
+            let dead_sources_w = dead_sources.clone();
             let nick_w = our_nick.clone();
             let min_speed = min_speed_bytes;
             let part_hashes_w = part_hashes.clone();
@@ -1493,6 +1522,11 @@ pub async fn run_ed2k_download(
                     // `RequestSent` event, read on the error path below.
                     let reask_sent = Arc::new(AtomicBool::new(false));
                     let reask_sent_cb = reask_sent.clone();
+                    // Did the peer answer OP_FILENOTFOUND? If so, it does not have
+                    // the file — park it on the dead-source list instead of cooling
+                    // it for a retry. Set by `FileNotFound`, read on the error path.
+                    let not_found = Arc::new(AtomicBool::new(false));
+                    let not_found_cb = not_found.clone();
                     // Separate handle for the handshake hashset event: the closure
                     // is `move`, but `part_hashes_w` is still needed by the
                     // post-slot fallback below.
@@ -1503,6 +1537,9 @@ pub async fn run_ed2k_download(
                         }
                         DownloadEvent::RequestSent => {
                             reask_sent_cb.store(true, Ordering::Relaxed);
+                        }
+                        DownloadEvent::FileNotFound => {
+                            not_found_cb.store(true, Ordering::Relaxed);
                         }
                         DownloadEvent::Queued { rank } => {
                             // Record our queue position at this peer so the UI can
@@ -1541,6 +1578,21 @@ pub async fn run_ed2k_download(
                     if let Err(e) = acq {
                         debug!(dl = download_id, %peer, error = %e,
                             "Peer unavailable — trying another source");
+                        if not_found.load(Ordering::Relaxed) {
+                            // The peer answered OP_FILENOTFOUND: it does not have
+                            // this file. Park it on the dead-source list and drop it
+                            // from the round (do not re-queue) so we stop re-dialing
+                            // it every search round; next round's prune evicts it
+                            // from the cache. Supersedes the reconnect cooldown.
+                            dead_sources_w
+                                .lock()
+                                .unwrap()
+                                .insert(peer, Instant::now() + DEAD_SOURCE_TTL);
+                            debug!(dl = download_id, %peer,
+                                "Peer does not have the file — dead-listing");
+                            drop(lease);
+                            continue 'sources;
+                        }
                         // Cool this peer before re-dialing. If we actually reasked
                         // it (STARTUPLOAD_REQ went out — queued, or silent after the
                         // ask), hold off for the full REASK_COOLDOWN so the re-knock

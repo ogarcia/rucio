@@ -723,6 +723,10 @@ pub enum DownloadEvent {
     /// the upload slot). Carries the parsed part hashes; the caller verifies
     /// them against the ed2k root before trusting them.
     Hashset(Vec<[u8; 16]>),
+    /// The peer answered `OP_FILENOTFOUND`: it definitively does not have this
+    /// file. The caller uses this to drop the source for a while (a dead-source
+    /// list) instead of re-dialing it every search round.
+    FileNotFound,
     Done,
 }
 
@@ -1145,7 +1149,10 @@ impl Session {
                     .context("read FILEREQUEST_ANSWER")?;
             match opcode {
                 OP_FILEREQUEST_ANSWER => break,
-                OP_FILENOTFOUND => bail!("peer does not have the file"),
+                OP_FILENOTFOUND => {
+                    on_event(DownloadEvent::FileNotFound);
+                    bail!("peer does not have the file");
+                }
                 OP_FILESTATUS => {
                     self.part_status = parse_file_status(&payload, hash.as_bytes(), num_parts)
                 }
