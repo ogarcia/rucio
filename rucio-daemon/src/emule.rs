@@ -773,16 +773,20 @@ impl Drop for InFlight {
 /// is skipped there.
 const CONNECT_RETRY_BACKOFF_SECS: u64 = 3;
 
-/// Backoff before making a fresh *cold* TCP connection to a peer that just
-/// failed to grant us a slot (connect error, or queued past `max_queue_waits`).
-///
-/// Warm connections held by the shared [`rucio_emule::pool::PeerConnPool`] never
-/// reask — they hold the slot and switch files in place (A4AF) — so the old
-/// 29-minute per-file reask ban no longer gates the common path. This shorter
-/// backoff only paces *cold reconnects* to a peer that wouldn't serve us, so we
-/// don't hammer it; it is stamped only on the cold-connect failure path, never
-/// when a peer merely queues a warm connection.
+/// Backoff before re-dialing a peer whose *cold connect* failed before any reask
+/// reached it (TCP refused, handshake error, no-such-file). Nothing was asked, so
+/// eMule's anti-leecher window is not in play; this only keeps us from hammering a
+/// momentarily unreachable peer in a tight loop.
 const RECONNECT_BACKOFF: Duration = Duration::from_secs(60);
+
+/// Cooldown before re-asking a peer to which we actually sent `OP_STARTUPLOAD_REQ`
+/// (it queued us, or went silent after the reask). This mirrors eMule's
+/// `MIN_REQUESTTIME` (10 min): re-knocking the same file sooner charges a bad
+/// request against us (`CUpDownClient::AddRequestCount`) and bans us at
+/// `BADCLIENTBAN` (4 strikes). Warm pooled connections hold their slot and switch
+/// files in place without reasking, so this gates only a *fresh reask* after we
+/// abandoned a full queue — never the warm A4AF path.
+const REASK_COOLDOWN: Duration = Duration::from_secs(600);
 
 /// Exponential back-off for source-search retries.
 /// Sequence: 30 s, 60 s, 2 min, 4 min, 8 min, 16 min, 30 min (cap), …
@@ -967,12 +971,14 @@ pub async fn run_ed2k_download(
     // the whole download (across re-search rounds), never on a normal resume.
     let reconciled = Arc::new(AtomicBool::new(false));
 
-    // Last time we sent an upload request to a peer that then queued us, keyed by
-    // address. Enforces `REASK_COOLDOWN` so we never re-knock a queued source
-    // sooner than eMule's reask window and trip its anti-leecher ban. Held for
-    // the whole download — not per round — so the pacing survives re-search
-    // rounds that re-add the same sources with a fresh attempt count.
-    let last_ask: Arc<Mutex<HashMap<std::net::SocketAddrV4, Instant>>> =
+    // Per-peer cooldown deadline, keyed by address: the instant a peer becomes
+    // askable again after a failed attempt. A peer we actually reasked (sent
+    // STARTUPLOAD_REQ) waits `REASK_COOLDOWN` (eMule's reask window) so we never
+    // re-knock it inside `MIN_REQUESTTIME` and trip its anti-leecher ban; a peer
+    // whose cold connect failed before any reask waits only `RECONNECT_BACKOFF`.
+    // Held for the whole download — not per round — so the pacing survives
+    // re-search rounds that re-add the same sources with a fresh attempt count.
+    let peer_cooldown: Arc<Mutex<HashMap<std::net::SocketAddrV4, Instant>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
     loop {
@@ -1387,7 +1393,7 @@ pub async fn run_ed2k_download(
             let pool = source_pool.clone();
             let conn_pool_w = conn_pool.clone();
             let qranks = queue_ranks.clone();
-            let last_ask_w = last_ask.clone();
+            let peer_cooldown_w = peer_cooldown.clone();
             let nick_w = our_nick.clone();
             let min_speed = min_speed_bytes;
             let part_hashes_w = part_hashes.clone();
@@ -1424,11 +1430,11 @@ pub async fn run_ed2k_download(
                             for _ in 0..n {
                                 let (s, a) = p.pop_front().unwrap();
                                 let addr = std::net::SocketAddrV4::new(s.ip, s.tcp_port);
-                                let rem = last_ask_w
+                                let rem = peer_cooldown_w
                                     .lock()
                                     .unwrap()
                                     .get(&addr)
-                                    .map(|t| RECONNECT_BACKOFF.saturating_sub(t.elapsed()))
+                                    .map(|until| until.saturating_duration_since(Instant::now()))
                                     .unwrap_or(Duration::ZERO);
                                 if !rem.is_zero() {
                                     min_wait = Some(min_wait.map_or(rem, |m| m.min(rem)));
@@ -1481,6 +1487,12 @@ pub async fn run_ed2k_download(
                     // twice per attempt — plain then the obfuscated retry), so
                     // they stay at debug; only an actual transfer start is info.
                     let qr_cb = qranks.clone();
+                    // Did this attempt actually put a reask (STARTUPLOAD_REQ) on the
+                    // wire? If so, a failure must cool the peer for the full reask
+                    // window, not the short cold-connect backoff. Set by the
+                    // `RequestSent` event, read on the error path below.
+                    let reask_sent = Arc::new(AtomicBool::new(false));
+                    let reask_sent_cb = reask_sent.clone();
                     // Separate handle for the handshake hashset event: the closure
                     // is `move`, but `part_hashes_w` is still needed by the
                     // post-slot fallback below.
@@ -1489,13 +1501,15 @@ pub async fn run_ed2k_download(
                         DownloadEvent::Connected => {
                             debug!(dl = download_id, %peer, "Connected to eMule peer")
                         }
+                        DownloadEvent::RequestSent => {
+                            reask_sent_cb.store(true, Ordering::Relaxed);
+                        }
                         DownloadEvent::Queued { rank } => {
                             // Record our queue position at this peer so the UI can
-                            // show "queued at N sources (best rank M)". No reask
-                            // cooldown stamp: a warm pooled connection holds the
-                            // queue position and switches files without reasking, so
-                            // the backoff only applies to a *failed cold connect*
-                            // (stamped on the error path below).
+                            // show "queued at N sources (best rank M)". The cooldown
+                            // is stamped on the error path below: REASK_COOLDOWN once
+                            // a reask was sent (this path), RECONNECT_BACKOFF for a
+                            // bare cold-connect failure.
                             qr_cb.lock().unwrap().insert(peer, rank);
                             debug!(dl = download_id, %peer, rank, "Queued at eMule peer")
                         }
@@ -1527,9 +1541,21 @@ pub async fn run_ed2k_download(
                     if let Err(e) = acq {
                         debug!(dl = download_id, %peer, error = %e,
                             "Peer unavailable — trying another source");
-                        // A cold connect that failed / queued past max_queue_waits:
-                        // back off this peer before another cold attempt.
-                        last_ask_w.lock().unwrap().insert(peer, Instant::now());
+                        // Cool this peer before re-dialing. If we actually reasked
+                        // it (STARTUPLOAD_REQ went out — queued, or silent after the
+                        // ask), hold off for the full REASK_COOLDOWN so the re-knock
+                        // never lands inside eMule's MIN_REQUESTTIME ban window; a
+                        // bare cold-connect failure (nothing asked) waits only the
+                        // short RECONNECT_BACKOFF.
+                        let backoff = if reask_sent.load(Ordering::Relaxed) {
+                            REASK_COOLDOWN
+                        } else {
+                            RECONNECT_BACKOFF
+                        };
+                        peer_cooldown_w
+                            .lock()
+                            .unwrap()
+                            .insert(peer, Instant::now() + backoff);
                         // It may be momentarily full — retry later unless exhausted.
                         // If it is the only source left, pace ourselves before
                         // looping so we don't hammer a peer that just refused us.

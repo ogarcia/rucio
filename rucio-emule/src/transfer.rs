@@ -700,6 +700,11 @@ impl Default for DownloadOptions {
 #[derive(Debug)]
 pub enum DownloadEvent {
     Connected,
+    /// We just sent `OP_STARTUPLOAD_REQ` to the peer — an actual reask that
+    /// starts eMule's `MIN_REQUESTTIME` anti-leecher window. The caller uses this
+    /// to apply the reask cooldown (not the shorter cold-connect backoff) when the
+    /// attempt then fails, so a re-knock never lands inside that window.
+    RequestSent,
     Queued {
         rank: u32,
     },
@@ -1762,8 +1767,9 @@ where
 
 /// Send `OP_STARTUPLOAD_REQ` **once** and wait for the peer to grant an upload
 /// slot (`OP_ACCEPTUPLOAD_REQ`), tolerating up to `max_queue_waits` queue-rank
-/// updates before giving up. Emits [`DownloadEvent::Queued`] for every rank
-/// update and [`DownloadEvent::Started`] once granted.
+/// updates before giving up. Emits [`DownloadEvent::RequestSent`] once the reask
+/// is on the wire, [`DownloadEvent::Queued`] for every rank update, and
+/// [`DownloadEvent::Started`] once granted.
 ///
 /// Critically, we do **not** re-send `OP_STARTUPLOAD_REQ` while queued: eMule's
 /// uploader sends ranking updates on its own (`SendRankingInfo`), and re-asking
@@ -1792,6 +1798,9 @@ where
     write_frame(stream, ciphers, OP_STARTUPLOAD_REQ, hash.as_bytes())
         .await
         .context("send STARTUPLOAD_REQ")?;
+    // A reask just left the wire: from here on, failing this attempt must cool the
+    // peer for the full reask window, not the short cold-connect backoff.
+    on_event(DownloadEvent::RequestSent);
 
     let mut queue_waits = 0;
     loop {
