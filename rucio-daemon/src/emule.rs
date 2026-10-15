@@ -544,6 +544,22 @@ async fn backfill_path(db: &Db, active_downloads: &ActiveDownloads, path: std::p
     }
     let size0 = md.len() as i64;
     let mtime0 = crate::api::shares::file_mtime_secs(&path);
+
+    // Incremental guard: if this path is already recorded with the same size
+    // and mtime, the file is unchanged, so its ed2k hash and hashset are too —
+    // don't re-run MD4. Mirrors index_file's native-side short-circuit and keeps
+    // backfill_path cheap to call from any site that walks a whole tree (e.g.
+    // re-adding an already-shared directory enqueues every file). An unchanged
+    // row means startup's load_shared_files already put the file in
+    // active_downloads, so there is nothing else to do here.
+    if let Ok(Some(row)) =
+        crate::db::emule_shared_files::get_by_path(db, &path.to_string_lossy()).await
+        && row.size == size0
+        && row.mtime == mtime0
+    {
+        return;
+    }
+
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -2721,5 +2737,119 @@ mod admission_tests {
             .await
             .expect("first waiter timed out")
             .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod backfill_tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+    use std::collections::HashMap;
+    use std::io::Write;
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+
+    async fn test_db() -> (Db, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("sqlite://{}?mode=rwc", dir.path().join("test.db").display());
+        let pool = SqlitePoolOptions::new()
+            .max_connections(4)
+            .connect(&url)
+            .await
+            .unwrap();
+        crate::db::apply_schema(&pool).await.unwrap();
+        (pool, dir)
+    }
+
+    fn write_file(path: &std::path::Path) {
+        std::fs::File::create(path)
+            .unwrap()
+            .write_all(&vec![0x5Au8; 4096])
+            .unwrap();
+    }
+
+    /// An unchanged file that is already recorded must NOT be re-hashed. This is
+    /// the re-add regression: re-adding a shared directory walks every file and
+    /// enqueues them all, but backfill_path should short-circuit the unchanged
+    /// ones instead of recomputing MD4 for the whole tree.
+    #[tokio::test]
+    async fn backfill_skips_unchanged_recorded_file() {
+        let (db, dir) = test_db().await;
+        let path = dir.path().join("payload.bin");
+        write_file(&path);
+        let ad: ActiveDownloads = Arc::new(RwLock::new(HashMap::new()));
+
+        // First pass: hashes the file and records it for seeding.
+        backfill_path(&db, &ad, path.clone()).await;
+        let row = crate::db::emule_shared_files::get_by_path(&db, &path.to_string_lossy())
+            .await
+            .unwrap()
+            .expect("file recorded on first backfill");
+        assert_eq!(ad.read().await.len(), 1, "file is now being seeded");
+
+        // Plant a sentinel hash (same size+mtime) so a re-hash would be visible:
+        // backfill_path would overwrite it with the real MD4.
+        let sentinel = vec![0xABu8; 16];
+        crate::db::emule_shared_files::upsert(
+            &db,
+            &sentinel.clone().try_into().unwrap(),
+            &row.name,
+            row.size as u64,
+            &row.path,
+            row.mtime,
+            &row.hashset,
+            1,
+        )
+        .await
+        .unwrap();
+
+        // Second pass on the unchanged file: must short-circuit (sentinel kept).
+        backfill_path(&db, &ad, path.clone()).await;
+        let after = crate::db::emule_shared_files::get_by_path(&db, &path.to_string_lossy())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.ed2k_hash, sentinel, "unchanged file was re-hashed");
+    }
+
+    /// A changed file (its row's mtime no longer matches disk) is NOT skipped —
+    /// the guard only fires on an exact size+mtime match, so a real edit still
+    /// refreshes the ed2k hash.
+    #[tokio::test]
+    async fn backfill_rehashes_when_mtime_differs() {
+        let (db, dir) = test_db().await;
+        let path = dir.path().join("payload.bin");
+        write_file(&path);
+        let ad: ActiveDownloads = Arc::new(RwLock::new(HashMap::new()));
+
+        backfill_path(&db, &ad, path.clone()).await;
+        let row = crate::db::emule_shared_files::get_by_path(&db, &path.to_string_lossy())
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Sentinel hash with a STALE mtime: the row now looks out of date versus
+        // the on-disk file, so the guard must not fire.
+        let sentinel = vec![0xABu8; 16];
+        crate::db::emule_shared_files::upsert(
+            &db,
+            &sentinel.clone().try_into().unwrap(),
+            &row.name,
+            row.size as u64,
+            &row.path,
+            row.mtime - 1,
+            &row.hashset,
+            1,
+        )
+        .await
+        .unwrap();
+
+        backfill_path(&db, &ad, path.clone()).await;
+        let after = crate::db::emule_shared_files::get_by_path(&db, &path.to_string_lossy())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(after.ed2k_hash, sentinel, "changed file must be re-hashed");
+        assert_eq!(after.mtime, row.mtime, "mtime refreshed to the disk value");
     }
 }
