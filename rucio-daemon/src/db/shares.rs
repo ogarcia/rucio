@@ -113,6 +113,28 @@ pub async fn list(db: &Db) -> Result<Vec<SharedFileRow>> {
         .collect())
 }
 
+/// `LIKE` pattern matching every file stored beneath directory `dir`.
+///
+/// Paths are stored verbatim with the OS-native separator (`collect_files` keeps
+/// `read_dir`'s `PathBuf`), so a file under `X:\Ejemplo` is stored as
+/// `X:\Ejemplo\foo` on Windows. The pattern therefore joins with
+/// [`std::path::MAIN_SEPARATOR`], never a hardcoded `/`, and the caller must run
+/// the `LIKE` **without** `ESCAPE` so a Windows backslash is matched literally.
+/// Shared by the directory filter, count and delete so they can never disagree.
+fn dir_like_pattern(dir: &str) -> String {
+    dir_like_pattern_with(dir, std::path::MAIN_SEPARATOR)
+}
+
+/// [`dir_like_pattern`] with an explicit separator, so the separator handling is
+/// unit-testable on any platform (not just where `MAIN_SEPARATOR` is a backslash).
+fn dir_like_pattern_with(dir: &str, sep: char) -> String {
+    if dir.ends_with(sep) {
+        format!("{dir}%")
+    } else {
+        format!("{dir}{sep}%")
+    }
+}
+
 /// One page of shared files matching an optional name substring (`q`) and/or
 /// directory (`dir`, exact dir or any file under it), newest first, plus the
 /// total number of matches. The filtering, ordering and slicing all happen in
@@ -136,19 +158,19 @@ pub async fn list_page(
         format!("%{e}%")
     });
     let (dir_eq, dir_pat) = match dir {
-        Some(d) => {
-            let d = d.trim_end_matches('/');
-            (Some(d.to_string()), Some(format!("{d}/%")))
-        }
+        Some(d) => (Some(d.to_string()), Some(dir_like_pattern(d))),
         None => (None, None),
     };
 
     // Same WHERE in both queries (filter is `(?1 IS NULL OR name LIKE ?1) AND
     // (?2 IS NULL OR path = ?2 OR path LIKE ?3)`). Kept as full literals because
-    // sqlx only accepts statically-safe query strings.
+    // sqlx only accepts statically-safe query strings. Only the name `LIKE` takes
+    // `ESCAPE '\'` (its pattern escapes wildcards with `\`); the path `LIKE` must
+    // NOT, or a Windows backslash in the dir would be read as an escape — see
+    // `dir_like_pattern`.
     const COUNT_SQL: &str = "SELECT COUNT(*) FROM shared_files \
          WHERE (?1 IS NULL OR name LIKE ?1 ESCAPE '\\') \
-           AND (?2 IS NULL OR path = ?2 OR path LIKE ?3 ESCAPE '\\')";
+           AND (?2 IS NULL OR path = ?2 OR path LIKE ?3)";
     // Pinned files float to the top (a LEFT JOIN on `pins`, ordered by whether a
     // pin row exists), then newest-first within each group. The join keys on the
     // unique `pins.root_hash`, so it never multiplies rows.
@@ -157,7 +179,7 @@ pub async fn list_page(
          FROM shared_files s \
          LEFT JOIN pins p ON p.root_hash = s.root_hash \
          WHERE (?1 IS NULL OR s.name LIKE ?1 ESCAPE '\\') \
-           AND (?2 IS NULL OR s.path = ?2 OR s.path LIKE ?3 ESCAPE '\\') \
+           AND (?2 IS NULL OR s.path = ?2 OR s.path LIKE ?3) \
          ORDER BY (p.root_hash IS NOT NULL) DESC, s.added_at DESC \
          LIMIT ?4 OFFSET ?5";
 
@@ -344,13 +366,9 @@ pub async fn rename_path(db: &Db, old_path: &str, new_path: &str, new_name: &str
 /// that content remains at any other path — so the caller de-publishes only
 /// content the node no longer has (a duplicate outside the tree keeps it shared).
 pub async fn delete_by_path_prefix(db: &Db, prefix: &str) -> Result<Vec<Vec<u8>>> {
-    // Ensure the prefix ends with the path separator so we don't accidentally
-    // match "/home/user/movies-extra" when asked to remove "/home/user/movies".
-    let pattern = if prefix.ends_with(std::path::MAIN_SEPARATOR) {
-        format!("{prefix}%")
-    } else {
-        format!("{prefix}{}%", std::path::MAIN_SEPARATOR)
-    };
+    // The pattern ends with the native separator so we don't accidentally match
+    // "/home/user/movies-extra" when asked to remove "/home/user/movies".
+    let pattern = dir_like_pattern(prefix);
 
     // Fetch the (distinct) hashes under the prefix first, then delete.
     let rows = sqlx::query("SELECT root_hash FROM shared_files WHERE path = ?1 OR path LIKE ?2")
@@ -389,11 +407,7 @@ pub async fn delete_by_path_prefix(db: &Db, prefix: &str) -> Result<Vec<Vec<u8>>
 /// Uses the same prefix semantics as [`delete_by_path_prefix`], so the count
 /// matches exactly what removing that directory would unshare.
 pub async fn count_and_size_by_prefix(db: &Db, prefix: &str) -> Result<(i64, i64)> {
-    let pattern = if prefix.ends_with(std::path::MAIN_SEPARATOR) {
-        format!("{prefix}%")
-    } else {
-        format!("{prefix}{}%", std::path::MAIN_SEPARATOR)
-    };
+    let pattern = dir_like_pattern(prefix);
 
     let row = sqlx::query(
         "SELECT COUNT(*) AS cnt, COALESCE(SUM(size), 0) AS total \
@@ -698,6 +712,65 @@ mod tests {
         let (d, total_d) = list_page(&db, None, Some("/docs"), 50, 0).await.unwrap();
         assert_eq!(total_d, 1);
         assert_eq!(d[0].name, "gamma.txt");
+    }
+
+    #[test]
+    fn dir_like_pattern_uses_native_separator() {
+        // Backslash case (Windows): the separator is joined, never a literal `/`,
+        // and the pattern is a plain LIKE (the backslash must stay literal, which
+        // is why the path LIKE drops `ESCAPE '\'`). Reproducible on any platform.
+        assert_eq!(dir_like_pattern_with("X:\\Ejemplo", '\\'), "X:\\Ejemplo\\%");
+        // Already ends with the separator: don't double it.
+        assert_eq!(
+            dir_like_pattern_with("X:\\Ejemplo\\", '\\'),
+            "X:\\Ejemplo\\%"
+        );
+        // Forward-slash case (Unix).
+        assert_eq!(dir_like_pattern_with("/movies", '/'), "/movies/%");
+        assert_eq!(dir_like_pattern_with("/movies/", '/'), "/movies/%");
+    }
+
+    #[tokio::test]
+    async fn list_page_dir_filter_matches_count_on_native_paths() {
+        // Regression for the Windows empty-listing bug: a directory's file count
+        // (count_and_size_by_prefix) and its file listing (list_page) must agree.
+        // Build paths with the native separator so this exercises backslashes on
+        // Windows, where `list_page` used to emit a `/`-joined pattern that never
+        // matched the stored paths.
+        let (db, _dir) = test_db().await;
+        let sep = std::path::MAIN_SEPARATOR;
+        let root = format!("X:{sep}Ejemplo");
+        let files = [
+            (1u8, "a.txt", format!("{root}{sep}a.txt")),
+            (2u8, "b.txt", format!("{root}{sep}sub{sep}b.txt")),
+            (3u8, "c.txt", format!("Y:{sep}Otro{sep}c.txt")), // outside the dir
+        ];
+        for (i, (seed, name, path)) in files.iter().enumerate() {
+            insert(
+                &db,
+                NewSharedFile {
+                    root_hash: &dummy_hash(*seed),
+                    name,
+                    size: 10,
+                    mime_type: None,
+                    path,
+                    chunk_size: 4096,
+                    added_at: 1_000_000 + i as u64,
+                    mtime: 0,
+                },
+            )
+            .await
+            .unwrap();
+        }
+
+        let (count, _size) = count_and_size_by_prefix(&db, &root).await.unwrap();
+        let (listed, total) = list_page(&db, None, Some(&root), 50, 0).await.unwrap();
+
+        // The dir holds two files (a.txt and sub/b.txt), not the one under Y:.
+        assert_eq!(count, 2);
+        assert_eq!(total, 2, "listing total must match the dir count");
+        assert_eq!(listed.len(), 2);
+        assert!(listed.iter().all(|r| r.path.starts_with(&root)));
     }
 
     #[tokio::test]
