@@ -52,7 +52,7 @@ bao-tree    = { version = "0.16", default-features = false, features = ["validat
 flate2      = { version = "1", default-features = false, features = ["zlib-rs"] }
 
 # p2p
-libp2p      = { version = "0.56", features = [
+libp2p      = { version = "0.57", features = [
     "tokio",
     "tcp",
     "quic",
