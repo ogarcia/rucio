@@ -237,23 +237,69 @@ pub fn spawn_shared_files_watcher(
     active_downloads: ActiveDownloads,
     downloads_dir: std::path::PathBuf,
 ) {
-    use notify::event::{ModifyKind, RenameMode};
-    use notify::{EventKind, RecursiveMode, Watcher};
+    use notify::{RecursiveMode, Watcher};
 
+    // Per-path table of pending changes, coalesced by path. The intake loop only
+    // writes here (no DB), so a slow DB can never stop it from draining the
+    // inotify bridge; the worker task applies the DB and in-memory updates. The
+    // same intake/worker split the Rucio share watcher uses, right-sized: no
+    // debounce and no status counter, which eMule seeding has no use for.
+    let pending: Arc<Mutex<HashMap<std::path::PathBuf, EmuleWatch>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    let work_ready = Arc::new(tokio::sync::Notify::new());
+
+    // Worker: drain the pending table one path at a time, doing the DB work.
+    {
+        let pending = Arc::clone(&pending);
+        let work_ready = Arc::clone(&work_ready);
+        let db = db.clone();
+        let active_downloads = active_downloads.clone();
+        tokio::spawn(async move {
+            loop {
+                work_ready.notified().await;
+                // Drain to empty before parking again. The lock is only held to
+                // pop one entry, never across the await below.
+                loop {
+                    let next = {
+                        let mut map = pending.lock().unwrap();
+                        map.keys()
+                            .next()
+                            .cloned()
+                            .map(|k| (k.clone(), map.remove(&k).unwrap()))
+                    };
+                    let Some((path, op)) = next else { break };
+                    match op {
+                        EmuleWatch::Check => emule_recheck(&db, &active_downloads, &path).await,
+                        EmuleWatch::RenamedFrom(old) => {
+                            handle_emule_rename(&db, &active_downloads, &old, &path).await;
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    // Intake: translate events into the pending table and wake the worker. Does
+    // no I/O, so it always gets straight back to draining the bridge.
     tokio::spawn(async move {
         // Unbounded bridge: the inotify reader thread must never block (see
         // `crate::watcher::event_bridge`), or the fd stops draining and the
         // kernel queues events in unreclaimable memory.
         let (tx, mut rx) = crate::watcher::event_bridge();
-        let mut watcher = match notify::recommended_watcher(move |res| {
-            let _ = tx.send(res);
-        }) {
-            Ok(w) => w,
-            Err(e) => {
-                warn!("eMule share watcher: cannot create: {e}");
-                return;
-            }
-        };
+        let mut watcher =
+            match notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+                // Access/open events never change content; drop them at the source.
+                if matches!(&res, Ok(ev) if ev.kind.is_access()) {
+                    return;
+                }
+                let _ = tx.send(res);
+            }) {
+                Ok(w) => w,
+                Err(e) => {
+                    warn!("eMule share watcher: cannot create: {e}");
+                    return;
+                }
+            };
         // Ensure the directory exists so the watch succeeds on a fresh install
         // (downloads complete into it later).
         let _ = std::fs::create_dir_all(&downloads_dir);
@@ -265,47 +311,140 @@ pub fn spawn_shared_files_watcher(
 
         while let Some(ev) = rx.recv().await {
             let Ok(ev) = ev else { continue };
-            // Access/open events never change content; skip the DB lookups.
-            if matches!(ev.kind, EventKind::Access(_)) {
-                continue;
-            }
-            // Pure rename inside the watched tree: repoint our seeded entry
-            // instead of dropping it, keeping the ed2k hash/hashset — no MD4
-            // recompute. Mirrors the Rucio share watcher's rename handling.
-            if matches!(
-                ev.kind,
-                EventKind::Modify(ModifyKind::Name(RenameMode::Both))
-            ) && ev.paths.len() == 2
-            {
-                handle_emule_rename(&db, &active_downloads, &ev.paths[0], &ev.paths[1]).await;
-                continue;
-            }
-            for path in &ev.paths {
-                let path_str = path.to_string_lossy().into_owned();
-                let row = match crate::db::emule_shared_files::get_by_path(&db, &path_str).await {
-                    Ok(Some(r)) => r,
-                    _ => continue, // not one of our shares (or DB error) — ignore
-                };
-                let disk_size = std::fs::metadata(path)
-                    .map(|m| m.len() as i64)
-                    .unwrap_or(-1);
-                let unchanged =
-                    disk_size == row.size && crate::api::shares::file_mtime_secs(path) == row.mtime;
-                if unchanged {
-                    continue; // genuine no-op (or our own completion) — keep sharing
-                }
-                // Drop just this path; only stop serving the content if no other
-                // copy still seeds it.
-                let was_last = crate::db::emule_shared_files::delete_by_path(&db, &path_str)
-                    .await
-                    .unwrap_or(false);
-                if was_last && let Ok(hash) = <[u8; 16]>::try_from(row.ed2k_hash.as_slice()) {
-                    active_downloads.write().await.remove(&hash);
-                }
-                info!(path = %path.display(), "eMule shared file changed/removed — stopped sharing");
+            if classify_emule_event(ev, &pending) {
+                work_ready.notify_one();
             }
         }
     });
+}
+
+/// A pending change to a seeded eMule file, coalesced per path by the share
+/// watcher's intake loop and applied by its worker.
+#[derive(Debug, PartialEq, Eq)]
+enum EmuleWatch {
+    /// A create/modify/remove touched this path — re-check it against its row.
+    Check,
+    /// The file was renamed here from this old path — repoint (or drop) the seed.
+    RenamedFrom(std::path::PathBuf),
+}
+
+/// Fold a notify event into the eMule watcher's pending table. Returns whether
+/// anything was queued (so the caller wakes the worker). Does no I/O.
+fn classify_emule_event(
+    ev: notify::Event,
+    pending: &Mutex<HashMap<std::path::PathBuf, EmuleWatch>>,
+) -> bool {
+    use notify::EventKind;
+    use notify::event::{ModifyKind, RenameMode};
+
+    let mut map = pending.lock().unwrap();
+    match ev.kind {
+        // Pure rename inside the watched tree: repoint our seeded entry instead
+        // of dropping it, keeping the ed2k hash/hashset — no MD4 recompute.
+        EventKind::Modify(ModifyKind::Name(RenameMode::Both)) if ev.paths.len() == 2 => {
+            let mut paths = ev.paths.into_iter();
+            let old = paths.next().unwrap();
+            let new = paths.next().unwrap();
+            // Cancel any stale check queued on the vanished source.
+            map.remove(&old);
+            map.insert(new, EmuleWatch::RenamedFrom(old));
+            true
+        }
+        // Ignore the bare `From` half: the paired `Both` carries the repoint, and
+        // treating `From` as a check on the now-vanished path could race it and
+        // wrongly drop the seed. Mirrors the Rucio share watcher.
+        EventKind::Modify(ModifyKind::Name(RenameMode::From)) => false,
+        // Anything else that can change a file (create, data write, the `To`
+        // half, removal) → re-check the path, without clobbering a pending
+        // rename (the standalone `To` after `Both`).
+        _ => {
+            let mut queued = false;
+            for path in ev.paths {
+                map.entry(path).or_insert(EmuleWatch::Check);
+                queued = true;
+            }
+            queued
+        }
+    }
+}
+
+/// Re-check a seeded eMule file against its recorded row and stop seeding it when
+/// the content changed or the file is gone. A no-op for paths we don't seed, so
+/// our own just-completed file (which matches what we stored) is never dropped.
+async fn emule_recheck(db: &Db, active_downloads: &ActiveDownloads, path: &std::path::Path) {
+    let path_str = path.to_string_lossy().into_owned();
+    let row = match crate::db::emule_shared_files::get_by_path(db, &path_str).await {
+        Ok(Some(r)) => r,
+        _ => return, // not one of our shares (or DB error) — ignore
+    };
+    let disk_size = std::fs::metadata(path)
+        .map(|m| m.len() as i64)
+        .unwrap_or(-1);
+    let unchanged = disk_size == row.size && crate::api::shares::file_mtime_secs(path) == row.mtime;
+    if unchanged {
+        return; // genuine no-op (or our own completion) — keep sharing
+    }
+    // Drop just this path; only stop serving the content if no other copy still
+    // seeds it.
+    let was_last = crate::db::emule_shared_files::delete_by_path(db, &path_str)
+        .await
+        .unwrap_or(false);
+    if was_last && let Ok(hash) = <[u8; 16]>::try_from(row.ed2k_hash.as_slice()) {
+        active_downloads.write().await.remove(&hash);
+    }
+    info!(path = %path.display(), "eMule shared file changed/removed — stopped sharing");
+}
+
+#[cfg(test)]
+mod share_watcher_tests {
+    use super::*;
+    use notify::event::{ModifyKind, RenameMode};
+    use notify::{Event, EventKind};
+    use std::path::PathBuf;
+
+    fn pending() -> Mutex<HashMap<PathBuf, EmuleWatch>> {
+        Mutex::new(HashMap::new())
+    }
+
+    #[test]
+    fn rename_coalesces_and_ignores_bare_from() {
+        let map = pending();
+        let old = PathBuf::from("/dl/old.avi");
+        let new = PathBuf::from("/dl/new.avi");
+        let name = |m| EventKind::Modify(ModifyKind::Name(m));
+
+        // The paired `Both` queues a single repoint on the new path, and the
+        // standalone `From`/`To` halves must not add a stale check on either.
+        let both = Event::new(name(RenameMode::Both))
+            .add_path(old.clone())
+            .add_path(new.clone());
+        assert!(classify_emule_event(both, &map));
+        let from = Event::new(name(RenameMode::From)).add_path(old.clone());
+        assert!(!classify_emule_event(from, &map));
+        let to = Event::new(name(RenameMode::To)).add_path(new.clone());
+        assert!(classify_emule_event(to, &map));
+
+        let g = map.lock().unwrap();
+        assert_eq!(g.get(&new), Some(&EmuleWatch::RenamedFrom(old)));
+        assert!(!g.contains_key(&PathBuf::from("/dl/old.avi")));
+        assert_eq!(g.len(), 1);
+    }
+
+    #[test]
+    fn writes_and_removes_coalesce_to_one_check() {
+        let map = pending();
+        let p = PathBuf::from("/dl/file.bin");
+
+        let modify = Event::new(EventKind::Modify(ModifyKind::Any)).add_path(p.clone());
+        let remove =
+            Event::new(EventKind::Remove(notify::event::RemoveKind::File)).add_path(p.clone());
+        assert!(classify_emule_event(modify, &map));
+        assert!(classify_emule_event(remove, &map));
+
+        let g = map.lock().unwrap();
+        assert_eq!(g.get(&p), Some(&EmuleWatch::Check));
+        assert_eq!(g.len(), 1);
+    }
 }
 
 /// Handle a rename of a seeded eMule file. When the content is unchanged (new
