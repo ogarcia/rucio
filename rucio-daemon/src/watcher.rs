@@ -13,7 +13,10 @@
 //! paired `Both` already repointed) never trigger a re-hash.
 //!
 //! The watcher runs `notify`'s blocking watcher on a dedicated OS thread and
-//! bridges events into async-land via a channel.
+//! bridges events into async-land via an **unbounded** channel (see
+//! [`event_bridge`]): the reader thread must never block handing an event off,
+//! or the inotify fd stops draining and the kernel queues events in
+//! unreclaimable memory.
 //!
 //! # Debounce
 //!
@@ -122,6 +125,30 @@ pub fn spawn(
 // Internal service loop
 // ---------------------------------------------------------------------------
 
+/// Build the `notify` → async event bridge, shared by this watcher and the
+/// eMule share watcher.
+///
+/// **Unbounded on purpose.** `notify` runs its inotify/FSEvents reader on a
+/// dedicated OS thread and hands each event to this channel from a *sync*
+/// context. If that hand-off could block — a bounded channel's `blocking_send`
+/// once the async consumer falls behind — the reader thread parks and stops
+/// reading the fd. The kernel then queues every new event in *unreclaimable*
+/// memory and, once its own `max_queued_events` is hit, drops them with
+/// `Q_OVERFLOW`, losing changes silently. Backpressure against an inotify fd is
+/// therefore counter-productive: it trades a bounded, reclaimable userspace
+/// queue for an unbounded, unreclaimable kernel one that also loses events.
+///
+/// With an unbounded channel the reader thread never blocks, so the fd always
+/// drains; a slow or stalled consumer merely delays indexing and shows up as
+/// (reclaimable) RSS, never as kernel slab growth. The realistic working set
+/// stays small regardless: `pending_upserts` coalesces repeated events per path.
+pub(crate) fn event_bridge() -> (
+    mpsc::UnboundedSender<notify::Result<Event>>,
+    mpsc::UnboundedReceiver<notify::Result<Event>>,
+) {
+    mpsc::unbounded_channel()
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run(
     db: Db,
@@ -133,8 +160,11 @@ async fn run(
     ed2k_tx: Option<crate::ed2k_index::Ed2kIndex>,
     index_guard: crate::index_guard::IndexGuard,
 ) -> Result<()> {
-    // Bridge: notify (sync) → tokio (async)
-    let (ev_tx, mut ev_rx) = mpsc::channel::<notify::Result<Event>>(256);
+    // Bridge: notify (sync OS thread) → tokio (async). Unbounded on purpose —
+    // see `event_bridge`: the reader thread must hand events off without ever
+    // blocking so the inotify fd keeps draining no matter how slow the async
+    // side is.
+    let (ev_tx, mut ev_rx) = event_bridge();
 
     // Shared set of currently-watched paths (used for unwatch)
     let watched: Arc<Mutex<HashSet<PathBuf>>> = Arc::new(Mutex::new(HashSet::new()));
@@ -144,7 +174,9 @@ async fn run(
     let ev_tx_clone = ev_tx.clone();
     let watcher: Arc<Mutex<RecommendedWatcher>> = {
         let w = notify::recommended_watcher(move |res| {
-            let _ = ev_tx_clone.blocking_send(res);
+            // Non-blocking hand-off. Only errs once the service task is gone
+            // (receiver dropped), when there is nothing left to index anyway.
+            let _ = ev_tx_clone.send(res);
         })?;
         Arc::new(Mutex::new(w))
     };
@@ -717,6 +749,30 @@ fn is_hidden(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn event_bridge_never_blocks_the_reader_thread() {
+        // The notify reader thread hands events off from a sync context; it must
+        // never block, or the inotify fd stops draining and the kernel queues
+        // events unreclaimably. Mirror that hand-off: push far more events than
+        // any bounded capacity with the consumer NOT reading, from a blocking
+        // thread, and require it to finish promptly. A bounded `blocking_send`
+        // would park at capacity forever and trip the timeout.
+        let (tx, _rx) = event_bridge();
+        let produced = tokio::task::spawn_blocking(move || {
+            for _ in 0..100_000 {
+                if tx.send(Ok(Event::default())).is_err() {
+                    return 0;
+                }
+            }
+            100_000
+        });
+        let n = tokio::time::timeout(Duration::from_secs(5), produced)
+            .await
+            .expect("reader hand-off blocked — the bridge is not unbounded")
+            .unwrap();
+        assert_eq!(n, 100_000, "every event handed off without blocking");
+    }
 
     #[test]
     fn top_level_dirs_drops_nested_shares() {

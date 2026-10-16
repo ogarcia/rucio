@@ -241,9 +241,12 @@ pub fn spawn_shared_files_watcher(
     use notify::{EventKind, RecursiveMode, Watcher};
 
     tokio::spawn(async move {
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<notify::Result<notify::Event>>(128);
+        // Unbounded bridge: the inotify reader thread must never block (see
+        // `crate::watcher::event_bridge`), or the fd stops draining and the
+        // kernel queues events in unreclaimable memory.
+        let (tx, mut rx) = crate::watcher::event_bridge();
         let mut watcher = match notify::recommended_watcher(move |res| {
-            let _ = tx.blocking_send(res);
+            let _ = tx.send(res);
         }) {
             Ok(w) => w,
             Err(e) => {
