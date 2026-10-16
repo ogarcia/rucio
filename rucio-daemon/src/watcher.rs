@@ -18,14 +18,21 @@
 //! or the inotify fd stops draining and the kernel queues events in
 //! unreclaimable memory.
 //!
+//! The service loop that drains the bridge does **no I/O of its own**. It
+//! reduces each event to a per-path intent in [`PendingOps`] and hands due work
+//! to a single [`index_worker`] task over a bounded queue; the worker owns every
+//! DB, hashing and DHT operation. So a slow or stuck worker (a backed-up node
+//! command channel, a busy disk) only delays indexing — it can never stall the
+//! loop and back up into the inotify fd.
+//!
 //! # Debounce
 //!
 //! Many editors and copy tools emit multiple events (Create + Modify, or
 //! several Modify in quick succession) for a single logical write.  To avoid
 //! re-indexing the same file repeatedly we debounce upsert events: when a
-//! Create/Modify arrives for a path we record the time and only index it after
-//! DEBOUNCE_MS have passed with no further events for that path.  Remove
-//! events are processed immediately since there is nothing to read.
+//! Create/Modify arrives for a path we record the time and only hand it to the
+//! worker after DEBOUNCE_MS have passed with no further events for that path.
+//! Removes carry no debounce (there is nothing to read) and go on the next tick.
 //!
 //! # Watcher lifecycle
 //!
@@ -50,7 +57,10 @@ use tracing::{debug, info, warn};
 use crate::api::shares::{file_mtime_secs, index_file};
 use crate::db::{self, Db};
 use crate::node::messages::NodeCmd;
+use pending::{IndexingTicket, Op, PendingOps, WORK_QUEUE, Work};
 use rucio_core::protocol::hashing::collect_files;
+
+mod pending;
 
 /// How long to wait after the last event for a path before indexing it.
 const DEBOUNCE_MS: u64 = 500;
@@ -173,7 +183,13 @@ async fn run(
     // the OS-level inotify/FSEvents API from a sync context.
     let ev_tx_clone = ev_tx.clone();
     let watcher: Arc<Mutex<RecommendedWatcher>> = {
-        let w = notify::recommended_watcher(move |res| {
+        let w = notify::recommended_watcher(move |res: notify::Result<Event>| {
+            // Access events (a shared file opened to serve an upload) are
+            // frequent and handle_event ignores them anyway — drop them here so
+            // they never even occupy the bridge.
+            if matches!(&res, Ok(ev) if ev.kind.is_access()) {
+                return;
+            }
             // Non-blocking hand-off. Only errs once the service task is gone
             // (receiver dropped), when there is nothing left to index anyway.
             let _ = ev_tx_clone.send(res);
@@ -181,10 +197,23 @@ async fn run(
         Arc::new(Mutex::new(w))
     };
 
-    // Debounce table: path → time of last upsert event.
-    // We flush entries whose timestamp is older than DEBOUNCE_MS.
-    let mut pending_upserts: HashMap<PathBuf, Instant> = HashMap::new();
-    let debounce_dur = Duration::from_millis(DEBOUNCE_MS);
+    // All DB / hashing / DHT work runs in a dedicated worker task, fed in order
+    // over a bounded queue. The service loop itself does no I/O, so it always
+    // gets straight back to draining events: a slow or stuck worker delays
+    // indexing without ever backing up into the inotify fd. The handle is
+    // dropped (the task is detached); it exits when `work_tx` drops on shutdown.
+    let (work_tx, work_rx) = mpsc::channel::<Work>(WORK_QUEUE);
+    tokio::spawn(index_worker(
+        work_rx,
+        db,
+        node_tx,
+        Arc::clone(&indexing_count),
+        outboard_dir,
+        ed2k_tx,
+    ));
+
+    // Per-path table of the next operation to hand to the worker.
+    let mut pending = PendingOps::new(Duration::from_millis(DEBOUNCE_MS));
     let mut debounce_tick = interval(Duration::from_millis(DEBOUNCE_MS / 2));
     debounce_tick.tick().await; // consume immediate first tick
 
@@ -214,29 +243,15 @@ async fn run(
                     None => break,
                     Some(Err(e)) => warn!("Watcher error: {e}"),
                     Some(Ok(event)) => {
-                        handle_event(
-                            event,
-                            &db,
-                            &node_tx,
-                            &mut pending_upserts,
-                            &excluded,
-                        ).await;
+                        handle_event(event, &mut pending, &excluded, Instant::now());
                     }
                 }
             }
 
             // --- Debounce flush tick -----------------------------------------
             _ = debounce_tick.tick() => {
-                flush_pending(
-                    &mut pending_upserts,
-                    debounce_dur,
-                    &db,
-                    &node_tx,
-                    &indexing_count,
-                    &outboard_dir,
-                    ed2k_tx.as_ref(),
-                    &index_guard,
-                ).await;
+                // Errors only if the worker task is gone — unrecoverable, so stop.
+                pending.flush(&work_tx, &indexing_count, &index_guard, Instant::now())?;
             }
         }
     }
@@ -308,38 +323,21 @@ fn unwatch_dir(
 // Event handler
 // ---------------------------------------------------------------------------
 
-async fn handle_event(
-    event: Event,
-    db: &Db,
-    node_tx: &mpsc::Sender<NodeCmd>,
-    pending_upserts: &mut HashMap<PathBuf, Instant>,
-    excluded: &[PathBuf],
-) {
+/// Translate a notify event into the pending table's intents. No I/O: the loop
+/// must get straight back to draining events, so every DB/hash/DHT operation is
+/// deferred to the worker via [`PendingOps`].
+fn handle_event(event: Event, pending: &mut PendingOps, excluded: &[PathBuf], now: Instant) {
     match event.kind {
-        // File created — queue for debounced indexing
-        EventKind::Create(_) => {
-            for path in &event.paths {
-                if !path.is_file() || is_hidden(path) || is_excluded(path, excluded) {
-                    continue;
-                }
-                debug!(path = %path.display(), "Watcher: Create — queuing upsert");
-                pending_upserts.insert(path.clone(), Instant::now());
-            }
-        }
-
-        // Rename (Both): repoint in place when the content is unchanged (no
-        // re-hash), else fall back to remove-old + index-new.
+        // Rename (Both): the worker repoints the row in place when the content
+        // is unchanged (no re-hash), else falls back to remove-old + index-new.
         EventKind::Modify(notify::event::ModifyKind::Name(notify::event::RenameMode::Both))
             if event.paths.len() == 2 =>
         {
             let (old, new) = (&event.paths[0], &event.paths[1]);
-            // New path not shareable (hidden/excluded/not a file → e.g. moved to
-            // a temp dir or to a non-regular target): just drop the old share.
-            if !new.is_file() || is_hidden(new) || is_excluded(new, excluded) {
-                on_file_remove(old, db, node_tx).await;
-                return;
-            }
-            on_file_rename(old, new, db, node_tx, &mut *pending_upserts).await;
+            // `shareable` is false when the new path is hidden/excluded/not a
+            // file (e.g. moved to a temp dir): the pending table then just drops
+            // the old share.
+            pending.rename(old, new.clone(), is_shareable(new, excluded), now);
         }
 
         // The "from" half of a rename: on Linux notify also emits the paired
@@ -350,26 +348,23 @@ async fn handle_event(
         // de-indexes it. (Without this it would fall into the catch-all below.)
         EventKind::Modify(notify::event::ModifyKind::Name(notify::event::RenameMode::From)) => {}
 
-        // Other modifications (data written, or the `To`/`Any` rename half) —
-        // queue for debounced indexing. on_file_upsert is idempotent, so the
-        // `To` of an already-repointed rename costs nothing.
-        EventKind::Modify(_) => {
-            for path in &event.paths {
-                if !path.is_file() || is_hidden(path) || is_excluded(path, excluded) {
-                    continue;
+        // File created, or other modifications (data written, or the `To`/`Any`
+        // rename half) — queue a debounced upsert. on_file_upsert is idempotent,
+        // so the `To` of an already-repointed rename costs nothing, and
+        // `PendingOps::upsert` never clobbers a pending rename.
+        EventKind::Create(_) | EventKind::Modify(_) => {
+            for path in event.paths {
+                if is_shareable(&path, excluded) {
+                    debug!(path = %path.display(), "Watcher: Create/Modify — queuing upsert");
+                    pending.upsert(path, now);
                 }
-                debug!(path = %path.display(), "Watcher: Modify — queuing upsert");
-                // Update timestamp; this resets the debounce window.
-                pending_upserts.insert(path.clone(), Instant::now());
             }
         }
 
-        // File removed — deindex immediately (no file to read, no point waiting)
+        // File removed — queue a de-index (due on the next tick; nothing to read).
         EventKind::Remove(_) => {
-            for path in &event.paths {
-                // Cancel any pending upsert for this path.
-                pending_upserts.remove(path);
-                on_file_remove(path, db, node_tx).await;
+            for path in event.paths {
+                pending.remove(path, now);
             }
         }
 
@@ -377,49 +372,47 @@ async fn handle_event(
     }
 }
 
-/// Process all pending upserts whose debounce window has expired.
-#[allow(clippy::too_many_arguments)]
-async fn flush_pending(
-    pending: &mut HashMap<PathBuf, Instant>,
-    debounce_dur: Duration,
-    db: &Db,
-    node_tx: &mpsc::Sender<NodeCmd>,
-    indexing_count: &AtomicUsize,
-    outboard_dir: &Path,
-    ed2k_tx: Option<&crate::ed2k_index::Ed2kIndex>,
-    index_guard: &crate::index_guard::IndexGuard,
+/// Run queued operations one at a time, in the order the service loop handed
+/// them over. This is the only place the watcher does DB / hashing / DHT work,
+/// so none of it can ever stall the loop that drains inotify events.
+async fn index_worker(
+    mut work_rx: mpsc::Receiver<Work>,
+    db: Db,
+    node_tx: mpsc::Sender<NodeCmd>,
+    indexing_count: Arc<AtomicUsize>,
+    outboard_dir: PathBuf,
+    ed2k_tx: Option<crate::ed2k_index::Ed2kIndex>,
 ) {
-    let now = Instant::now();
-    let ready: Vec<PathBuf> = pending
-        .iter()
-        .filter(|(_, ts)| now.duration_since(**ts) >= debounce_dur)
-        // Skip a file a completion path is already indexing (e.g. a just-finished
-        // eMule download): it hashes the file itself, so re-indexing it here would
-        // be a redundant second full read and would race on UNIQUE(path). Once its
-        // row lands, on_file_upsert's own "unchanged?" check keeps skipping it.
-        .filter(|(p, _)| !index_guard.is_marked(p))
-        .map(|(p, _)| p.clone())
-        .collect();
-
-    for path in &ready {
-        pending.remove(path);
-    }
-    // Only existing files get indexed; surface that count to the indexing
-    // status endpoint (and WS), decrementing as each one completes — so the
-    // CLI/web report watcher-driven indexing, not just manual `share add`.
-    //
-    // We deliberately do NOT latch `indexing_seen` here: incremental
-    // watcher-driven indexing (a completed download landing in download_dir, a
-    // file dropped into a shared folder) shouldn't fire the "indexing complete"
-    // notification. That notification is reserved for indexing the user
-    // actually asked for — `share add` and the startup/periodic rescan — so a
-    // finished download doesn't surprise them with a second notification right
-    // after "download complete". The live count above still reflects the work.
-    let to_index: Vec<&PathBuf> = ready.iter().filter(|p| p.is_file()).collect();
-    indexing_count.fetch_add(to_index.len(), Ordering::Relaxed);
-    for path in to_index {
-        on_file_upsert(path, db, node_tx, outboard_dir, ed2k_tx).await;
-        indexing_count.fetch_sub(1, Ordering::Relaxed);
+    // `_ticket` keeps an upsert counted on the status endpoint until its arm is
+    // done; the rename fallbacks mint their own ticket for the hashing they do.
+    while let Some(Work {
+        path,
+        op,
+        ticket: _ticket,
+    }) = work_rx.recv().await
+    {
+        match op {
+            Op::Upsert => {
+                on_file_upsert(&path, &db, &node_tx, &outboard_dir, ed2k_tx.as_ref()).await;
+            }
+            Op::Remove => on_file_remove(&path, &db, &node_tx).await,
+            Op::RenamedFrom(old) => match repoint_rename(&old, &path, &db).await {
+                Rename::Repointed => {}
+                // Content changed alongside the rename (or the repoint raced) →
+                // drop the old row and re-index the new path.
+                Rename::Changed => {
+                    on_file_remove(&old, &db, &node_tx).await;
+                    let _ticket = IndexingTicket::new(&indexing_count);
+                    on_file_upsert(&path, &db, &node_tx, &outboard_dir, ed2k_tx.as_ref()).await;
+                }
+                // Old path wasn't a tracked share (hidden/excluded before, or a
+                // DB miss): treat the new path as a fresh file.
+                Rename::Untracked => {
+                    let _ticket = IndexingTicket::new(&indexing_count);
+                    on_file_upsert(&path, &db, &node_tx, &outboard_dir, ed2k_tx.as_ref()).await;
+                }
+            },
+        }
     }
 }
 
@@ -503,22 +496,24 @@ async fn on_file_upsert(
     }
 }
 
-/// Handle a rename of a shared file (`old` → `new`, both inside watched dirs).
+/// Outcome of trying to repoint a renamed share in place.
+enum Rename {
+    /// Same content: the row now points at the new path.
+    Repointed,
+    /// The old path was indexed but the content changed around the rename.
+    Changed,
+    /// The old path was not a tracked share.
+    Untracked,
+}
+
+/// Try to repoint a renamed share (`old` → `new`, both inside watched dirs).
 ///
 /// A pure rename leaves the content — and therefore the root hash and chunks —
 /// untouched, so when the new path's size + mtime still match what we recorded
 /// for the old path we just repoint the DB row: no re-hash, and no DHT churn
-/// (we keep providing the same hash). Only if they differ (a write happened
-/// around the rename) do we fall back to remove-old + index-new.
-async fn on_file_rename(
-    old: &Path,
-    new: &Path,
-    db: &Db,
-    node_tx: &mpsc::Sender<NodeCmd>,
-    pending: &mut HashMap<PathBuf, Instant>,
-) {
-    // A pending debounced upsert for the old path is now stale.
-    pending.remove(old);
+/// (we keep providing the same hash). Otherwise the caller falls back to
+/// remove-old + index-new.
+async fn repoint_rename(old: &Path, new: &Path, db: &Db) -> Rename {
     let old_str = old.to_string_lossy().into_owned();
     let new_str = new.to_string_lossy().into_owned();
     let new_name = new
@@ -535,22 +530,14 @@ async fn on_file_rename(
                     .await
                     .unwrap_or(false)
             {
-                // Cancel the upsert the standalone `To` event queued for the new
-                // path — the repoint already covered it.
-                pending.remove(new);
                 debug!(from = %old.display(), to = %new.display(), "Watcher: renamed (repointed, no re-hash)");
-                return;
+                Rename::Repointed
+            } else {
+                Rename::Changed
             }
-            // Content changed alongside the rename (or the repoint raced) →
-            // re-index the new path and drop the old row.
-            on_file_remove(old, db, node_tx).await;
-            pending.insert(new.to_path_buf(), Instant::now());
         }
-        // Old path wasn't a tracked share (hidden/excluded before, or a DB
-        // miss): treat the new path as a fresh file.
-        _ => {
-            pending.insert(new.to_path_buf(), Instant::now());
-        }
+        // Old path wasn't a tracked share (hidden/excluded before, or a DB miss).
+        _ => Rename::Untracked,
     }
 }
 
@@ -738,6 +725,12 @@ fn is_excluded(path: &Path, excluded: &[PathBuf]) -> bool {
     excluded.iter().any(|dir| path.starts_with(dir))
 }
 
+/// Whether `path` is a regular file the share should index (not hidden, not
+/// excluded). Used both when a file lands and when one is renamed into place.
+fn is_shareable(path: &Path, excluded: &[PathBuf]) -> bool {
+    path.is_file() && !is_hidden(path) && !is_excluded(path, excluded)
+}
+
 /// Returns `true` for hidden files (name starts with `.`).
 fn is_hidden(path: &Path) -> bool {
     path.file_name()
@@ -772,6 +765,30 @@ mod tests {
             .expect("reader hand-off blocked — the bridge is not unbounded")
             .unwrap();
         assert_eq!(n, 100_000, "every event handed off without blocking");
+    }
+
+    #[test]
+    fn rename_events_map_to_one_pending_rename() {
+        // notify on Linux delivers the paired `Both`, then the standalone `To`.
+        // Both must collapse to a single pending rename on the new path, with
+        // nothing left pending on the old one.
+        let dir = tempfile::tempdir().unwrap();
+        let new = dir.path().join("new.mkv");
+        std::fs::write(&new, b"x").unwrap();
+        let old = dir.path().join("old.mkv");
+        let now = Instant::now();
+        let mut pending = PendingOps::new(Duration::from_millis(DEBOUNCE_MS));
+        let name = |mode| EventKind::Modify(notify::event::ModifyKind::Name(mode));
+
+        let both = Event::new(name(notify::event::RenameMode::Both))
+            .add_path(old.clone())
+            .add_path(new.clone());
+        let to = Event::new(name(notify::event::RenameMode::To)).add_path(new.clone());
+        handle_event(both, &mut pending, &[], now);
+        handle_event(to, &mut pending, &[], now);
+
+        assert_eq!(pending.op(&new), Some(&Op::RenamedFrom(old.clone())));
+        assert_eq!(pending.op(&old), None);
     }
 
     #[test]
