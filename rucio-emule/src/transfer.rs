@@ -69,10 +69,11 @@ use md5::{Digest, Md5};
 use std::collections::HashMap;
 use std::future::Future;
 use std::io::{self, Read as _};
-use std::net::{SocketAddr, SocketAddrV4};
+use std::net::{IpAddr, SocketAddr, SocketAddrV4};
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
@@ -2109,10 +2110,67 @@ pub trait UploadSession: Send + Sync {
     fn add_bytes(&self, bytes: u64);
 }
 
+/// Approximate upload-queue rank tracker.
+///
+/// We don't keep a real waiting list or promote anyone: when all slots are busy
+/// we tell the peer a queue rank and close the connection, and it re-asks later
+/// to race for a freed slot. This exists only so the rank we report is a
+/// *plausible, changing* number — roughly "how many peers are waiting, and where
+/// you are among them" — instead of a constant. A fixed rank looks scripted and
+/// some anti-leech client mods may flag it.
+///
+/// Keyed by peer IP (the TCP port changes on every reconnect). Each waiter keeps
+/// its first-seen time, so a peer that patiently re-asks holds its place and its
+/// rank improves as earlier waiters are served or drop off; `last_seen` drives a
+/// TTL so a waiter that stops re-asking no longer inflates the count.
+#[derive(Default)]
+pub struct UploadQueue {
+    waiters: Mutex<HashMap<IpAddr, Waiter>>,
+}
+
+struct Waiter {
+    first_seen: Instant,
+    last_seen: Instant,
+}
+
+impl UploadQueue {
+    /// How long a waiter keeps counting without re-asking before it is pruned.
+    const TTL: Duration = Duration::from_secs(10 * 60);
+
+    /// Record `ip` as waiting for a slot and return its 1-based queue rank: its
+    /// position ordered by how long it has been waiting (1 = longest-waiting, so
+    /// next in line). Prunes waiters idle longer than [`Self::TTL`] first.
+    fn rank(&self, ip: IpAddr) -> u32 {
+        let now = Instant::now();
+        let mut w = self.waiters.lock().unwrap();
+        w.retain(|_, x| now.duration_since(x.last_seen) < Self::TTL);
+        let first_seen = {
+            let e = w.entry(ip).or_insert(Waiter {
+                first_seen: now,
+                last_seen: now,
+            });
+            e.last_seen = now;
+            e.first_seen
+        };
+        // Position = every waiter that has been waiting at least as long as this
+        // one (itself included), so the earliest waiter is rank 1.
+        w.values().filter(|x| x.first_seen <= first_seen).count() as u32
+    }
+
+    /// Drop `ip` from the waiting set — it just got a slot, so it should no
+    /// longer count toward anyone else's rank.
+    fn served(&self, ip: IpAddr) {
+        self.waiters.lock().unwrap().remove(&ip);
+    }
+}
+
 /// Everything the upload handler needs, shared across all incoming connections.
 pub struct UploadContext {
     /// Semaphore that caps simultaneous upload connections.
     pub slots: Arc<Semaphore>,
+    /// Tracks peers turned away while slots are full, to report a changing queue
+    /// rank rather than a constant one.
+    pub queue: UploadQueue,
     /// Directory where `.part` and `.part.met` files are stored.
     pub temp_dir: PathBuf,
     /// Our TCP port to advertise in HELLO packets.
@@ -2341,10 +2399,15 @@ async fn handle_incoming(mut stream: TcpStream, peer: SocketAddr, ctx: Arc<Uploa
 
             // Try to claim an upload slot (non-blocking).
             let _permit = match ctx.slots.try_acquire() {
-                Ok(p) => p,
+                Ok(p) => {
+                    // Got a slot — no longer a waiter.
+                    ctx.queue.served(peer.ip());
+                    p
+                }
                 Err(TryAcquireError::NoPermits) => {
-                    // Tell the peer to try again later — standard eMule behaviour.
-                    let rank = 50u32;
+                    // Slots full: report a real-ish queue rank (not a constant)
+                    // and close — the peer re-asks later to race for a free slot.
+                    let rank = ctx.queue.rank(peer.ip());
                     write_frame(
                         &mut stream,
                         &mut ciphers,
@@ -2352,7 +2415,7 @@ async fn handle_incoming(mut stream: TcpStream, peer: SocketAddr, ctx: Arc<Uploa
                         &rank.to_le_bytes(),
                     )
                     .await?;
-                    debug!(%peer, "upload slots full — sent QUEUE_RANK 50");
+                    debug!(%peer, rank, "upload slots full — sent QUEUE_RANK");
                     break;
                 }
                 Err(TryAcquireError::Closed) => break,
@@ -2684,6 +2747,28 @@ pub(crate) mod mock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn upload_queue_rank_reflects_waiting_order() {
+        let q = UploadQueue::default();
+        let a: IpAddr = "10.0.0.1".parse().unwrap();
+        let b: IpAddr = "10.0.0.2".parse().unwrap();
+        let c: IpAddr = "10.0.0.3".parse().unwrap();
+
+        // Distinct waiters get increasing ranks in arrival order…
+        assert_eq!(q.rank(a), 1);
+        assert_eq!(q.rank(b), 2);
+        assert_eq!(q.rank(c), 3);
+
+        // …a returning waiter keeps its (earlier) place, not a fresh last spot…
+        assert_eq!(q.rank(a), 1);
+        assert_eq!(q.rank(b), 2);
+
+        // …and once the head is served it drops out, so the rest move up.
+        q.served(a);
+        assert_eq!(q.rank(b), 1);
+        assert_eq!(q.rank(c), 2);
+    }
 
     #[test]
     fn frame_payload_len_caps_and_rejects() {
