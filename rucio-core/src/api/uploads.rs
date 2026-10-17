@@ -23,6 +23,11 @@ pub struct ActiveUpload {
     pub network: UploadNetwork,
     /// Remote peer identity: a base58 PeerId (rucio) or `ip:port` (eMule).
     pub peer: String,
+    /// eMule-only: the nickname the remote user chose (from the HELLO `CT_NAME`
+    /// tag), when they sent one. `None` for rucio peers (libp2p has no nicks) and
+    /// for eMule peers that advertised no name.
+    #[serde(default)]
+    pub nick: Option<String>,
     /// File hash in hex — BLAKE3 root hash (rucio) or MD4 ed2k hash (eMule).
     pub file_hash: String,
     /// File display name, when known.

@@ -55,6 +55,8 @@ struct UploadKey {
 
 struct UploadEntry {
     file_name: Option<String>,
+    /// eMule peer's chosen nick (`CT_NAME`), when sent. Always `None` for rucio.
+    nick: Option<String>,
     /// Cumulative bytes sent — written lock-free from the upload hot path,
     /// read by the sampler.
     bytes_sent: Arc<AtomicU64>,
@@ -101,6 +103,7 @@ impl UploadRegistry {
         let now = now_secs();
         let entry = map.entry(key).or_insert_with(|| UploadEntry {
             file_name: name,
+            nick: None,
             bytes_sent: Arc::new(AtomicU64::new(0)),
             started_at: now,
             rate_bps: 0,
@@ -171,6 +174,7 @@ impl UploadRegistry {
         let now = now_secs();
         let entry = map.entry(key).or_insert_with(|| UploadEntry {
             file_name: name,
+            nick: None,
             bytes_sent: Arc::new(AtomicU64::new(0)),
             started_at: now,
             rate_bps: 0,
@@ -210,6 +214,7 @@ impl UploadRegistry {
             .map(|(key, e)| ActiveUpload {
                 network: key.network,
                 peer: key.peer.clone(),
+                nick: e.nick.clone(),
                 file_hash: key.file_hash.clone(),
                 file_name: e.file_name.clone(),
                 bytes_sent: e.bytes_sent.load(Ordering::Relaxed),
@@ -250,6 +255,7 @@ impl UploadRegistry {
     fn insert_emule(
         &self,
         peer: std::net::SocketAddr,
+        nick: Option<&str>,
         hash: [u8; 16],
         name: &str,
     ) -> (UploadKey, Arc<AtomicU64>) {
@@ -262,6 +268,7 @@ impl UploadRegistry {
         let now = now_secs();
         let entry = map.entry(key.clone()).or_insert_with(|| UploadEntry {
             file_name: Some(name.to_string()),
+            nick: nick.map(str::to_string),
             bytes_sent: Arc::new(AtomicU64::new(0)),
             started_at: now,
             rate_bps: 0,
@@ -303,10 +310,11 @@ mod emule_bridge {
         fn upload_started(
             &self,
             peer: SocketAddr,
+            nick: Option<&str>,
             hash: [u8; 16],
             name: &str,
         ) -> Box<dyn UploadSession> {
-            let (key, bytes) = self.0.insert_emule(peer, hash, name);
+            let (key, bytes) = self.0.insert_emule(peer, nick, hash, name);
             Box::new(EmuleUploadGuard {
                 registry: Arc::clone(&self.0),
                 key,

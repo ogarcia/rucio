@@ -422,6 +422,9 @@ pub enum UploadNetwork {
 pub struct ActiveUpload {
     pub network: UploadNetwork,
     pub peer: String,
+    /// eMule-only: the remote user's chosen nick, when they sent one.
+    #[serde(default)]
+    pub nick: Option<String>,
     pub file_hash: String,
     pub file_name: Option<String>,
     pub bytes_sent: u64,

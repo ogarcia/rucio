@@ -112,6 +112,12 @@ fn print_table(uploads: Vec<ActiveUpload>) {
         .into_iter()
         .enumerate()
         .map(|(i, u)| {
+            // eMule peers may advertise a nick; show "Nick · ip:port". Others
+            // (anonymous eMule peers, all libp2p peers) show the address alone.
+            let peer = match u.nick.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+                Some(nick) => format!("{} · {}", truncate(nick, 20), truncate(&u.peer, 20)),
+                None => truncate(&u.peer, 20),
+            };
             [
                 (i + 1).to_string(),
                 match u.network {
@@ -119,7 +125,7 @@ fn print_table(uploads: Vec<ActiveUpload>) {
                     UploadNetwork::Emule => "eMule".to_string(),
                 },
                 u.file_name.unwrap_or_else(|| truncate(&u.file_hash, 16)),
-                truncate(&u.peer, 20),
+                peer,
                 human_size(u.bytes_sent),
                 if u.rate_bps == 0 {
                     "-".to_string()

@@ -197,6 +197,8 @@ const ET_MOD_VERSION: u8 = 0x55;
 /// The mod string we advertise (see [`ET_MOD_VERSION`]). Kept to plain letters:
 /// eMuleAI's mod-name scheme validator rejects punctuation/stray digits.
 const MOD_VERSION: &str = "Rucio";
+/// HELLO tag carrying the client's chosen nickname (`CT_NAME`), a string tag.
+const CT_NAME: u8 = 0x01;
 /// HELLO tag carrying our UDP ports (`CT_EMULE_UDPPORTS`). eMule packs it as a
 /// single u32: `(kad_udp_port << 16) | emule_client_udp_port`. Every real eMule
 /// advertises this in its HELLO; the receiver splits it back into `m_nKadPort`
@@ -517,6 +519,80 @@ fn build_hello(
     p.extend_from_slice(&0u32.to_le_bytes()); // server IP (unused)
     p.extend_from_slice(&0u16.to_le_bytes()); // server port (unused)
     p
+}
+
+/// Best-effort extraction of the remote peer's chosen nickname (`CT_NAME`) from
+/// an `OP_HELLO` payload. Panic-free: any short or unknown-typed tag just ends
+/// the scan, yielding whatever was found so far (usually `None` → the caller
+/// falls back to `ip:port`).
+///
+/// `OP_HELLO` layout: `hashsize(1) + userhash(16) + clientid(4) + port(2) +
+/// tagcount(4) + tags… + serverip(4) + serverport(2)`. Each tag is a type byte
+/// (high bit ⇒ one-byte "special" name, else a u16-length name string) followed
+/// by a value sized by the (low-7-bit) type. `CT_NAME` is a string tag; eMule
+/// orders tags by ascending id, so it comes before the capability tags we can't
+/// skip, which is why the common case parses cleanly.
+fn parse_hello_nick(payload: &[u8]) -> Option<String> {
+    let mut pos = 1 + 16 + 4 + 2; // skip hashsize + userhash + clientid + port
+    let tag_count = u32::from_le_bytes(payload.get(pos..pos + 4)?.try_into().ok()?);
+    pos += 4;
+    for _ in 0..tag_count.min(64) {
+        let type_byte = *payload.get(pos)?;
+        pos += 1;
+        // Tag name: special (high bit) → 1 byte; otherwise u16 len + name bytes.
+        let name_first = if type_byte & 0x80 != 0 {
+            let b = *payload.get(pos)?;
+            pos += 1;
+            b
+        } else {
+            let l = u16::from_le_bytes(payload.get(pos..pos + 2)?.try_into().ok()?) as usize;
+            let b = *payload.get(pos + 2)?;
+            pos += 2 + l;
+            b
+        };
+        let is_name = name_first == CT_NAME;
+        match type_byte & 0x7f {
+            // TAGTYPE_STRING: u16 len + bytes.
+            0x02 => {
+                let l = u16::from_le_bytes(payload.get(pos..pos + 2)?.try_into().ok()?) as usize;
+                pos += 2;
+                let bytes = payload.get(pos..pos + l)?;
+                pos += l;
+                if is_name {
+                    return clean_nick(&String::from_utf8_lossy(bytes));
+                }
+            }
+            // TAGTYPE_STR1..STR16: inline string of length (type - 0x10).
+            ty @ 0x11..=0x20 => {
+                let l = (ty - 0x10) as usize;
+                let bytes = payload.get(pos..pos + l)?;
+                pos += l;
+                if is_name {
+                    return clean_nick(&String::from_utf8_lossy(bytes));
+                }
+            }
+            0x01 => pos += 16,                              // TAGTYPE_HASH16
+            0x03 | 0x04 => pos += 4,                        // TAGTYPE_UINT32 / FLOAT32
+            0x08 => pos += 2,                               // TAGTYPE_UINT16
+            0x09 => pos += 1,                               // TAGTYPE_UINT8
+            0x0b => pos += 8,                               // TAGTYPE_UINT64
+            0x0a => pos += 1 + *payload.get(pos)? as usize, // TAGTYPE_BSOB: size + bytes
+            _ => return None,                               // unknown type: can't size it, give up
+        }
+    }
+    None
+}
+
+/// Trim a peer-supplied nick, drop control characters, cap at 60 chars, and
+/// return `None` when nothing printable is left.
+fn clean_nick(raw: &str) -> Option<String> {
+    let nick: String = raw
+        .trim()
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(60)
+        .collect();
+    (!nick.is_empty()).then_some(nick)
 }
 
 // ── Obfuscation helpers ───────────────────────────────────────────────────────
@@ -2098,6 +2174,7 @@ pub trait UploadObserver: Send + Sync {
     fn upload_started(
         &self,
         peer: SocketAddr,
+        nick: Option<&str>,
         hash: [u8; 16],
         name: &str,
     ) -> Box<dyn UploadSession>;
@@ -2333,16 +2410,20 @@ async fn handle_incoming(mut stream: TcpStream, peer: SocketAddr, ctx: Arc<Uploa
         }
 
         // ── HELLO handshake ───────────────────────────────────────────────────
+        // The peer's chosen nick (CT_NAME) rides in its HELLO; keep it to label
+        // the upload row. None when it sent no name.
+        let peer_nick: Option<String>;
         loop {
-            let (_proto, opcode, _payload) =
+            let (_proto, opcode, payload) =
                 timeout(OP_TIMEOUT, read_frame(&mut stream, &mut ciphers))
                     .await
                     .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "hello timeout"))??;
             if opcode == OP_HELLO {
+                peer_nick = parse_hello_nick(&payload);
                 // HELLOANSWER carries no hash-size prefix (see build_hello).
                 let answer = build_hello(&our_hash, ctx.tcp_port, ctx.kad_udp_port, &ctx.nick, false);
                 write_frame(&mut stream, &mut ciphers, OP_HELLOANSWER, &answer).await?;
-                debug!(%peer, "eMule HELLO done; awaiting file request");
+                debug!(%peer, nick = ?peer_nick, "eMule HELLO done; awaiting file request");
                 break;
             }
             debug!(%peer, "got 0x{opcode:02x} before HELLO");
@@ -2468,6 +2549,7 @@ async fn handle_incoming(mut stream: TcpStream, peer: SocketAddr, ctx: Arc<Uploa
                 &done,
                 &ctx,
                 peer,
+                peer_nick.as_deref(),
                 OP_TIMEOUT,
             )
             .await
@@ -2519,6 +2601,7 @@ async fn run_upload_session(
     done: &[bool],
     ctx: &UploadContext,
     peer: SocketAddr,
+    peer_nick: Option<&str>,
     op_timeout: Duration,
 ) -> io::Result<()> {
     // Wait for STARTUPLOADREQ.
@@ -2543,7 +2626,7 @@ async fn run_upload_session(
     let session = ctx
         .upload_observer
         .as_ref()
-        .map(|o| o.upload_started(peer, *hash, &info.name));
+        .map(|o| o.upload_started(peer, peer_nick, *hash, &info.name));
 
     // Serve from the file the whitelist entry points at: the `.part` for an
     // in-progress download, the final file for a completed share.
@@ -2747,6 +2830,24 @@ pub(crate) mod mock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_hello_nick_roundtrips_build_hello() {
+        // OP_HELLO carries the hash-size prefix; CT_NAME is the first tag.
+        let hello = build_hello(&[0u8; 16], 4321, 1234, "Fulanito", true);
+        assert_eq!(parse_hello_nick(&hello).as_deref(), Some("Fulanito"));
+        // No nick advertised → no CT_NAME tag → None (caller shows ip:port).
+        let anon = build_hello(&[0u8; 16], 4321, 1234, "", true);
+        assert_eq!(parse_hello_nick(&anon), None);
+    }
+
+    #[test]
+    fn parse_hello_nick_is_panic_free_on_garbage() {
+        // Truncated / nonsense payloads must never panic, just yield None.
+        assert_eq!(parse_hello_nick(&[]), None);
+        assert_eq!(parse_hello_nick(&[0x10; 8]), None);
+        assert_eq!(parse_hello_nick(&[0xff; 40]), None);
+    }
 
     #[test]
     fn upload_queue_rank_reflects_waiting_order() {

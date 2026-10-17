@@ -77,13 +77,24 @@ fn UploadRow(upload: ActiveUpload) -> impl IntoView {
     let title_attr = title.clone();
     let rate = format_speed(upload.rate_bps);
     let sent = format_size(upload.bytes_sent);
+    // eMule peers may advertise a nick; show "Nick · ip:port" when they did,
+    // otherwise just the address. libp2p peers never carry a nick.
+    let peer_label = match upload
+        .nick
+        .as_deref()
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+    {
+        Some(nick) => format!("{nick} · {}", upload.peer),
+        None => upload.peer.clone(),
+    };
 
     view! {
         <li class="ul-row">
             <span class=format!("ul-badge {net_class}")>{net_label}</span>
             <div class="ul-main">
                 <span class="ul-name" title=title_attr>{title}</span>
-                <span class="ul-peer" title=t!("upload.peer_title")>{upload.peer}</span>
+                <span class="ul-peer" title=t!("upload.peer_title")>{peer_label}</span>
             </div>
             <span class="ul-sent" title=t!("upload.sent_title")>{sent}</span>
             <span class="ul-rate">{if rate.is_empty() { "—".to_string() } else { rate }}</span>
