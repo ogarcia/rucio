@@ -526,6 +526,24 @@
         dt { color: var(--text-3); font-size: 0.8125rem; white-space: nowrap; }
         dd { font-size: 0.8125rem; }
 
+        /* Per-network session breakdown (rucio · eMule · Total). A label column
+           plus three right-aligned number columns that always line up. */
+        .stats-split {
+            display: grid; grid-template-columns: max-content repeat(3, 1fr);
+            gap: 0.4rem 0.75rem; align-items: baseline;
+        }
+        .stats-split > span {
+            font-size: 0.8125rem; text-align: right;
+            font-variant-numeric: tabular-nums; white-space: nowrap;
+        }
+        .stats-split .stats-row-l {
+            color: var(--text-3); text-align: left;
+        }
+        .stats-split .stats-col-h {
+            font-size: 0.6875rem; text-transform: uppercase;
+            letter-spacing: 0.06em; color: var(--text-4);
+        }
+
         .section-label {
             font-size: 0.6875rem; text-transform: uppercase;
             letter-spacing: 0.08em; color: var(--text-4);

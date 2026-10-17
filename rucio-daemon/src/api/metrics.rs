@@ -59,18 +59,41 @@ pub async fn get_metrics(
     // Live connection gauges (not accumulated): (file, peer) transfer pairs in
     // each direction, counted the same way so the two are comparable.
     let upload_conns = state.upload_stats.active_connection_count();
-    let download_conns: usize = state
-        .live_stats
-        .read()
-        .await
-        .values()
-        .map(|s| s.sources_active as usize)
-        .sum();
+    // Split download connections by network: eMule downloads carry negative ids.
+    let (download_conns, download_conns_emule_n) = {
+        let ls = state.live_stats.read().await;
+        let mut total = 0usize;
+        let mut emule = 0usize;
+        for (id, s) in ls.iter() {
+            let n = s.sources_active as usize;
+            total += n;
+            if *id < 0 {
+                emule += n;
+            }
+        }
+        (total, emule)
+    };
+
+    // Per-network session split, only when the eMule subsystem is active: the
+    // eMule-only slice (the rucio slice is `session` minus this, derived in the
+    // UI). `None` ⇒ the view shows a single, combined column.
+    let session_emule = state.emule_metrics.as_ref().map(|m| m.session_snapshot());
+    let (download_conns_emule, upload_conns_emule) = if session_emule.is_some() {
+        (
+            Some(download_conns_emule_n),
+            Some(state.upload_stats.active_connection_count_emule()),
+        )
+    } else {
+        (None, None)
+    };
 
     Ok(Json(MetricsResponse {
         session,
         total,
         download_conns,
         upload_conns,
+        session_emule,
+        download_conns_emule,
+        upload_conns_emule,
     }))
 }

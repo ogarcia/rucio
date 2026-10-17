@@ -134,6 +134,7 @@ overlay:
     title: "Estadísticas"
     session: "Esta sesión"
     total: "Total histórico"
+    col_total: "Total"
     uptime: "Tiempo activo"
     speed_down: "↓ velocidad"
     speed_up: "↑ velocidad"

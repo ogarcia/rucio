@@ -67,6 +67,7 @@ async fn test_state() -> (
         indexing_count: Arc::new(AtomicUsize::new(0)),
         ws_tx,
         metrics: Arc::new(crate::metrics::Metrics::default()),
+        emule_metrics: None,
         upload_throttle: Arc::new(crate::throttle::TokenBucket::new(0)),
         download_throttle: Arc::new(crate::throttle::TokenBucket::new(0)),
         bandwidth: Arc::new(crate::throttle::BandwidthState::new(

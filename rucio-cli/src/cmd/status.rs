@@ -284,37 +284,44 @@ pub async fn metrics_cmd(client: &ApiClient) -> Result<()> {
     ]);
 
     println!("{}", t!("node.metrics.session_header"));
-    println!(
-        "  {l_up:<w$} : {}",
-        t!(
-            "node.metrics.upload_val",
-            bytes = color::value(&format_bytes(sess.uploaded_bytes)),
-            chunks = sess.chunks_served
-        )
-    );
-    println!(
-        "  {l_down:<w$} : {}",
-        t!(
-            "node.metrics.download_val",
-            bytes = color::value(&format_bytes(sess.downloaded_bytes)),
-            chunks = sess.chunks_received,
-            rejected = sess.chunks_rejected
-        )
-    );
-    println!(
-        "  {l_sup:<w$} : {}",
-        t!(
-            "node.metrics.speed_val",
-            speed = color::value(&format_bytes(sess.upload_speed))
-        )
-    );
-    println!(
-        "  {l_sdown:<w$} : {}",
-        t!(
-            "node.metrics.speed_val",
-            speed = color::value(&format_bytes(sess.download_speed))
-        )
-    );
+    match &m.session_emule {
+        // eMule active → split the live session by network (rucio · eMule · Total).
+        Some(e) => print_session_split(sess, e),
+        // No eMule → the single combined view, as before.
+        None => {
+            println!(
+                "  {l_up:<w$} : {}",
+                t!(
+                    "node.metrics.upload_val",
+                    bytes = color::value(&format_bytes(sess.uploaded_bytes)),
+                    chunks = sess.chunks_served
+                )
+            );
+            println!(
+                "  {l_down:<w$} : {}",
+                t!(
+                    "node.metrics.download_val",
+                    bytes = color::value(&format_bytes(sess.downloaded_bytes)),
+                    chunks = sess.chunks_received,
+                    rejected = sess.chunks_rejected
+                )
+            );
+            println!(
+                "  {l_sup:<w$} : {}",
+                t!(
+                    "node.metrics.speed_val",
+                    speed = color::value(&format_bytes(sess.upload_speed))
+                )
+            );
+            println!(
+                "  {l_sdown:<w$} : {}",
+                t!(
+                    "node.metrics.speed_val",
+                    speed = color::value(&format_bytes(sess.download_speed))
+                )
+            );
+        }
+    }
 
     println!();
     println!("{}", t!("node.metrics.lifetime_header"));
@@ -337,6 +344,72 @@ pub async fn metrics_cmd(client: &ApiClient) -> Result<()> {
     );
 
     Ok(())
+}
+
+/// Print the live session metrics split by network as a rucio · eMule · Total
+/// table. The rucio column is derived as Total − eMule per field, so the three
+/// always add up. Mirrors the panel's per-network breakdown.
+fn print_session_split(
+    s: &rucio_core::api::metrics::SessionMetrics,
+    e: &rucio_core::api::metrics::SessionMetrics,
+) {
+    let speed = |b: u64| format!("{}/s", format_bytes(b));
+    let mut b = Builder::new();
+    b.push_record([
+        String::new(),
+        "rucio".to_string(),
+        "eMule".to_string(),
+        t!("node.metrics.col_total").to_string(),
+    ]);
+    b.push_record([
+        t!("node.metrics.upload").to_string(),
+        format_bytes(s.uploaded_bytes.saturating_sub(e.uploaded_bytes)),
+        format_bytes(e.uploaded_bytes),
+        format_bytes(s.uploaded_bytes),
+    ]);
+    b.push_record([
+        t!("node.metrics.download").to_string(),
+        format_bytes(s.downloaded_bytes.saturating_sub(e.downloaded_bytes)),
+        format_bytes(e.downloaded_bytes),
+        format_bytes(s.downloaded_bytes),
+    ]);
+    b.push_record([
+        t!("node.metrics.speed_up").to_string(),
+        speed(s.upload_speed.saturating_sub(e.upload_speed)),
+        speed(e.upload_speed),
+        speed(s.upload_speed),
+    ]);
+    b.push_record([
+        t!("node.metrics.speed_down").to_string(),
+        speed(s.download_speed.saturating_sub(e.download_speed)),
+        speed(e.download_speed),
+        speed(s.download_speed),
+    ]);
+    b.push_record([
+        t!("node.metrics.chunks_served").to_string(),
+        s.chunks_served.saturating_sub(e.chunks_served).to_string(),
+        e.chunks_served.to_string(),
+        s.chunks_served.to_string(),
+    ]);
+    b.push_record([
+        t!("node.metrics.chunks_received").to_string(),
+        s.chunks_received
+            .saturating_sub(e.chunks_received)
+            .to_string(),
+        e.chunks_received.to_string(),
+        s.chunks_received.to_string(),
+    ]);
+    if s.chunks_rejected > 0 {
+        b.push_record([
+            t!("node.metrics.chunks_rejected").to_string(),
+            s.chunks_rejected
+                .saturating_sub(e.chunks_rejected)
+                .to_string(),
+            e.chunks_rejected.to_string(),
+            s.chunks_rejected.to_string(),
+        ]);
+    }
+    println!("{}", b.build());
 }
 
 /// Return a short scope label for a multiaddr string, or empty string if the

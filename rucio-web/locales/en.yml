@@ -136,6 +136,7 @@ overlay:
     title: "Statistics"
     session: "This session"
     total: "All-time total"
+    col_total: "Total"
     uptime: "Uptime"
     speed_down: "↓ speed"
     speed_up: "↑ speed"

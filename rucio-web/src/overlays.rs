@@ -224,32 +224,28 @@ pub fn StatsPanel(active_panel: RwSignal<Option<super::Panel>>) -> impl IntoView
                             let t = &m.total;
                             view! {
                                 <p class="section-label">{t!("overlay.stats.session")}</p>
+                                // Uptime is session-wide (not per network) — shown once.
                                 <dl class="panel-dl">
                                     <dt>{t!("overlay.stats.uptime")}</dt>
                                     <dd>{format_uptime(s.uptime_secs())}</dd>
-                                    <dt>{t!("overlay.stats.speed_down")}</dt>
-                                    <dd>{format_speed_full(s.download_speed)}</dd>
-                                    <dt>{t!("overlay.stats.speed_up")}</dt>
-                                    <dd>{format_speed_full(s.upload_speed)}</dd>
-                                    <dt>{t!("overlay.stats.conns_down")}</dt>
-                                    <dd>{m.download_conns.to_string()}</dd>
-                                    <dt>{t!("overlay.stats.conns_up")}</dt>
-                                    <dd>{m.upload_conns.to_string()}</dd>
-                                    <dt>{t!("overlay.stats.downloaded")}</dt>
-                                    <dd>{format_size(s.downloaded_bytes)}</dd>
-                                    <dt>{t!("overlay.stats.uploaded")}</dt>
-                                    <dd>{format_size(s.uploaded_bytes)}</dd>
-                                    <dt>{t!("overlay.stats.ratio")}</dt>
-                                    <dd>{format_ratio(s.ratio, s.uploaded_bytes)}</dd>
-                                    <dt>{t!("overlay.stats.chunks_received")}</dt>
-                                    <dd>{s.chunks_received.to_string()}</dd>
-                                    <dt>{t!("overlay.stats.chunks_served")}</dt>
-                                    <dd>{s.chunks_served.to_string()}</dd>
-                                    {(s.chunks_rejected > 0).then(|| view! {
-                                        <dt>{t!("overlay.stats.chunks_rejected")}</dt>
-                                        <dd class="dl-error">{s.chunks_rejected.to_string()}</dd>
-                                    })}
                                 </dl>
+                                {match m.session_emule.clone() {
+                                    // eMule active → split the live session by network.
+                                    Some(e) => session_split(
+                                        s.clone(),
+                                        e,
+                                        m.download_conns,
+                                        m.download_conns_emule.unwrap_or(0),
+                                        m.upload_conns,
+                                        m.upload_conns_emule.unwrap_or(0),
+                                    )
+                                    .into_any(),
+                                    // No eMule → a single combined column, as before.
+                                    None => {
+                                        session_single(s.clone(), m.download_conns, m.upload_conns)
+                                            .into_any()
+                                    }
+                                }}
 
                                 <p class="section-label">{t!("overlay.stats.total")}</p>
                                 <dl class="panel-dl">
@@ -482,6 +478,129 @@ pub fn AboutPanel(
                     </div>
                 </div>
             </div>
+        </div>
+    }
+}
+
+/// The live session stats as a single combined column (no eMule split): the
+/// view shown when the daemon reports no per-network breakdown.
+fn session_single(
+    s: crate::types::SessionMetrics,
+    download_conns: usize,
+    upload_conns: usize,
+) -> impl IntoView {
+    view! {
+        <dl class="panel-dl">
+            <dt>{t!("overlay.stats.speed_down")}</dt>
+            <dd>{format_speed_full(s.download_speed)}</dd>
+            <dt>{t!("overlay.stats.speed_up")}</dt>
+            <dd>{format_speed_full(s.upload_speed)}</dd>
+            <dt>{t!("overlay.stats.conns_down")}</dt>
+            <dd>{download_conns.to_string()}</dd>
+            <dt>{t!("overlay.stats.conns_up")}</dt>
+            <dd>{upload_conns.to_string()}</dd>
+            <dt>{t!("overlay.stats.downloaded")}</dt>
+            <dd>{format_size(s.downloaded_bytes)}</dd>
+            <dt>{t!("overlay.stats.uploaded")}</dt>
+            <dd>{format_size(s.uploaded_bytes)}</dd>
+            <dt>{t!("overlay.stats.ratio")}</dt>
+            <dd>{format_ratio(s.ratio, s.uploaded_bytes)}</dd>
+            <dt>{t!("overlay.stats.chunks_received")}</dt>
+            <dd>{s.chunks_received.to_string()}</dd>
+            <dt>{t!("overlay.stats.chunks_served")}</dt>
+            <dd>{s.chunks_served.to_string()}</dd>
+            {(s.chunks_rejected > 0).then(|| view! {
+                <dt>{t!("overlay.stats.chunks_rejected")}</dt>
+                <dd class="dl-error">{s.chunks_rejected.to_string()}</dd>
+            })}
+        </dl>
+    }
+}
+
+/// The live session stats split into rucio · eMule · Total columns. `s` is the
+/// combined total (what the daemon already reports), `e` the eMule-only slice;
+/// the rucio column is derived as `s − e` per field so the three always add up.
+#[allow(clippy::too_many_arguments)]
+fn session_split(
+    s: crate::types::SessionMetrics,
+    e: crate::types::SessionMetrics,
+    download_conns: usize,
+    download_conns_emule: usize,
+    upload_conns: usize,
+    upload_conns_emule: usize,
+) -> impl IntoView {
+    // rucio = total − eMule, per field (saturating: display-only, never negative).
+    let r_dl_spd = s.download_speed.saturating_sub(e.download_speed);
+    let r_ul_spd = s.upload_speed.saturating_sub(e.upload_speed);
+    let r_dl = s.downloaded_bytes.saturating_sub(e.downloaded_bytes);
+    let r_ul = s.uploaded_bytes.saturating_sub(e.uploaded_bytes);
+    let r_cr = s.chunks_received.saturating_sub(e.chunks_received);
+    let r_cs = s.chunks_served.saturating_sub(e.chunks_served);
+    let r_crej = s.chunks_rejected.saturating_sub(e.chunks_rejected);
+    let r_dc = download_conns.saturating_sub(download_conns_emule);
+    let r_uc = upload_conns.saturating_sub(upload_conns_emule);
+    // A per-column ratio from that column's own up/down bytes.
+    let ratio = |up: u64, down: u64| -> Option<f64> { (down > 0).then(|| up as f64 / down as f64) };
+    let show_rej = s.chunks_rejected > 0;
+
+    view! {
+        <div class="stats-split">
+            <span></span>
+            <span class="stats-col-h">"rucio"</span>
+            <span class="stats-col-h">"eMule"</span>
+            <span class="stats-col-h">{t!("overlay.stats.col_total")}</span>
+
+            <span class="stats-row-l">{t!("overlay.stats.speed_down")}</span>
+            <span>{format_speed_full(r_dl_spd)}</span>
+            <span>{format_speed_full(e.download_speed)}</span>
+            <span>{format_speed_full(s.download_speed)}</span>
+
+            <span class="stats-row-l">{t!("overlay.stats.speed_up")}</span>
+            <span>{format_speed_full(r_ul_spd)}</span>
+            <span>{format_speed_full(e.upload_speed)}</span>
+            <span>{format_speed_full(s.upload_speed)}</span>
+
+            <span class="stats-row-l">{t!("overlay.stats.conns_down")}</span>
+            <span>{r_dc.to_string()}</span>
+            <span>{download_conns_emule.to_string()}</span>
+            <span>{download_conns.to_string()}</span>
+
+            <span class="stats-row-l">{t!("overlay.stats.conns_up")}</span>
+            <span>{r_uc.to_string()}</span>
+            <span>{upload_conns_emule.to_string()}</span>
+            <span>{upload_conns.to_string()}</span>
+
+            <span class="stats-row-l">{t!("overlay.stats.downloaded")}</span>
+            <span>{format_size(r_dl)}</span>
+            <span>{format_size(e.downloaded_bytes)}</span>
+            <span>{format_size(s.downloaded_bytes)}</span>
+
+            <span class="stats-row-l">{t!("overlay.stats.uploaded")}</span>
+            <span>{format_size(r_ul)}</span>
+            <span>{format_size(e.uploaded_bytes)}</span>
+            <span>{format_size(s.uploaded_bytes)}</span>
+
+            <span class="stats-row-l">{t!("overlay.stats.ratio")}</span>
+            <span>{format_ratio(ratio(r_ul, r_dl), r_ul)}</span>
+            <span>{format_ratio(ratio(e.uploaded_bytes, e.downloaded_bytes), e.uploaded_bytes)}</span>
+            <span>{format_ratio(s.ratio, s.uploaded_bytes)}</span>
+
+            <span class="stats-row-l">{t!("overlay.stats.chunks_received")}</span>
+            <span>{r_cr.to_string()}</span>
+            <span>{e.chunks_received.to_string()}</span>
+            <span>{s.chunks_received.to_string()}</span>
+
+            <span class="stats-row-l">{t!("overlay.stats.chunks_served")}</span>
+            <span>{r_cs.to_string()}</span>
+            <span>{e.chunks_served.to_string()}</span>
+            <span>{s.chunks_served.to_string()}</span>
+
+            {show_rej.then(|| view! {
+                <span class="stats-row-l">{t!("overlay.stats.chunks_rejected")}</span>
+                <span class="dl-error">{r_crej.to_string()}</span>
+                <span class="dl-error">{e.chunks_rejected.to_string()}</span>
+                <span class="dl-error">{s.chunks_rejected.to_string()}</span>
+            })}
         </div>
     }
 }

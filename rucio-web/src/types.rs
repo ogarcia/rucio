@@ -555,6 +555,14 @@ pub struct MetricsResponse {
     pub download_conns: usize,
     #[serde(default)]
     pub upload_conns: usize,
+    /// eMule-only slice of `session` (rucio = `session` − this). `Some` only when
+    /// the daemon has eMule active; drives the per-network split in the stats view.
+    #[serde(default)]
+    pub session_emule: Option<SessionMetrics>,
+    #[serde(default)]
+    pub download_conns_emule: Option<usize>,
+    #[serde(default)]
+    pub upload_conns_emule: Option<usize>,
 }
 
 #[derive(Deserialize, Clone, Debug)]

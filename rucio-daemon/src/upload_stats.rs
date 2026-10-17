@@ -249,6 +249,17 @@ impl UploadRegistry {
         self.inner.lock().unwrap().len()
     }
 
+    /// Active upload connections served over eMule — the per-network slice of
+    /// [`Self::active_connection_count`] (rucio = total − this).
+    pub fn active_connection_count_emule(&self) -> usize {
+        self.inner
+            .lock()
+            .unwrap()
+            .keys()
+            .filter(|k| k.network == UploadNetwork::Emule)
+            .count()
+    }
+
     /// Insert (or reuse) an eMule upload row and return its byte counter. The
     /// row is removed when the returned key is dropped via [`Self::remove`].
     #[cfg(feature = "emule-compat")]

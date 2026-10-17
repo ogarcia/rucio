@@ -108,6 +108,20 @@ pub struct MetricsResponse {
     /// figures are directly comparable.
     #[serde(default)]
     pub upload_conns: usize,
+    /// eMule-only slice of `session`, present only when the daemon was built with
+    /// eMule support and the subsystem is enabled. The stats view shows it as a
+    /// per-network column; the rucio column is `session` minus this. `None` means
+    /// no split (no eMule) — show `session` as a single column.
+    #[serde(default)]
+    pub session_emule: Option<SessionMetrics>,
+    /// eMule-only slice of `download_conns` (rucio = total − this). `None` ⇔
+    /// `session_emule` is `None`.
+    #[serde(default)]
+    pub download_conns_emule: Option<usize>,
+    /// eMule-only slice of `upload_conns` (rucio = total − this). `None` ⇔
+    /// `session_emule` is `None`.
+    #[serde(default)]
+    pub upload_conns_emule: Option<usize>,
 }
 
 // ---------------------------------------------------------------------------

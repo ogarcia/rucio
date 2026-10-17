@@ -146,6 +146,10 @@ node:
     upload_val: "%{bytes} (%{chunks} bloques servidos)"
     download_val: "%{bytes} (%{chunks} bloques, %{rejected} rechazados)"
     speed_val: "%{speed}/s"
+    col_total: "Total"
+    chunks_served: "Bloques servidos"
+    chunks_received: "Bloques recibidos"
+    chunks_rejected: "Bloques rechazados"
 
 emule:
   compat: "Compatibilidad eMule: %{state}"

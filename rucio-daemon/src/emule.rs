@@ -1004,7 +1004,7 @@ pub async fn run_ed2k_download(
     download_slots: &Arc<PriorityAdmission>,
     conn_pool: &Arc<rucio_emule::pool::PeerConnPool>,
     live_stats: &crate::live_stats::LiveStatsMap,
-    metrics: &Arc<crate::metrics::Metrics>,
+    metrics: &crate::metrics::MetricsSink,
     download_throttle: &Arc<crate::throttle::TokenBucket>,
     notifier: &crate::notifier::Notifier,
     node_tx: tokio::sync::mpsc::Sender<crate::node::messages::NodeCmd>,

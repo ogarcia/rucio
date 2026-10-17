@@ -476,6 +476,9 @@ pub struct AppState {
     pub ws_tx: broadcast::Sender<WsEvent>,
     /// In-memory session metrics (upload/download bytes, speeds, chunk counts).
     pub metrics: Arc<Metrics>,
+    /// Parallel eMule-only session metrics, so the stats view can split the live
+    /// session by network. `None` when eMule isn't compiled in or is disabled.
+    pub emule_metrics: Option<Arc<Metrics>>,
     /// Upload bandwidth throttle (global, across all peers).  0 KB/s = unlimited.
     pub upload_throttle: Arc<TokenBucket>,
     /// Download bandwidth throttle (global, across all peers).  0 KB/s = unlimited.

@@ -14,6 +14,8 @@
 //! as a separate pair of `AtomicU64` so handlers can read them without
 //! holding any lock.
 
+#[cfg(feature = "emule-compat")]
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
@@ -306,6 +308,48 @@ impl Metrics {
             chunks_rejected: d_rej,
             uptime_seconds: d_uptime,
             ratio: None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// eMule metrics sink
+// ---------------------------------------------------------------------------
+
+/// A metrics destination for eMule download traffic. Always feeds the global
+/// session metrics (which aggregate both networks) and, when present, a parallel
+/// eMule-only [`Metrics`] so the stats view can split the live session by
+/// network. Its method names mirror [`Metrics`], so the eMule call sites use it
+/// unchanged. eMule *uploads* are folded into both instances at the once-a-second
+/// reconcile in the main loop, so they need no sink.
+#[cfg(feature = "emule-compat")]
+#[derive(Clone)]
+pub struct MetricsSink {
+    global: Arc<Metrics>,
+    emule: Option<Arc<Metrics>>,
+}
+
+#[cfg(feature = "emule-compat")]
+impl MetricsSink {
+    pub fn new(global: Arc<Metrics>, emule: Option<Arc<Metrics>>) -> Self {
+        Self { global, emule }
+    }
+    pub fn record_download_bytes(&self, bytes: u64) {
+        self.global.record_download_bytes(bytes);
+        if let Some(e) = &self.emule {
+            e.record_download_bytes(bytes);
+        }
+    }
+    pub fn record_download_chunk(&self) {
+        self.global.record_download_chunk();
+        if let Some(e) = &self.emule {
+            e.record_download_chunk();
+        }
+    }
+    pub fn record_rejected(&self) {
+        self.global.record_rejected();
+        if let Some(e) = &self.emule {
+            e.record_rejected();
         }
     }
 }

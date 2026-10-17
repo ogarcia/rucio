@@ -227,6 +227,18 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
     let session_metrics = Arc::new(metrics::Metrics::new(metrics::instant_to_unix(
         &Instant::now(),
     )));
+    // Parallel eMule-only session metrics so the stats view can split live
+    // traffic by network. Fed alongside the global metrics at the eMule paths;
+    // the global still carries the combined total (and drives the historical DB
+    // flush). `None` when eMule isn't compiled in or is disabled → no split.
+    #[cfg(feature = "emule-compat")]
+    let emule_metrics: Option<Arc<metrics::Metrics>> = config.emule.enabled.then(|| {
+        Arc::new(metrics::Metrics::new(metrics::instant_to_unix(
+            &Instant::now(),
+        )))
+    });
+    #[cfg(not(feature = "emule-compat"))]
+    let emule_metrics: Option<Arc<metrics::Metrics>> = None;
     let rucio_upload_limiter: rucio_net::ByteLimiter = {
         let up = Arc::clone(&upload_throttle);
         let met = Arc::clone(&session_metrics);
@@ -708,6 +720,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         indexing_count: Arc::clone(&indexing_count),
         ws_tx: ws_tx.clone(),
         metrics: Arc::clone(&session_metrics),
+        emule_metrics: emule_metrics.clone(),
         upload_throttle: Arc::clone(&upload_throttle),
         download_throttle: Arc::clone(&download_throttle),
         bandwidth: Arc::clone(&bandwidth),
@@ -824,7 +837,10 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                 let slots = emule_download_slots.clone();
                 let pool = emule_conn_pool.clone();
                 let ls = live_stats.clone();
-                let met = Arc::clone(&session_metrics);
+                let met = crate::metrics::MetricsSink::new(
+                    Arc::clone(&session_metrics),
+                    emule_metrics.clone(),
+                );
                 let dt = Arc::clone(&download_throttle);
                 let reg = emule_cancel.clone();
                 let notif = notifier.clone();
@@ -996,14 +1012,22 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                     use std::sync::atomic::Ordering;
                     let up = emule_uploaded_bytes.load(Ordering::Relaxed);
                     let ch = emule_uploaded_chunks.load(Ordering::Relaxed);
-                    session_metrics.record_upload_bulk(
-                        up.saturating_sub(last_emule_up_bytes),
-                        ch.saturating_sub(last_emule_up_chunks),
-                    );
+                    let up_delta = up.saturating_sub(last_emule_up_bytes);
+                    let ch_delta = ch.saturating_sub(last_emule_up_chunks);
+                    session_metrics.record_upload_bulk(up_delta, ch_delta);
+                    // Feed the same delta to the eMule-only instance (if any), so
+                    // the per-network upload column tracks it too.
+                    if let Some(em) = &emule_metrics {
+                        em.record_upload_bulk(up_delta, ch_delta);
+                    }
                     last_emule_up_bytes = up;
                     last_emule_up_chunks = ch;
                 }
                 session_metrics.tick();
+                // Advance the eMule instance's speed windows in lockstep.
+                if let Some(em) = &emule_metrics {
+                    em.tick();
+                }
                 sample_download_speeds(&db, &live_stats, &mut speed_samples).await;
                 // Refresh per-peer upload rates and prune finished rucio rows.
                 upload_stats.sample();
@@ -1332,7 +1356,10 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                                             let slots = emule_download_slots.clone();
                                             let pool = emule_conn_pool.clone();
                                             let ls = live_stats.clone();
-                                            let met = Arc::clone(&session_metrics);
+                                            let met = crate::metrics::MetricsSink::new(
+                                                Arc::clone(&session_metrics),
+                                                emule_metrics.clone(),
+                                            );
                                             let dt = Arc::clone(&download_throttle);
                                             let reg = emule_cancel.clone();
                                             let notif = notifier.clone();
