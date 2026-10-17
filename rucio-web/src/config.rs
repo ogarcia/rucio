@@ -63,6 +63,164 @@ fn parse_kbps(s: &str) -> u64 {
     s.trim().parse().unwrap_or(0)
 }
 
+/// Unit for the bandwidth-limit inputs. The daemon stores every cap in binary
+/// KB/s (KiB/s); MB/s and GB/s are input conveniences scaled by 1024, so a value
+/// entered in any unit round-trips to the same byte cap.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SpeedUnit {
+    Kb,
+    Mb,
+    Gb,
+}
+
+impl SpeedUnit {
+    fn factor(self) -> u64 {
+        match self {
+            SpeedUnit::Kb => 1,
+            SpeedUnit::Mb => 1024,
+            SpeedUnit::Gb => 1024 * 1024,
+        }
+    }
+    /// Stable code used as the `<option>` value (not shown to the user).
+    fn code(self) -> &'static str {
+        match self {
+            SpeedUnit::Kb => "kb",
+            SpeedUnit::Mb => "mb",
+            SpeedUnit::Gb => "gb",
+        }
+    }
+    fn from_code(s: &str) -> Self {
+        match s {
+            "mb" => SpeedUnit::Mb,
+            "gb" => SpeedUnit::Gb,
+            _ => SpeedUnit::Kb,
+        }
+    }
+}
+
+/// Pick the unit the box shows a stored KB/s cap in. Each factor is a power of
+/// two, so `kbps / factor` terminates after exactly
+/// `log2(factor) - trailing_zeros(kbps)` decimals. Use the largest unit (>= 1)
+/// whose exact form needs at most `MAX_DEC` decimals — so 51712 reads as
+/// "50.5 MB/s" and 1536 as "1.5 MB/s" — and fall back to KB/s for anything that
+/// would need a long fraction (e.g. 1500). The shown value is always exact, so
+/// re-saving an untouched-looking field never drifts it.
+fn split_kbps(kbps: u64) -> (String, SpeedUnit) {
+    if kbps == 0 {
+        return ("0".to_string(), SpeedUnit::Kb);
+    }
+    const MAX_DEC: u32 = 3;
+    for (unit, pow) in [(SpeedUnit::Gb, 20u32), (SpeedUnit::Mb, 10u32)] {
+        let factor = 1u64 << pow;
+        if kbps >= factor {
+            let dec = pow.saturating_sub(kbps.trailing_zeros());
+            if dec <= MAX_DEC {
+                return (
+                    format!("{:.*}", dec as usize, kbps as f64 / factor as f64),
+                    unit,
+                );
+            }
+        }
+    }
+    (format!("{kbps}"), SpeedUnit::Kb)
+}
+
+/// Fold a possibly-decimal amount in `unit` back to a whole KB/s cap.
+fn amount_to_kbps(amount: &str, unit: SpeedUnit) -> u64 {
+    let n: f64 = amount.trim().parse().unwrap_or(0.0);
+    if n <= 0.0 {
+        0
+    } else {
+        (n * unit.factor() as f64).round() as u64
+    }
+}
+
+/// A bandwidth-limit field: a numeric amount plus a unit selector (KB/s · MB/s ·
+/// GB/s), with a live read-only "≈ Mbps" mirror so a user can cross-check the
+/// byte cap against their ISP plan (which is sold in bits). The canonical value
+/// stays in binary KB/s in `value`, so saving and CLI parity are unchanged — the
+/// widget is purely an input convenience. Honours env-locking like other fields.
+#[component]
+fn SpeedField(
+    /// i18n key for the field label.
+    label: &'static str,
+    /// Bound KB/s value as a string (shared with the load/save paths).
+    value: RwSignal<String>,
+    /// Dotted config key, matched against `locked` for editability.
+    #[prop(into)]
+    field_key: String,
+    /// Server-computed list of env-pinned keys.
+    locked: RwSignal<Vec<String>>,
+) -> impl IntoView {
+    let num = RwSignal::new(String::new());
+    let unit = RwSignal::new(SpeedUnit::Kb);
+    // The KB/s string we last pushed into `value`, so the sync effect can tell an
+    // external change (a config load) from our own write-back.
+    let last_pushed = RwSignal::new(String::new());
+    let is_locked = Signal::derive(move || locked.get().contains(&field_key));
+
+    // External → internal: when `value` changes from outside (config loaded),
+    // re-derive the amount + unit shown. Our own writes match `last_pushed`, so
+    // they never trigger a re-derive (and can't fight the user's typing).
+    Effect::new(move |_| {
+        let v = value.get();
+        if v != last_pushed.get_untracked() {
+            let (n, u) = split_kbps(v.trim().parse::<u64>().unwrap_or(0));
+            num.set(n);
+            unit.set(u);
+            last_pushed.set(v);
+        }
+    });
+
+    // Internal → external: fold amount + unit back into the KB/s string.
+    let push = move || {
+        let s = amount_to_kbps(&num.get(), unit.get()).to_string();
+        last_pushed.set(s.clone());
+        value.set(s);
+    };
+
+    // The read-only bit-rate mirror (ISP plans are quoted in bits).
+    let mirror = move || {
+        let kbps = amount_to_kbps(&num.get(), unit.get());
+        if kbps == 0 {
+            t!("common.unlimited").to_string()
+        } else {
+            format!("≈ {}", crate::types::format_rate_bits(kbps))
+        }
+    };
+
+    view! {
+        <div class="config-field-speed">
+            <label class="config-label">{t!(label)}</label>
+            <div class="speed-box">
+                <input class="config-input speed-num" type="text"
+                    class:config-input-locked=move || is_locked.get()
+                    prop:readonly=move || is_locked.get()
+                    title=move || if is_locked.get() {
+                        t!("config.env_locked").to_string()
+                    } else {
+                        String::new()
+                    }
+                    prop:value=move || num.get()
+                    on:input=move |e| { num.set(event_target_value(&e)); push(); } />
+                <select class="config-input speed-unit"
+                    class:config-input-locked=move || is_locked.get()
+                    prop:disabled=move || is_locked.get()
+                    prop:value=move || unit.get().code().to_string()
+                    on:change=move |e| {
+                        unit.set(SpeedUnit::from_code(&event_target_value(&e)));
+                        push();
+                    }>
+                    <option value="kb">"KB/s"</option>
+                    <option value="mb">"MB/s"</option>
+                    <option value="gb">"GB/s"</option>
+                </select>
+            </div>
+            <span class="speed-mirror">{mirror}</span>
+        </div>
+    }
+}
+
 /// CSS classes for a per-kind notification pill: reflects its on/off state and
 /// greys it out (non-interactive) while the master switch is off.
 fn notif_pill_class(on: bool, master_enabled: bool) -> &'static str {
@@ -564,47 +722,19 @@ pub fn ConfigModal(
                             ConfigTab::Network => view! {
                                 <div class="config-section">
                                     <p class="config-hint">{t!("config.network.hint_limits")}</p>
-                                    <div class="config-field">
-                                        <label class="config-label">{t!("config.network.download_limit")}</label>
-                                        <input class="config-input" type="text"
-                                            class:config-input-locked=move || is_locked("network.download_limit_kbps")
-                                            prop:readonly=move || is_locked("network.download_limit_kbps")
-                                            title=move || lock_title("network.download_limit_kbps")
-                                            prop:value=move || f_dl.get()
-                                            on:input=move |e| f_dl.set(event_target_value(&e))/>
-                                    </div>
-                                    <div class="config-field">
-                                        <label class="config-label">{t!("config.network.upload_limit")}</label>
-                                        <input class="config-input" type="text"
-                                            class:config-input-locked=move || is_locked("network.upload_limit_kbps")
-                                            prop:readonly=move || is_locked("network.upload_limit_kbps")
-                                            title=move || lock_title("network.upload_limit_kbps")
-                                            prop:value=move || f_ul.get()
-                                            on:input=move |e| f_ul.set(event_target_value(&e))/>
-                                    </div>
-                                    <div class="config-field">
-                                        <label class="config-label">{t!("config.network.temp_download")}</label>
-                                        <input class="config-input" type="text"
-                                            class:config-input-locked=move || is_locked("network.temp_download_limit_kbps")
-                                            prop:readonly=move || is_locked("network.temp_download_limit_kbps")
-                                            title=move || lock_title("network.temp_download_limit_kbps")
-                                            prop:value=move || f_tdl.get()
-                                            on:input=move |e| f_tdl.set(event_target_value(&e))/>
-                                    </div>
-                                    <div class="config-field">
-                                        <label class="config-label">{t!("config.network.temp_upload")}</label>
-                                        <input class="config-input" type="text"
-                                            class:config-input-locked=move || is_locked("network.temp_upload_limit_kbps")
-                                            prop:readonly=move || is_locked("network.temp_upload_limit_kbps")
-                                            title=move || lock_title("network.temp_upload_limit_kbps")
-                                            prop:value=move || f_tul.get()
-                                            on:input=move |e| f_tul.set(event_target_value(&e))/>
-                                    </div>
+                                    <SpeedField label="config.network.download_limit"
+                                        value=f_dl field_key="network.download_limit_kbps" locked=locked/>
+                                    <SpeedField label="config.network.upload_limit"
+                                        value=f_ul field_key="network.upload_limit_kbps" locked=locked/>
+                                    <SpeedField label="config.network.temp_download"
+                                        value=f_tdl field_key="network.temp_download_limit_kbps" locked=locked/>
+                                    <SpeedField label="config.network.temp_upload"
+                                        value=f_tul field_key="network.temp_upload_limit_kbps" locked=locked/>
 
                                     <p class="config-hint">{t!("config.network.hint_restart")}</p>
                                     <div class="config-field config-field-col">
                                         <label class="config-label">{t!("config.network.bootstrap")}</label>
-                                        <textarea class="config-textarea" rows="3"
+                                        <textarea class="config-textarea" rows="2"
                                             class:config-input-locked=move || is_locked("network.bootstrap_peers")
                                             prop:readonly=move || is_locked("network.bootstrap_peers")
                                             title=move || lock_title("network.bootstrap_peers")

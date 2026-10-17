@@ -633,7 +633,7 @@
         /* Wide enough for all six tabs (incl. the longer Spanish labels) on a
            large screen; max-width:90vw still narrows it (tabs scroll) on mobile. */
         .modal-config { width: 640px; }
-        .modal-config .modal-body { max-height: 60vh; overflow-y: auto; }
+        .modal-config .modal-body { max-height: 78vh; overflow-y: auto; }
         /* ── Folder browser (share picker) ───────────────────────────────── */
         .path-input-row { display: flex; gap: 0.5rem; align-items: stretch; }
         .path-input-row .search-input { flex: 1 1 auto; min-width: 0; }
@@ -737,6 +737,27 @@
         .config-select-wide { width: 320px; }
         .config-input:focus, .config-textarea:focus { border-color: var(--accent); }
         .config-input-sm { width: 80px; }
+        /* Speed-limit field: a numeric amount + a unit select, with a read-only
+           bit-rate mirror. A grid lets that mirror sit UNDER the input on desktop
+           (aligned with its left edge) and move to the RIGHT of the label on
+           mobile — without duplicating it in the DOM. */
+        .config-field-speed {
+            display: grid;
+            grid-template-columns: 1fr auto;
+            grid-template-areas: "label control" "label mirror";
+            align-items: center;
+            column-gap: 1rem; row-gap: 0.15rem;
+        }
+        .config-field-speed > .config-label { grid-area: label; }
+        .config-field-speed .speed-box {
+            grid-area: control; display: flex; align-items: center; gap: 0.4rem;
+        }
+        .config-field-speed .speed-mirror {
+            grid-area: mirror; justify-self: start;
+            font-size: 0.7rem; color: var(--text-4); white-space: nowrap;
+        }
+        .config-field-speed .speed-num { width: 130px; }
+        .config-field-speed .speed-unit { width: 84px; }
         .config-textarea { width: 100%; resize: vertical; font-family: 'Cascadia Code', monospace; font-size: 0.75rem; }
         .config-pending {
             display: flex; align-items: center; gap: 0.5rem;
@@ -755,6 +776,15 @@
             }
             .config-label { white-space: normal; }
             .config-input, .config-input-sm { width: 100%; }
+            /* Speed field: amount+unit on their own full-width row, mirror tucked
+               to the right of the label to use the space the label leaves free. */
+            .config-field-speed {
+                grid-template-areas: "label mirror" "control control";
+                column-gap: 0.5rem; row-gap: 0.25rem;
+            }
+            .config-field-speed .speed-mirror { justify-self: end; }
+            .config-field-speed .speed-box { width: 100%; }
+            .config-field-speed .speed-num { flex: 1; width: auto; }
         }
 
         .modal-hint { font-size: 0.75rem; color: var(--text-3); }

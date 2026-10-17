@@ -395,7 +395,7 @@ config:
     compact: "Compact download list"
     compact_hint: "Show each download on a single row."
   network:
-    hint_limits: "Speed limits in KB/s (0 = unlimited); applied immediately."
+    hint_limits: "Speed limits in bytes (0 = unlimited); applied immediately. The grey ≈ value is the equivalent in the unit ISPs advertise."
     download_limit: "Download limit"
     upload_limit: "Upload limit"
     temp_download: "Temp download limit"

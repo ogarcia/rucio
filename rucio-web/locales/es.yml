@@ -393,7 +393,7 @@ config:
     compact: "Lista de descargas compacta"
     compact_hint: "Muestra cada descarga en una sola fila."
   network:
-    hint_limits: "Límites de velocidad en KB/s (0 = sin límite); se aplican inmediatamente."
+    hint_limits: "Límites de velocidad en bytes (0 = sin límite); se aplican inmediatamente. El valor gris ≈ es el equivalente a la unidad que anuncian los ISP."
     download_limit: "Límite de descarga"
     upload_limit: "Límite de subida"
     temp_download: "Límite temporal de descarga"

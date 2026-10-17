@@ -635,6 +635,27 @@ pub fn format_rate_kbps(kbps: u64) -> String {
     }
 }
 
+/// Approximate a KB/s cap (binary KiB/s — the app's limit unit) as an ISP-style
+/// *decimal bitrate*, for the read-only "≈" mirror under the speed inputs. ISPs
+/// advertise links in bits per second (decimal), while the cap itself is bytes,
+/// so showing both lets a user sanity-check a value against their plan without
+/// the app ever storing or displaying anything but bytes elsewhere.
+pub fn format_rate_bits(kbps: u64) -> String {
+    let bits = kbps as f64 * 1024.0 * 8.0;
+    let (val, unit) = if bits >= 1e9 {
+        (bits / 1e9, "Gbps")
+    } else if bits >= 1e6 {
+        (bits / 1e6, "Mbps")
+    } else {
+        (bits / 1e3, "kbps")
+    };
+    if val.fract().abs() < 0.05 {
+        format!("{val:.0} {unit}")
+    } else {
+        format!("{val:.1} {unit}")
+    }
+}
+
 // ── Configuration ──────────────────────────────────────────────────────────
 
 // Mirror of the daemon's GET/PUT /api/v1/config payloads.
