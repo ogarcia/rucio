@@ -5,6 +5,7 @@ _version: 1
 
 common:
   cancel: "Cancel"
+  close: "Close"
   save: "Save"
   saving: "Saving…"
   unlimited: "Unlimited"
@@ -278,7 +279,7 @@ share:
   no_match: "No files match"
   no_files: "No shared files yet"
   info: "Info"
-  info_title: "Show details and links for the selected file"
+  info_title: "Show details and links for the selected file(s)"
   pin_title: "Pin the selected file(s) (keep them available on purpose; publishes them in your pin-set)"
   unpin_title: "Unpin the selected file(s) (stops keeping them on purpose; they stay shared)"
   pinned_marker_title: "Pinned"
@@ -288,6 +289,10 @@ share:
   rescan_title: "Force a full rescan of the shared folders (reconcile against disk; picks up changes the watcher missed)"
   rescanning: "Rescanning…"
   copied: "Copied!"
+  copy_all: "Copy all"
+  links_title: "Links (%{n})"
+  links_pending: "%{n} not on eMule yet"
+  links_none: "None of these files are on eMule yet"
   detail:
     path: "Path"
     size: "Size"

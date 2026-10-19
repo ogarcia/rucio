@@ -268,6 +268,10 @@ pub fn SharesTab(
     let anchor: RwSignal<Option<String>> = RwSignal::new(None);
     // The file shown in the info overlay (the single selected one), or None.
     let detail: RwSignal<Option<ShareFile>> = RwSignal::new(None);
+    // When set, the multi-file links modal is open for these files. Info with a
+    // single file opens the full-detail overlay above; with several it opens
+    // this modal instead, listing every selected file's shareable link.
+    let links_modal: RwSignal<Option<Vec<ShareFile>>> = RwSignal::new(None);
     // Whether eMule is active (compiled in and enabled), resolved once below —
     // the info overlay only offers an eMule link when it is.
     let emule_active: RwSignal<bool> = RwSignal::new(false);
@@ -417,10 +421,11 @@ pub fn SharesTab(
         })
     };
 
-    // Info is single-item; Pin/Unpin act on whichever selected rows qualify.
-    // All three test the files actually present in the list, so a selection
-    // left over from another directory (no longer shown) disables them.
-    let can_info = move || selected_files().len() == 1;
+    // Info acts on the selection (one file → full detail, several → links
+    // modal); Pin/Unpin act on whichever selected rows qualify. All three test
+    // the files actually present in the list, so a selection left over from
+    // another directory (no longer shown) disables them.
+    let can_info = move || !selected_files().is_empty();
     let can_pin = move || {
         selected_files()
             .iter()
@@ -432,11 +437,12 @@ pub fn SharesTab(
             .any(|f| pinned_set.get().contains(&f.root_hash))
     };
 
-    // Open the info overlay for the single selected file.
-    let open_info = move || {
-        if let [f] = selected_files().as_slice() {
-            detail.set(Some(f.clone()));
-        }
+    // Open info on the selection: a single file gets the full-detail overlay,
+    // several files get the links modal (every selected link in one place).
+    let open_info = move || match selected_files().as_slice() {
+        [] => {}
+        [f] => detail.set(Some(f.clone())),
+        multi => links_modal.set(Some(multi.to_vec())),
     };
 
     // Clicking Pin opens the collection modal for every selected file that
@@ -906,6 +912,19 @@ pub fn SharesTab(
                 }
             }}
         </Show>
+
+        <Show when=move || links_modal.get().is_some()>
+            {move || {
+                let files = links_modal.get().unwrap();
+                view! {
+                    <ShareLinksModal
+                        files=files
+                        emule_active=emule_active.get()
+                        on_close=move || links_modal.set(None)
+                    />
+                }
+            }}
+        </Show>
     }
 }
 
@@ -973,6 +992,142 @@ fn PinCollectionModal(
                 <div class="modal-footer">
                     <button class="btn-sm" on:click=move |_| on_close()>{t!("common.cancel")}</button>
                     <button class="btn-sm btn-primary" on:click=move |_| confirm()>{t!("share.pin")}</button>
+                </div>
+            </div>
+        </div>
+    }
+}
+
+// ── Bulk links modal (multi-select) ──────────────────────────────────────────
+
+/// Shown when the info action fires with several files selected: lists the
+/// shareable link of every selected file so they can be copied in one go. With
+/// eMule support a Rucio/eMule selector switches which link kind is listed;
+/// without it the list is Rucio-only and the selector is hidden. Files not yet
+/// hashed for eMule contribute no eMule link (noted, and left out of the copy).
+#[component]
+fn ShareLinksModal(
+    files: Vec<ShareFile>,
+    /// Whether eMule is active (compiled in and enabled); gates the Rucio/eMule
+    /// selector. When false only Rucio magnets exist, so no selector is shown.
+    emule_active: bool,
+    on_close: impl Fn() + Copy + 'static,
+) -> impl IntoView {
+    crate::overlays::close_on_escape(on_close);
+    let count = files.len();
+    let files = StoredValue::new(files);
+    // true = list eMule (ed2k) links, false = Rucio magnets. Only reachable
+    // when emule_active, since the selector is hidden otherwise.
+    let emule: RwSignal<bool> = RwSignal::new(false);
+    let copied: RwSignal<bool> = RwSignal::new(false);
+    // Guard the reset timer from firing after the modal is closed/unmounted.
+    let alive = Arc::new(AtomicBool::new(true));
+    let alive_cleanup = alive.clone();
+    on_cleanup(move || alive_cleanup.store(false, Ordering::Relaxed));
+
+    // The links shown (and copied) for the current selector position: every
+    // Rucio magnet, or every eMule link that already exists.
+    let links = move || -> Vec<String> {
+        let em = emule.get();
+        files.with_value(|fs| {
+            fs.iter()
+                .filter_map(|f| {
+                    if em {
+                        f.ed2k.clone()
+                    } else {
+                        Some(f.magnet.clone())
+                    }
+                })
+                .collect()
+        })
+    };
+    // Selected files still lacking an eMule link (only meaningful in eMule mode).
+    let pending = move || -> usize {
+        if !emule.get() {
+            return 0;
+        }
+        files.with_value(|fs| fs.iter().filter(|f| f.ed2k.is_none()).count())
+    };
+
+    let copy_all = move || {
+        let text = links().join("\n");
+        if text.is_empty() {
+            return;
+        }
+        copy_to_clipboard(&text);
+        copied.set(true);
+        let alive = alive.clone();
+        spawn_local(async move {
+            sleep(Duration::from_millis(1400)).await;
+            if alive.load(Ordering::Relaxed) {
+                copied.set(false);
+            }
+        });
+    };
+
+    view! {
+        <div class="modal-backdrop">
+            <div class="modal" on:click=move |e| e.stop_propagation()>
+                <div class="modal-header">
+                    <span class="modal-title">{t!("share.links_title", n = count)}</span>
+                    <button class="overlay-close" on:click=move |_| on_close()>
+                        <Icon paths=icons::X/>
+                    </button>
+                </div>
+                <div class="modal-body">
+                    // The Rucio/eMule selector exists only in an eMule build.
+                    {emule_active.then(|| view! {
+                        <div class="seg-toggle">
+                            <button
+                                class=move || if emule.get() { "seg-btn" } else { "seg-btn seg-on" }
+                                on:click=move |_| emule.set(false)
+                            >
+                                {t!("share.detail.rucio_link")}
+                            </button>
+                            <button
+                                class=move || if emule.get() { "seg-btn seg-on" } else { "seg-btn" }
+                                on:click=move |_| emule.set(true)
+                            >
+                                {t!("share.detail.emule_link")}
+                            </button>
+                        </div>
+                    })}
+
+                    {move || {
+                        let items = links();
+                        if items.is_empty() {
+                            // Only reachable in eMule mode with nothing hashed yet.
+                            view! {
+                                <p class="share-link-pending">{t!("share.links_none")}</p>
+                            }.into_any()
+                        } else {
+                            view! {
+                                <div class="share-links-list">
+                                    {items.into_iter().map(|l| view! {
+                                        <code class="mono share-links-item">{l}</code>
+                                    }).collect_view()}
+                                </div>
+                            }.into_any()
+                        }
+                    }}
+
+                    {move || {
+                        let n = pending();
+                        (n > 0).then(|| view! {
+                            <p class="share-link-pending">{t!("share.links_pending", n = n)}</p>
+                        })
+                    }}
+                </div>
+                <div class="modal-footer">
+                    <button class="btn-sm" on:click=move |_| on_close()>{t!("common.close")}</button>
+                    <button
+                        class="btn-sm btn-primary share-copy-btn"
+                        disabled=move || links().is_empty()
+                        on:click=move |_| copy_all()
+                    >
+                        <Icon paths=icons::COPY/>
+                        {move || if copied.get() { t!("share.copied") } else { t!("share.copy_all") }}
+                    </button>
                 </div>
             </div>
         </div>
