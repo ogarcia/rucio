@@ -38,18 +38,36 @@ pub fn close_on_escape(on_close: impl Fn() + 'static) {
     on_cleanup(move || handle.remove());
 }
 
-/// (label, css class) for the eMule connectivity badge, reusing node-class styles.
-fn emule_conn_badge(c: EmuleConnectivity) -> (String, &'static str) {
+/// (label, css class, tooltip) for the eMule connectivity badge, reusing
+/// node-class styles. The tooltip explains what the value means for a newcomer.
+fn emule_conn_badge(c: EmuleConnectivity) -> (String, &'static str, String) {
     match c {
-        EmuleConnectivity::Open => (t!("overlay.emule.open").to_string(), "badge badge-high"),
+        EmuleConnectivity::Open => (
+            t!("overlay.emule.open").to_string(),
+            "badge badge-high badge-help",
+            t!("overlay.emule.conn_tip_open").to_string(),
+        ),
         EmuleConnectivity::Firewalled => (
             t!("overlay.emule.firewalled").to_string(),
-            "badge badge-low",
+            "badge badge-low badge-help",
+            t!("overlay.emule.conn_tip_firewalled").to_string(),
         ),
         EmuleConnectivity::Unknown => (
             t!("overlay.emule.unknown").to_string(),
-            "badge badge-unknown",
+            "badge badge-unknown badge-help",
+            t!("overlay.emule.conn_tip_unknown").to_string(),
         ),
+    }
+}
+
+/// Explanatory tooltip for the Rucio node-class badge, keyed on the raw class
+/// string. Mirrors `class_badge`; split out so the shared badge helper (also
+/// used in the peers list) keeps its signature.
+fn class_tip(class: &str) -> String {
+    match class {
+        "HighId" => t!("overlay.node.class_tip_high").to_string(),
+        "LowId" => t!("overlay.node.class_tip_low").to_string(),
+        _ => t!("overlay.node.class_tip_unknown").to_string(),
     }
 }
 
@@ -90,6 +108,7 @@ pub fn NodeStatusPanel(
                         None => view! { <p class="loading">{t!("overlay.loading")}</p> }.into_any(),
                         Some(s) => {
                             let (label, css) = class_badge(&s.class);
+                            let tip = class_tip(&s.class);
                             // Reachability detail is only useful while LowID.
                             let reach = reachability_hint(&s.class, &s.reachability);
                             let uptime = format_uptime(s.uptime_secs);
@@ -107,7 +126,10 @@ pub fn NodeStatusPanel(
                                     <dd>{format!("{}{}", s.version, commit_suffix(&s.commit))}</dd>
                                     <dt>{t!("overlay.node.class")}</dt>
                                     <dd>
-                                        <span class=css>{label}</span>
+                                        <span
+                                            class=format!("{css} badge-help")
+                                            title=tip
+                                        >{label}</span>
                                         {reach.map(|h| view! {
                                             <span class="muted reach-hint">{h}</span>
                                         })}
@@ -134,12 +156,12 @@ pub fn NodeStatusPanel(
                     {move || emule.get()
                         .filter(|e| e.feature_enabled && e.runtime_enabled)
                         .map(|e| {
-                            let (clabel, ccss) = emule_conn_badge(e.connectivity);
+                            let (clabel, ccss, ctip) = emule_conn_badge(e.connectivity);
                             view! {
                                 <p class="section-label">"eMule / Kad2"</p>
                                 <dl class="panel-dl">
                                     <dt>{t!("overlay.emule.connectivity")}</dt>
-                                    <dd><span class=ccss>{clabel}</span></dd>
+                                    <dd><span class=ccss title=ctip>{clabel}</span></dd>
                                     <dt>{t!("overlay.emule.kad_contacts")}</dt>
                                     <dd>{e.connected_peers.to_string()}</dd>
                                     <dt>"nodes.dat"</dt>
