@@ -1197,7 +1197,7 @@ fn AddModal(
                     </Show>
                 </div>
                 <div class="modal-footer">
-                    <button class="btn-sm" on:click=move |_| on_close()>{t!("common.cancel")}</button>
+                    <button class="btn-sm" on:click=move |_| on_close()>{t!("common.close")}</button>
                     <button
                         class="btn-sm btn-primary"
                         disabled=move || busy.get() || text.get().trim().is_empty()
