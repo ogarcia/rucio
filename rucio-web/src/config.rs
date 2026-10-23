@@ -397,6 +397,9 @@ pub fn ConfigModal(
     let n_enabled = notif_enabled;
     let n_downloads = RwSignal::new(true);
     let n_system = RwSignal::new(true);
+    // Independent of the notification master switch: it governs the automatic
+    // GitHub release check itself, not just whether a notice is shown.
+    let n_update_check = RwSignal::new(true);
     // Webhook rows live here (not in WebhooksEditor) so they survive tab
     // switches and are persisted by this modal's Save button.
     let webhook_rows: RwSignal<Vec<Row>> = RwSignal::new(vec![]);
@@ -451,6 +454,7 @@ pub fn ConfigModal(
                 n_enabled.set(s.enabled);
                 n_downloads.set(s.downloads);
                 n_system.set(s.system);
+                n_update_check.set(s.update_check);
             }
             if let Ok(r) = gloo_net::http::Request::get(&crate::api::api(
                 "/api/v1/config/notifications/webhooks",
@@ -482,6 +486,7 @@ pub fn ConfigModal(
             enabled: n_enabled.get_untracked(),
             downloads: n_downloads.get_untracked(),
             system: n_system.get_untracked(),
+            update_check: n_update_check.get_untracked(),
         };
         spawn_local(async move {
             if let Ok(req) =
@@ -934,6 +939,23 @@ pub fn ConfigModal(
                                             {move || if n_system.get() { t!("common.on") } else { t!("common.off") }}
                                         </span>
                                     </div>
+                                    <div class="config-field config-field-keep">
+                                        <label class="config-label">{t!("config.notif.update_check")}</label>
+                                        <span
+                                            class=move || if n_update_check.get() {
+                                                "toggle-pill toggle-on toggle-clickable"
+                                            } else {
+                                                "toggle-pill toggle-clickable"
+                                            }
+                                            on:click=move |_| {
+                                                n_update_check.update(|v| *v = !*v);
+                                                save_notif();
+                                            }
+                                        >
+                                            {move || if n_update_check.get() { t!("common.on") } else { t!("common.off") }}
+                                        </span>
+                                    </div>
+                                    <p class="config-hint">{t!("config.notif.update_check_hint")}</p>
                                 </div>
                                 <WebhooksEditor rows=webhook_rows next_id=webhook_next_id owner=modal_owner.clone()/>
                             }.into_any(),

@@ -36,6 +36,7 @@ serde_json          = { workspace = true }
 toml                = { workspace = true }
 thiserror           = { workspace = true }
 anyhow              = { workspace = true }
+semver              = { workspace = true }
 tracing             = { workspace = true }
 utoipa              = { workspace = true }
 utoipa-scalar       = { workspace = true }

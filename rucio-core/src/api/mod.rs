@@ -11,5 +11,6 @@ pub mod searches;
 pub mod shares;
 pub mod status;
 pub mod subscriptions;
+pub mod update;
 pub mod uploads;
 pub mod ws;

@@ -75,6 +75,16 @@ pub struct NotificationSettings {
     pub enabled: bool,
     pub downloads: bool,
     pub system: bool,
+    /// Whether the daemon periodically checks GitHub for a newer release and
+    /// raises a notification when one appears. Governs only the automatic
+    /// check; the panel's manual "check now" button always works. Grouped with
+    /// the notification toggles since that is where the user turns it off.
+    #[serde(default = "default_true")]
+    pub update_check: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Outcome of `POST /api/v1/config/notifications/webhooks/test`: whether a test

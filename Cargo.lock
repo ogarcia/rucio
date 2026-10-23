@@ -6327,6 +6327,7 @@ dependencies = [
  "rucio-net",
  "rust-embed",
  "rustix",
+ "semver",
  "serde",
  "serde_json",
  "serial_test",

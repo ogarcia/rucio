@@ -54,6 +54,16 @@ async fn test_state() -> (
     }));
     let search_registry = Arc::new(RwLock::new(SearchRegistry::new()));
 
+    let updater = crate::update::Updater::new(
+        true,
+        crate::notifier::Notifier::new(
+            db.clone(),
+            ws_tx.clone(),
+            crate::notifier::NotificationState::from_config(
+                &crate::config::NotificationConfig::default(),
+            ),
+        ),
+    );
     let state = AppState {
         db,
         config: Arc::new(Config::default()),
@@ -112,6 +122,7 @@ async fn test_state() -> (
         notifications: crate::notifier::NotificationState::from_config(
             &crate::config::NotificationConfig::default(),
         ),
+        updater,
         indexing_seen: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         reconcile_trigger: Arc::new(tokio::sync::Notify::new()),
         auto_clear: Arc::new(std::sync::atomic::AtomicBool::new(false)),

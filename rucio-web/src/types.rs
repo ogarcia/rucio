@@ -881,9 +881,11 @@ pub struct Notification {
     pub kind: NotificationKind,
     pub title: String,
     pub body: String,
-    // The daemon's `ref_key` (the resource a notification is about) is sent but
-    // not consumed by the UI: there is no useful click target today, and serde
-    // ignores the extra field. It lives on in the backend model for webhooks.
+    /// The resource a notification is about. Generic across kinds (a download's
+    /// blake3 hash, a release URL, …); the UI only treats it as a click target
+    /// when it is an `http(s)` URL — e.g. the update notice's release page.
+    #[serde(default)]
+    pub ref_key: Option<String>,
     pub created_at: i64,
     #[serde(default)]
     pub read: bool,
@@ -900,6 +902,23 @@ pub struct NotificationSettings {
     pub enabled: bool,
     pub downloads: bool,
     pub system: bool,
+    /// Periodic GitHub release check (automatic path only; the manual button in
+    /// About always works). Defaults to on for an older daemon that omits it.
+    #[serde(default = "default_true")]
+    pub update_check: bool,
+}
+
+/// Result of the release update check (`GET /api/v1/update`,
+/// `POST /api/v1/update/check`). The running version is shown from the status
+/// response, so only the comparison fields are read here.
+#[derive(Deserialize, Clone, Debug, Default)]
+pub struct UpdateInfo {
+    #[serde(default)]
+    pub latest: Option<String>,
+    #[serde(default)]
+    pub newer: bool,
+    #[serde(default)]
+    pub release_url: Option<String>,
 }
 
 /// Outcome of `POST /config/notifications/webhooks/test`. The daemon also sends

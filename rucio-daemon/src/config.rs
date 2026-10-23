@@ -20,6 +20,26 @@ pub struct Config {
     pub notifications: NotificationConfig,
     #[serde(default)]
     pub downloads: DownloadsConfig,
+    #[serde(default)]
+    pub update_check: UpdateCheckConfig,
+}
+
+/// Release update-check behaviour.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateCheckConfig {
+    /// When set, the daemon checks GitHub for a newer release once a day and
+    /// raises a one-time notification when one appears. This governs only the
+    /// automatic check; the panel's manual "check now" button always works
+    /// regardless. Contacting GitHub reveals the node's IP, so it can be turned
+    /// off here (default on).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+impl Default for UpdateCheckConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
 }
 
 /// Download-history behaviour.

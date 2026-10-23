@@ -10,8 +10,8 @@ use rust_i18n::t;
 use crate::icons::{self, Icon};
 use crate::types::{
     EmuleConnectivity, EmuleStatusResponse, MetricsResponse, PeerInfo, PeersResponse,
-    StatusResponse, class_badge, format_ratio, format_size, format_speed_full, format_uptime,
-    reachability_hint,
+    StatusResponse, UpdateInfo, class_badge, format_ratio, format_size, format_speed_full,
+    format_uptime, reachability_hint,
 };
 
 async fn api_fetch_emule_status() -> Option<EmuleStatusResponse> {
@@ -20,6 +20,18 @@ async fn api_fetch_emule_status() -> Option<EmuleStatusResponse> {
         .await
         .ok()?
         .json::<EmuleStatusResponse>()
+        .await
+        .ok()
+}
+
+/// Force a release check (the About panel's manual button). The daemon applies
+/// a 10-minute floor, so a quick second press returns the cached result.
+async fn api_check_update() -> Option<UpdateInfo> {
+    gloo_net::http::Request::post(&crate::api::api("/api/v1/update/check"))
+        .send()
+        .await
+        .ok()?
+        .json::<UpdateInfo>()
         .await
         .ok()
 }
@@ -452,7 +464,10 @@ fn version_string(status: &StatusResponse) -> String {
     format!("v{}{}", status.version, commit_suffix(&status.commit))
 }
 
-/// Quick reference: version, repository and where to report issues.
+/// Quick reference: version, repository and where to report issues. The release
+/// update check runs inline below the version: a button that, once pressed,
+/// is replaced in place by the result (Firefox/Chrome show the result directly,
+/// but we must not check on open — contacting GitHub is the user's choice).
 #[component]
 pub fn AboutPanel(
     status: RwSignal<Option<StatusResponse>>,
@@ -461,6 +476,38 @@ pub fn AboutPanel(
     let close = move || active_panel.set(None);
     close_on_escape(close);
     const REPO: &str = "https://github.com/ogarcia/rucio";
+
+    let info: RwSignal<Option<UpdateInfo>> = RwSignal::new(None);
+    let checking = RwSignal::new(false);
+    let failed = RwSignal::new(false);
+    // Flipped on unmount so a late response can't write to a disposed scope.
+    let alive = Arc::new(AtomicBool::new(true));
+    {
+        let alive = alive.clone();
+        on_cleanup(move || alive.store(false, Ordering::Relaxed));
+    }
+    // The manual check: force a fresh look (the daemon floor-limits to one real
+    // GitHub hit per 10 minutes). A `Callback` so it stays Copy for reuse in
+    // the reactive view below.
+    let check = Callback::new(move |()| {
+        if checking.get_untracked() {
+            return;
+        }
+        checking.set(true);
+        failed.set(false);
+        let alive = alive.clone();
+        spawn_local(async move {
+            let res = api_check_update().await;
+            if !alive.load(Ordering::Relaxed) {
+                return;
+            }
+            match res {
+                Some(i) => info.set(Some(i)),
+                None => failed.set(true),
+            }
+            checking.set(false);
+        });
+    });
 
     view! {
         <div class="overlay-backdrop">
@@ -484,6 +531,53 @@ pub fn AboutPanel(
                     <div style="color: var(--text-3); margin-top: 0.15rem;">
                         {move || status.get().map(|s| version_string(&s)).unwrap_or_default()}
                     </div>
+
+                    // The update line: the button, replaced in place by
+                    // "checking…" and then the result once pressed.
+                    <div class="about-update-line">
+                        {move || {
+                            if checking.get() {
+                                return view! {
+                                    <span class="update-checking">{t!("overlay.update.checking")}</span>
+                                }.into_any();
+                            }
+                            if let Some(i) = info.get() {
+                                return if i.newer {
+                                    let url = i.release_url.clone();
+                                    let latest = i.latest.clone().unwrap_or_default();
+                                    view! {
+                                        <p class="update-available">
+                                            {t!("overlay.update.available_v", v = latest)}
+                                        </p>
+                                        // The notes live on GitHub; link out rather
+                                        // than re-render markdown here.
+                                        {url.map(|u| view! {
+                                            <a
+                                                class="btn-sm btn-primary update-release-link"
+                                                href=u target="_blank" rel="noopener noreferrer"
+                                            >{t!("overlay.update.view_release")}</a>
+                                        })}
+                                    }.into_any()
+                                } else {
+                                    view! {
+                                        <p class="update-uptodate">{t!("overlay.update.up_to_date")}</p>
+                                    }.into_any()
+                                };
+                            }
+                            // Not yet checked: show the button (and a retry-able
+                            // error line if the last attempt failed).
+                            view! {
+                                {failed.get().then(|| view! {
+                                    <p class="update-failed">{t!("overlay.update.failed")}</p>
+                                })}
+                                <button
+                                    class="btn-sm"
+                                    on:click=move |_| check.run(())
+                                >{t!("overlay.update.check")}</button>
+                            }.into_any()
+                        }}
+                    </div>
+
                     <p style="color: var(--text-2); margin: 0.9rem 0 1.1rem;">
                         {t!("overlay.about.tagline")}
                     </p>

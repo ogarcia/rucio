@@ -17,6 +17,7 @@ pub mod pinset;
 pub mod pinset_probes;
 pub mod throttle;
 pub mod transfer;
+pub mod update;
 pub mod upload_scheduler;
 pub mod upload_stats;
 pub mod upnp;
@@ -409,6 +410,10 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
     let notif_state = crate::notifier::NotificationState::from_config(&config.notifications);
     let notifier =
         crate::notifier::Notifier::new(db.clone(), ws_tx.clone(), Arc::clone(&notif_state));
+    // Release update checker, seeded from config; it caches the latest-release
+    // comparison, serves the panel, and raises a one-time notification when a
+    // newer version appears (automatic path only).
+    let updater = crate::update::Updater::new(config.update_check.enabled, notifier.clone());
 
     // Live toggle for auto-clearing finished downloads, seeded from config and
     // flipped at runtime by the settings handler. The download-completion and
@@ -502,6 +507,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         let outboard_dir = config.storage.outboard_dir.clone();
         let trigger = Arc::clone(&reconcile_trigger);
         let index_guard = index_guard.clone();
+        let updater_task = Arc::clone(&updater);
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(24 * 3600));
             tick.tick().await; // consume the immediate first fire
@@ -521,6 +527,14 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                 // (watcher de-index, files vanished from disk, a crash between
                 // the DB delete and the inline file delete).
                 transfer::gc_orphan_outboards(&db, &outboard_dir).await;
+                // Piggyback the daily release update check on the same cadence.
+                // Spawned so a slow GitHub never delays the reconcile loop; it
+                // is a no-op when disabled and floor-limited to one call per
+                // 10 min (so manual-trigger wakeups can't spam GitHub).
+                {
+                    let u = Arc::clone(&updater_task);
+                    tokio::spawn(async move { u.run_auto().await });
+                }
                 // Wait for the next scheduled sweep or a manual trigger.
                 tokio::select! {
                     _ = tick.tick() => {}
@@ -747,6 +761,7 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         upload_stats: Arc::clone(&upload_stats),
         pinset_probes: Arc::clone(&pinset_probes),
         notifications: Arc::clone(&notif_state),
+        updater: Arc::clone(&updater),
         indexing_seen: Arc::clone(&indexing_seen),
         reconcile_trigger: Arc::clone(&reconcile_trigger),
         auto_clear: Arc::clone(&auto_clear),

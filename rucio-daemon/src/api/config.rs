@@ -411,6 +411,7 @@ pub async fn get_notification_settings(
         enabled,
         downloads,
         system,
+        update_check: state.updater.is_enabled(),
     })
 }
 
@@ -432,10 +433,12 @@ pub async fn put_notification_settings(
     State(state): State<AppState>,
     Json(req): Json<NotificationSettings>,
 ) -> StatusCode {
-    // Apply to the live notifier immediately so the change takes effect now.
+    // Apply to the live notifier and update checker immediately so the change
+    // takes effect now.
     state
         .notifications
         .update(req.enabled, req.downloads, req.system);
+    state.updater.set_enabled(req.update_check);
 
     // Persist: load what is currently on disk, swap only the toggles (keeping
     // the configured webhooks), and save — so we never clobber other settings.
@@ -446,6 +449,7 @@ pub async fn put_notification_settings(
     cfg.notifications.enabled = req.enabled;
     cfg.notifications.downloads = req.downloads;
     cfg.notifications.system = req.system;
+    cfg.update_check.enabled = req.update_check;
     match cfg.save(state.config_path.as_deref()) {
         Ok(()) => StatusCode::NO_CONTENT,
         Err(e) => {

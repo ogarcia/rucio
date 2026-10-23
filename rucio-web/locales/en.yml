@@ -171,6 +171,13 @@ overlay:
     tagline: "Peer-to-peer file sharing over libp2p, with eMule/Kad2 compatibility."
     source: "Source code on GitHub"
     report: "Report an issue"
+  update:
+    check: "Check for updates"
+    checking: "Checking…"
+    failed: "Couldn't reach GitHub to check for updates. Try again later."
+    available_v: "Version %{v} is available."
+    up_to_date: "Rucio is up to date."
+    view_release: "View the release"
 
 cat:
   hint: "Categories route downloads to their own folder and tag them with a coloured badge. A download with no explicit category is auto-filed by the match keywords (the first matching category wins)."
@@ -442,6 +449,8 @@ config:
     enable: "Enable notifications"
     downloads: "Download notifications"
     system: "System notifications"
+    update_check: "Check for updates"
+    update_check_hint: "Checks GitHub once a day for a new release and notifies you when one appears. Contacting GitHub reveals this node's IP; turn it off to stop the automatic check (the button in About still works)."
 
 download:
   none: "No downloads"

@@ -32,6 +32,16 @@ fn kind_icon(kind: NotificationKind) -> &'static str {
     }
 }
 
+/// The notification's click target, but only when `ref_key` is a web link
+/// (the update notice carries the release URL). Other kinds use `ref_key` for
+/// non-URL references (e.g. a blake3 hash), which must never become an `href`.
+fn link_ref(ref_key: &Option<String>) -> Option<String> {
+    ref_key
+        .as_deref()
+        .filter(|r| r.starts_with("https://") || r.starts_with("http://"))
+        .map(str::to_string)
+}
+
 #[component]
 pub fn NotificationsPanel(
     notifications: RwSignal<Vec<Notification>>,
@@ -84,13 +94,26 @@ pub fn NotificationsPanel(
                                 key=|n| n.id
                                 children=move |n| {
                                     let id = n.id;
+                                    let link = link_ref(&n.ref_key);
                                     view! {
                                         <li class="notif-item">
                                             <span class="notif-icon">
                                                 <Icon paths=kind_icon(n.kind)/>
                                             </span>
                                             <div class="notif-text">
-                                                <div class="notif-title">{n.title.clone()}</div>
+                                                {match link {
+                                                    // Linkable notice (e.g. the update notice):
+                                                    // the title opens the release page.
+                                                    Some(url) => view! {
+                                                        <a
+                                                            class="notif-title notif-title-link"
+                                                            href=url target="_blank" rel="noopener noreferrer"
+                                                        >{n.title.clone()}</a>
+                                                    }.into_any(),
+                                                    None => view! {
+                                                        <div class="notif-title">{n.title.clone()}</div>
+                                                    }.into_any(),
+                                                }}
                                                 <div class="notif-body">{n.body.clone()}</div>
                                                 <div class="notif-time">{seen_ago(n.created_at)}</div>
                                             </div>

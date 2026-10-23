@@ -169,6 +169,13 @@ overlay:
     tagline: "Intercambio de archivos entre pares sobre libp2p, con compatibilidad eMule/Kad2."
     source: "Código fuente en GitHub"
     report: "Informar de un problema"
+  update:
+    check: "Buscar actualizaciones"
+    checking: "Buscando…"
+    failed: "No se pudo contactar con GitHub para comprobar actualizaciones. Inténtalo más tarde."
+    available_v: "La versión %{v} está disponible."
+    up_to_date: "Rucio está actualizado."
+    view_release: "Ver la publicación"
 
 cat:
   hint: "Las categorías encaminan las descargas a su propia carpeta y las etiquetan con una insignia de color. Una descarga sin categoría explícita se clasifica automáticamente por las palabras clave de coincidencia (gana la primera categoría que coincida)."
@@ -440,6 +447,8 @@ config:
     enable: "Activar notificaciones"
     downloads: "Notificaciones de descargas"
     system: "Notificaciones del sistema"
+    update_check: "Buscar actualizaciones"
+    update_check_hint: "Comprueba en GitHub una vez al día si hay una versión nueva y te avisa cuando aparece. Contactar con GitHub revela la IP de este nodo; desactívalo para detener la comprobación automática (el botón de Acerca de sigue funcionando)."
 
 download:
   none: "No hay descargas"

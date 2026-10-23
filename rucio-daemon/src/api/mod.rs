@@ -21,6 +21,7 @@ pub mod status;
 pub mod subscriptions;
 #[cfg(test)]
 mod tests;
+pub mod update;
 pub mod uploads;
 pub mod ws;
 
@@ -123,6 +124,8 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         config::put_temp_limit,
         config::get_limits,
         config::put_limits,
+        update::get_update,
+        update::check_update,
         config::get_notification_settings,
         config::put_notification_settings,
         config::get_download_settings,
@@ -216,6 +219,7 @@ const SCALAR_HTML: &str = r#"<!doctype html>
         rucio_core::api::emule::EmuleBootstrapRequest,
         rucio_core::api::emule::EmuleBootstrapResponse,
         rucio_core::api::emule::EmuleStatusResponse,
+        rucio_core::api::update::UpdateInfo,
         rucio_core::api::notifications::NotificationKind,
         rucio_core::api::notifications::NotificationDto,
         rucio_core::api::notifications::NotificationList,
@@ -536,6 +540,9 @@ pub struct AppState {
     /// Live notification toggles, updated by the settings handler and read by
     /// the notifier when deciding whether to record an event.
     pub notifications: Arc<crate::notifier::NotificationState>,
+    /// Release update checker: caches the latest-release comparison, serves the
+    /// panel, and raises a one-time notification on a new version.
+    pub updater: Arc<crate::update::Updater>,
     /// Latched by any indexing producer when it enqueues work; the main loop
     /// clears it and fires an "indexing complete" notification once the pending
     /// count drains to 0.
@@ -603,6 +610,9 @@ fn v1_router() -> Router<AppState> {
         // status & peers
         .route("/status", routing::get(status::get_status))
         .route("/peers", routing::get(status::get_peers))
+        // release update check
+        .route("/update", routing::get(update::get_update))
+        .route("/update/check", routing::post(update::check_update))
         // shares
         .route("/shares", routing::get(shares::list_shares))
         .route("/shares/files", routing::get(shares::list_share_files))
