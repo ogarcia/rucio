@@ -221,6 +221,8 @@ impl Updater {
         self.notifier
             .notify(
                 NotificationKind::System,
+                "update_available",
+                &[("v", latest)],
                 format!("Rucio {latest} is available"),
                 format!(
                     "A newer version ({latest}) has been released. Click the title to view it."

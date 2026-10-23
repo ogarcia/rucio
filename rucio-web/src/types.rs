@@ -879,8 +879,16 @@ pub enum NotificationKind {
 pub struct Notification {
     pub id: i64,
     pub kind: NotificationKind,
+    /// English default title/body; shown verbatim when `code` is absent or the
+    /// UI doesn't recognise it.
     pub title: String,
     pub body: String,
+    /// Stable message code for localisation (see `notifications::localize`).
+    #[serde(default)]
+    pub code: Option<String>,
+    /// Interpolation arguments for the localised message.
+    #[serde(default)]
+    pub args: std::collections::BTreeMap<String, String>,
     /// The resource a notification is about. Generic across kinds (a download's
     /// blake3 hash, a release URL, …); the UI only treats it as a click target
     /// when it is an `http(s)` URL — e.g. the update notice's release page.

@@ -104,6 +104,20 @@ notif:
   clear_all: "Clear all"
   empty: "No notifications"
   dismiss: "Dismiss"
+  # Localised notification messages, keyed by the daemon's message code. An
+  # unknown code falls back to the English title/body the daemon sent.
+  msg:
+    indexing_complete:
+      title: "Indexing complete"
+      body: "Your shared files are up to date"
+    download_complete:
+      title: "Download complete"
+    download_save_failed:
+      title: "Couldn't save download"
+      body: "%{name}: the download folder is missing or not writable — fix it and retry"
+    update_available:
+      title: "Rucio %{v} is available"
+      body: "A newer version (%{v}) has been released. Click the title to view it."
 
 overlay:
   loading: "Loading…"

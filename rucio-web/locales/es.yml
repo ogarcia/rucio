@@ -102,6 +102,20 @@ notif:
   clear_all: "Borrar todo"
   empty: "No hay notificaciones"
   dismiss: "Descartar"
+  # Mensajes de notificación traducidos, por código del daemon. Un código
+  # desconocido recae en el título/cuerpo en inglés que envió el daemon.
+  msg:
+    indexing_complete:
+      title: "Indexación completada"
+      body: "Tus archivos compartidos están al día"
+    download_complete:
+      title: "Descarga completada"
+    download_save_failed:
+      title: "No se pudo guardar la descarga"
+      body: "%{name}: la carpeta de descargas no existe o no se puede escribir — corrígelo y reintenta"
+    update_available:
+      title: "Rucio %{v} está disponible"
+      body: "Se ha publicado una versión más nueva (%{v}). Haz clic en el título para verla."
 
 overlay:
   loading: "Cargando…"

@@ -1223,8 +1223,10 @@ impl DownloadEngine {
                 self.notifier
                     .notify(
                         rucio_core::api::notifications::NotificationKind::Download,
+                        "download_complete",
+                        &[("name", name.as_str())],
                         "Download complete",
-                        name,
+                        name.clone(),
                         Some(hash_hex),
                     )
                     .await;
@@ -1244,6 +1246,8 @@ impl DownloadEngine {
                 self.notifier
                     .notify(
                         rucio_core::api::notifications::NotificationKind::Download,
+                        "download_save_failed",
+                        &[("name", name.as_str())],
                         "Couldn't save download",
                         format!(
                             "{name}: the download folder is missing or not writable — fix it and retry"

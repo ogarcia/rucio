@@ -44,11 +44,24 @@ impl NotificationKind {
 pub struct NotificationDto {
     pub id: i64,
     pub kind: NotificationKind,
+    /// Human-readable English title, always present. It is the source of truth
+    /// for non-UI consumers (webhooks) and the panel's fallback when `code` is
+    /// unknown or absent.
     pub title: String,
+    /// Human-readable English body, same role as `title`.
     pub body: String,
+    /// Stable message code (e.g. `update_available`) letting the web panel show
+    /// a localised title/body built from `code` + `args`. Absent on older rows
+    /// and on ad-hoc notifications; the panel then shows `title`/`body` as-is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    /// Interpolation arguments for the localised message (e.g. `{"v":"0.50.0"}`
+    /// or `{"name":"movie.mkv"}`). Also handed to webhook consumers.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub args: std::collections::BTreeMap<String, String>,
     /// Optional reference to the resource the notification is about (e.g. a
-    /// download's blake3 root hash, hex-encoded). Lets the client deep-link to
-    /// it later; ignored when absent.
+    /// download's blake3 root hash, hex-encoded, or a release URL). Lets the
+    /// client deep-link to it; ignored when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ref_key: Option<String>,
     /// Creation time, Unix seconds.

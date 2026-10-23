@@ -108,9 +108,16 @@ impl Notifier {
     /// disabled, in which case this is a no-op (nothing is persisted). Failures
     /// are logged and swallowed: a notification is never worth failing the
     /// operation that triggered it.
+    ///
+    /// `title`/`body` are the English default (stored, sent to webhooks, and
+    /// shown by the panel when it can't localise). `code` + `args` let the panel
+    /// show a localised message instead; pass an empty `code` for an ad-hoc
+    /// notification with no localised form.
     pub async fn notify(
         &self,
         kind: NotificationKind,
+        code: &str,
+        args: &[(&str, &str)],
         title: impl Into<String>,
         body: impl Into<String>,
         ref_key: Option<String>,
@@ -119,27 +126,44 @@ impl Notifier {
             return;
         }
         let (title, body) = (title.into(), body.into());
+        let args: std::collections::BTreeMap<String, String> = args
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect();
+        let code = (!code.is_empty()).then(|| code.to_string());
+        let args_json =
+            (!args.is_empty()).then(|| serde_json::to_string(&args).unwrap_or_default());
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
 
-        let id =
-            match db::notifications::insert(&self.db, kind, &title, &body, ref_key.as_deref(), now)
-                .await
-            {
-                Ok(id) => id,
-                Err(e) => {
-                    warn!("notify: cannot persist notification: {e}");
-                    return;
-                }
-            };
+        let id = match db::notifications::insert(
+            &self.db,
+            kind,
+            code.as_deref(),
+            args_json.as_deref(),
+            &title,
+            &body,
+            ref_key.as_deref(),
+            now,
+        )
+        .await
+        {
+            Ok(id) => id,
+            Err(e) => {
+                warn!("notify: cannot persist notification: {e}");
+                return;
+            }
+        };
 
         let dto = NotificationDto {
             id,
             kind,
             title,
             body,
+            code,
+            args,
             ref_key,
             created_at: now,
             read: false,

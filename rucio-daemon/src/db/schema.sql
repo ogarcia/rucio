@@ -292,8 +292,10 @@ CREATE TABLE IF NOT EXISTS known_peers (
 CREATE TABLE IF NOT EXISTS notifications (
     id          INTEGER PRIMARY KEY,
     kind        TEXT    NOT NULL,          -- download, system
-    title       TEXT    NOT NULL,
-    body        TEXT    NOT NULL,
+    title       TEXT    NOT NULL,          -- English default (webhooks + fallback)
+    body        TEXT    NOT NULL,          -- English default (webhooks + fallback)
+    code        TEXT,                      -- stable message code for localisation
+    args        TEXT,                      -- JSON map of interpolation args
     ref_key     TEXT,                      -- optional resource reference (e.g. blake3 hex)
     created_at  INTEGER NOT NULL,
     read        INTEGER NOT NULL DEFAULT 0 -- 1 = seen, 0 = unread

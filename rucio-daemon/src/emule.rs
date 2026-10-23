@@ -2360,6 +2360,8 @@ pub async fn run_ed2k_download(
         notifier
             .notify(
                 rucio_core::api::notifications::NotificationKind::Download,
+                "download_save_failed",
+                &[("name", final_name.as_str())],
                 "Couldn't save download",
                 format!(
                     "{final_name}: the download folder is missing or not writable — fix it and retry"
@@ -2443,6 +2445,8 @@ pub async fn run_ed2k_download(
     notifier
         .notify(
             rucio_core::api::notifications::NotificationKind::Download,
+            "download_complete",
+            &[("name", final_name.as_str())],
             "Download complete",
             final_name.clone(),
             rucio_root_hex,

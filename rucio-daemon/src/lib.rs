@@ -1114,6 +1114,8 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
                     notifier
                         .notify(
                             rucio_core::api::notifications::NotificationKind::System,
+                            "indexing_complete",
+                            &[],
                             "Indexing complete",
                             "Your shared files are up to date",
                             None,

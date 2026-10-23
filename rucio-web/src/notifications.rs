@@ -32,6 +32,33 @@ fn kind_icon(kind: NotificationKind) -> &'static str {
     }
 }
 
+/// Localise a notification's (title, body) from its `code` + `args`. Unknown or
+/// absent codes fall back to the English `title`/`body` the daemon sent, so a
+/// new daemon message still shows (just untranslated) against an old panel.
+fn localize(n: &Notification) -> (String, String) {
+    let arg = |k: &str| n.args.get(k).cloned().unwrap_or_default();
+    match n.code.as_deref() {
+        Some("indexing_complete") => (
+            t!("notif.msg.indexing_complete.title").into_owned(),
+            t!("notif.msg.indexing_complete.body").into_owned(),
+        ),
+        // The body is the file name itself (data, not translatable text).
+        Some("download_complete") => (
+            t!("notif.msg.download_complete.title").into_owned(),
+            arg("name"),
+        ),
+        Some("download_save_failed") => (
+            t!("notif.msg.download_save_failed.title").into_owned(),
+            t!("notif.msg.download_save_failed.body", name = arg("name")).into_owned(),
+        ),
+        Some("update_available") => (
+            t!("notif.msg.update_available.title", v = arg("v")).into_owned(),
+            t!("notif.msg.update_available.body", v = arg("v")).into_owned(),
+        ),
+        _ => (n.title.clone(), n.body.clone()),
+    }
+}
+
 /// The notification's click target, but only when `ref_key` is a web link
 /// (the update notice carries the release URL). Other kinds use `ref_key` for
 /// non-URL references (e.g. a blake3 hash), which must never become an `href`.
@@ -95,6 +122,7 @@ pub fn NotificationsPanel(
                                 children=move |n| {
                                     let id = n.id;
                                     let link = link_ref(&n.ref_key);
+                                    let (title, body) = localize(&n);
                                     view! {
                                         <li class="notif-item">
                                             <span class="notif-icon">
@@ -108,13 +136,13 @@ pub fn NotificationsPanel(
                                                         <a
                                                             class="notif-title notif-title-link"
                                                             href=url target="_blank" rel="noopener noreferrer"
-                                                        >{n.title.clone()}</a>
+                                                        >{title}</a>
                                                     }.into_any(),
                                                     None => view! {
-                                                        <div class="notif-title">{n.title.clone()}</div>
+                                                        <div class="notif-title">{title}</div>
                                                     }.into_any(),
                                                 }}
-                                                <div class="notif-body">{n.body.clone()}</div>
+                                                <div class="notif-body">{body}</div>
                                                 <div class="notif-time">{seen_ago(n.created_at)}</div>
                                             </div>
                                             <button

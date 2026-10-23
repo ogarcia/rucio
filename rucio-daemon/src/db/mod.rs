@@ -1,8 +1,11 @@
 //! Database layer — SQLite via sqlx.
 //!
-//! Pre-stable policy: schema is applied with `CREATE TABLE IF NOT EXISTS` on
-//! every startup.  If the schema changes, delete the DB file and restart.
-//! No migrations, no versioning until the project reaches a stable release.
+//! Pre-stable policy: the schema is applied with `CREATE TABLE IF NOT EXISTS`
+//! on every startup, which creates everything a fresh database needs. For
+//! additive changes to an *existing* database (new columns), lightweight
+//! `user_version` migrations run after the schema is applied — see [`migrate`].
+//! These stay collapsible: at 1.0 the accumulated migrations fold back into a
+//! clean schema. Non-additive changes still mean deleting the DB file.
 
 pub mod categories;
 pub mod downloads;
@@ -20,7 +23,7 @@ pub mod shared_dirs;
 pub mod shares;
 
 use anyhow::{Context, Result};
-use sqlx::{SqlitePool, sqlite::SqliteConnectOptions};
+use sqlx::{Row, SqlitePool, sqlite::SqliteConnectOptions};
 use std::path::Path;
 use std::str::FromStr;
 use tracing::info;
@@ -54,8 +57,64 @@ pub async fn open(path: &Path) -> Result<Db> {
         .with_context(|| format!("opening sqlite db at {}", path.display()))?;
 
     apply_schema(&pool).await?;
+    migrate(&pool).await?;
     info!(path = %path.display(), "Database ready");
     Ok(pool)
+}
+
+/// Current schema version. Bumped when a new additive migration step is added
+/// below; stored in SQLite's `PRAGMA user_version`.
+const SCHEMA_VERSION: i64 = 1;
+
+/// Apply additive migrations an existing database is missing, keyed on
+/// `user_version`. A fresh database already has the current schema (so each
+/// step is a column-existence-guarded no-op), after which its version is
+/// stamped. Every step must be idempotent.
+pub(crate) async fn migrate(pool: &Db) -> Result<()> {
+    let version: i64 = sqlx::query_scalar("PRAGMA user_version")
+        .fetch_one(pool)
+        .await
+        .context("reading user_version")?;
+    if version >= SCHEMA_VERSION {
+        return Ok(());
+    }
+
+    // v1: localisable notifications — add `code`/`args` to pre-existing DBs.
+    add_column_if_missing(pool, "notifications", "code", "TEXT").await?;
+    add_column_if_missing(pool, "notifications", "args", "TEXT").await?;
+
+    // PRAGMA can't be parameterised; the value is a compile-time constant.
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "PRAGMA user_version = {SCHEMA_VERSION}"
+    )))
+    .execute(pool)
+    .await
+    .context("stamping user_version")?;
+    info!(version = SCHEMA_VERSION, "Database migrated");
+    Ok(())
+}
+
+/// `ALTER TABLE … ADD COLUMN` unless the column already exists. SQLite has no
+/// `ADD COLUMN IF NOT EXISTS`, so check `table_info` first. Keeps the migration
+/// safe to run against both a fresh DB (column already present) and an old one.
+async fn add_column_if_missing(pool: &Db, table: &str, column: &str, decl: &str) -> Result<()> {
+    let cols = sqlx::query(sqlx::AssertSqlSafe(format!("PRAGMA table_info({table})")))
+        .fetch_all(pool)
+        .await
+        .with_context(|| format!("reading columns of {table}"))?;
+    let exists = cols.iter().any(|r| {
+        let name: String = r.get("name");
+        name == column
+    });
+    if !exists {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "ALTER TABLE {table} ADD COLUMN {column} {decl}"
+        )))
+        .execute(pool)
+        .await
+        .with_context(|| format!("adding column {table}.{column}"))?;
+    }
+    Ok(())
 }
 
 /// Execute the embedded schema SQL against `pool`.
@@ -112,5 +171,54 @@ mod tests {
 
         assert!(!wal.exists(), "-wal should be gone after a clean close");
         assert!(!shm.exists(), "-shm should be gone after a clean close");
+    }
+
+    async fn has_column(db: &Db, table: &str, column: &str) -> bool {
+        sqlx::query(sqlx::AssertSqlSafe(format!("PRAGMA table_info({table})")))
+            .fetch_all(db)
+            .await
+            .unwrap()
+            .iter()
+            .any(|r| r.get::<String, _>("name") == column)
+    }
+
+    /// The v1 migration adds `code`/`args` to a database created before they
+    /// existed, stamps the version, and is safe to run twice.
+    #[tokio::test]
+    async fn migrate_adds_notification_columns_to_old_db() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open(&dir.path().join("t.db")).await.unwrap();
+
+        // Simulate an old DB: drop the modern table and recreate the pre-v1
+        // shape, then rewind the version so the migration runs.
+        sqlx::query("DROP TABLE notifications")
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE notifications (id INTEGER PRIMARY KEY, kind TEXT NOT NULL, \
+             title TEXT NOT NULL, body TEXT NOT NULL, ref_key TEXT, \
+             created_at INTEGER NOT NULL, read INTEGER NOT NULL DEFAULT 0)",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query("PRAGMA user_version = 0")
+            .execute(&db)
+            .await
+            .unwrap();
+        assert!(!has_column(&db, "notifications", "code").await);
+
+        migrate(&db).await.unwrap();
+        assert!(has_column(&db, "notifications", "code").await);
+        assert!(has_column(&db, "notifications", "args").await);
+        let v: i64 = sqlx::query_scalar("PRAGMA user_version")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+
+        // Idempotent: a second run is a no-op and doesn't error.
+        migrate(&db).await.unwrap();
     }
 }

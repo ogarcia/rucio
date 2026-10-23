@@ -167,10 +167,12 @@ fn render_template(tpl: &str, n: &NotificationDto, json_escape: bool) -> String 
         quoted[1..quoted.len() - 1].to_string()
     };
     let ref_val = n.ref_key.as_deref().unwrap_or("");
-    let tokens: [(&str, String); 6] = [
+    let tokens: [(&str, String); 7] = [
         ("{title}", esc(&n.title)),
         ("{body}", esc(&n.body)),
         ("{kind}", n.kind.as_str().to_string()),
+        // The localisation code (full args map is in the Generic JSON payload).
+        ("{code}", esc(n.code.as_deref().unwrap_or(""))),
         ("{ref}", esc(ref_val)),
         ("{id}", n.id.to_string()),
         ("{created_at}", n.created_at.to_string()),
@@ -245,6 +247,8 @@ pub async fn send_test(
         kind: NotificationKind::System,
         title: "Rucio test notification".to_string(),
         body: "If you can read this, your webhook is configured correctly.".to_string(),
+        code: None,
+        args: Default::default(),
         ref_key: None,
         created_at: 0,
         read: false,
@@ -314,6 +318,8 @@ mod tests {
             kind: NotificationKind::Download,
             title: title.to_string(),
             body: body.to_string(),
+            code: None,
+            args: Default::default(),
             ref_key: Some("abcd".to_string()),
             created_at: 1700,
             read: false,

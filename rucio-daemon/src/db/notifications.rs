@@ -17,20 +17,26 @@ use super::Db;
 const MAX_NOTIFICATIONS: i64 = 200;
 
 /// Insert a notification and prune the table back to [`MAX_NOTIFICATIONS`].
-/// Returns the new row id.
+/// Returns the new row id. `code` is the localisation code and `args` its JSON
+/// argument map (both optional; absent for ad-hoc notifications).
+#[allow(clippy::too_many_arguments)]
 pub async fn insert(
     db: &Db,
     kind: NotificationKind,
+    code: Option<&str>,
+    args: Option<&str>,
     title: &str,
     body: &str,
     ref_key: Option<&str>,
     now: i64,
 ) -> Result<i64> {
     let id = sqlx::query(
-        "INSERT INTO notifications (kind, title, body, ref_key, created_at, read) \
-         VALUES (?1, ?2, ?3, ?4, ?5, 0)",
+        "INSERT INTO notifications (kind, code, args, title, body, ref_key, created_at, read) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)",
     )
     .bind(kind.as_str())
+    .bind(code)
+    .bind(args)
     .bind(title)
     .bind(body)
     .bind(ref_key)
@@ -56,11 +62,18 @@ fn row_to_dto(r: &sqlx::sqlite::SqliteRow) -> NotificationDto {
     let kind: String = r.get("kind");
     let ref_key: Option<String> = r.get("ref_key");
     let read: i64 = r.get("read");
+    // `args` is a JSON object string; a malformed or absent one yields no args.
+    let args = r
+        .get::<Option<String>, _>("args")
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
     NotificationDto {
         id: r.get("id"),
         kind: NotificationKind::from_db(&kind),
         title: r.get("title"),
         body: r.get("body"),
+        code: r.get("code"),
+        args,
         ref_key,
         created_at: r.get("created_at"),
         read: read != 0,
@@ -70,7 +83,7 @@ fn row_to_dto(r: &sqlx::sqlite::SqliteRow) -> NotificationDto {
 /// List the most recent notifications, newest first, capped at `limit`.
 pub async fn list(db: &Db, limit: i64) -> Result<Vec<NotificationDto>> {
     let rows = sqlx::query(
-        "SELECT id, kind, title, body, ref_key, created_at, read \
+        "SELECT id, kind, code, args, title, body, ref_key, created_at, read \
          FROM notifications ORDER BY id DESC LIMIT ?1",
     )
     .bind(limit)
@@ -133,6 +146,8 @@ mod tests {
         insert(
             &db,
             NotificationKind::Download,
+            None,
+            None,
             "Done",
             "movie.mkv",
             Some("abcd"),
@@ -143,6 +158,8 @@ mod tests {
         insert(
             &db,
             NotificationKind::System,
+            None,
+            None,
             "Indexed",
             "12 files",
             None,
@@ -166,13 +183,13 @@ mod tests {
     #[tokio::test]
     async fn delete_and_clear() {
         let (db, _dir) = test_db().await;
-        let id = insert(&db, NotificationKind::System, "x", "y", None, 1)
+        let id = insert(&db, NotificationKind::System, None, None, "x", "y", None, 1)
             .await
             .unwrap();
         assert!(delete(&db, id).await.unwrap());
         assert!(!delete(&db, id).await.unwrap());
 
-        insert(&db, NotificationKind::System, "a", "b", None, 2)
+        insert(&db, NotificationKind::System, None, None, "a", "b", None, 2)
             .await
             .unwrap();
         clear(&db).await.unwrap();
@@ -183,7 +200,7 @@ mod tests {
     async fn insert_prunes_to_cap() {
         let (db, _dir) = test_db().await;
         for i in 0..(MAX_NOTIFICATIONS + 25) {
-            insert(&db, NotificationKind::System, "n", "b", None, i)
+            insert(&db, NotificationKind::System, None, None, "n", "b", None, i)
                 .await
                 .unwrap();
         }
