@@ -320,6 +320,8 @@ share:
   links_title: "Links (%{n})"
   links_pending: "%{n} not on eMule yet"
   links_none: "None of these files are on eMule yet"
+  links_anonymous: "Anonymous links"
+  links_anonymous_tip: "Leave your node out as a provider so the links don't reveal your identity (they still resolve through the network)"
   detail:
     path: "Path"
     size: "Size"

@@ -1497,6 +1497,17 @@
         }
         .share-link-pending { flex: 1; font-size: 0.75rem; color: var(--text-3); font-style: italic; }
 
+        /* Controls row in the multi-file links modal: the Rucio/eMule selector
+           on the left, the "anonymous links" toggle on the right. */
+        .share-links-controls {
+            display: flex; align-items: center; justify-content: space-between;
+            gap: 0.75rem; flex-wrap: wrap;
+        }
+        .share-anon-toggle {
+            display: inline-flex; align-items: center; gap: 0.4rem;
+            font-size: 0.8125rem; color: var(--text-2);
+        }
+
         /* Rucio/eMule selector in the multi-file links modal: a two-button
            segmented control. */
         .seg-toggle {

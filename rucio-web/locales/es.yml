@@ -318,6 +318,8 @@ share:
   links_title: "Enlaces (%{n})"
   links_pending: "%{n} aún no en eMule"
   links_none: "Ninguno de estos archivos está aún en eMule"
+  links_anonymous: "Enlaces anónimos"
+  links_anonymous_tip: "Deja tu nodo fuera como proveedor para que los enlaces no revelen tu identidad (siguen resolviéndose por la red)"
   detail:
     path: "Ruta"
     size: "Tamaño"

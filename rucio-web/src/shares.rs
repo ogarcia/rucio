@@ -1000,6 +1000,26 @@ fn PinCollectionModal(
 
 // ── Bulk links modal (multi-select) ──────────────────────────────────────────
 
+/// Return a Rucio magnet with every `provider=` hint removed, yielding an
+/// anonymous link (hash plus the `name`/`size` descriptors). The daemon owns the
+/// magnet format and always builds the full link; here we only drop a known
+/// optional parameter, so no link-building knowledge crosses into the panel. A
+/// string without a query, or without providers, is returned unchanged.
+fn strip_providers(magnet: &str) -> String {
+    let Some((base, query)) = magnet.split_once('?') else {
+        return magnet.to_string();
+    };
+    let kept: Vec<&str> = query
+        .split('&')
+        .filter(|p| !p.starts_with("provider="))
+        .collect();
+    if kept.is_empty() {
+        base.to_string()
+    } else {
+        format!("{base}?{}", kept.join("&"))
+    }
+}
+
 /// Shown when the info action fires with several files selected: lists the
 /// shareable link of every selected file so they can be copied in one go. With
 /// eMule support a Rucio/eMule selector switches which link kind is listed;
@@ -1019,6 +1039,11 @@ fn ShareLinksModal(
     // true = list eMule (ed2k) links, false = Rucio magnets. Only reachable
     // when emule_active, since the selector is hidden otherwise.
     let emule: RwSignal<bool> = RwSignal::new(false);
+    // When set, Rucio magnets are shown stripped of our provider hint so the
+    // links don't carry our identity. Off by default: the links are shown as the
+    // daemon built them (with the provider), which also helps a freshly-shared
+    // file be found before its DHT announce has propagated.
+    let anonymous: RwSignal<bool> = RwSignal::new(false);
     let copied: RwSignal<bool> = RwSignal::new(false);
     // Guard the reset timer from firing after the modal is closed/unmounted.
     let alive = Arc::new(AtomicBool::new(true));
@@ -1026,14 +1051,17 @@ fn ShareLinksModal(
     on_cleanup(move || alive_cleanup.store(false, Ordering::Relaxed));
 
     // The links shown (and copied) for the current selector position: every
-    // Rucio magnet, or every eMule link that already exists.
+    // Rucio magnet (anonymised on demand), or every eMule link that exists.
     let links = move || -> Vec<String> {
         let em = emule.get();
+        let anon = anonymous.get();
         files.with_value(|fs| {
             fs.iter()
                 .filter_map(|f| {
                     if em {
                         f.ed2k.clone()
+                    } else if anon {
+                        Some(strip_providers(&f.magnet))
                     } else {
                         Some(f.magnet.clone())
                     }
@@ -1075,23 +1103,46 @@ fn ShareLinksModal(
                     </button>
                 </div>
                 <div class="modal-body">
-                    // The Rucio/eMule selector exists only in an eMule build.
-                    {emule_active.then(|| view! {
-                        <div class="seg-toggle">
-                            <button
-                                class=move || if emule.get() { "seg-btn" } else { "seg-btn seg-on" }
-                                on:click=move |_| emule.set(false)
+                    // Controls row: the Rucio/eMule selector (eMule builds only)
+                    // and, while Rucio links are shown, the "anonymous" toggle.
+                    <div class="share-links-controls">
+                        {emule_active.then(|| view! {
+                            <div class="seg-toggle">
+                                <button
+                                    class=move || if emule.get() { "seg-btn" } else { "seg-btn seg-on" }
+                                    on:click=move |_| emule.set(false)
+                                >
+                                    {t!("share.detail.rucio_link")}
+                                </button>
+                                <button
+                                    class=move || if emule.get() { "seg-btn seg-on" } else { "seg-btn" }
+                                    on:click=move |_| emule.set(true)
+                                >
+                                    {t!("share.detail.emule_link")}
+                                </button>
+                            </div>
+                        })}
+                        // Anonymity applies only to Rucio magnets, so this is
+                        // hidden while eMule links are selected.
+                        <Show when=move || !emule.get()>
+                            // The whole label (text + pill) toggles, so the
+                            // click target isn't just the small pill.
+                            <span
+                                class="share-anon-toggle toggle-clickable"
+                                title=move || t!("share.links_anonymous_tip").to_string()
+                                on:click=move |_| anonymous.set(!anonymous.get_untracked())
                             >
-                                {t!("share.detail.rucio_link")}
-                            </button>
-                            <button
-                                class=move || if emule.get() { "seg-btn seg-on" } else { "seg-btn" }
-                                on:click=move |_| emule.set(true)
-                            >
-                                {t!("share.detail.emule_link")}
-                            </button>
-                        </div>
-                    })}
+                                <span class="share-anon-label">{t!("share.links_anonymous")}</span>
+                                <span class=move || if anonymous.get() {
+                                    "toggle-pill toggle-on"
+                                } else {
+                                    "toggle-pill"
+                                }>
+                                    {move || if anonymous.get() { t!("common.on") } else { t!("common.off") }}
+                                </span>
+                            </span>
+                        </Show>
+                    </div>
 
                     {move || {
                         let items = links();
