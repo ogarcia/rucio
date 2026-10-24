@@ -1,9 +1,11 @@
 //! Release update check against GitHub.
 //!
-//! A daily poll (folded into the periodic share-reconcile task) plus an
-//! on-demand refresh for the panel's manual "check now" button. A 10-minute
-//! floor means repeated manual checks serve the cached result instead of
-//! hammering GitHub. The check finds the latest *stable* release
+//! A daily poll (folded into the periodic share-reconcile task), a one-shot
+//! check shortly after startup (so an occasional user hears about a new release
+//! without waiting for the first daily sweep), plus an on-demand refresh for the
+//! panel's manual "check now" button. A 10-minute floor means repeated manual
+//! checks serve the cached result instead of hammering GitHub. The check finds
+//! the latest *stable* release
 //! (`/releases/latest` already excludes prereleases), compares its tag with the
 //! running version, caches the outcome, and — only on the automatic path, and
 //! only for a stable build — raises a one-time `System` notification when a
@@ -34,6 +36,27 @@ const RELEASES_URL: &str = "https://api.github.com/repos/ogarcia/rucio/releases/
 /// window returns the cached result, so the manual button can't be used to spam
 /// GitHub.
 const MIN_CHECK_SPACING: Duration = Duration::from_secs(10 * 60);
+
+/// Floor for the one-shot startup check's delay: never phone home in the first
+/// two minutes after boot, so a user who merely bounces the daemon (start it to
+/// tweak a setting, stop it again) triggers no request.
+const STARTUP_DELAY_FLOOR: Duration = Duration::from_secs(2 * 60);
+
+/// Random jitter added on top of the floor, in seconds. Spreads the startup
+/// checks of many nodes restarting at once (and gives a bouncing user more
+/// slack) instead of having them all hit GitHub in lockstep.
+const STARTUP_DELAY_JITTER_SECS: u64 = 3 * 60;
+
+/// A randomised delay before the one-shot startup update check: the floor plus
+/// up to [`STARTUP_DELAY_JITTER_SECS`] of jitter. Derived from a fresh UUID so
+/// we don't pull in a `rand` dependency just for this (matching how the node's
+/// other ad-hoc randomness is generated).
+pub fn startup_delay() -> Duration {
+    let bytes = *uuid::Uuid::new_v4().as_bytes();
+    let jitter =
+        u64::from(u16::from_le_bytes([bytes[0], bytes[1]])) % (STARTUP_DELAY_JITTER_SECS + 1);
+    STARTUP_DELAY_FLOOR + Duration::from_secs(jitter)
+}
 
 /// The running build's version, as compiled in.
 fn current_version() -> &'static str {
@@ -257,6 +280,18 @@ mod tests {
         assert!(!is_newer("0.49.0-dev", "0.48.0"));
         assert!(current_is_prerelease_of("0.49.0-dev"));
         assert!(!current_is_prerelease_of("0.49.0"));
+    }
+
+    #[test]
+    fn startup_delay_respects_floor_and_ceiling() {
+        let floor = STARTUP_DELAY_FLOOR;
+        let ceiling = STARTUP_DELAY_FLOOR + Duration::from_secs(STARTUP_DELAY_JITTER_SECS);
+        // Sample enough times to exercise the jitter across its range.
+        for _ in 0..1000 {
+            let d = startup_delay();
+            assert!(d >= floor, "{d:?} below floor {floor:?}");
+            assert!(d <= ceiling, "{d:?} above ceiling {ceiling:?}");
+        }
     }
 
     #[test]

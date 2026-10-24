@@ -544,6 +544,21 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
         })
     };
 
+    // One-shot startup update check: an occasional user (or one who kept the
+    // daemon off for a while) learns about a new release shortly after boot
+    // instead of waiting up to 24 h for the first periodic sweep. Delayed by a
+    // short random interval (see `update::startup_delay`) so merely bouncing the
+    // daemon doesn't phone home, and so many nodes restarting at once don't hit
+    // GitHub in lockstep. A no-op when the check is disabled, and floor-limited
+    // like the periodic path.
+    {
+        let u = Arc::clone(&updater);
+        tokio::spawn(async move {
+            tokio::time::sleep(crate::update::startup_delay()).await;
+            u.run_auto().await;
+        });
+    }
+
     // --- API server ---------------------------------------------------------
 
     // In-memory whitelist of files currently being downloaded via eMule, shared
