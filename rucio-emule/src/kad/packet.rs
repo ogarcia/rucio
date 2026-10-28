@@ -26,6 +26,13 @@ pub const KAD2_PROTO: u8 = 0xe4;
 /// Current Kad version we advertise (KADEMLIA_VERSION = 0x09 per eMule opcodes.h).
 pub const KAD_VERSION: u8 = 9;
 
+/// Upper bound on the decompressed size of a packed (`0xe5`) Kad2 packet. A
+/// legitimate Kad2 datagram is a few KB; this is far above any real packet and
+/// far below the tens of MB a zlib bomb could reach from one UDP datagram.
+/// Without it, `read_to_end` grows the output `Vec` unbounded for a small
+/// malicious stream that expands ~1000×.
+const MAX_PACKED_DECOMPRESSED: usize = 512 * 1024;
+
 // ── Opcodes ───────────────────────────────────────────────────────────────────
 
 /// Kad2 UDP opcodes (byte `[1]` of every packet).
@@ -395,10 +402,15 @@ pub fn decode(data: &[u8]) -> Result<KadPacket, PacketError> {
     if data[0] == 0xe5 {
         use flate2::read::ZlibDecoder;
         use std::io::Read as _;
-        let mut dec = ZlibDecoder::new(&data[2..]);
+        // Bound the inflate (read one byte past the cap to detect overflow) so a
+        // small malicious stream can't expand without limit and exhaust memory.
+        let mut dec = ZlibDecoder::new(&data[2..]).take(MAX_PACKED_DECOMPRESSED as u64 + 1);
         let mut decompressed = Vec::new();
         dec.read_to_end(&mut decompressed)
             .map_err(|_| PacketError::Decompress)?;
+        if decompressed.len() > MAX_PACKED_DECOMPRESSED {
+            return Err(PacketError::Decompress);
+        }
         // Re-frame: prepend KAD2_PROTO so decode_payload can be called recursively.
         let mut reframed = Vec::with_capacity(2 + decompressed.len());
         reframed.push(KAD2_PROTO);

@@ -2080,6 +2080,22 @@ fn build_request_parts(
 /// contiguous slice of the stream.  Feed every sub-packet's fragment through
 /// [`Self::push`]; the full block is inflated once `packed_size` bytes have
 /// arrived.
+/// Upper bound on a packed block's *decompressed* size. We request up to three
+/// consecutive ~180 KB windows per REQUESTPARTS, and a peer may answer that
+/// contiguous span as one packed block, so a well-behaved OP_COMPRESSEDPART
+/// decompresses to at most ~540 KB. Cap a little above that: far over anything a
+/// legitimate peer sends, far under the gigabytes a zlib bomb would otherwise
+/// reach. Without this, `read_to_end` grows the output `Vec` unbounded and a
+/// small malicious stream that expands ~1000× OOM-aborts the process.
+const MAX_PACKED_UNPACKED: usize = 4 * 180 * 1024;
+
+/// Upper bound on a packed block's *compressed* size. Compression never grows a
+/// block by more than zlib's small overhead, so a declared `packed_size` beyond
+/// this is bogus. Rejecting it before buffering stops a peer from growing the
+/// reassembly buffer without bound by declaring a huge size and dribbling
+/// fragments.
+const MAX_PACKED_PACKED: usize = MAX_PACKED_UNPACKED + 1024;
+
 #[derive(Default)]
 struct PackedReassembler {
     /// Accumulated compressed bytes for the block currently being received.
@@ -2102,6 +2118,15 @@ impl PackedReassembler {
         packed_size: usize,
         fragment: &[u8],
     ) -> io::Result<Option<Vec<u8>>> {
+        // Reject an implausibly large declared size before buffering anything,
+        // so a peer can't grow `buf` without bound by dribbling fragments under
+        // a huge `packed_size`.
+        if packed_size > MAX_PACKED_PACKED {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("packed block size {packed_size} exceeds maximum {MAX_PACKED_PACKED}"),
+            ));
+        }
         if self.key != Some((start, packed_size)) {
             if !self.buf.is_empty() {
                 warn!(
@@ -2118,11 +2143,23 @@ impl PackedReassembler {
             return Ok(None);
         }
 
+        // Bound the inflate: read one byte past the cap so a stream that expands
+        // beyond a legitimate block is detected and rejected rather than left to
+        // grow the output allocation unbounded (zlib-bomb protection).
         let mut out = Vec::new();
-        let result = ZlibDecoder::new(&self.buf[..packed_size]).read_to_end(&mut out);
+        let result = ZlibDecoder::new(&self.buf[..packed_size])
+            .take(MAX_PACKED_UNPACKED as u64 + 1)
+            .read_to_end(&mut out);
         self.buf.clear();
         self.key = None;
-        result.map(|_| Some(out))
+        result?;
+        if out.len() > MAX_PACKED_UNPACKED {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("packed block inflates beyond maximum {MAX_PACKED_UNPACKED}"),
+            ));
+        }
+        Ok(Some(out))
     }
 }
 
@@ -3657,6 +3694,52 @@ mod tests {
         let good = zlib_compress(b"hello world");
         let out = r.push(0, good.len(), &good).unwrap();
         assert_eq!(out.as_deref(), Some(b"hello world".as_slice()));
+    }
+
+    #[test]
+    fn packed_reassembler_rejects_decompression_bomb() {
+        // A tiny zlib stream that inflates far beyond a legitimate block (a
+        // highly-compressible payload well over MAX_PACKED_UNPACKED). The
+        // reassembler must reject it instead of growing the output unbounded.
+        let bomb = zlib_compress(&vec![0u8; MAX_PACKED_UNPACKED + 50_000]);
+        assert!(
+            bomb.len() <= MAX_PACKED_PACKED,
+            "the compressed bomb must be small enough to pass the packed-size gate"
+        );
+        let mut r = PackedReassembler::default();
+        let res = r.push(0, bomb.len(), &bomb);
+        assert!(
+            res.is_err(),
+            "expected an over-expanding stream to be rejected"
+        );
+        // The reassembler is reset and still works for a legitimate block.
+        let good = zlib_compress(b"after the bomb");
+        let out = r.push(0, good.len(), &good).unwrap();
+        assert_eq!(out.as_deref(), Some(b"after the bomb".as_slice()));
+    }
+
+    #[test]
+    fn packed_reassembler_rejects_oversized_declared_size() {
+        // A declared packed size beyond the cap is refused before any buffering,
+        // so a peer cannot grow the reassembly buffer by dribbling fragments.
+        let mut r = PackedReassembler::default();
+        let res = r.push(0, MAX_PACKED_PACKED + 1, &[0u8; 16]);
+        assert!(
+            res.is_err(),
+            "expected an oversized packed_size to be rejected"
+        );
+        assert!(r.buf.is_empty(), "nothing should have been buffered");
+    }
+
+    #[test]
+    fn packed_reassembler_accepts_largest_legitimate_block() {
+        // Three full ~180 KB windows served as one contiguous block is the
+        // largest a well-behaved peer sends; it must still be accepted.
+        let original = sample_payload(3 * 180 * 1024);
+        let packed = zlib_compress(&original);
+        let mut r = PackedReassembler::default();
+        let out = r.push(0, packed.len(), &packed).unwrap();
+        assert_eq!(out.as_deref(), Some(original.as_slice()));
     }
 
     // ── place_block (out-of-order assembly) ─────────────────────────────────
