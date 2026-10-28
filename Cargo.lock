@@ -6228,7 +6228,7 @@ dependencies = [
 
 [[package]]
 name = "rucio"
-version = "0.50.0"
+version = "0.51.0-dev"
 dependencies = [
  "anyhow",
  "clap",
@@ -6239,7 +6239,7 @@ dependencies = [
 
 [[package]]
 name = "rucio-bootstrap"
-version = "0.50.0"
+version = "0.51.0-dev"
 dependencies = [
  "anyhow",
  "axum",
@@ -6262,7 +6262,7 @@ dependencies = [
 
 [[package]]
 name = "rucio-cli"
-version = "0.50.0"
+version = "0.51.0-dev"
 dependencies = [
  "anyhow",
  "clap",
@@ -6284,7 +6284,7 @@ dependencies = [
 
 [[package]]
 name = "rucio-core"
-version = "0.50.0"
+version = "0.51.0-dev"
 dependencies = [
  "anyhow",
  "bao-tree",
@@ -6306,7 +6306,7 @@ dependencies = [
 
 [[package]]
 name = "rucio-daemon"
-version = "0.50.0"
+version = "0.51.0-dev"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6349,7 +6349,7 @@ dependencies = [
 
 [[package]]
 name = "rucio-emule"
-version = "0.50.0"
+version = "0.51.0-dev"
 dependencies = [
  "anyhow",
  "blake3",
@@ -6367,7 +6367,7 @@ dependencies = [
 
 [[package]]
 name = "rucio-net"
-version = "0.50.0"
+version = "0.51.0-dev"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6383,7 +6383,7 @@ dependencies = [
 
 [[package]]
 name = "rucio-tauri"
-version = "0.50.0"
+version = "0.51.0-dev"
 dependencies = [
  "ashpd",
  "dirs 7.0.0",
@@ -6399,7 +6399,7 @@ dependencies = [
 
 [[package]]
 name = "rucio-web"
-version = "0.50.0"
+version = "0.51.0-dev"
 dependencies = [
  "base64 0.23.1",
  "futures-util",
