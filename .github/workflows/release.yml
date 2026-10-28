@@ -17,6 +17,11 @@ env:
   # rustflags in .cargo/config.toml, which would drop the Windows crt-static
   # linking. Warnings are gated in ci.yml on every push/PR.
 
+# Least-privilege default for GITHUB_TOKEN; the release job raises it to
+# `contents: write` per job to publish the GitHub release.
+permissions:
+  contents: read
+
 jobs:
   # ---------------------------------------------------------------------------
   # Build matrix — one job per target

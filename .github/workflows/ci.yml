@@ -17,6 +17,10 @@ env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
 
+# Least-privilege default for GITHUB_TOKEN; this workflow only reads the repo.
+permissions:
+  contents: read
+
 jobs:
   check:
     name: Format / Clippy / Test

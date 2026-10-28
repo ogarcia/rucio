@@ -32,6 +32,11 @@ env:
   # versions.env, loaded into $GITHUB_ENV by the "Load build versions" step in
   # each job below.
 
+# Least-privilege default for GITHUB_TOKEN; the image jobs raise it to
+# `packages: write` per job to push to ghcr.io.
+permissions:
+  contents: read
+
 jobs:
   # ── Compile binaries once per arch (native runners) ────────────────────────
   build:
