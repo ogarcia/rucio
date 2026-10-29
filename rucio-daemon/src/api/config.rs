@@ -577,6 +577,7 @@ pub async fn put_webhooks(
     responses((status = 200, description = "Test delivery outcome", body = WebhookTestResult)),
 )]
 pub async fn test_webhook(Json(webhook): Json<WebhookConfig>) -> Json<WebhookTestResult> {
+    crate::ensure_crypto_provider();
     let client = reqwest::Client::new();
     Json(crate::webhooks::send_test(&client, &webhook).await)
 }

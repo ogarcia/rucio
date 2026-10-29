@@ -95,6 +95,21 @@ pub fn apply_base_dir_env(portable: bool, base_dir: Option<&std::path::Path>) {
     }
 }
 
+/// Install the ring rustls `CryptoProvider` as the process-wide default,
+/// idempotently. Called before building any rustls-backed client (the reqwest
+/// clients used for the update check, webhooks and the eMule nodes.dat
+/// download), not only from the entry point, so the clients also work in tests
+/// that never call [`run`]. ring dispatches on CPU features at runtime and
+/// ships no AVX-512 assembly, so the binaries run on older x86_64 CPUs without
+/// AVX; libp2p already uses ring for QUIC/TLS.
+pub fn ensure_crypto_provider() {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
 /// Entry point for the daemon logic. Runs until Ctrl-C / SIGTERM.
 pub async fn run(config_path: Option<&std::path::Path>) -> Result<()> {
     run_until(config_path, shutdown_signal()).await
@@ -108,6 +123,8 @@ pub async fn run_until<F: std::future::Future<Output = ()>>(
     config_path: Option<&std::path::Path>,
     shutdown: F,
 ) -> Result<()> {
+    ensure_crypto_provider();
+
     rucio_core::logging::init(
         "RUCIOD",
         "rucio_daemon=info,rucio_core=info,rucio_emule=info,rucio_net=info",

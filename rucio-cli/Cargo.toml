@@ -16,6 +16,9 @@ rucio-core          = { path = "../rucio-core" }
 tokio               = { workspace = true }
 clap                = { workspace = true }
 reqwest             = { workspace = true }
+# Installs the process-default ring CryptoProvider for the rustls-based clients
+# (reqwest, tokio-tungstenite) so they stay off aws-lc-rs/AVX-512.
+rustls              = { workspace = true }
 serde               = { workspace = true }
 serde_json          = { workspace = true }
 anyhow              = { workspace = true }

@@ -2658,6 +2658,7 @@ pub async fn bootstrap_nodes_dat(path: &std::path::Path, url: &str) -> Result<us
     // (or never answers the SYN, capped only by the OS at ~2 min) could hang
     // this task indefinitely. Bound both the connect phase and the whole
     // request so a cold-start download fails loudly instead of hanging.
+    crate::ensure_crypto_provider();
     let client = reqwest::Client::builder()
         .user_agent(EMULE_USER_AGENT)
         .connect_timeout(std::time::Duration::from_secs(30))

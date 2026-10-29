@@ -96,6 +96,7 @@ pub struct Notifier {
 
 impl Notifier {
     pub fn new(db: Db, ws_tx: broadcast::Sender<WsEvent>, state: Arc<NotificationState>) -> Self {
+        crate::ensure_crypto_provider();
         Self {
             db,
             ws_tx,

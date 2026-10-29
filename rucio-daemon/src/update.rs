@@ -117,6 +117,7 @@ pub struct Updater {
 
 impl Updater {
     pub fn new(enabled: bool, notifier: Notifier) -> Arc<Self> {
+        crate::ensure_crypto_provider();
         // GitHub rejects requests without a User-Agent; identify ourselves.
         let http = reqwest::Client::builder()
             .user_agent(concat!("rucio/", env!("CARGO_PKG_VERSION")))

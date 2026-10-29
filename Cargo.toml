@@ -88,7 +88,14 @@ toml        = "1.1"
 clap        = { version = "4", features = ["derive", "env"] }
 
 # http client (para rucio-cli)
-reqwest     = { version = "0.13", features = ["json"] }
+reqwest     = { version = "0.13", default-features = false, features = ["json", "charset", "http2", "system-proxy", "rustls-no-provider"] }
+
+# tls crypto provider — ring everywhere. ring has reliable runtime CPU-feature
+# dispatch and, unlike aws-lc-rs (rustls' default provider), bundles no AVX-512
+# assembly, so the binaries run on older x86_64 CPUs without AVX. libp2p already
+# selects ring for QUIC/TLS; reqwest/tokio-tungstenite use `rustls-no-provider`
+# and pick up ring via the process-default provider installed at startup.
+rustls      = { version = "0.23", default-features = false, features = ["ring"] }
 
 # error handling
 thiserror   = "2"

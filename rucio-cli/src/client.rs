@@ -43,6 +43,7 @@ pub struct ApiClient {
 
 impl ApiClient {
     pub fn new(base: &str) -> Self {
+        crate::ensure_crypto_provider();
         Self {
             base: base.trim_end_matches('/').to_string(),
             inner: reqwest::Client::new(),

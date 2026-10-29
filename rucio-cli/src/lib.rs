@@ -518,9 +518,24 @@ pub enum ConfigAction {
     },
 }
 
+/// Install the ring rustls `CryptoProvider` as the process-wide default,
+/// idempotently. Called before building any rustls-backed client (reqwest and
+/// the WebSocket) so they work however the CLI is entered. ring has reliable
+/// runtime CPU dispatch and no AVX-512 asm, so the binary runs on older x86_64
+/// CPUs without AVX.
+pub fn ensure_crypto_provider() {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
 /// Entry point for the CLI logic.
 /// Called both from the CLI's own `main.rs` and from the fat binary.
 pub async fn run() -> Result<()> {
+    ensure_crypto_provider();
+
     rucio_core::logging::init("RUCIO", "off");
     // Resolve the locale before building the command so `--help` is localized.
     rust_i18n::set_locale(&resolve_locale(preparse_lang().as_deref()));

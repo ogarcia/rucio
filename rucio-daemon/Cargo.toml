@@ -21,9 +21,12 @@ rucio-core          = { path = "../rucio-core" }
 rucio-net           = { path = "../rucio-net" }
 rucio-emule         = { path = "../rucio-emule", optional = true }
 # Used for the eMule nodes.dat download and for outbound notification webhooks,
-# so it is non-optional (not gated behind emule-compat). Same TLS setup as
-# before — left untouched to keep the static musl build working.
-reqwest             = { version = "0.13", features = ["json"] }
+# so it is non-optional (not gated behind emule-compat). Uses rustls with no
+# bundled provider; the process-default ring provider (installed at startup)
+# backs it, keeping the static musl build working and off aws-lc-rs/AVX-512.
+reqwest             = { version = "0.13", default-features = false, features = ["json", "charset", "http2", "system-proxy", "rustls-no-provider"] }
+# Installs the process-default ring CryptoProvider for the rustls-based clients.
+rustls              = { workspace = true }
 hmac                = "0.13"
 sha2                = "0.11"
 rust-embed          = { workspace = true, optional = true }
