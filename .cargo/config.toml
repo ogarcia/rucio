@@ -9,3 +9,23 @@
 # build scripts (host artifacts) are NOT compiled with crt-static.
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
+
+# Keep the shipped x86_64 Linux binaries runnable on any x86_64 CPU, including
+# older ones without AVX (e.g. the Intel "Goldmont" Celeron/Atom families).
+#
+# Newer build hosts raise the default instruction-set baseline: GCC 15 on Ubuntu
+# 26.04 — the current `ubuntu-latest` CI runner — compiles for `x86-64-v3`
+# (AVX/AVX2) by default. That silently bakes AVX into the C dependencies the
+# `cc` crate builds (SQLite via libsqlite3-sys, etc.), with no runtime CPU
+# check, so the first SQLite call (`sqlite3_initialize`) hits an AVX instruction
+# and the process dies with SIGILL on a pre-AVX CPU. Pin both the Rust and the C
+# compiler back to the base x86-64 ISA. The crypto crates (ring, blake3, …) keep
+# their own runtime CPU dispatch, so AES-NI/AVX are still used when the CPU has
+# them — only the always-on codegen is forced to stay portable.
+[target.x86_64-unknown-linux-musl]
+rustflags = ["-C", "target-cpu=x86-64"]
+
+[env]
+# Read by the `cc` crate when it cross-compiles C for the musl target; overrides
+# the build host's default `-march` so SQLite et al. are built for base x86-64.
+CFLAGS_x86_64_unknown_linux_musl = "-march=x86-64"
