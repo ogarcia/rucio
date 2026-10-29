@@ -106,11 +106,34 @@ documented in [`rucio-tauri/flatpak/README.md`](../../rucio-tauri/flatpak/README
 
 ## Option B — Build from source
 
-### Standard build
+The build produces a single binary; the `ruciod` symlink is what triggers
+daemon mode — see [Architecture](../design/01-architecture.md) for details. Two
+optional features decide what that binary contains:
+
+| Feature | What it adds |
+|---|---|
+| `emule-compat` | eMule / Kad2 network — downloading files via `ed2k://` links |
+| `web-ui` | The embedded web panel, served by the daemon at `/` |
+
+They are independent and can be combined. The official [release binary](#option-a--release-binary)
+is built with **both** (`--features emule-compat,web-ui`), so a from-source
+build that matches it is the [Complete build](#complete-build-panel--emule)
+below. For deeper build details see the developer docs
+([Building](../dev/02-building.md), [Web UI](../dev/03-web-ui.md)).
+
+First clone the repository (the commands below are all run from its root):
 
 ```sh
 git clone https://github.com/ogarcia/rucio
 cd rucio
+```
+
+### Standard build (daemon + CLI only)
+
+No optional features — the libp2p daemon, download engine and REST API, but no
+web panel and no eMule support:
+
+```sh
 cargo build --release
 install -m755 target/release/rucio /usr/local/bin/rucio
 ln -s /usr/local/bin/rucio /usr/local/bin/ruciod
@@ -119,9 +142,8 @@ ln -s /usr/local/bin/rucio /usr/local/bin/ruciod
 ### Build with eMule / Kad2 compatibility
 
 The `emule-compat` feature adds support for downloading files via `ed2k://`
-links from the eMule Kademlia network.  It is opt-in because it pulls in an
-HTTP client (`reqwest`) and the `md4` crate, which increases binary size and
-compile time.
+links from the eMule Kademlia network. It is opt-in because it pulls in the
+`md4` crate, which increases binary size and compile time.
 
 ```sh
 cargo build --release --features emule-compat
@@ -137,8 +159,63 @@ rucio node emule status
 
 The field `eMule compatibility` will show `enabled` or `disabled`.
 
-The build produces a single binary. The `ruciod` symlink is what triggers
-daemon mode — see [Architecture](../design/01-architecture.md) for details.
+### Build with the embedded web panel
+
+The panel (`rucio-web`) is a separate WebAssembly frontend. It is **not** part
+of the default `cargo build`: it is compiled by [trunk](https://trunkrs.dev/)
+to `rucio-web/dist/`, and the `web-ui` feature then embeds those assets into
+the binary. So building the panel is a two-step process, and it needs two extra
+tools on top of Rust — the `wasm32-unknown-unknown` target and `trunk`. Their
+installation (including the Arch Linux packages) is covered in
+[Toolchain](../dev/01-toolchain.md); the short version:
+
+```sh
+# rustup-managed toolchain
+rustup target add wasm32-unknown-unknown
+cargo install trunk
+# Arch Linux (system Rust): sudo pacman -S rust-wasm trunk
+```
+
+Then build the frontend first, and the binary second:
+
+```sh
+# Step 1 — compile the frontend to WASM (writes rucio-web/dist/)
+cd rucio-web && trunk build --release && cd ..
+
+# Step 2 — compile the binary with the assets embedded
+cargo build --release --features web-ui
+install -m755 target/release/rucio /usr/local/bin/rucio
+ln -s /usr/local/bin/rucio /usr/local/bin/ruciod
+```
+
+The daemon then serves the control panel at `http://<listen-addr>/` (default
+`http://127.0.0.1:3003/`), exactly like the release binary.
+
+### Complete build (panel + eMule)
+
+To reproduce the official release binary — web panel **and** eMule support —
+combine both features (after the trunk step above):
+
+```sh
+cd rucio-web && trunk build --release && cd ..
+cargo build --release --features emule-compat,web-ui
+install -m755 target/release/rucio /usr/local/bin/rucio
+ln -s /usr/local/bin/rucio /usr/local/bin/ruciod
+```
+
+### Older / low-power x86\_64 CPUs
+
+Rucio runs on any 64-bit x86 CPU, including low-power chips without AVX — for
+example the Intel Celeron/Pentium "Gemini Lake" family such as the **J4125**.
+Its SIMD-accelerated code (the libp2p/QUIC TLS crypto and the BLAKE3 hashing)
+picks the instruction set at runtime and falls back to a supported path when
+AVX/AVX2/AVX-512 is absent, and Rust itself compiles to the baseline `x86-64`
+instructions. No special flags are needed, for the release binary or a
+from-source build.
+
+To instead optimise a from-source build for the exact machine you compile on,
+set `RUSTFLAGS="-C target-cpu=native"` — but the resulting binary is then only
+guaranteed to run on CPUs at least as new as that one.
 
 ## Option C — Container image
 
