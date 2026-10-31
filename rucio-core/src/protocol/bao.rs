@@ -7,11 +7,20 @@
 //! root — so a chunk is verified against the file's identity, not against a
 //! separate per-chunk hash that the network would have to be trusted to supply.
 //!
-//! Block size is `2^10` chunks of 1 KiB = **1 MiB**. The transfer chunk (4 MiB)
-//! is exactly four 1 MiB blocks, so every chunk request covers whole subtrees —
-//! which is what lets a node serve a chunk it has from a partially-downloaded
-//! file (partial sharing). The outboard (the tree of inner hashes) is about
-//! `size / 16384` bytes — a few MB even for tens of GB of data.
+//! Block size is `2^10` chunks of 1 KiB = **1 MiB** on the Rucio network. The
+//! transfer chunk (4 MiB) is exactly four 1 MiB blocks, so every chunk request
+//! covers whole subtrees — which is what lets a node serve a chunk it has from a
+//! partially-downloaded file (partial sharing). The outboard (the tree of inner
+//! hashes) is about `size / 16384` bytes — a few MB even for tens of GB of data.
+//!
+//! Each function defaults to [`BLOCK_SIZE`] but has a `*_with_block_size` form.
+//! The BLAKE3 root is identical for any block size (it is a property of the
+//! content, not of where the tree stops caching inner hashes), so an outboard or
+//! slice can be produced at another resolution — e.g. 256 KiB (`chunk_log` 8) to
+//! serve a peer on a protocol that uses the same root — for the same file
+//! identity, without rehashing to a different root. Only the outboard bytes and
+//! the slice granularity change; block boundaries at a coarser size are a
+//! superset of a finer one (1 MiB = 4 × 256 KiB), so they line up cleanly.
 
 use std::io;
 use std::path::Path;
@@ -22,7 +31,9 @@ use bao_tree::io::round_up_to_chunks;
 use bao_tree::io::sync::{decode_ranges, encode_ranges_validated, outboard};
 use bao_tree::{BaoTree, BlockSize, ByteRanges, ChunkRanges};
 
-/// Merkle tree block size: `2^10` BLAKE3 chunks of 1 KiB = 1 MiB blocks.
+/// Merkle tree block size on the Rucio network: `2^10` BLAKE3 chunks of 1 KiB =
+/// 1 MiB blocks. The default wrappers pass this to the `*_with_block_size`
+/// functions; other resolutions share the same root.
 pub const BLOCK_SIZE: BlockSize = BlockSize::from_chunk_log(10);
 
 /// Compute the bao root hash (identical to `blake3::hash` of the file content)
@@ -31,8 +42,20 @@ pub const BLOCK_SIZE: BlockSize = BlockSize::from_chunk_log(10);
 ///
 /// Blocking I/O — call inside `spawn_blocking` from async code.
 pub fn compute_outboard(path: &Path) -> io::Result<(blake3::Hash, Vec<u8>, u64)> {
+    compute_outboard_with_block_size(path, BLOCK_SIZE)
+}
+
+/// [`compute_outboard`] for an explicit `block_size`. The returned root is the
+/// same at any block size; only the outboard bytes differ (they grow as the
+/// block size shrinks). Lets a bridge build a differently-sized outboard for the
+/// same file identity on demand — e.g. lazily, only when a peer actually requests
+/// the file at that resolution.
+pub fn compute_outboard_with_block_size(
+    path: &Path,
+    block_size: BlockSize,
+) -> io::Result<(blake3::Hash, Vec<u8>, u64)> {
     let size = std::fs::metadata(path)?.len();
-    let tree = BaoTree::new(size, BLOCK_SIZE);
+    let tree = BaoTree::new(size, block_size);
     let mut ob = PreOrderMemOutboard {
         root: blake3::hash(&[]),
         tree,
@@ -65,7 +88,27 @@ pub fn encode_slice(
     total_size: u64,
     ranges: &ChunkRanges,
 ) -> io::Result<Vec<u8>> {
-    let tree = BaoTree::new(total_size, BLOCK_SIZE);
+    encode_slice_with_block_size(
+        data_path,
+        outboard_bytes,
+        root,
+        total_size,
+        ranges,
+        BLOCK_SIZE,
+    )
+}
+
+/// [`encode_slice`] for an explicit `block_size`. The `outboard_bytes` must have
+/// been built at the same `block_size` (see [`compute_outboard_with_block_size`]).
+pub fn encode_slice_with_block_size(
+    data_path: &Path,
+    outboard_bytes: Vec<u8>,
+    root: blake3::Hash,
+    total_size: u64,
+    ranges: &ChunkRanges,
+    block_size: BlockSize,
+) -> io::Result<Vec<u8>> {
+    let tree = BaoTree::new(total_size, block_size);
     let ob = PreOrderMemOutboard {
         root,
         tree,
@@ -93,7 +136,32 @@ pub fn decode_slice_into(
     total_size: u64,
     partial_outboard: Vec<u8>,
 ) -> Result<Vec<u8>, DecodeError> {
-    let tree = BaoTree::new(total_size, BLOCK_SIZE);
+    decode_slice_into_with_block_size(
+        slice,
+        ranges,
+        dest,
+        root,
+        total_size,
+        partial_outboard,
+        BLOCK_SIZE,
+    )
+}
+
+/// [`decode_slice_into`] for an explicit `block_size`. The `slice` must have been
+/// encoded at the same `block_size`, and `partial_outboard` sized with
+/// [`outboard_len_with_block_size`]; a mismatch fails verification rather than
+/// corrupting silently.
+#[allow(clippy::too_many_arguments)]
+pub fn decode_slice_into_with_block_size(
+    slice: &[u8],
+    ranges: &ChunkRanges,
+    dest: &mut std::fs::File,
+    root: blake3::Hash,
+    total_size: u64,
+    partial_outboard: Vec<u8>,
+    block_size: BlockSize,
+) -> Result<Vec<u8>, DecodeError> {
+    let tree = BaoTree::new(total_size, block_size);
     let mut ob = PreOrderMemOutboard {
         root,
         tree,
@@ -106,7 +174,12 @@ pub fn decode_slice_into(
 /// The byte length of the (full) pre-order outboard for a file of `total_size`.
 /// Use to allocate a fresh partial outboard buffer before the first chunk.
 pub fn outboard_len(total_size: u64) -> usize {
-    BaoTree::new(total_size, BLOCK_SIZE).outboard_size() as usize
+    outboard_len_with_block_size(total_size, BLOCK_SIZE)
+}
+
+/// [`outboard_len`] for an explicit `block_size`.
+pub fn outboard_len_with_block_size(total_size: u64, block_size: BlockSize) -> usize {
+    BaoTree::new(total_size, block_size).outboard_size() as usize
 }
 
 /// Rebuild the completed-chunk set of a (possibly partial) file from disk alone:
@@ -128,7 +201,27 @@ pub fn valid_chunks(
     total_size: u64,
     chunk_size: u32,
 ) -> io::Result<Vec<u32>> {
-    let tree = BaoTree::new(total_size, BLOCK_SIZE);
+    valid_chunks_with_block_size(
+        outboard_bytes,
+        part_path,
+        root,
+        total_size,
+        chunk_size,
+        BLOCK_SIZE,
+    )
+}
+
+/// [`valid_chunks`] for an explicit `block_size` (the one the `outboard_bytes`
+/// were built at).
+pub fn valid_chunks_with_block_size(
+    outboard_bytes: Vec<u8>,
+    part_path: &Path,
+    root: blake3::Hash,
+    total_size: u64,
+    chunk_size: u32,
+    block_size: BlockSize,
+) -> io::Result<Vec<u32>> {
+    let tree = BaoTree::new(total_size, block_size);
     let ob = PreOrderMemOutboard {
         root,
         tree,
@@ -267,6 +360,57 @@ mod tests {
         let (root, _ob, size) = compute_outboard(f.path()).unwrap();
         assert_eq!(size, 0);
         assert_eq!(root, blake3::hash(&[]));
+    }
+
+    #[test]
+    fn root_is_block_size_independent() {
+        // The same file hashed at 1 MiB (chunk_log 10) and 256 KiB (chunk_log 8)
+        // must yield the identical root — this is what makes cross-protocol
+        // identity interop free. Only the outboard bytes differ.
+        let data = ramp(5 * 1024 * 1024);
+        let f = write_tmp(&data);
+        let (root10, ob10, _) = compute_outboard(f.path()).unwrap();
+        let (root8, ob8, _) =
+            compute_outboard_with_block_size(f.path(), BlockSize::from_chunk_log(8)).unwrap();
+        assert_eq!(root10, root8);
+        assert_eq!(root10, blake3::hash(&data));
+        // Finer blocks cache more inner hashes, so the outboard is larger.
+        assert!(ob8.len() > ob10.len());
+    }
+
+    #[test]
+    fn roundtrip_chunk_verifies_at_256k_blocks() {
+        // The parametric path encodes and verifies end to end at 256 KiB blocks
+        // against the same root a 1 MiB node would compute.
+        let bs = BlockSize::from_chunk_log(8);
+        let data: Vec<u8> = (0..10 * 1024 * 1024).map(|i| (i % 251) as u8).collect();
+        let f = write_tmp(&data);
+        let (root, ob, size) = compute_outboard_with_block_size(f.path(), bs).unwrap();
+        assert_eq!(root, blake3::hash(&data));
+        let chunk_size = 4 * 1024 * 1024u32;
+
+        let ranges = chunk_ranges(1, chunk_size, size);
+        let slice = encode_slice_with_block_size(f.path(), ob, root, size, &ranges, bs).unwrap();
+
+        let mut part = tempfile::NamedTempFile::new().unwrap();
+        part.as_file().set_len(size).unwrap();
+        decode_slice_into_with_block_size(
+            &slice,
+            &ranges,
+            part.as_file_mut(),
+            root,
+            size,
+            vec![0u8; outboard_len_with_block_size(size, bs)],
+            bs,
+        )
+        .unwrap();
+
+        use std::io::{Read, Seek, SeekFrom};
+        let mut buf = vec![0u8; chunk_size as usize];
+        let mut pf = part.reopen().unwrap();
+        pf.seek(SeekFrom::Start(4 * 1024 * 1024)).unwrap();
+        pf.read_exact(&mut buf).unwrap();
+        assert_eq!(&buf[..], &data[4 * 1024 * 1024..8 * 1024 * 1024]);
     }
 
     #[test]
