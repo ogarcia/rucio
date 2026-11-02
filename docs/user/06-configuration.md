@@ -82,6 +82,10 @@ rucio config unset node.listen_addrs "/ip6/::/tcp/4321"
 **Default:** `/ip4/0.0.0.0/tcp/4321` and `/ip6/::/tcp/4321` (all interfaces,
 port 4321).
 
+> [!NOTE]
+> **Env override:** `RUCIOD_P2P_LISTEN` (comma-separated multiaddrs) — see
+> [Environment variable overrides](#environment-variable-overrides).
+
 ---
 
 ### `node.identity_path`
@@ -102,6 +106,10 @@ rucio config unset node.identity_path
 | Linux | `~/.config/rucio/identity.key` |
 | macOS | `~/Library/Application Support/rucio/identity.key` |
 
+> [!NOTE]
+> **Env override:** `RUCIOD_IDENTITY_PATH` — see
+> [Environment variable overrides](#environment-variable-overrides).
+
 ---
 
 ### `api.listen`
@@ -120,6 +128,10 @@ rucio config set api.listen 0.0.0.0:3003
 ```
 
 **Default:** `127.0.0.1:3003`
+
+> [!NOTE]
+> **Env override:** `RUCIOD_API_LISTEN` (`host:port`) — see
+> [Environment variable overrides](#environment-variable-overrides).
 
 ---
 
@@ -149,6 +161,10 @@ RUCIOD_BASE_PATH=/rucio/ ruciod
 ```
 
 **Default:** `/`.
+
+> [!IMPORTANT]
+> **Env override:** `RUCIOD_BASE_PATH`. Read at startup only — not settable with
+> `rucio config set`.
 
 ---
 
@@ -201,6 +217,10 @@ reachable yet. `rucio node status` shows the resulting class (`HighID` /
 
 **Default:** `true`
 
+> [!NOTE]
+> **Env override:** `RUCIOD_UPNP` (`true`/`false`, also `1`/`0`, `yes`/`no`,
+> `on`/`off`) — see [Environment variable overrides](#environment-variable-overrides).
+
 ---
 
 ### `network.download_limit_kbps`
@@ -215,6 +235,10 @@ rucio config set network.download_limit_kbps 0      # unlimited
 
 **Default:** `0` (unlimited)
 
+> [!NOTE]
+> **Env override:** `RUCIOD_DOWNLOAD_LIMIT_KBPS` (integer KB/s) — see
+> [Environment variable overrides](#environment-variable-overrides).
+
 ---
 
 ### `network.upload_limit_kbps`
@@ -228,6 +252,10 @@ rucio config set network.upload_limit_kbps 0      # unlimited
 ```
 
 **Default:** `0` (unlimited)
+
+> [!NOTE]
+> **Env override:** `RUCIOD_UPLOAD_LIMIT_KBPS` (integer KB/s) — see
+> [Environment variable overrides](#environment-variable-overrides).
 
 ---
 
@@ -244,6 +272,11 @@ rucio config set network.temp_upload_limit_kbps   5120
 ```
 
 **Default:** `5120` (5 MB/s) each.
+
+> [!NOTE]
+> **Env override:** `RUCIOD_TEMP_DOWNLOAD_LIMIT_KBPS` /
+> `RUCIOD_TEMP_UPLOAD_LIMIT_KBPS` (integer KB/s) — see
+> [Environment variable overrides](#environment-variable-overrides).
 
 ---
 
@@ -299,6 +332,10 @@ rucio config set network.max_upload_tasks 128  # more parallelism for fast NVMe
 
 > Requires a daemon restart to take effect.
 
+> [!NOTE]
+> **Env override:** `RUCIOD_MAX_UPLOAD_TASKS` (integer ≥1) — see
+> [Environment variable overrides](#environment-variable-overrides).
+
 ---
 
 ### `network.bootstrap_peers`
@@ -318,6 +355,10 @@ rucio config unset network.bootstrap_peers \
 public bootstrap node (`51.255.175.14:4321`, IPv4 + IPv6) — they do not replace
 it — so a fresh node still reaches the public network out of the box. LAN
 discovery via mDNS also works independently.
+
+> [!NOTE]
+> **Env override:** `RUCIOD_BOOTSTRAP_PEERS` (comma-separated multiaddrs) — see
+> [Environment variable overrides](#environment-variable-overrides).
 
 ---
 
@@ -348,6 +389,9 @@ exclusive_bootstrap = true
 > deployment, isolate it at the network layer (VPN, firewall rules, or a
 > private address range that outsiders cannot route to).
 
+> [!NOTE]
+> No environment override — set this in `config.toml` only.
+
 ---
 
 ### `storage.download_dir`
@@ -371,6 +415,10 @@ app-state directories.
 | Linux (desktop) | `$XDG_DOWNLOAD_DIR/rucio/downloads` or `~/Downloads/rucio/downloads` |
 | macOS | `~/Downloads/rucio/downloads` |
 | Linux (server / no XDG) | `~/rucio/downloads` |
+
+> [!NOTE]
+> **Env override:** `RUCIOD_DOWNLOAD_DIR` (path) — see
+> [Environment variable overrides](#environment-variable-overrides).
 
 ---
 
@@ -397,6 +445,10 @@ A `pins` directory beside `downloads/` in the same Rucio content folder.
 | macOS | `~/Downloads/rucio/pins` |
 | Linux (server / no XDG) | `~/rucio/pins` |
 
+> [!NOTE]
+> **Env override:** `RUCIOD_PIN_DIR` (path) — see
+> [Environment variable overrides](#environment-variable-overrides).
+
 ---
 
 ### `storage.temp_dir`
@@ -417,6 +469,10 @@ rucio config unset storage.temp_dir
 |---|---|
 | Linux | `~/.cache/rucio/tmp` |
 | macOS | `~/Library/Caches/rucio/tmp` |
+
+> [!NOTE]
+> **Env override:** `RUCIOD_TEMP_DIR` (path) — see
+> [Environment variable overrides](#environment-variable-overrides).
 
 ---
 
@@ -453,6 +509,10 @@ rucio config unset storage.outboard_dir     # back to <cache>/rucio/outboards
 | Linux | `~/.cache/rucio/outboards` |
 | macOS | `~/Library/Caches/rucio/outboards` |
 
+> [!NOTE]
+> **Env override:** `RUCIOD_OUTBOARD_DIR` (path) — see
+> [Environment variable overrides](#environment-variable-overrides).
+
 ---
 
 ### `storage.shared_dirs`
@@ -488,6 +548,10 @@ unaffected and stay removable as usual.
 
 **Default:** empty (no extra directories).
 
+> [!NOTE]
+> **Env override:** `RUCIOD_SHARED_DIRS` (comma-separated paths) — see
+> [Environment variable overrides](#environment-variable-overrides).
+
 ---
 
 ### `storage.database_path`
@@ -509,6 +573,10 @@ rucio config unset storage.database_path
 |---|---|
 | Linux | `~/.local/share/rucio/rucio.db` |
 | macOS | `~/Library/Application Support/rucio/rucio.db` |
+
+> [!NOTE]
+> **Env override:** `RUCIOD_DB_PATH` (path) — see
+> [Environment variable overrides](#environment-variable-overrides).
 
 ---
 
@@ -537,6 +605,10 @@ not by this key.
 
 **Default:** unset — resolves to `<cache-dir>/rucio/kad/nodes.dat`.
 
+> [!IMPORTANT]
+> **Env override:** `RUCIOD_NODES_DAT` (path). Read at startup only — not
+> settable with `rucio config set`.
+
 ---
 
 ### `emule.enabled`
@@ -554,6 +626,11 @@ rucio config set emule.enabled true
 ```
 
 **Default:** `true`
+
+> [!NOTE]
+> **Env override:** `RUCIOD_EMULE_ENABLED` (`true`/`false`, also `1`/`0`,
+> `yes`/`no`, `on`/`off`) — see
+> [Environment variable overrides](#environment-variable-overrides).
 
 ---
 
@@ -580,6 +657,10 @@ rucio config unset emule.identity_path
 | Linux | `~/.config/rucio/emule_identity.key` |
 | macOS | `~/Library/Application Support/rucio/emule_identity.key` |
 
+> [!NOTE]
+> **Env override:** `RUCIOD_EMULE_IDENTITY_PATH` (path) — see
+> [Environment variable overrides](#environment-variable-overrides).
+
 ---
 
 ### `emule.tcp_port`
@@ -598,6 +679,10 @@ rucio config set emule.tcp_port 4662
 
 **Default:** `4662` (eMule standard)
 
+> [!NOTE]
+> **Env override:** `RUCIOD_EMULE_TCP_PORT` (integer 1–65535) — see
+> [Environment variable overrides](#environment-variable-overrides).
+
 ---
 
 ### `emule.udp_port`
@@ -613,6 +698,10 @@ rucio config set emule.udp_port 4672
 ```
 
 **Default:** `4672` (eMule standard)
+
+> [!NOTE]
+> **Env override:** `RUCIOD_EMULE_UDP_PORT` (integer 1–65535) — see
+> [Environment variable overrides](#environment-variable-overrides).
 
 ---
 
@@ -634,6 +723,10 @@ rucio config unset emule.temp_dir
 | Linux | `~/.cache/rucio/emule-tmp` |
 | macOS | `~/Library/Caches/rucio/emule-tmp` |
 
+> [!NOTE]
+> **Env override:** `RUCIOD_EMULE_TEMP_DIR` (path) — see
+> [Environment variable overrides](#environment-variable-overrides).
+
 ---
 
 ### `emule.external_ip`
@@ -649,6 +742,10 @@ rucio config unset emule.external_ip       # back to auto-detection
 ```
 
 **Default:** unset (auto-detected).
+
+> [!NOTE]
+> **Env override:** `RUCIOD_EXTERNAL_IP` (IPv4 address) — see
+> [Environment variable overrides](#environment-variable-overrides).
 
 ---
 
@@ -666,8 +763,11 @@ identical name. Set this key (or `RUCIOD_EMULE_NICK`) to pick your own.
 rucio config set emule.nick "my-nickname"
 ```
 
-**Default:** an auto-generated `<Adjective> <Adjective> Rucio` nickname
-(override at runtime with `RUCIOD_EMULE_NICK`)
+**Default:** an auto-generated `<Adjective> <Adjective> Rucio` nickname.
+
+> [!NOTE]
+> **Env override:** `RUCIOD_EMULE_NICK` (string) — see
+> [Environment variable overrides](#environment-variable-overrides).
 
 ---
 
@@ -686,6 +786,10 @@ rucio config set emule.download_slots_per_file 5
 ```
 
 **Default:** `5`  **Range:** `1–50`
+
+> [!NOTE]
+> **Env override:** `RUCIOD_EMULE_DOWNLOAD_SLOTS_PER_FILE` (integer 1–50) — see
+> [Environment variable overrides](#environment-variable-overrides).
 
 ---
 
@@ -707,6 +811,10 @@ rucio config set emule.max_upload_slots 4
 
 **Default:** `4`  **Range:** `1–50`
 
+> [!NOTE]
+> **Env override:** `RUCIOD_EMULE_MAX_UPLOAD_SLOTS` (integer 1–50) — see
+> [Environment variable overrides](#environment-variable-overrides).
+
 ---
 
 ### `emule.max_concurrent_downloads`
@@ -723,6 +831,10 @@ rucio config set emule.max_concurrent_downloads 3
 ```
 
 **Default:** `3`  **Range:** `1–50`
+
+> [!NOTE]
+> **Env override:** `RUCIOD_EMULE_MAX_CONCURRENT_DOWNLOADS` (integer 1–50) — see
+> [Environment variable overrides](#environment-variable-overrides).
 
 ---
 
@@ -741,8 +853,11 @@ grace period at the start of each piece avoids penalising TCP slow-start.
 rucio config set emule.min_source_speed_kib_s 2
 ```
 
-**Default:** `2`  (set to `0` to disable the check; override at runtime with
-`RUCIOD_EMULE_MIN_SOURCE_SPEED_KIB_S`)
+**Default:** `2` (set to `0` to disable the check).
+
+> [!NOTE]
+> **Env override:** `RUCIOD_EMULE_MIN_SOURCE_SPEED_KIB_S` (integer, `0` = off) —
+> see [Environment variable overrides](#environment-variable-overrides).
 
 ---
 
@@ -777,6 +892,10 @@ RUCIOD_EMULE_BACKFILL_SPACING_SECS=0 ruciod
 
 **Default:** `3`  (set to `0` for no pause).
 
+> [!IMPORTANT]
+> **Env override:** `RUCIOD_EMULE_BACKFILL_SPACING_SECS` (integer seconds). Read
+> at startup only — not settable with `rucio config set`.
+
 ---
 
 ### `emule.nodes_dat_url`
@@ -804,6 +923,10 @@ then the built-in default.
 
 **Default:** unset (built-in default mirror).
 
+> [!IMPORTANT]
+> **Env override:** `RUCIOD_EMULE_NODES_DAT_URL` (URL). Read at startup only —
+> not settable with `rucio config set`.
+
 ---
 
 ### `downloads.auto_clear_completed`
@@ -819,7 +942,12 @@ rucio config set downloads.auto_clear_completed true
 rucio config unset downloads.auto_clear_completed
 ```
 
-**Default:** `false`  (override at runtime with `RUCIOD_AUTO_CLEAR_COMPLETED`)
+**Default:** `false`.
+
+> [!NOTE]
+> **Env override:** `RUCIOD_AUTO_CLEAR_COMPLETED` (`true`/`false`, also `1`/`0`,
+> `yes`/`no`, `on`/`off`) — see
+> [Environment variable overrides](#environment-variable-overrides).
 
 ---
 
@@ -832,6 +960,10 @@ see [Notifications](08-notifications.md), which covers the keys, the webhook
 formats (generic / Discord / Slack / custom) and HMAC signing.
 
 **Defaults:** `enabled = true`, `downloads = true`, `system = true`, no webhooks.
+
+> [!NOTE]
+> No environment override — configured under `[notifications]` in `config.toml`;
+> see the [Notifications guide](08-notifications.md).
 
 ---
 
