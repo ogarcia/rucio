@@ -415,19 +415,25 @@
       }
       footer.site .wrap {
         display: flex;
-        justify-content: space-between;
+        justify-content: center;
         align-items: center;
         flex-wrap: wrap;
         gap: 0.5rem 1rem;
+        text-align: center;
       }
       footer.site a {
         color: var(--text-2);
       }
-      @media (max-width: 640px) {
-        footer.site .wrap {
-          flex-direction: column;
-          text-align: center;
-        }
+      /* A CSS-coloured heart, not an emoji: consistent on every platform. */
+      footer.site .heart {
+        color: #e25555;
+      }
+      /* Inline SVG flag, since emoji flags do not render on Windows. */
+      footer.site .flag-eu {
+        height: 0.95em;
+        width: auto;
+        vertical-align: -0.12em;
+        border-radius: 1.5px;
       }
     </style>
   </head>
@@ -703,10 +709,14 @@ cargo build --release</code></pre>
     <footer class="site">
       <div class="wrap">
         <span>
-          Rucio es software libre bajo la
-          <a href="https://github.com/ogarcia/rucio/blob/master/LICENSE">GPLv3</a>.
+          Hecho con <span class="heart" role="img" aria-label="amor">♥</span> en
+          Galicia, España, Europa
+          <svg class="flag-eu" viewBox="0 0 36 24" role="img" aria-label="Unión Europea">
+            <rect width="36" height="24" rx="2" fill="#003399" />
+            <path fill="#FFCC00" d="M 18.000,2.667 L 18.299,3.588 L 19.268,3.588 L 18.484,4.157 L 18.784,5.079 L 18.000,4.509 L 17.216,5.079 L 17.516,4.157 L 16.732,3.588 L 17.701,3.588 Z M 22.000,3.738 L 22.299,4.660 L 23.268,4.660 L 22.484,5.229 L 22.784,6.150 L 22.000,5.581 L 21.216,6.150 L 21.516,5.229 L 20.732,4.660 L 21.701,4.660 Z M 24.928,6.667 L 25.228,7.588 L 26.196,7.588 L 25.413,8.157 L 25.712,9.079 L 24.928,8.509 L 24.144,9.079 L 24.444,8.157 L 23.660,7.588 L 24.629,7.588 Z M 26.000,10.667 L 26.299,11.588 L 27.268,11.588 L 26.484,12.157 L 26.784,13.079 L 26.000,12.509 L 25.216,13.079 L 25.516,12.157 L 24.732,11.588 L 25.701,11.588 Z M 24.928,14.667 L 25.228,15.588 L 26.196,15.588 L 25.413,16.157 L 25.712,17.079 L 24.928,16.509 L 24.144,17.079 L 24.444,16.157 L 23.660,15.588 L 24.629,15.588 Z M 22.000,17.595 L 22.299,18.516 L 23.268,18.516 L 22.484,19.086 L 22.784,20.007 L 22.000,19.437 L 21.216,20.007 L 21.516,19.086 L 20.732,18.516 L 21.701,18.516 Z M 18.000,18.667 L 18.299,19.588 L 19.268,19.588 L 18.484,20.157 L 18.784,21.079 L 18.000,20.509 L 17.216,21.079 L 17.516,20.157 L 16.732,19.588 L 17.701,19.588 Z M 14.000,17.595 L 14.299,18.516 L 15.268,18.516 L 14.484,19.086 L 14.784,20.007 L 14.000,19.437 L 13.216,20.007 L 13.516,19.086 L 12.732,18.516 L 13.701,18.516 Z M 11.072,14.667 L 11.371,15.588 L 12.340,15.588 L 11.556,16.157 L 11.856,17.079 L 11.072,16.509 L 10.288,17.079 L 10.587,16.157 L 9.804,15.588 L 10.772,15.588 Z M 10.000,10.667 L 10.299,11.588 L 11.268,11.588 L 10.484,12.157 L 10.784,13.079 L 10.000,12.509 L 9.216,13.079 L 9.516,12.157 L 8.732,11.588 L 9.701,11.588 Z M 11.072,6.667 L 11.371,7.588 L 12.340,7.588 L 11.556,8.157 L 11.856,9.079 L 11.072,8.509 L 10.288,9.079 L 10.587,8.157 L 9.804,7.588 L 10.772,7.588 Z M 14.000,3.738 L 14.299,4.660 L 15.268,4.660 L 14.484,5.229 L 14.784,6.150 L 14.000,5.581 L 13.216,6.150 L 13.516,5.229 L 12.732,4.660 L 13.701,4.660 Z" />
+          </svg>
+          por <a href="https://ogarcia.me">Óscar García Amor</a>
         </span>
-        <a href="https://github.com/ogarcia/rucio">github.com/ogarcia/rucio</a>
       </div>
     </footer>
   </body>
