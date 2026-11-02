@@ -44,8 +44,11 @@
 #                              $HOME/.config/rucio/config.toml (/var/lib/rucio/.config/…)
 #   RUCIO_API                  Daemon API URL used by the rucio CLI
 #                              (default: http://127.0.0.1:3003)
-#   RUCIOD_KAD_PORT            Kad2 UDP port for eMule network (default: 4672).
-#                              Must be mapped on the host: -p 4672:4672/udp
+#   RUCIOD_EMULE_UDP_PORT      Kad2 UDP port for the eMule network (default:
+#                              4672). Map on the host: -p 4672:4672/udp
+#   RUCIOD_EMULE_TCP_PORT      eMule TCP port for incoming peer connections;
+#                              needed for High-ID and faster downloads
+#                              (default: 4662). Map: -p 4662:4662/tcp
 #   RUCIOD_UPNP                Enable UPnP port mapping (default: false in the
 #                              container; set to true only with --network=host)
 #   RUCIO_BOOTSTRAP_CONFIG     Path to the bootstrap config file — optional, defaults to
@@ -145,9 +148,11 @@ ENV RUCIOD_UPNP=false
 EXPOSE 4321/tcp
 # REST API and web control panel — http://<host>:3003/
 EXPOSE 3003/tcp
-# Kad2 UDP port for eMule network (emule-compat builds).
-# Map with: -p 4672:4672/udp
+# eMule network (emule-compat builds, enabled by default): UDP for Kad2, TCP for
+# High-ID (direct incoming connections, faster downloads). Change the ports with
+# RUCIOD_EMULE_UDP_PORT / RUCIOD_EMULE_TCP_PORT and map the ones you use.
 EXPOSE 4672/udp
+EXPOSE 4662/tcp
 
 ENTRYPOINT ["/usr/bin/ruciod"]
 
@@ -174,9 +179,11 @@ ENV RUCIOD_UPNP=false
 
 EXPOSE 4321/tcp
 EXPOSE 3003/tcp
-# Kad2 UDP port for eMule network (emule-compat builds).
-# Map with: -p 4672:4672/udp
+# eMule network (emule-compat builds, enabled by default): UDP for Kad2, TCP for
+# High-ID (direct incoming connections, faster downloads). Change the ports with
+# RUCIOD_EMULE_UDP_PORT / RUCIOD_EMULE_TCP_PORT and map the ones you use.
 EXPOSE 4672/udp
+EXPOSE 4662/tcp
 
 ENTRYPOINT ["/usr/bin/ruciod"]
 
