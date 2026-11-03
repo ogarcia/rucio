@@ -497,6 +497,10 @@ download directly. The first time, the browser asks for permission to let Rucio
 handle `ed2k` links. Native `rucio:` magnets are a custom scheme browsers don't
 allow PWAs to claim, so those still go through the **Add downloads** box.
 
+Without the PWA (CLI-only or headless setups), you can register a native desktop
+handler for `ed2k://` instead — see
+[Capturing ed2k:// links from the browser](04-downloading.md#capturing-ed2k-links-from-the-browser).
+
 ## Running as a system service (Linux / systemd)
 
 Create `/etc/systemd/system/ruciod.service`:

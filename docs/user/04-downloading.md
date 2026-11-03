@@ -243,6 +243,168 @@ The daemon will:
 The download appears in `rucio download list` and supports `--watch` like any
 other download.
 
+### Capturing `ed2k://` links from the browser
+
+On Linux you can make a click on an `ed2k://` link on any website go straight
+into Rucio, through a desktop URL-scheme handler. This is **not Firefox-only**:
+any browser that hands external schemes to the system (Firefox, Chromium, …)
+works, because the handler is registered desktop-wide, not in the browser. It is
+the native alternative to the [PWA handler](01-installation.md#ed2k-links-open-the-app),
+which needs the panel installed over HTTPS. The handler is a small Python script
+(Python 3 ships on virtually every Linux), and it talks to a daemon that may be
+running locally or on **another machine**.
+
+Only `ed2k://` is worth wiring up: websites render those as clickable links,
+whereas `rucio:` magnets are not linkified by browsers, so they keep going
+through the panel's **Add downloads** box.
+
+1. Create the handler script at `~/.local/bin/rucio-ed2k-handler`. Set `MODE`
+   near the top to `cli` (shell out to the `rucio` CLI) or `api` (POST to the
+   REST API — set `RUCIO_API` to the daemon's address when it runs on another
+   machine). `api` mode uses only the Python standard library, so it needs no
+   `curl`:
+
+   ```python
+   #!/usr/bin/env python3
+   """Hand an ed2k:// link clicked in the browser to Rucio."""
+   import base64
+   import json
+   import os
+   import shutil
+   import subprocess
+   import sys
+   import urllib.error
+   import urllib.parse
+   import urllib.request
+
+   # cli = run the `rucio` CLI; api = POST to RUCIO_API (set it to a remote
+   # host when Rucio runs on another machine). Either can come from the env.
+   MODE = os.environ.get("RUCIO_ED2K_MODE", "cli")
+   RUCIO_API = os.environ.get("RUCIO_API", "http://127.0.0.1:3003")
+
+
+   def notify(summary, body, urgent=False):
+       # Notify only when notify-send exists, so the handler never fails on a
+       # minimal or headless desktop.
+       if not shutil.which("notify-send"):
+           return
+       args = ["notify-send"] + (["-u", "critical"] if urgent else [])
+       subprocess.run(args + [summary, body], check=False)
+
+
+   def add_via_cli(link):
+       try:
+           p = subprocess.run(["rucio", "download", "add", link],
+                              capture_output=True, text=True)
+       except FileNotFoundError:
+           return "rucio not found on PATH"
+       if p.returncode == 0:
+           return None
+       return (p.stderr or p.stdout).strip() or f"exit code {p.returncode}"
+
+
+   def add_via_api(link):
+       headers = {"Content-Type": "application/json"}
+       # Pull HTTP Basic credentials out of RUCIO_API if it carries any
+       # (e.g. https://user:pass@host), so a URL with auth just works.
+       parts = urllib.parse.urlsplit(RUCIO_API)
+       if parts.username:
+           creds = "%s:%s" % (urllib.parse.unquote(parts.username),
+                              urllib.parse.unquote(parts.password or ""))
+           headers["Authorization"] = "Basic " + base64.b64encode(
+               creds.encode()).decode()
+           netloc = parts.hostname + (":%d" % parts.port if parts.port else "")
+           base = urllib.parse.urlunsplit((parts.scheme, netloc, "", "", ""))
+       else:
+           base = RUCIO_API.rstrip("/")
+       req = urllib.request.Request(
+           f"{base}/api/v1/downloads/ed2k",
+           data=json.dumps({"link": link}).encode(),
+           headers=headers,
+           method="POST",
+       )
+       try:
+           urllib.request.urlopen(req, timeout=10)
+           return None
+       except urllib.error.HTTPError as e:
+           return e.read().decode(errors="replace").strip() or f"HTTP {e.code}"
+       except urllib.error.URLError as e:
+           return f"cannot reach {base}: {e.reason}"
+
+
+   def main():
+       if len(sys.argv) < 2 or not sys.argv[1]:
+           notify("Rucio", "No link given", urgent=True)
+           return 1
+       link = sys.argv[1]
+       if MODE == "cli":
+           error = add_via_cli(link)
+       elif MODE == "api":
+           error = add_via_api(link)
+       else:
+           notify("Rucio", f"Invalid MODE '{MODE}' (use cli or api)", urgent=True)
+           return 1
+       if error is None:
+           notify("Rucio", "Download queued")
+           return 0
+       notify("Rucio", f"Could not queue download: {error}", urgent=True)
+       return 1
+
+
+   if __name__ == "__main__":
+       sys.exit(main())
+   ```
+
+   ```sh
+   chmod +x ~/.local/bin/rucio-ed2k-handler
+   ```
+
+2. Create the desktop entry at `~/.local/share/applications/rucio-ed2k.desktop`:
+
+   ```ini
+   [Desktop Entry]
+   Type=Application
+   Name=Rucio ed2k handler
+   Exec=rucio-ed2k-handler %u
+   NoDisplay=true
+   MimeType=x-scheme-handler/ed2k;
+   ```
+
+   If clicking a link later does nothing, your desktop session's `PATH` may not
+   include `~/.local/bin`; put the script's absolute path in `Exec` instead.
+
+3. Register it as the default handler for the scheme:
+
+   ```sh
+   xdg-mime default rucio-ed2k.desktop x-scheme-handler/ed2k
+   update-desktop-database ~/.local/share/applications 2>/dev/null || true
+   ```
+
+4. Test it without a browser — this should land in `rucio download list` (it
+   won't find sources, the hash is a dummy, but the capture worked):
+
+   ```sh
+   xdg-open "ed2k://|file|test|1|00000000000000000000000000000000|/"
+   ```
+
+> **Notes.** The daemon must be running; the handler only forwards the link and,
+> on failure, puts the daemon's own reason in the notification. The first time you
+> click an `ed2k://` link the browser asks whether to open it with Rucio — allow
+> it (and tick *always* if offered). The desktop entry runs with a minimal
+> environment, so in `cli` mode give `rucio` an absolute path if it is not found.
+
+For `api` mode behind an nginx basic-auth gate (the
+[Option D](01-installation.md#option-d--behind-your-own-web-server-nginx) setup),
+put the credentials straight in `RUCIO_API` — the script turns them into an
+`Authorization: Basic` header:
+
+```python
+RUCIO_API = os.environ.get("RUCIO_API", "https://user:password@rucio.example.com")
+```
+
+Prefer `https` so the credentials are encrypted in transit; over plain `http`
+they travel only base64-encoded.
+
 ### Configuration
 
 | Key | Default | Description |
