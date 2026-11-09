@@ -191,33 +191,39 @@ impl ActiveSearch {
         self.queried.len()
     }
 
-    /// True when enough results have been collected or the deadline has passed.
-    pub fn is_done(&self) -> bool {
-        let n = match &self.mode {
+    /// Results collected so far: sources found, keyword hits, or stores
+    /// acknowledged, depending on the search mode.
+    pub fn result_count(&self) -> usize {
+        match &self.mode {
             SearchMode::Sources { sources, .. } => sources.len(),
             SearchMode::Keyword { hits, .. } => hits.len(),
             SearchMode::Publish { published, .. } => *published,
-        };
-        n >= self.max_results || Instant::now() >= self.deadline
+        }
+    }
+
+    /// True when enough results have been collected or the deadline has passed.
+    pub fn is_done(&self) -> bool {
+        self.result_count() >= self.max_results || Instant::now() >= self.deadline
     }
 
     /// Deliver results to the reply channel and consume the search.
     pub fn finish(self) {
         let queried = self.queried.len();
         let target = self.target;
+        let found = self.result_count();
         match self.mode {
             SearchMode::Sources { sources, reply, .. } => {
-                debug!(sources = sources.len(), queried, %target, "Kad2 source search finished");
+                debug!(sources = found, queried, %target, "Kad2 source search finished");
                 let _ = reply.send(sources);
             }
             SearchMode::Keyword { hits, reply } => {
-                debug!(hits = hits.len(), queried, %target, "Kad2 keyword search finished");
+                debug!(hits = found, queried, %target, "Kad2 keyword search finished");
                 let _ = reply.send(hits);
             }
             SearchMode::Publish {
                 published, reply, ..
             } => {
-                debug!(published, queried, %target, "Kad2 source publish finished");
+                debug!(published = found, queried, %target, "Kad2 source publish finished");
                 let _ = reply.send(published);
             }
         }

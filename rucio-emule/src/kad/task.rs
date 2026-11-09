@@ -441,8 +441,9 @@ async fn run_task(
                             if Instant::now() >= s.deadline {
                                 info!(
                                     queried = s.queried_count(),
+                                    found = s.result_count(),
                                     target = %s.target,
-                                    "Kad2 search timed out"
+                                    "Kad2 search reached deadline"
                                 );
                                 s.finish();
                             } else {
