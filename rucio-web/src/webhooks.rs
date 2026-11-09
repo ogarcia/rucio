@@ -68,7 +68,7 @@ impl Row {
             secret: opt(self.secret.get_untracked()),
             template: is_custom
                 .then(|| self.template.get_untracked())
-                .and_then(&opt),
+                .and_then(opt),
             content_type: if is_custom {
                 opt(self.content_type.get_untracked())
             } else {
