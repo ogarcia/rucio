@@ -29,7 +29,7 @@ tokio        = { workspace = true }
 # app keeps running as a background app via the XDG Background portal, which
 # lets the desktop (e.g. GNOME's "Background Apps" menu) list and manage it.
 [target.'cfg(target_os = "linux")'.dependencies]
-ashpd = { version = "0.13", default-features = false, features = ["tokio", "background"] }
+ashpd = { version = "0.14", default-features = false, features = ["tokio", "background"] }
 # Read the desktop shell's own tiny, hand-edited desktop.toml (autostart).
 dirs = { workspace = true }
 toml = { workspace = true }
