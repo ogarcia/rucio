@@ -46,6 +46,15 @@ a category routes a download to a folder and disappears when you clear the
 download from the list, whereas a collection sticks to the pin for as long as
 it's pinned. A pin belongs to **one** collection (or none).
 
+**Example.** Say you keep a `Linux ISOs` collection and pin each new release
+into it. Anyone subscribed to your node can follow just that collection; their
+node then mirrors your `Linux ISOs` pins automatically — when you pin a new ISO,
+theirs fetches it on the next sync (within the disk quota they set) and
+re-shares it. So your followers always end up with the latest releases without
+doing anything, and each becomes one more provider keeping them alive. See
+[Subscriptions](#subscriptions-cooperative-pinning) and
+[Following specific collections](#following-specific-collections).
+
 ## Pinning from the CLI
 
 ```sh
