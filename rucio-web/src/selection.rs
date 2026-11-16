@@ -28,6 +28,17 @@ where
     pub cursor: RwSignal<Option<Id>>,
 }
 
+/// How a cursor move updates the selection.
+#[derive(Clone, Copy)]
+pub enum CursorMode {
+    /// Collapse the selection to the cursor row (plain Arrow).
+    Collapse,
+    /// Extend the contiguous range from the anchor to the cursor (Shift+Arrow).
+    Extend,
+    /// Move the cursor only, leaving the selection unchanged (Ctrl+Arrow).
+    Focus,
+}
+
 impl<Id: Send + Sync + 'static> Clone for Selection<Id> {
     fn clone(&self) -> Self {
         *self
@@ -92,12 +103,11 @@ where
         self.cursor.set(Some(id));
     }
 
-    /// Move the keyboard cursor by `delta` rows over `visible`, updating the
-    /// selection. With `extend` (shift held) the selection becomes the
-    /// contiguous range from the anchor to the new cursor; otherwise it
-    /// collapses to the cursor row, which also becomes the new anchor. No-op on
-    /// an empty list.
-    pub fn move_cursor(&self, delta: i32, extend: bool, visible: &[Id]) {
+    /// Move the keyboard cursor by `delta` rows over `visible`, applying `mode`:
+    /// `Collapse` selects only the cursor row (and re-anchors), `Extend` selects
+    /// the contiguous range from the anchor to the cursor, `Focus` moves the
+    /// cursor and leaves the selection untouched. No-op on an empty list.
+    pub fn move_cursor(&self, delta: i32, mode: CursorMode, visible: &[Id]) {
         if visible.is_empty() {
             return;
         }
@@ -115,39 +125,63 @@ where
             None => len - 1,
         } as usize;
         let target = visible[next].clone();
-        if extend {
-            // Anchor the range if nothing anchors it yet, then select the span
-            // from the anchor to the new cursor.
-            let anchor_idx = match self
-                .anchor
-                .get_untracked()
-                .and_then(|a| visible.iter().position(|x| *x == a))
-            {
-                Some(i) => i,
-                None => {
-                    self.anchor.set(Some(target.clone()));
-                    next
-                }
-            };
-            let (lo, hi) = if anchor_idx <= next {
-                (anchor_idx, next)
-            } else {
-                (next, anchor_idx)
-            };
-            self.selected
-                .set(visible[lo..=hi].iter().cloned().collect());
-        } else {
-            self.selected.set(HashSet::from([target.clone()]));
-            self.anchor.set(Some(target.clone()));
+        match mode {
+            // Move the cursor only; the selection and anchor stay put.
+            CursorMode::Focus => {}
+            CursorMode::Extend => {
+                // Anchor the range if nothing anchors it yet, then select the
+                // span from the anchor to the new cursor.
+                let anchor_idx = match self
+                    .anchor
+                    .get_untracked()
+                    .and_then(|a| visible.iter().position(|x| *x == a))
+                {
+                    Some(i) => i,
+                    None => {
+                        self.anchor.set(Some(target.clone()));
+                        next
+                    }
+                };
+                let (lo, hi) = if anchor_idx <= next {
+                    (anchor_idx, next)
+                } else {
+                    (next, anchor_idx)
+                };
+                self.selected
+                    .set(visible[lo..=hi].iter().cloned().collect());
+            }
+            CursorMode::Collapse => {
+                self.selected.set(HashSet::from([target.clone()]));
+                self.anchor.set(Some(target.clone()));
+            }
         }
         self.cursor.set(Some(target));
     }
 
-    /// Handle a keydown on a list: on ArrowUp/ArrowDown move the cursor over
-    /// `visible` (extending the range while shift is held) and scroll the new
-    /// cursor row into view; other keys are left untouched. `list` is the
-    /// container whose rows carry `data-row-id="<row_value(id)>"`.
-    pub fn arrow_navigate<E>(
+    /// Toggle the current cursor row in the selection (Space). The cursor row
+    /// becomes the new anchor so a following Shift+Arrow extends from here.
+    /// No-op when there is no cursor or it is not in `visible`.
+    pub fn toggle_cursor(&self, visible: &[Id]) {
+        let Some(cur) = self.cursor.get_untracked() else {
+            return;
+        };
+        if !visible.contains(&cur) {
+            return;
+        }
+        self.selected.update(|s| {
+            if !s.insert(cur.clone()) {
+                s.remove(&cur);
+            }
+        });
+        self.anchor.set(Some(cur));
+    }
+
+    /// Handle a keydown on a list and scroll the resulting cursor row into view.
+    /// ArrowUp/ArrowDown move the cursor — plain collapses, Shift extends the
+    /// range, Ctrl/⌘ moves the focus only — and Space toggles the cursor row.
+    /// Other keys are left untouched. `list` is the container whose rows carry
+    /// `data-row-id="<row_value(id)>"`.
+    pub fn handle_key<E>(
         &self,
         ev: &web_sys::KeyboardEvent,
         visible: &[Id],
@@ -156,13 +190,27 @@ where
     ) where
         E: AsRef<web_sys::Element>,
     {
-        let delta = match ev.key().as_str() {
-            "ArrowDown" => 1,
-            "ArrowUp" => -1,
+        let key = ev.key();
+        match key.as_str() {
+            "ArrowDown" | "ArrowUp" => {
+                let delta = if key == "ArrowDown" { 1 } else { -1 };
+                let mode = if ev.shift_key() {
+                    CursorMode::Extend
+                } else if ev.ctrl_key() || ev.meta_key() {
+                    CursorMode::Focus
+                } else {
+                    CursorMode::Collapse
+                };
+                ev.prevent_default();
+                self.move_cursor(delta, mode, visible);
+            }
+            // Space toggles the cursor row (build a non-contiguous selection).
+            " " | "Spacebar" => {
+                ev.prevent_default();
+                self.toggle_cursor(visible);
+            }
             _ => return,
-        };
-        ev.prevent_default();
-        self.move_cursor(delta, ev.shift_key(), visible);
+        }
         if let (Some(list), Some(cur)) = (list, self.cursor.get_untracked()) {
             // Escape the value for a `[data-row-id="…"]` attribute selector.
             let v = row_value(&cur).replace('\\', "\\\\").replace('"', "\\\"");

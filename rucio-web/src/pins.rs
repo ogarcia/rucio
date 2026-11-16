@@ -386,7 +386,7 @@ pub fn PinsTab(
                         // swallows the first tap and breaks tap-to-toggle.
                         tabindex=(!crate::platform::coarse_pointer()).then_some(0)
                         on:keydown=move |ev| {
-                            selection.arrow_navigate(
+                            selection.handle_key(
                                 &ev,
                                 &visible_hashes(),
                                 list_ref.get(),
@@ -445,6 +445,11 @@ pub fn PinsTab(
                                             let mut c = String::from("share-dir-row");
                                             if selected.with(|s| s.contains(&row_hash)) {
                                                 c.push_str(" share-dir-selected");
+                                            }
+                                            if selection.cursor.get().as_deref()
+                                                == Some(row_hash.as_str())
+                                            {
+                                                c.push_str(" share-dir-cursor");
                                             }
                                             c
                                         }

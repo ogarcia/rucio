@@ -977,6 +977,10 @@
         }
         .dl-row:hover { background: var(--row-hover); }
         .dl-row-selected { background: var(--row-sel) !important; }
+        /* Keyboard cursor: a focus ring on the active row, shown only while the
+           list has keyboard focus (never on touch, where it isn't focusable). */
+        .dl-list:focus { outline: none; }
+        .dl-list:focus .dl-row-cursor { box-shadow: inset 0 0 0 1px var(--accent); }
         .dl-row:last-child { border-bottom: none; }
 
         .dl-top {
@@ -1329,6 +1333,8 @@
         }
         .share-dir-row:hover { background: var(--row-hover); }
         .share-dir-selected { background: var(--row-sel) !important; }
+        .share-dir-list:focus { outline: none; }
+        .share-dir-list:focus .share-dir-cursor { box-shadow: inset 0 0 0 1px var(--accent); }
         .share-dir-row:last-child { border-bottom: none; }
         .share-dir-icon { color: var(--text-3); display: inline-flex; flex-shrink: 0; }
         .share-dir-icon .icon { width: 1.125rem; height: 1.125rem; }
@@ -1467,6 +1473,8 @@
         }
         .share-file-row:last-child { border-bottom: none; }
         .share-file-selected { background: var(--row-sel); }
+        .share-file-list:focus { outline: none; }
+        .share-file-list:focus .share-file-cursor { box-shadow: inset 0 0 0 1px var(--accent); }
         .share-file-pin {
             display: inline-flex; color: var(--text-3); flex: none;
         }

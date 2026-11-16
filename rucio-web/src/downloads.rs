@@ -678,7 +678,7 @@ pub fn DownloadsTab(
                         // swallows the first tap and breaks tap-to-toggle.
                         tabindex=(!crate::platform::coarse_pointer()).then_some(0)
                         on:keydown=move |ev| {
-                            selection.arrow_navigate(
+                            selection.handle_key(
                                 &ev,
                                 &visible_ids(),
                                 list_ref.get(),
@@ -714,6 +714,7 @@ pub fn DownloadsTab(
                                     downloads=downloads
                                     categories=categories
                                     selected_ids=selected_ids
+                                    cursor=selection.cursor
                                     on_select=on_row_click
                                     compact=compact
                                 />
@@ -835,6 +836,7 @@ fn DownloadRow(
     downloads: RwSignal<Vec<DownloadResponse>>,
     categories: RwSignal<Vec<Category>>,
     selected_ids: RwSignal<HashSet<i64>>,
+    cursor: RwSignal<Option<i64>>,
     on_select: Callback<(i64, bool, bool)>,
     compact: RwSignal<bool>,
 ) -> impl IntoView {
@@ -998,6 +1000,9 @@ fn DownloadRow(
                 let mut c = String::from("dl-row");
                 if selected_ids.with(|s| s.contains(&id)) {
                     c.push_str(" dl-row-selected");
+                }
+                if cursor.get() == Some(id) {
+                    c.push_str(" dl-row-cursor");
                 }
                 if compact.get() {
                     c.push_str(" dl-row-compact");

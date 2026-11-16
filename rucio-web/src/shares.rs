@@ -779,7 +779,7 @@ pub fn SharesTab(
                         on:keydown=move |ev| {
                             let vis: Vec<String> =
                                 files.with_untracked(|f| f.iter().map(|x| x.path.clone()).collect());
-                            selection.arrow_navigate(&ev, &vis, list_ref.get(), |id| id.clone());
+                            selection.handle_key(&ev, &vis, list_ref.get(), |id| id.clone());
                         }
                     >
                         <For
@@ -797,10 +797,15 @@ pub fn SharesTab(
                                 // Rows highlight by path (selection is per row);
                                 // the pin marker keys on root_hash (pins are per
                                 // content, so both copies of a duplicate show it).
-                                let row_class = move || if selected.get().contains(&path) {
-                                    "share-file-row share-file-selected"
-                                } else {
-                                    "share-file-row"
+                                let row_class = move || {
+                                    let mut c = String::from("share-file-row");
+                                    if selected.get().contains(&path) {
+                                        c.push_str(" share-file-selected");
+                                    }
+                                    if selection.cursor.get().as_deref() == Some(path.as_str()) {
+                                        c.push_str(" share-file-cursor");
+                                    }
+                                    c
                                 };
                                 view! {
                                     <li
