@@ -297,6 +297,26 @@ the directory — just make sure it matches the mount:
 docker run --user "$(id -u):$(id -g)" -v /srv/rucio:/var/lib/rucio ...
 ```
 
+### Customizing the image
+
+The images are built on **Alpine Linux**, so they ship a minimal userland and no
+shell tools beyond busybox. To add a package (say `bash`) or your own files,
+build a thin image **on top of** the published one — don't fork the
+Containerfile:
+
+```dockerfile
+FROM ghcr.io/ogarcia/rucio:latest
+RUN apk add --no-cache bash
+```
+
+```sh
+docker build -t my-rucio .
+docker run -d --name rucio ... my-rucio   # same flags as the stock image
+```
+
+Everything else (ports, volume, environment variables) is unchanged — you are
+only layering extras onto the stock image.
+
 See [Configuration](06-configuration.md) for the full list of environment
 variables accepted by the container.
 

@@ -15,3 +15,4 @@ No knowledge of distributed systems or networking required.
 | [08 — Notifications](08-notifications.md) | The notification centre and forwarding events to Discord, Telegram, ntfy and more |
 | [09 — Categories](09-categories.md) | Organising downloads into colour-tagged categories with their own folders |
 | [10 — Pinning](10-pinning.md) | Keeping content available on purpose (fetch-and-retain), and mirroring other nodes' pins via subscriptions (cooperative pinning) |
+| [11 — Scope and non-goals](11-scope.md) | What Rucio deliberately doesn't do (no eMule servers, no BitTorrent, no built-in accounts, no chat) and what to use instead |
