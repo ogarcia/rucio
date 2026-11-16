@@ -212,6 +212,9 @@ pub fn PinsTab(
     // as the pivot for shift+click range selection.
     let selection = Selection::<String>::new();
     let selected = selection.selected;
+    // Ref to the list <ul> so keyboard navigation can scroll the cursor row
+    // into view.
+    let list_ref = NodeRef::<leptos::html::Ul>::new();
     // When set to (hashes, prefill), the set-collection modal is open. The
     // prefill is the current collection, carried only for a single selection.
     let coll_modal: RwSignal<Option<(Vec<String>, Option<String>)>> = RwSignal::new(None);
@@ -375,7 +378,22 @@ pub fn PinsTab(
                         </div>
                     }
                 >
-                    <ul class="share-dir-list">
+                    <ul
+                        class="share-dir-list"
+                        node_ref=list_ref
+                        // Keyboard navigation is desktop-only; don't make the
+                        // list focusable on touch, where a focusable container
+                        // swallows the first tap and breaks tap-to-toggle.
+                        tabindex=(!crate::platform::coarse_pointer()).then_some(0)
+                        on:keydown=move |ev| {
+                            selection.arrow_navigate(
+                                &ev,
+                                &visible_hashes(),
+                                list_ref.get(),
+                                |id| id.clone(),
+                            );
+                        }
+                    >
                         <For
                             each=move || {
                                 let fs = filter_state.get();
@@ -430,6 +448,7 @@ pub fn PinsTab(
                                             }
                                             c
                                         }
+                                        attr:data-row-id=hash.clone()
                                         on:click=move |ev| {
                                             // On a touchscreen there are no modifiers,
                                             // so a plain tap toggles (builds a set).

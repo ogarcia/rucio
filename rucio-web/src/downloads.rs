@@ -457,6 +457,9 @@ pub fn DownloadsTab(
     // pivot for shift+click range selection.
     let selection = Selection::<i64>::new();
     let selected_ids = selection.selected;
+    // Ref to the list <ul> so keyboard navigation can scroll the cursor row
+    // into view.
+    let list_ref = NodeRef::<leptos::html::Ul>::new();
     let add_open: RwSignal<bool> = RwSignal::new(false);
     let detail: RwSignal<Option<DownloadDetailResponse>> = RwSignal::new(None);
     // Open flag for the multi-selection bulk-edit modal (category + priority).
@@ -523,9 +526,11 @@ pub fn DownloadsTab(
     let visible_ids = move || {
         let q = filter_name.get().to_lowercase();
         let fs = filter_state.get();
+        let fc = filter_cat.get();
         downloads.with(|v| {
             v.iter()
                 .filter(|d| fs.matches(&d.state))
+                .filter(|d| fc.matches(d.category_id))
                 .filter(|d| {
                     q.is_empty() || d.name.as_deref().unwrap_or("").to_lowercase().contains(&q)
                 })
@@ -665,7 +670,22 @@ pub fn DownloadsTab(
                     when=move || !downloads.get().is_empty()
                     fallback=|| view! { <div class="empty-state"><p>{t!("download.none")}</p></div> }
                 >
-                    <ul class="dl-list">
+                    <ul
+                        class="dl-list"
+                        node_ref=list_ref
+                        // Keyboard navigation is desktop-only; don't make the
+                        // list focusable on touch, where a focusable container
+                        // swallows the first tap and breaks tap-to-toggle.
+                        tabindex=(!crate::platform::coarse_pointer()).then_some(0)
+                        on:keydown=move |ev| {
+                            selection.arrow_navigate(
+                                &ev,
+                                &visible_ids(),
+                                list_ref.get(),
+                                |id| id.to_string(),
+                            );
+                        }
+                    >
                         <For
                             each=move || {
                                 let q = filter_name.get().to_lowercase();
@@ -984,6 +1004,7 @@ fn DownloadRow(
                 }
                 c
             }
+            attr:data-row-id=id.to_string()
             on:click=move |ev| {
                 // On a touchscreen there are no modifiers, so a plain tap is
                 // treated as an additive toggle to allow building a selection.

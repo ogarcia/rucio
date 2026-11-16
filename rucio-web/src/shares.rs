@@ -268,6 +268,9 @@ pub fn SharesTab(
     // buttons (keeps them readable on mobile).
     let selection = Selection::<String>::new();
     let selected = selection.selected;
+    // Ref to the file-list <ul> so keyboard navigation can scroll the cursor
+    // row into view.
+    let list_ref = NodeRef::<leptos::html::Ul>::new();
     // The file shown in the info overlay (the single selected one), or None.
     let detail: RwSignal<Option<ShareFile>> = RwSignal::new(None);
     // When set, the multi-file links modal is open for these files. Info with a
@@ -766,7 +769,19 @@ pub fn SharesTab(
                         </div>
                     }
                 >
-                    <ul class="share-file-list">
+                    <ul
+                        class="share-file-list"
+                        node_ref=list_ref
+                        // Keyboard navigation is desktop-only; don't make the
+                        // list focusable on touch, where a focusable container
+                        // swallows the first tap and breaks tap-to-toggle.
+                        tabindex=(!crate::platform::coarse_pointer()).then_some(0)
+                        on:keydown=move |ev| {
+                            let vis: Vec<String> =
+                                files.with_untracked(|f| f.iter().map(|x| x.path.clone()).collect());
+                            selection.arrow_navigate(&ev, &vis, list_ref.get(), |id| id.clone());
+                        }
+                    >
                         <For
                             each=move || files.get()
                             // Key on `path`, not `root_hash`: identical content
@@ -790,6 +805,7 @@ pub fn SharesTab(
                                 view! {
                                     <li
                                         class=row_class
+                                        attr:data-row-id=f.path.clone()
                                         on:click=move |ev| {
                                             // On a touchscreen there are no modifiers, so a
                                             // plain tap is treated as an additive toggle to
