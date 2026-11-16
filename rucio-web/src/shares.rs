@@ -8,6 +8,8 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use rust_i18n::t;
 
+use crate::selection::Selection;
+
 use crate::icons::{self, Icon};
 use crate::statusbar::StatusBar;
 use crate::types::{
@@ -264,8 +266,8 @@ pub fn SharesTab(
     // at once, breaking single-row info/pin). Per-file actions (info, pin, unpin)
     // act on the selection from the toolbar, so the rows themselves carry no
     // buttons (keeps them readable on mobile).
-    let selected: RwSignal<HashSet<String>> = RwSignal::new(HashSet::new());
-    let anchor: RwSignal<Option<String>> = RwSignal::new(None);
+    let selection = Selection::<String>::new();
+    let selected = selection.selected;
     // The file shown in the info overlay (the single selected one), or None.
     let detail: RwSignal<Option<ShareFile>> = RwSignal::new(None);
     // When set, the multi-file links modal is open for these files. Info with a
@@ -297,7 +299,7 @@ pub fn SharesTab(
             // A fresh result set replaces the list; drop any prior selection so
             // the toolbar can't act on rows that are no longer shown.
             selected.set(HashSet::new());
-            anchor.set(None);
+            selection.anchor.set(None);
         }
         let q = filter.get_untracked();
         let dir = selected_dir.get_untracked();
@@ -387,28 +389,8 @@ pub fn SharesTab(
     // Row click with modifiers: plain = select only this row; ctrl/⌘ = toggle
     // this row; shift = select the range from the anchor to this row.
     let on_row_click = Callback::new(move |(path, additive, range): (String, bool, bool)| {
-        if range && let Some(a) = anchor.get_untracked() {
-            let vis: Vec<String> =
-                files.with_untracked(|f| f.iter().map(|x| x.path.clone()).collect());
-            if let (Some(i1), Some(i2)) = (
-                vis.iter().position(|x| x == &a),
-                vis.iter().position(|x| x == &path),
-            ) {
-                let (lo, hi) = if i1 <= i2 { (i1, i2) } else { (i2, i1) };
-                selected.set(vis[lo..=hi].iter().cloned().collect());
-                return;
-            }
-        }
-        if additive {
-            selected.update(|s| {
-                if !s.insert(path.clone()) {
-                    s.remove(&path);
-                }
-            });
-        } else {
-            selected.set(HashSet::from([path.clone()]));
-        }
-        anchor.set(Some(path));
+        let vis: Vec<String> = files.with_untracked(|f| f.iter().map(|x| x.path.clone()).collect());
+        selection.click(path, additive, range, &vis);
     });
 
     // The currently-selected files still present in the loaded list.

@@ -8,6 +8,7 @@ mod overlays;
 mod pins;
 mod platform;
 mod searches;
+mod selection;
 mod shares;
 mod statusbar;
 mod subscriptions;

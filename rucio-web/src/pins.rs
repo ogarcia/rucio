@@ -15,6 +15,8 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use rust_i18n::t;
 
+use crate::selection::Selection;
+
 use crate::icons::{self, Icon};
 use crate::statusbar::StatusBar;
 use crate::types::{Pin, PinsResponse, PinsetProbes, format_size};
@@ -208,8 +210,8 @@ pub fn PinsTab(
     let add_open: RwSignal<bool> = RwSignal::new(false);
     // Multi-selection: the set of selected root hashes, plus the anchor row used
     // as the pivot for shift+click range selection.
-    let selected: RwSignal<HashSet<String>> = RwSignal::new(HashSet::new());
-    let anchor: RwSignal<Option<String>> = RwSignal::new(None);
+    let selection = Selection::<String>::new();
+    let selected = selection.selected;
     // When set to (hashes, prefill), the set-collection modal is open. The
     // prefill is the current collection, carried only for a single selection.
     let coll_modal: RwSignal<Option<(Vec<String>, Option<String>)>> = RwSignal::new(None);
@@ -291,27 +293,7 @@ pub fn PinsTab(
     // Row click with modifier keys: plain = select only this row; ctrl/⌘ =
     // toggle this row; shift = select the range from the anchor to this row.
     let on_row_click = Callback::new(move |(hash, additive, range): (String, bool, bool)| {
-        if range && let Some(a) = anchor.get_untracked() {
-            let vis = visible_hashes();
-            if let (Some(i1), Some(i2)) = (
-                vis.iter().position(|x| x == &a),
-                vis.iter().position(|x| x == &hash),
-            ) {
-                let (lo, hi) = if i1 <= i2 { (i1, i2) } else { (i2, i1) };
-                selected.set(vis[lo..=hi].iter().cloned().collect());
-                return;
-            }
-        }
-        if additive {
-            selected.update(|s| {
-                if !s.insert(hash.clone()) {
-                    s.remove(&hash);
-                }
-            });
-        } else {
-            selected.set(HashSet::from([hash.clone()]));
-        }
-        anchor.set(Some(hash));
+        selection.click(hash, additive, range, &visible_hashes());
     });
 
     view! {

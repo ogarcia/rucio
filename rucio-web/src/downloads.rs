@@ -7,6 +7,8 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use rust_i18n::t;
 
+use crate::selection::Selection;
+
 use gloo_timers::future::sleep;
 
 use crate::icons::{self, Icon};
@@ -453,8 +455,8 @@ pub fn DownloadsTab(
 
     // Multi-selection: the set of selected ids, plus the anchor row used as the
     // pivot for shift+click range selection.
-    let selected_ids: RwSignal<HashSet<i64>> = RwSignal::new(HashSet::new());
-    let anchor: RwSignal<Option<i64>> = RwSignal::new(None);
+    let selection = Selection::<i64>::new();
+    let selected_ids = selection.selected;
     let add_open: RwSignal<bool> = RwSignal::new(false);
     let detail: RwSignal<Option<DownloadDetailResponse>> = RwSignal::new(None);
     // Open flag for the multi-selection bulk-edit modal (category + priority).
@@ -535,27 +537,7 @@ pub fn DownloadsTab(
     // Row click with modifier keys: plain = select only this row; ctrl/⌘ =
     // toggle this row; shift = select the range from the anchor to this row.
     let on_row_click = Callback::new(move |(id, additive, range): (i64, bool, bool)| {
-        if range && let Some(a) = anchor.get_untracked() {
-            let vis = visible_ids();
-            if let (Some(i1), Some(i2)) = (
-                vis.iter().position(|&x| x == a),
-                vis.iter().position(|&x| x == id),
-            ) {
-                let (lo, hi) = if i1 <= i2 { (i1, i2) } else { (i2, i1) };
-                selected_ids.set(vis[lo..=hi].iter().copied().collect());
-                return;
-            }
-        }
-        if additive {
-            selected_ids.update(|s| {
-                if !s.insert(id) {
-                    s.remove(&id);
-                }
-            });
-        } else {
-            selected_ids.set(HashSet::from([id]));
-        }
-        anchor.set(Some(id));
+        selection.click(id, additive, range, &visible_ids());
     });
 
     view! {
