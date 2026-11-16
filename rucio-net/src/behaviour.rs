@@ -7,6 +7,13 @@
 //! advertises no protocol and emits no events, so a node that only needs the
 //! DHT (e.g. a bootstrap node) carries no inert protocol surface.
 
+// libp2p's `NetworkBehaviour` derive expands to a poll loop whose trailing arm
+// newer rustc stables (1.100+) flag as unreachable; the generated code is
+// correct. An item-level allow on the struct does not reach the derived impl,
+// so allow it module-wide. Revisit on the next libp2p bump — a newer derive may
+// stop tripping it, letting this go.
+#![allow(unreachable_code)]
+
 use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::{
     autonat, connection_limits, dcutr, gossipsub, identify, kad, mdns, relay, request_response,
