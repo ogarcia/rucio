@@ -1402,7 +1402,9 @@ fn DownloadInfoOverlay(
         <div class="overlay-backdrop">
             <div class="overlay overlay-wide" on:click=move |e| e.stop_propagation()>
                 <div class="overlay-header">
-                    <span class="overlay-title">{move || display_name.get()}</span>
+                    <span class="overlay-title" title=move || display_name.get()>
+                        {move || display_name.get()}
+                    </span>
                     <button class="overlay-close" on:click=move |_| on_close()>
                         <Icon paths=icons::X/>
                     </button>

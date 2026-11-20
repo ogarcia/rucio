@@ -383,15 +383,23 @@
         }
         .overlay-header {
             display: flex; align-items: center; justify-content: space-between;
+            gap: 0.75rem;
             padding: 0.875rem 1.25rem; border-bottom: 1px solid var(--border);
             background: var(--surface); flex-shrink: 0;
         }
-        .overlay-title { font-size: 0.8125rem; font-weight: 600; color: var(--text); }
+        .overlay-title {
+            font-size: 0.8125rem; font-weight: 600; color: var(--text);
+            flex: 1; min-width: 0; overflow: hidden; overflow-wrap: anywhere;
+            /* Grow up to two lines, then ellipsis — keeps the header bounded
+               so the close button can never be pushed off-screen. */
+            display: -webkit-box; -webkit-box-orient: vertical;
+            -webkit-line-clamp: 2; line-clamp: 2;
+        }
         .overlay-close {
             display: inline-flex; align-items: center; justify-content: center;
             background: transparent; border: none; color: var(--text-4);
             cursor: pointer; padding: 0.125rem; border-radius: 0.25rem;
-            transition: color 0.15s, background 0.1s;
+            transition: color 0.15s, background 0.1s; flex-shrink: 0;
         }
         .overlay-close .icon { width: 1.125rem; height: 1.125rem; }
         .overlay-close:hover { color: var(--text); background: var(--row-hover); }
