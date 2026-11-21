@@ -13,7 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 leptos        = { version = "0.8", features = ["csr"] }
-gloo-net      = { version = "0.7", features = ["http", "websocket"] }
+gloo-net      = { version = "0.8", features = ["http", "websocket"] }
 gloo-timers   = { version = "0.4", features = ["futures"] }
 futures-util  = "0.3"
 base64        = "0.23"
